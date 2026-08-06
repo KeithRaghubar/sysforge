@@ -28,7 +28,10 @@ free ID (e.g. `2.4.0-F1`). `make check-standards` also flags collisions and
 active-cycle sequence gaps.
 
 Within each subsection, entries are kept in **ascending ID order** (by type
-counter, then version) — sort on every add so the list stays scannable.
+counter, then version) — sort on every add so the list stays scannable. Every
+entry opens `- **`<ID>` — <title sentence>.**` and is separated from its
+neighbour by a `---` rule, so a single item is readable on its own rather than
+running into the next one. `docs/release-notes/` entries use the same two rules.
 
 **Open questions (`Q`) must be resolved before any implementation.** A `Q`
 entry is undecided by definition; investigation/spikes to inform the decision
@@ -88,6 +91,7 @@ canonical ordering.
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
+| `2.6.1-STD7` | disambiguate repeated roadmap IDs in release notes with a (n/N) suffix | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -106,6 +110,8 @@ canonical ordering.
   scope note already covers per-verb `SYSFORGE_TARGET`. *Priority: low · Effort: small · Bump: patch* — observability
   completeness; additive, no correctness impact.
 
+---
+
 - **`2.5.1-F4` — Split the Abandoned section out of `ROADMAP.md` into a dedicated `docs/` file.**
   `## Abandoned / decided against` is history, not forward-looking work, yet it shares the file with
   the live backlog. At 6 entries / 54 lines (23% of the file, post-tightening) it is not yet in the
@@ -123,6 +129,8 @@ canonical ordering.
   invariant, this file's header prose, `check_standards.py`'s docstring, and the covering tests.
   *Priority: low · Effort: medium · Bump: patch* — readability only, and the guard rework is the real cost; the
   cheap half (tightening entry prose) is already done.
+
+---
 
 - **`2.6.1-F12` — Diagnose pkg-config/meson version-gate build failures.** A `-git` package whose
   upstream has raised a dependency floor fails at configure time against a repo dep that hasn't
@@ -148,6 +156,8 @@ canonical ordering.
   behaviour changes. **Standards home on adoption:** none new — §`build_diag`'s existing matcher
   table covers it.
 
+---
+
 - **`2.6.1-F19` — warn when `sysforge.toml [ui] editor` will shadow a newly persisted `EDITOR`.**
   Follow-up to `2.6.1-F18`. The persistence prompt writes the chosen editor to `/etc/environment`
   and/or `~/.zshenv` independently of the sysforge target, but `[ui] editor` is rung 2 of the
@@ -161,6 +171,8 @@ canonical ordering.
   launch. *Priority: med · Effort: small · Bump: patch* — additive warning; no write behaviour
   changes. **Standards home on adoption:** none new.
 
+---
+
 - **`2.6.1-F20` — complete the editor chain display: source values, `$VISUAL` origins, one snapshot.**
   Follow-up to `2.6.1-F18`, three coupled gaps in `_format_editor_chain`. (1) `SourceRow.value` is
   computed and never rendered — with `~/.zshenv` setting `vim` and `/etc/environment` setting `nano`
@@ -173,6 +185,8 @@ canonical ordering.
   list, nor a single-element `sources_defining` result (the `from`/`also` prefix boundary).
   *Priority: low · Effort: small · Bump: patch* — display only; no resolution or write behaviour
   changes. **Standards home on adoption:** none new.
+
+---
 
 - **`2.6.1-F21` — one home for replacing an existing config file.** Six sites hand-roll the same
   stage-to-temp-then-install shape with three different spellings and two different privilege
@@ -199,6 +213,8 @@ canonical ordering.
   does not exist yet; behaviour-preserving on every success path. **Standards home on adoption:**
   none new — §22's privilege seam row already covers the `run_privileged` conversion.
 
+---
+
 - **`2.6.1-F23` — Verify requested kconfig symbols survive into the merged `.config`.** SysForge
   writes kconfig fragments (`sysforge.config`, `sysforge.hotplug.config`) as plain text and never
   checks that the symbols it asked for actually landed. A fragment line can be voided outright with
@@ -220,6 +236,8 @@ canonical ordering.
   no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
   one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
 
+---
+
 - **`2.6.1-F27` — Install stage target-root change summary.** Builds on `2.6.1-F24`; **built last,
   and deferrable.** The install stage pacstraps into a target root via `archinstall --silent`, so
   it has no before-state and every row is an addition (`— → ver`) — a manifest plus a total size.
@@ -234,6 +252,8 @@ canonical ordering.
   fabricated count. If the mount lifetime proves hostile, drop this item; F24–F26 stand alone.
   *Priority: low · Effort: medium · Bump: patch* — the one piece carrying implementation
   uncertainty, isolated here so it cannot hold up the rest.
+
+---
 
 - **`2.6.1-F28` — `artifact review --all`: bulk-adopt every offerable candidate.** Adoption is
   one-file-at-a-time: `artifacts.adopt` takes a single `src`, and `ArtifactReviewVerb.execute`
@@ -260,6 +280,8 @@ canonical ordering.
   the manpage move in the same change. *Priority: low · Effort: small · Bump: patch* — additive
   flag on an existing verb, no new seam and no change to the per-file adopt contract.
   **Standards home on adoption:** none new.
+
+---
 
 - **`2.6.1-F29` — colour-code the `update` version-check verdicts.** A `sysforge update --devel`
   run over a large `-git` set produces one summary line per package, and nothing distinguishes the
@@ -290,6 +312,32 @@ canonical ordering.
   **Standards home on adoption:** none new — row 5 (`NO_COLOR`/`FORCE_COLOR`) already governs the
   gate this rides on.
 
+---
+
+- **`2.6.1-STD7` — disambiguate repeated roadmap IDs in release notes with a `(n/N)` suffix.**
+  One roadmap item routinely ships several distinct user-visible changes, so its ID repeats across
+  release-note entries — `2.6.1-F2` and `2.6.1-STD1` four times each in the current accumulator,
+  `2.6.1-F1` three. `2.6.1-STD6` moved the ID from mid-prose to the entry's lead, which made the
+  repetition the first thing a reader sees. Extend the lead to
+  ``- **`<ID>` (n/N) — <title>.**`` for a repeated ID, so an entry states up front that it is one
+  facet of a larger item rather than reading as a duplicate filing.
+  **Scope this to same-section repeats only.** A cross-section repeat is structurally forced — one
+  Keep a Changelog entry cannot span `Changed` and `Removed`, which is exactly why `2.6.1-F1` has
+  three entries — and numbering *across* sections would put `(2/3)` under a heading a reader
+  arrives at with no memory of `(1/3)`. Within one section the entries are adjacent and the counter
+  reads naturally.
+  **Two things already fit this without change:** `_RN_ENTRY_RE` anchors only the ID code-span and
+  the em dash, so a suffix between them parses today; and `_gather_ids()` treats release-note IDs
+  as a set (asking "has this shipped?"), so nothing downstream counts entries per ID.
+  One thing does not: `_check_accumulator_id_order` compares `key < prev_key`, so two same-ID
+  entries sort *equal* and their relative order is the one spot in the accumulator that no lint
+  constrains — arbitrary today, and `(1/2)` before `(2/2)` is the natural fix. Make the suffix the
+  tiebreak in `_entry_sort_key` and validate `N` against the actual count, otherwise a stale `(2/3)`
+  left behind when an entry is merged away is exactly the drift the group exists to catch.
+  *Priority: low · Effort: small · Bump: patch* — release-note presentation and its lint; no runtime
+  surface. **Standards home on adoption:** none new — the `changelog` group's existing rows
+  (ID presence, ID-first lead, ordering) already own this file's grammar.
+
 ### Bugs
 
 - **`2.6.1-B11` — `format_assignment` can emit env-file syntax `env_chain` cannot read back.**
@@ -308,6 +356,8 @@ canonical ordering.
   *Priority: med · Effort: small · Bump: patch* — hardening; no reachable behaviour change today.
   **Standards home on adoption:** none new — §22's privilege seam row already covers the argv fix.
 
+---
+
 - **`2.6.1-B12` — `plan_write` misses the `KEY=value; export KEY` assignment form.**
   `primitives/env_persist.py`'s per-syntax regexes match `KEY=value` (bare) and `export KEY=value`
   (export), but not the split `KEY=value; export KEY` form — which `env_chain`'s reader *does*
@@ -318,6 +368,8 @@ canonical ordering.
   one — but a wrong "currently" reading is precisely what makes a system-file write look routine.
   Teach `plan_write` the third form, and add a round-trip case for it.
   *Priority: low · Effort: small · Bump: patch* — parser gap; writes stay correct either way.
+
+---
 
 - **`2.6.1-B13` — `describe_editor_chain` hardcodes the detected rung's index.**
   In `primitives/editor.py` the detected/last-resort rung is built with `index=5` and claimed as the
@@ -353,6 +405,8 @@ canonical ordering.
   `[env_precedence]` table below, rejected for the same "configurable precedence nobody needs"
   reason.
 
+---
+
 - **`2.3.0-F5` — declarative provisioning via `tmpfiles.d`/`sysusers.d` — decided against 2026-07-25.**
   Would have replaced the imperative provisioning in `fs_provision.py`/`stage_ownership.py` with a
   shipped `tmpfiles.d` snippet applied by `systemd-tmpfiles`, plus `sysusers.d` for service users.
@@ -365,6 +419,8 @@ canonical ordering.
   becomes a net removal and extends Standards row 2 (FHS). Scope on revisit: genuinely static
   provisioning only. **Spec:** `tmpfiles.d(5)`, `sysusers.d(5)`, `systemd-tmpfiles(8)`.
 
+---
+
 - **`2.4.0-Q1` — machine-readable AI-inclusion disclosure — decided against 2026-07-17.**
   **No ratified standard as of mid-2026** — three competing conventions: the `Assisted-by:`/
   `Generated-by:` commit trailer (strongest convergence, kernel precedent), `SPDX-AI-Disclosure:`
@@ -372,6 +428,8 @@ canonical ordering.
   to a spec that may not win, and the file-tag variant would churn every source file when it loses.
   Existing README prose + the `Co-Authored-By:` trailer already disclose honestly.
   **Reopens** as a `STD` naming its target row once a convention is clearly dominant.
+
+---
 
 - **`2.2.0-Q1` — build-system cohesion audit — decided against 2026-07-10.**
   Premise doesn't hold. The load-bearing **low seam** (`makepkg_wrapper.run` /
@@ -383,6 +441,8 @@ canonical ordering.
   resolve→build→bulk-install assumption. **Reopens** as a narrow `F` scoped to `packages.py` if its
   partial re-implementation of `build_and_install` ever becomes a real maintenance cost.
 
+---
+
 - **`1.2.0-Q11` — proactive kernel driver-class filter — decided against 2026-07-03.**
   Deriving `=n` for built-in `=y` options from `hardware_profile` — the gap `localmodconfig`
   leaves, since it only touches unloaded `=m` modules — trades boot safety for marginal gain.
@@ -392,12 +452,16 @@ canonical ordering.
   path already serves users wanting a slimmer kernel, on the safe side of the trade.
   **Reopens under a new ID** only if a concrete boot-size or build-time problem motivates it.
 
+---
+
 - **`-sysforge` suffix on the PGO-built toolchain — scrapped 2026-06-24.** The PGO toolchain keeps
   stock names (`clang`, `llvm`, `llvm-libs`, …), per the invariant that the toolchain stage is an
   in-place system replacement. The rename would have broken five exact-pacman-name lookups
   (`_verify_llvm_install`/`_probe_cc` skew arms, `_installed_libllvm_soname` soname-bump gate, BOLT
   Pass 4a, `collect_llvm_state` provenance) plus a B5 rework — cosmetic provenance gain on a
   default-off path, on the highest-stakes path in the repo.
+
+---
 
 - **`[env_precedence]` config table — design cancelled.** Proposed a configurable priority stack
   (wrapper profile 100 / makepkg.conf 80 / shell 20 / PKGBUILD 10). Superseded by a simpler model:

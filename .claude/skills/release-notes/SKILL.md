@@ -58,13 +58,16 @@ date-stamp, or commit** — the release script owns those steps.
      any that don't apply: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
      `Security`. (This vocabulary is enforced by `make check-standards`, which now
      lints `unreleased.md` too.)
-   - Flag breaking changes inline with a **Breaking:** prefix under `Changed` or
-     `Removed`, including the migration path.
+   - Each entry leads with its roadmap ID in ROADMAP.md's own shape,
+     ``- **`1.2.0-F35` — <title sentence>.** <body>``, and is separated from its
+     neighbour by a `---` rule. Both are enforced by `make check-standards`.
+   - Flag breaking changes with a **Breaking:** prefix opening the body under
+     `Changed` or `Removed`, including the migration path.
 
    Reconcile, don't transcribe: merge duplicate/overlapping bullets, group related
    entries, fix mis-filed sections, add any entry a landing commit forgot, drop
    pure-noise lines, and never reference competing projects by name. Retain the
-   inline roadmap IDs (e.g. `(1.2.0-F35)`).
+   roadmap IDs, including cross-references cited in an entry's body.
 
 5. **Do not rename, date-stamp, or commit.** Leave the curated content in
    `unreleased.md`; `tools/release.sh` Phase 1 renames + stamps + reseeds + commits.

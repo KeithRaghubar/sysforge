@@ -255,8 +255,16 @@ def _entry_sort_key(block: str) -> tuple[int, int, int, str, int] | None:
     return (major, minor, patch, typ, num)
 
 
+# An accumulator entry's lead: `- **`<ID>` — <title>.** <body>`, the same shape
+# ROADMAP.md entries use (gen_roadmap_table._ENTRY_RE), so an item reads
+# identically on the backlog and in the notes. Leading with the ID also makes
+# `_entry_sort_key`'s "first ID is the filing ID" structural rather than a
+# convention about where in the prose the ID happened to be dropped.
+_RN_ENTRY_RE = re.compile(r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`\s*—\s")
+
+
 def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
-    """Entries within each `## ` section must ascend by roadmap ID.
+    """Entries within each `## ` section must lead with their ID and ascend by it.
 
     Scoped to the accumulator only, on the same reasoning as the `roadmap_ids`
     Q-promotion check: released `v*.md` files are immutable history and are
@@ -289,6 +297,13 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     f"(every entry records the item it shipped)",
                 ))
                 continue
+            if not _RN_ENTRY_RE.match(block[0]):
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"entry under `## {heading}` must lead with its roadmap ID: "
+                    "``- **`<ID>` — <title>.** <body>``, the same shape "
+                    "ROADMAP.md entries use",
+                ))
             cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
             if prev_key is not None and key < prev_key:
                 findings.append(Finding(
@@ -1158,27 +1173,36 @@ def derive_bump(text: str) -> tuple[str | None, str]:
     Returns (bump, evidence); bump is None when the accumulator has no authored
     entries (tools/release.sh already hard-fails that case, so this does not
     duplicate the error). The strongest signal present wins. A `**Breaking:**`
-    bullet forces major regardless of the section it sits in — which is the
+    marker forces major regardless of the section it sits in — which is the
     documented residual risk of deriving from sections: a breaking `Changed`
     entry that omits the marker reads as patch. release.sh prints this evidence
     so the inference is auditable.
+
+    The marker is searched for across the entry's whole block, not just its
+    bullet line: an entry opens with a bold `**`<ID>` — title.**` lead, so
+    `**Breaking:**` starts the body and lands on a continuation line whenever
+    the title fills the first one.
     """
     body = _HTML_COMMENT_RE.sub("", text)
     best: str | None = None
     evidence = "no authored entries"
     section: str | None = None
+    blocks: list[tuple[int, str | None, list[str]]] = []
     for lineno, line in enumerate(body.splitlines(), start=1):
         m = re.match(r"^##\s+(\w+)\s*$", line)
         if m:
             section = m.group(1)
             continue
-        if not line.lstrip().startswith("- "):
-            continue
-        if "**Breaking:**" in line:
+        if line.lstrip().startswith("- "):
+            blocks.append((lineno, section, [line]))
+        elif blocks:
+            blocks[-1][2].append(line)
+    for lineno, sect, block in blocks:
+        if "**Breaking:**" in "\n".join(block):
             candidate, why = "major", f"**Breaking:** marker, line {lineno}"
-        elif section in _SECTION_BUMP:
-            candidate = _SECTION_BUMP[section]
-            why = f"## {section}, line {lineno}"
+        elif sect is not None and sect in _SECTION_BUMP:
+            candidate = _SECTION_BUMP[sect]
+            why = f"## {sect}, line {lineno}"
         else:
             continue
         if best is None or BUMP_ORDER.index(candidate) > BUMP_ORDER.index(best):

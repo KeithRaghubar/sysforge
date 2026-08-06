@@ -86,7 +86,13 @@ class RoadmapError(Exception):
 
 
 def _planned_section(text: str) -> str:
-    """The text of `## Planned` up to the next `##`/`---` (the entries only)."""
+    """The text of `## Planned` up to the next `##` heading (the entries only).
+
+    A bare `---` is deliberately *not* a terminator: entries are separated by
+    horizontal rules for readability, so treating one as the section end would
+    truncate the table to the first entry. The rule that closes the section is
+    immediately followed by `## Abandoned`, which terminates it either way.
+    """
     lines = text.splitlines()
     out: list[str] = []
     in_planned = False
@@ -94,7 +100,7 @@ def _planned_section(text: str) -> str:
         if re.match(r"^##\s+Planned\b", line):
             in_planned = True
             continue
-        if in_planned and (re.match(r"^##\s+", line) or line.strip() == "---"):
+        if in_planned and re.match(r"^##\s+", line):
             break
         if in_planned:
             out.append(line)

@@ -21,6 +21,11 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "check_standards.py"
 
 
 def _load():
+    # tools/ on sys.path first: check_standards imports its sibling
+    # `_semver_vocab`, which fails in a single-file run where no other test
+    # module has done this insert (the 2.6.1-B14 defect, same shape).
+    if str(_SCRIPT.parent) not in sys.path:
+        sys.path.insert(0, str(_SCRIPT.parent))
     spec = importlib.util.spec_from_file_location("check_standards", _SCRIPT)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -41,7 +46,9 @@ def _write_notes(repo: Path, body: str) -> None:
 
 
 def test_well_formed_accumulator_passes(tmp_path):
-    _write_notes(tmp_path, "# sysforge (unreleased)\n\n## Changed\n\n- thing (1.0.0-F1)\n")
+    _write_notes(tmp_path,
+                 "# sysforge (unreleased)\n\n## Changed\n\n"
+                 "- **`1.0.0-F1` — thing.** body\n")
     assert check_standards.check_changelog(tmp_path) == []
 
 
@@ -62,7 +69,7 @@ def test_non_category_sub_heading_is_allowed(tmp_path):
     """A `### foo` that is *not* a category word is legitimate entry sub-prose."""
     _write_notes(
         tmp_path,
-        "# sysforge (unreleased)\n\n## Changed\n\n- thing (1.0.0-F1)\n\n"
+        "# sysforge (unreleased)\n\n## Changed\n\n- **`1.0.0-F1` — thing.** body\n\n"
         "### Migration\n\nsteps\n",
     )
     assert check_standards.check_changelog(tmp_path) == []
@@ -73,13 +80,17 @@ def test_non_category_sub_heading_is_allowed(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_ascending_ids_pass(tmp_path):
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- a (1.0.0-B2)\n\n- b (1.0.0-F1)\n\n"
-                           "- c (1.0.0-STD1)\n\n- d (1.1.0-F1)\n")
+    _write_notes(tmp_path,
+                 "# t\n\n## Added\n\n- **`1.0.0-B2` — a.** x\n\n"
+                 "- **`1.0.0-F1` — b.** x\n\n- **`1.0.0-STD1` — c.** x\n\n"
+                 "- **`1.1.0-F1` — d.** x\n")
     assert check_standards.check_changelog(tmp_path) == []
 
 
 def test_descending_ids_are_error(tmp_path):
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- b (1.0.0-F2)\n\n- a (1.0.0-F1)\n")
+    _write_notes(tmp_path,
+                 "# t\n\n## Added\n\n- **`1.0.0-F2` — b.** x\n\n"
+                 "- **`1.0.0-F1` — a.** x\n")
     findings = check_standards.check_changelog(tmp_path)
     assert any("must ascend by roadmap ID" in f.message
                and "1.0.0-F1 follows 1.0.0-F2" in f.message
@@ -88,15 +99,17 @@ def test_descending_ids_are_error(tmp_path):
 
 def test_version_ordering_is_numeric_not_lexical(tmp_path):
     """2.10.0 sorts after 2.9.0 — a string compare would invert this."""
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- a (2.10.0-F1)\n\n- b (2.9.0-F1)\n")
+    _write_notes(tmp_path,
+                 "# t\n\n## Added\n\n- **`2.10.0-F1` — a.** x\n\n"
+                 "- **`2.9.0-F1` — b.** x\n")
     findings = check_standards.check_changelog(tmp_path)
     assert any("2.9.0-F1 follows 2.10.0-F1" in f.message for f in findings), findings
 
 
 def test_sections_are_ordered_independently(tmp_path):
     """A later section restarting at a lower ID is not drift."""
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- a (1.0.0-F9)\n\n"
-                           "## Fixed\n\n- b (1.0.0-B1)\n")
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-F9` — a.** x\n\n"
+                           "## Fixed\n\n- **`1.0.0-B1` — b.** x\n")
     assert check_standards.check_changelog(tmp_path) == []
 
 
@@ -108,15 +121,28 @@ def test_entry_without_roadmap_id_is_error(tmp_path):
 
 def test_first_id_in_entry_is_the_filing_id(tmp_path):
     """Later IDs in an entry body are cross-references, not the filing ID."""
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- a (1.0.0-F1), which supersedes\n"
-                           "  the approach from (1.0.0-F9)\n\n- b (1.0.0-F2)\n")
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-F1` — a.** Supersedes\n"
+                           "  the approach from (1.0.0-F9)\n\n- **`1.0.0-F2` — b.** x\n")
     assert check_standards.check_changelog(tmp_path) == []
 
 
+def test_entry_not_leading_with_its_id_is_error(tmp_path):
+    """An entry must open `- **`<ID>` — <title>.**`, ROADMAP.md's own shape."""
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- a thing shipped (1.0.0-F1)\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("must lead with its roadmap ID" in f.message
+               for f in findings), findings
+
+
 def test_promoted_from_lineage_is_not_the_filing_id(tmp_path):
-    """`promoted from <ID>` names the old pre-promotion ID; it must not sort."""
-    _write_notes(tmp_path, "# t\n\n## Added\n\n- a (1.0.0-F1)\n\n"
-                           "- b (promoted from 1.0.0-Q1) (1.0.0-F2)\n")
+    """`promoted from <ID>` names the old pre-promotion ID; it must not sort.
+
+    The ID-first lead makes this structural — the filing ID precedes any body
+    mention — but the stripping stays covered so it cannot regress into
+    counting a lineage ID if the lead check is ever relaxed.
+    """
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-F1` — a.** x\n\n"
+                           "- **`1.0.0-F2` — b (promoted from 1.0.0-Q1).** x\n")
     assert check_standards.check_changelog(tmp_path) == []
 
 
