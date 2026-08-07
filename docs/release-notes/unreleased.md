@@ -1,26 +1,14 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. An entry leads with its
-roadmap ID, in the same shape ROADMAP.md entries use:
-
-    - **`1.2.0-F35` — <title sentence>.** <body>
-
-    ---
-
-    - **`1.2.0-F36` — …
-
-Entries are separated by a `---` rule and kept in ascending ID order within each
-section. Flag breaking changes with a **Breaking:** prefix opening the body, plus
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+The first major since 2.0.0, and a compatibility break by design: `sysforge
+doctor` splits into `doctor system` and `doctor pkg`, and the five back-compat
+config read paths carried since 1.0.0 are deleted. Both removals were declared
+before they were made — SemVer impact is now recorded in a deprecation registry
+and enforced at release time rather than inferred after the fact. Alongside
+them: every build-bearing pipeline stage now ends by reporting which installed
+package versions actually changed, Arch-derivative portability becomes an
+enforced standard with a container test tier behind it, and a live run's stage
+sentinel can no longer be cleared out from under it by a second run.
 
 ## Added
 
