@@ -367,6 +367,12 @@ def _patch_pacman(monkeypatch, *, llvm_libs_files, installed, depends, pkgbase=N
     )
     monkeypatch.setattr(pacman, "get_all_installed_packages", lambda: installed)
     monkeypatch.setattr(pacman, "get_package_depends", lambda name: depends.get(name, []))
+    # The whole-system reverse-dep walk reads the DB in one pass (2.6.1-B22);
+    # stub it too or these tests fall through to the real host pacman DB.
+    monkeypatch.setattr(
+        pacman, "get_all_package_depends",
+        lambda root=None: {name: depends.get(name, []) for name in installed},
+    )
     monkeypatch.setattr(pacman, "get_pkgbase", lambda name: (pkgbase or {}).get(name))
 
 
@@ -709,3 +715,79 @@ def test_check_installed_consumer_symbols_flags_broken(tmp_path, monkeypatch):
     assert len(findings) == 1
     assert findings[0].is_brick
     assert "installed" in findings[0].message
+
+
+# ---------------------------------------------------------------------------
+# libllvm_soname_consumers — local-DB walk cost (2.6.1-B22)
+# ---------------------------------------------------------------------------
+
+def _mk_local_db(root: Path, names: dict[str, list[str]]) -> None:
+    """Build a fake /var/lib/pacman/local tree: <pkg>-1.0-1/desc with %DEPENDS%."""
+    root.mkdir(parents=True, exist_ok=True)
+    for name, deps in names.items():
+        entry = root / f"{name}-1.0-1"
+        entry.mkdir()
+        body = f"%NAME%\n{name}\n\n%VERSION%\n1.0-1\n"
+        if deps:
+            body += "\n%DEPENDS%\n" + "\n".join(deps) + "\n"
+        (entry / "desc").write_text(body)
+
+
+def _count_db_enumerations(monkeypatch, db_root: Path) -> dict[str, int]:
+    """Count directory enumerations of db_root, whichever pathlib route is used.
+
+    Path.iterdir() goes through os.listdir; Path.glob() through os.scandir.
+    Counting both keeps this test blind to the implementation choice.
+    """
+    import os
+
+    counter = {"n": 0}
+    real_listdir, real_scandir = os.listdir, os.scandir
+
+    def _bump(path):
+        if Path(path) == db_root:
+            counter["n"] += 1
+
+    def fake_listdir(path=".", *a, **k):
+        _bump(path)
+        return real_listdir(path, *a, **k)
+
+    def fake_scandir(path=".", *a, **k):
+        _bump(path)
+        return real_scandir(path, *a, **k)
+
+    monkeypatch.setattr(os, "listdir", fake_listdir)
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+    return counter
+
+
+def _run_soname_walk(monkeypatch, tmp_path, n_packages: int) -> int:
+    """Run the walk against an n-package fake DB; return db-root enumerations."""
+    from sysforge.primitives import pacman
+
+    db_root = tmp_path / f"db{n_packages}"
+    names = {f"filler{i}": [] for i in range(n_packages - 1)}
+    names["vulkan-radeon"] = ["libLLVM.so=22.1-64"]
+    _mk_local_db(db_root, names)
+
+    monkeypatch.setattr(pacman, "_LOCAL_DB_ROOT", db_root)
+    monkeypatch.setattr(pacman, "get_all_installed_packages", lambda: dict.fromkeys(names, "1.0-1"))
+    counter = _count_db_enumerations(monkeypatch, db_root)
+    ts.libllvm_soname_consumers("22.1", exclude=set())
+    return counter["n"]
+
+
+def test_libllvm_soname_consumers_does_not_rescan_db_per_package(monkeypatch, tmp_path):
+    """The reverse-dep walk must not re-enumerate the local DB once per package.
+
+    Regression guard for 2.6.1-B22: resolving <pkg>-<ver>-<rel> per package
+    re-read the whole DB directory each time, making the walk O(N^2) in
+    installed packages (~5.5M stats on a 2,349-package host). Enumeration
+    count must stay flat as the DB grows, not track its size.
+    """
+    small = _run_soname_walk(monkeypatch, tmp_path, 20)
+    large = _run_soname_walk(monkeypatch, tmp_path, 200)
+    assert small == large, (
+        f"DB enumerations scale with package count: {small} at N=20, "
+        f"{large} at N=200 — the walk re-resolves the DB per package"
+    )

@@ -91,6 +91,25 @@ def _isolate_filesystem_soname_cache(monkeypatch):
                         lambda lib32=False: frozenset())
 
 
+@pytest.fixture(autouse=True)
+def _isolate_local_pacman_db(monkeypatch, tmp_path_factory):
+    """
+    Point the local-DB root at an empty tree instead of /var/lib/pacman/local.
+
+    Reads that resolve a package to `<pkgname>-<pkgver>-<pkgrel>/` otherwise hit
+    the host's real DB, which makes the suite depend on whatever is installed on
+    the machine running it. The toolchain stage's soname gate did exactly that
+    from a `dry_run=True` test, walking every installed package (2.6.1-B22).
+
+    Mirrors `_isolate_filesystem_soname_cache`: tests that want real DB
+    behaviour build a fixture tree and re-patch `_LOCAL_DB_ROOT` (or pass
+    `root=`) themselves.
+    """
+    from sysforge.primitives import pacman as _pacman
+    empty_db = tmp_path_factory.mktemp("empty-pacman-db")
+    monkeypatch.setattr(_pacman, "_LOCAL_DB_ROOT", empty_db)
+
+
 # ---------------------------------------------------------------------------
 # Centralized external-isolation fixtures (Phase 0 — behavior-first testing).
 #

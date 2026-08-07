@@ -938,6 +938,33 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`2.6.1-B22` — The libLLVM soname-bump consumer scan no longer costs
+  O(N²) reads of the local pacman database.** `libllvm_soname_consumers` called
+  `get_package_depends` once per installed package, and each of those calls
+  re-enumerated all of `/var/lib/pacman/local` to resolve
+  `<pkgname>-<pkgver>-<pkgrel>`. The gate therefore did roughly *packages ×
+  packages* directory reads — about 5.5 million `stat()` calls on a
+  2,349-package host — stalling `run toolchain`'s post-Gate-3 consumer check
+  for minutes with no output. The walk now takes a single pass over the DB via
+  the new `pacman.get_all_package_depends()`, which reads each entry's `desc`
+  once; `libllvm_abi_consumers` shares the same helper and is fixed with it.
+  The cost was quadratic in installed-package count, so it grew silently as
+  systems accumulated packages rather than appearing as a regression at any one
+  commit.
+
+  Test isolation was the reason it went unseen: `libllvm_soname_consumers`'
+  only coverage stubbed the pacman layer wholesale, so nothing exercised the
+  lookup, while `test_toolchain_stage_llvm_pgo_dry_run` — a `dry_run=True`
+  test — reached straight through to the *host's* real database. A new autouse
+  `_isolate_local_pacman_db` fixture now points the DB root at an empty tree
+  for the whole suite (mirroring `_isolate_filesystem_soname_cache`), so no
+  test can read the machine it runs on; tests wanting real behaviour build a
+  fixture tree and re-patch it. The regression guard asserts a scaling
+  property — that DB enumerations stay flat as the package count grows — rather
+  than a wall-clock threshold, so it cannot go flaky on a fast machine.
+
+---
+
 - **`2.6.1-F1` — `sysforge doctor --rust PKG` no longer appears to ignore its
   argument.** It never did — it skipped silently, in two places: a package that
   could not be resolved to a PKGBUILD, and one with no `rust-toolchain.toml`,

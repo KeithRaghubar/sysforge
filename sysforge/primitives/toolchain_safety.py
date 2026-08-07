@@ -706,11 +706,14 @@ def libllvm_soname_consumers(mm: str, *, exclude: set[str]) -> list[str]:
 
     consumers: set[str] = set()
     try:
-        installed = pacman.get_all_installed_packages()
+        # One DB pass, not one lookup per package: the per-package reader
+        # re-enumerates the DB root each call, making this walk O(N^2) in
+        # installed packages (2.6.1-B22).
+        depends_by_pkg = pacman.get_all_package_depends()
     except Exception:
         return []
-    for name in installed:
-        for dep in pacman.get_package_depends(name):
+    for name, deps in depends_by_pkg.items():
+        for dep in deps:
             m = _SONAME_RE.match(dep)
             if m and m.group("base") == "libLLVM.so" and m.group("ver") == mm:
                 pkgbase = pacman.get_pkgbase(name) or name

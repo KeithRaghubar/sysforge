@@ -1008,3 +1008,21 @@ class TestParseQiFacts:
         )
         facts = pacman._parse_qi_facts(text)
         assert facts == {"htop": ("3.3.0-1", None)}
+
+
+# ---------------------------------------------------------------------------
+# Host-DB isolation (2.6.1-B22)
+# ---------------------------------------------------------------------------
+
+def test_local_pacman_db_is_isolated_from_the_host():
+    """No test may read the machine's real /var/lib/pacman/local.
+
+    Regression guard for 2.6.1-B22: `test_toolchain_stage_llvm_pgo_dry_run`
+    reached the host DB through the stage's soname gate, so a "dry run" walked
+    every installed package on the developer's machine — making the suite both
+    machine-dependent and, at 2,349 packages, minutes slow. Reads must resolve
+    against the isolated root the autouse fixture installs, not the host.
+    """
+    from sysforge.primitives import pacman
+    assert pacman.get_all_package_depends() == {}
+    assert pacman.get_local_db_entry("bash") is None

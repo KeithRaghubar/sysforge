@@ -1103,17 +1103,52 @@ def get_package_depends(pkgname: str, root: Path | None = None) -> list[str]:
     desc_path = entry / "desc"
     if not desc_path.is_file():
         return []
-    depends: list[str] = []
+    return _desc_array(desc_path.read_text(), "%DEPENDS%")
+
+
+def _desc_array(text: str, section: str) -> list[str]:
+    """Return the entries of a local-db ``desc`` array section (``%DEPENDS%``…).
+
+    The array runs until the first blank line or the next ``%SECTION%`` header.
+    """
+    values: list[str] = []
     in_section = False
-    for line in desc_path.read_text().splitlines():
-        if line == "%DEPENDS%":
+    for line in text.splitlines():
+        if line == section:
             in_section = True
             continue
         if not in_section:
             continue
-        if not line:
+        if not line or line.startswith("%"):
             break
-        if line.startswith("%"):
-            break
-        depends.append(line)
-    return depends
+        values.append(line)
+    return values
+
+
+def get_all_package_depends(root: Path | None = None) -> dict[str, list[str]]:
+    """Return ``{pkgname: %DEPENDS%}`` for every installed package, in ONE pass
+    over the local DB.
+
+    Reverse-dependency walks must use this rather than calling
+    :func:`get_package_depends` per package: that resolves
+    ``<pkgname>-<pkgver>-<pkgrel>`` by enumerating the DB root every time, so a
+    whole-system walk costs O(N^2) directory reads (~5.5M stats on a
+    2,349-package host — 2.6.1-B22). Unreadable entries are skipped, matching
+    the per-package reader's degrade-to-empty contract.
+    """
+    db_root = root or _LOCAL_DB_ROOT
+    if not db_root.is_dir():
+        return {}
+    out: dict[str, list[str]] = {}
+    for entry in db_root.iterdir():
+        # <pkgname>-<pkgver>-<pkgrel>; non-package files (ALPM_DB_VERSION) and
+        # non-directories fall out on the read below rather than costing a stat.
+        parts = entry.name.rsplit("-", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            text = (entry / "desc").read_text()
+        except OSError:
+            continue
+        out[parts[0]] = _desc_array(text, "%DEPENDS%")
+    return out
