@@ -213,7 +213,13 @@ echo
 # ---------------------------------------------------------------------------
 echo "Coverage ratchet"
 if [[ "${RUN_COVERAGE:-1}" == "1" ]]; then
-    if make --no-print-directory coverage >/dev/null 2>&1; then
+    # The instrumented suite is the slowest thing preflight runs (minutes), so
+    # stream pytest's progress lines to show it is alive. sed (not grep) so an
+    # empty match can't fail the pipeline under pipefail; -u so the lines
+    # arrive live rather than block-buffered at the end. Everything else --
+    # the coverage table, the summary -- stays suppressed.
+    if make --no-print-directory coverage 2>/dev/null \
+        | sed -n -u 's/^\([.sxXFEup]\+ *\[ *[0-9]\+%\]\)$/  \1/p'; then
         RATCHET_OUT="$(python3 tools/coverage_ratchet.py --check 2>&1)"
         RATCHET_RC=$?
         if [[ $RATCHET_RC -eq 3 ]]; then
