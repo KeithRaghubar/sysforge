@@ -91,7 +91,6 @@ canonical ordering.
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
-| `2.6.1-STD7` | disambiguate repeated roadmap IDs in release notes with a (n/N) suffix | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -311,32 +310,6 @@ canonical ordering.
   optional argument; no change to the action taxonomy or to what `update` decides.
   **Standards home on adoption:** none new — row 5 (`NO_COLOR`/`FORCE_COLOR`) already governs the
   gate this rides on.
-
----
-
-- **`2.6.1-STD7` — disambiguate repeated roadmap IDs in release notes with a `(n/N)` suffix.**
-  One roadmap item routinely ships several distinct user-visible changes, so its ID repeats across
-  release-note entries — `2.6.1-F2` and `2.6.1-STD1` four times each in the current accumulator,
-  `2.6.1-F1` three. `2.6.1-STD6` moved the ID from mid-prose to the entry's lead, which made the
-  repetition the first thing a reader sees. Extend the lead to
-  ``- **`<ID>` (n/N) — <title>.**`` for a repeated ID, so an entry states up front that it is one
-  facet of a larger item rather than reading as a duplicate filing.
-  **Scope this to same-section repeats only.** A cross-section repeat is structurally forced — one
-  Keep a Changelog entry cannot span `Changed` and `Removed`, which is exactly why `2.6.1-F1` has
-  three entries — and numbering *across* sections would put `(2/3)` under a heading a reader
-  arrives at with no memory of `(1/3)`. Within one section the entries are adjacent and the counter
-  reads naturally.
-  **Two things already fit this without change:** `_RN_ENTRY_RE` anchors only the ID code-span and
-  the em dash, so a suffix between them parses today; and `_gather_ids()` treats release-note IDs
-  as a set (asking "has this shipped?"), so nothing downstream counts entries per ID.
-  One thing does not: `_check_accumulator_id_order` compares `key < prev_key`, so two same-ID
-  entries sort *equal* and their relative order is the one spot in the accumulator that no lint
-  constrains — arbitrary today, and `(1/2)` before `(2/2)` is the natural fix. Make the suffix the
-  tiebreak in `_entry_sort_key` and validate `N` against the actual count, otherwise a stale `(2/3)`
-  left behind when an entry is merged away is exactly the drift the group exists to catch.
-  *Priority: low · Effort: small · Bump: patch* — release-note presentation and its lint; no runtime
-  surface. **Standards home on adoption:** none new — the `changelog` group's existing rows
-  (ID presence, ID-first lead, ordering) already own this file's grammar.
 
 ### Bugs
 

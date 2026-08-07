@@ -61,6 +61,12 @@ date-stamp, or commit** — the release script owns those steps.
    - Each entry leads with its roadmap ID in ROADMAP.md's own shape,
      ``- **`1.2.0-F35` — <title sentence>.** <body>``, and is separated from its
      neighbour by a `---` rule. Both are enforced by `make check-standards`.
+   - When one ID files **more than one entry in the same section**, each carries a
+     `(n/N)` facet suffix — ``- **`1.2.0-F35` (1/2) — <title>.**`` — numbered in
+     document order, so a repeat reads as one facet of a larger item rather than a
+     duplicate filing. Cross-section repeats (a `Changed` and a `Removed` entry for
+     the same item) carry none. Merging or splitting entries during reconciliation
+     changes `N`: `make check-standards` fails on a stale denominator.
    - Flag breaking changes with a **Breaking:** prefix opening the body under
      `Changed` or `Removed`, including the migration path.
 

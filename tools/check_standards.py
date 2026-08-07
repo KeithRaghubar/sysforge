@@ -96,6 +96,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -237,13 +238,18 @@ def check_changelog(repo: Path) -> list[Finding]:
     return findings
 
 
-def _entry_sort_key(block: str) -> tuple[int, int, int, str, int] | None:
+def _entry_sort_key(block: str) -> tuple[int, int, int, str, int, int] | None:
     """Ascending-order key for one accumulator entry: its first roadmap ID.
 
     The *first* ID is the entry's filing ID — later ones are cross-references
     (a related item, the item a fix regressed). `promoted from <ID>` names the
     old pre-promotion ID and is stripped for the same reason
     :func:`shipped_ids_from_text` strips it.
+
+    The trailing element is the `(n/N)` facet number of a repeated ID (0 when
+    absent). Two entries filed under the same ID otherwise compare *equal*,
+    which would leave their relative order the one spot in the accumulator no
+    lint constrains; the facet makes `(1/2)` sort before `(2/2)`.
     """
     body = _HTML_COMMENT_RE.sub("", block)
     body = re.sub(r"promoted from\s+`?" + _ID_RE.pattern, "", body)
@@ -252,7 +258,9 @@ def _entry_sort_key(block: str) -> tuple[int, int, int, str, int] | None:
         return None
     ver, typ, num = _parse_id(m.group(0))  # type: ignore[misc]
     major, minor, patch = (int(p) for p in ver.split("."))
-    return (major, minor, patch, typ, num)
+    lead = _RN_ENTRY_RE.match(block)
+    facet = int(lead.group(2)) if lead and lead.group(2) else 0
+    return (major, minor, patch, typ, num, facet)
 
 
 # An accumulator entry's lead: `- **`<ID>` — <title>.** <body>`, the same shape
@@ -260,7 +268,16 @@ def _entry_sort_key(block: str) -> tuple[int, int, int, str, int] | None:
 # identically on the backlog and in the notes. Leading with the ID also makes
 # `_entry_sort_key`'s "first ID is the filing ID" structural rather than a
 # convention about where in the prose the ID happened to be dropped.
-_RN_ENTRY_RE = re.compile(r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`\s*—\s")
+#
+# One item routinely ships several distinct user-visible changes, so its ID
+# repeats across entries. A repeat within one section carries a `(n/N)` facet
+# suffix — `- **`<ID>` (n/N) — <title>.**` — so the entry states up front that
+# it is one facet of a larger item rather than reading as a duplicate filing.
+# Cross-section repeats carry none: one Keep a Changelog entry cannot span
+# `Changed` and `Removed`, and a `(2/3)` under a heading the reader arrives at
+# with no memory of `(1/3)` explains nothing.
+_RN_ENTRY_RE = re.compile(
+    r"^- \*\*`(\d+\.\d+\.\d+-[A-Z]+\d+)`(?:\s+\((\d+)/(\d+)\))?\s*—\s")
 
 
 def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
@@ -285,8 +302,11 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
     def flush() -> None:
         if heading is None:
             return
-        prev_key = None
-        prev_id = None
+        # Pass 1: parse. The facet suffix is validated against how often its ID
+        # occurs in *this* section, so nothing can be checked until every entry
+        # under the heading has been seen.
+        parsed: list[tuple[int, str, tuple[int, int, int, str, int, int],
+                           re.Match[str] | None]] = []
         for lineno, block in blocks:
             text = "".join(block)
             key = _entry_sort_key(text)
@@ -297,7 +317,8 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     f"(every entry records the item it shipped)",
                 ))
                 continue
-            if not _RN_ENTRY_RE.match(block[0]):
+            lead = _RN_ENTRY_RE.match(block[0])
+            if lead is None:
                 findings.append(Finding(
                     "changelog", "error", f"{rel}:{lineno}",
                     f"entry under `## {heading}` must lead with its roadmap ID: "
@@ -305,14 +326,54 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     "ROADMAP.md entries use",
                 ))
             cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
+            parsed.append((lineno, cur_id, key, lead))
+
+        counts = Counter(cur_id for _, cur_id, _, _ in parsed)
+        seen: dict[str, set[int]] = {}
+        prev_key = None
+        prev_label = None
+        for lineno, cur_id, key, lead in parsed:
+            total = counts[cur_id]
+            facet = key[5]
+            if total == 1 and facet:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` appears once under `## {heading}` — drop the "
+                    f"`(n/N)` suffix (a lone entry is not one facet of several)",
+                ))
+            elif total > 1 and not facet:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` repeats {total} times under `## {heading}` — "
+                    f"suffix each entry's ID `(n/{total})` so it reads as one "
+                    f"facet, not a duplicate filing",
+                ))
+            elif total > 1 and lead is not None and int(lead.group(3)) != total:
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` denominator is `/{lead.group(3)}` but it has "
+                    f"{total} entries under `## {heading}` — restate as "
+                    f"`(n/{total})`",
+                ))
+            if total > 1 and facet:
+                bucket = seen.setdefault(cur_id, set())
+                if facet in bucket or not 1 <= facet <= total:
+                    findings.append(Finding(
+                        "changelog", "error", f"{rel}:{lineno}",
+                        f"`{cur_id}` facets must number 1..{total} once each "
+                        f"under `## {heading}` — `({facet}/…)` is duplicated "
+                        f"or out of range",
+                    ))
+                bucket.add(facet)
+            label = f"{cur_id} ({facet}/{total})" if facet else cur_id
             if prev_key is not None and key < prev_key:
                 findings.append(Finding(
                     "changelog", "error", f"{rel}:{lineno}",
                     f"`## {heading}` entries must ascend by roadmap ID: "
-                    f"{cur_id} follows {prev_id} — re-sort the section "
+                    f"{label} follows {prev_label} — re-sort the section "
                     f"(CLAUDE.md: re-sort on every add/remove)",
                 ))
-            prev_key, prev_id = key, cur_id
+            prev_key, prev_label = key, label
 
     for lineno, ln in enumerate(unreleased.read_text(encoding="utf-8").splitlines(),
                                 1):

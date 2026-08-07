@@ -153,3 +153,66 @@ def test_released_notes_are_exempt_from_ordering(tmp_path):
     (notes / "v1.0.0.md").write_text(
         "# v1.0.0\n\n## Added\n\n- b (1.0.0-F2)\n\n- a (1.0.0-F1)\n", encoding="utf-8")
     assert check_standards.check_changelog(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Repeated-ID facet suffixes (2.6.1-STD7)
+# ---------------------------------------------------------------------------
+
+def test_repeated_id_with_facet_suffixes_passes(tmp_path):
+    """One item shipping two distinct changes numbers them `(n/N)`."""
+    _write_notes(tmp_path, "# t\n\n## Added\n\n"
+                           "- **`1.0.0-F1` (1/2) — a.** x\n\n"
+                           "- **`1.0.0-F1` (2/2) — b.** x\n")
+    assert check_standards.check_changelog(tmp_path) == []
+
+
+def test_repeated_id_without_suffix_is_error(tmp_path):
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-F1` — a.** x\n\n"
+                           "- **`1.0.0-F1` — b.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("repeats 2 times" in f.message and "(n/2)" in f.message
+               for f in findings), findings
+
+
+def test_lone_id_with_suffix_is_error(tmp_path):
+    """A `(1/1)` — or a stale suffix left when its sibling was merged away."""
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-F1` (1/2) — a.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("appears once" in f.message for f in findings), findings
+
+
+def test_stale_denominator_is_error(tmp_path):
+    """`(n/3)` left behind after one of three entries was merged away."""
+    _write_notes(tmp_path, "# t\n\n## Added\n\n"
+                           "- **`1.0.0-F1` (1/3) — a.** x\n\n"
+                           "- **`1.0.0-F1` (2/3) — b.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("denominator" in f.message for f in findings), findings
+
+
+def test_duplicate_facet_number_is_error(tmp_path):
+    _write_notes(tmp_path, "# t\n\n## Added\n\n"
+                           "- **`1.0.0-F1` (1/2) — a.** x\n\n"
+                           "- **`1.0.0-F1` (1/2) — b.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("must number 1..2 once each" in f.message
+               for f in findings), findings
+
+
+def test_facet_suffix_breaks_the_ordering_tie(tmp_path):
+    """(2/2) before (1/2) is the one same-ID ordering no lint used to catch."""
+    _write_notes(tmp_path, "# t\n\n## Added\n\n"
+                           "- **`1.0.0-F1` (2/2) — b.** x\n\n"
+                           "- **`1.0.0-F1` (1/2) — a.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("must ascend by roadmap ID" in f.message
+               and "1.0.0-F1 (1/2) follows 1.0.0-F1 (2/2)" in f.message
+               for f in findings), findings
+
+
+def test_cross_section_repeat_needs_no_suffix(tmp_path):
+    """A Changed/Removed split is structurally forced, not a duplicate filing."""
+    _write_notes(tmp_path, "# t\n\n## Changed\n\n- **`1.0.0-F1` — a.** x\n\n"
+                           "## Removed\n\n- **`1.0.0-F1` — b.** x\n")
+    assert check_standards.check_changelog(tmp_path) == []

@@ -39,7 +39,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F2` — `doctor --distro` reports the running distribution and its
+- **`2.6.1-F2` (1/2) — `doctor --distro` reports the running distribution and its
   support tier, read from `os-release(5)`.** Arch is the primary base and the
   bare sweep stays silent on it; an Arch derivative (`ID_LIKE=arch`) gets an
   `info` naming what is validated there (packaging, dependency resolution,
@@ -51,7 +51,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F2` — A container test tier for the packaging and portability checks,
+- **`2.6.1-F2` (2/2) — A container test tier for the packaging and portability checks,
   parameterized by distro.** `make container-smoke` (Arch) and `make
   container-smoke-cachyos`. It installs a locally-built package into a throwaway
   container and runs the same checks `make vm-smoke` does, in seconds instead of
@@ -189,7 +189,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F25` — the kernel stage's change summary now carries two kconfig
+- **`2.6.1-F25` (1/2) — the kernel stage's change summary now carries two kconfig
   blocks.** They answer "what did I actually change about this kernel" — which
   the subpackage and hotplug-driver toggles otherwise make invisible. The first
   diffs the resolved `.config` against the one the last build produced; sysforge
@@ -208,7 +208,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F25` — A `Ctrl-C` landing inside a stage's change-summary window no
+- **`2.6.1-F25` (2/2) — A `Ctrl-C` landing inside a stage's change-summary window no
   longer replaces the stage's own error.** The reporting path guards `Exception`
   while the stage call is caught with `BaseException`, so an interrupt in that
   narrow window could previously mask a real build failure and leave the
@@ -369,7 +369,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F2` — standards row 23 (`os-release(5)`, enforced) records the
+- **`2.6.1-F2` (1/2) — standards row 23 (`os-release(5)`, enforced) records the
   distro-identity invariant adopted above.** It is guarded by the
   `check_standards` `distro_portability` group: identity is read from
   `/etc/os-release` (then `/usr/lib/os-release`) through
@@ -378,7 +378,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-F2` — the smoke checks moved from `tools/vm/smoke.sh` to
+- **`2.6.1-F2` (2/2) — the smoke checks moved from `tools/vm/smoke.sh` to
   `tools/smoke.sh` and gained a `--transport=ssh|podman` flag.** The VM and
   container tiers now share one copy of the checks rather than diverging. `make
   vm-smoke` is unchanged. Both tiers additionally assert the portability
@@ -520,7 +520,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-STD1` — standards row 23 is now the full Arch-derivative portability
+- **`2.6.1-STD1` (1/3) — standards row 23 is now the full Arch-derivative portability
   standard.** It is extended from the identity-only invariant that shipped with
   2.6.1-F2 to all three sub-invariants: **(a)** no hardcoded sync-repo names —
   the `["core", "extra"]` literal in `primitives/pacman.py` is the sole
@@ -538,7 +538,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-STD1` — the release preflight gained section 9, running the container
+- **`2.6.1-STD1` (2/3) — the release preflight gained section 9, running the container
   tier's derivative arm.** It is the only check that exercises row 23 against a
   real derivative rather than synthetic input. Same policy as section 8: warn
   when the harness is unavailable (no podman, no network, unpullable image),
@@ -549,7 +549,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`2.6.1-STD1` — documented distribution support tiers.** Across `README.md`,
+- **`2.6.1-STD1` (3/3) — documented distribution support tiers.** Across `README.md`,
   `docs/design/20-scope.md`, and a new `DISTRIBUTIONS` section in the manpage:
   Arch primary (everything, including bootstrap/kernel/graphics), CachyOS
   validated each minor via the container tier (packaging invariants only), other
@@ -580,6 +580,28 @@ https://keepachangelog.com/en/1.1.0/
   the `**Breaking:**` marker only on an entry's first physical line, which the
   bold lead can now push the marker off. `derive_bump` scans the whole entry
   block instead.
+
+---
+
+- **`2.6.1-STD7` — a roadmap ID that files several release-note entries in one
+  section now numbers them `(n/N)`.** One item routinely ships several distinct
+  user-visible changes, so its ID repeats across entries — `2.6.1-STD1` three
+  times under `Changed` alone. `2.6.1-STD6` moved the ID from mid-prose to the
+  entry's lead, which made that repetition the first thing a reader sees. A
+  repeated ID now carries a facet suffix, ``- **`<ID>` (1/3) — <title>.**``,
+  numbered in document order, so an entry states up front that it is one facet
+  of a larger item rather than reading as a duplicate filing. Cross-section
+  repeats carry none: one Keep a Changelog entry cannot span `Changed` and
+  `Removed`, and a `(2/3)` under a heading the reader arrives at with no memory
+  of `(1/3)` explains nothing.
+
+  The `check_standards` `changelog` group enforces the suffix — present exactly
+  when the ID repeats within the section, numbering `1..N` once each, with `N`
+  matching the actual entry count, so a stale `(2/3)` left behind when an entry
+  is merged away fails the gate rather than misleading a reader. The facet is
+  also the new tiebreak in `_entry_sort_key`: two same-ID entries used to
+  compare equal, leaving their relative order the one spot in the accumulator
+  that no lint constrained.
 
 ## Deprecated
 
