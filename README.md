@@ -2,12 +2,21 @@
 
 SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Relationship to `makepkg` and `pacman`.** `build` and `update` wrap `makepkg` — with makepkg flag passthrough — to build the packages SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`; they are a profiled front-end for those packages, not a general `makepkg` replacement. On the pacman side, SysForge wraps *part* of the surface — search/query, install (through `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion) — but deliberately does not, and is not meant to, cover all of pacman. Pacman remains the package-database authority.
+**Relationship to `makepkg` and `pacman`:**
+
+- **`makepkg`** — `build` and `update` wrap it (with flag passthrough) to build the packages
+  SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`.
+  A profiled front-end for those packages, not a general `makepkg` replacement.
+- **`pacman`** — SysForge wraps *part* of the surface: search/query, install (through
+  `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion).
+  It deliberately does not cover all of pacman — pacman remains the package-database authority.
 
 The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile, or use `sysforge run toolchain --compiler=llvm`.
 
-**Commands:** `build` / `fetch` / `update` / `resolve` build and maintain profiled AUR & custom packages; `packages` / `state` manage the manifest and build state; `search` / `uninstall` cover everyday package lifecycle; `artifact list` inventories your own scripts, systemd units, and pacman hooks,
-`artifact adopt`/`edit` bring one under management and track drift, and `artifact deploy`/`remove` push a managed artifact to (or off) the live system — `deploy` refuses on an artifact whose live copy drifted outside SysForge unless you pass `--force` (managed copy wins) or `--adopt-live` (live copy wins, folded back into the managed copy), and `remove` likewise refuses on drift without `--force`; `doctor` / `log` / `env` inspect system health and configuration; `setup` wires up pacman integration; `run <stage>` drives the bootstrap pipeline. See `sysforge --help` or the [man page](man/sysforge.1) for the full reference.
+**Commands.** The everyday set is in [Quick start](#quick-start) below, grouped by what
+you're trying to do. For the complete reference — every verb, subcommand and flag — use
+`sysforge --help` (or `sysforge help <command>`) and the [man page](man/sysforge.1);
+[DESIGN.md](DESIGN.md) documents the semantics behind them.
 
 <sub><!--version-->v2.6.1<!--/version--></sub>
 
@@ -54,7 +63,8 @@ sudo sysforge run hardware      # detect CPU/GPU, write the hardware profile
 sudo vim /etc/sysforge/profiles.toml
 
 # 4. Build and install a package with your active profile
-sysforge build neovim-git -m "-si"
+#    (bare makepkg short flags pass straight through)
+sysforge build neovim-git -si
 
 # 5. Rebuild outdated installed AUR packages
 sysforge update
@@ -62,25 +72,74 @@ sysforge update --devel       # VCS packages too
 sysforge update --dry-run     # preview only
 ```
 
-Anything you `build` is then *maintained*: `sysforge update` rebuilds it from source as upstream advances. This works for repo packages too — `sysforge build mesa` keeps your optimized mesa current. Stop maintaining one with `sysforge state forget <pkg>` (or `sudo pacman -S <pkg>`, which the next `update` auto-reverts to the repo binary).
+Anything you `build` is then *maintained*: `sysforge update` rebuilds it from source as
+upstream advances. This works for repo packages too — `sysforge build mesa` keeps your
+optimized mesa current.
 
-Other common verbs:
+To stop maintaining one:
+
+- `sysforge state forget <pkg>` — drops it from build state, leaves the installed build alone.
+- `sysforge revert-to-stock <pkg>` — reinstalls the repo build over it and demotes it in one step.
+- `sudo pacman -S <pkg>` — works too; the next `update` reconciles it back to stock.
+
+### Common commands
+
+**Build and maintain packages**
 
 ```bash
-sysforge packages list              # manage the package manifest
-sysforge state list                 # inspect build state
-sysforge doctor                     # fast full system health sweep
-sysforge doctor mesa-git            # health-check one package's deps + linkage
-sysforge log [PKG]                  # page sysforge logs
-sysforge config merge               # adopt shipped config-default drift (.sfnew)
-sysforge search cosmic              # search installed, repo, and AUR for a term
-sysforge help [COMMAND]             # help for sysforge or one command (same as --help)
-sysforge uninstall mesa             # remove a package (demotes it out of build state)
+sysforge build PKG [-si]        # build (and install) with the resolved profile
+sysforge update                 # rebuild outdated managed packages
+sysforge fetch PKG              # download a PKGBUILD without building
+sysforge resolve PKG            # show which profile applies to PKG, and why
 ```
 
-To override system defaults without touching `/etc/sysforge/`, create user copies in `~/.config/sysforge/`.
+**Everyday package lifecycle**
 
-For the full flag reference — PGO/`--pgo`, `--cleansrc`, `--install-only`, throttling, profiling/`--timings`, the `doctor` axes, and profile/rule semantics — see `sysforge --help`, the [man page](man/sysforge.1), and [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned and abandoned features live in [ROADMAP.md](ROADMAP.md).
+```bash
+sysforge search cosmic          # search installed, repo, and AUR for a term
+sysforge uninstall mesa         # remove a package (demotes it out of build state)
+sysforge revert-to-stock mesa   # undo a source-built package back to the repo version
+```
+
+**Manifest and build state**
+
+```bash
+sysforge packages list          # manage the package manifest
+sysforge state list             # inspect build state
+```
+
+**Inspect and diagnose**
+
+```bash
+sysforge doctor                 # fast full system health sweep
+sysforge doctor pkg mesa-git    # health-check one package's deps + linkage
+sysforge log [PKG]              # page sysforge logs
+sysforge env                    # show the inherited build environment and its sources
+sysforge help [COMMAND]         # help for sysforge or one command (same as --help)
+```
+
+**Config and your own artifacts**
+
+```bash
+sysforge config merge           # adopt shipped config-default drift (.sfnew)
+sysforge setup                  # wire up pacman integration (IgnoreGroup + hooks)
+sysforge artifact list          # inventory your scripts, systemd units, pacman hooks
+sysforge artifact review        # offer newly-discovered ones for adoption
+sysforge artifact deploy NAME   # push a managed artifact to the live system
+```
+
+Adopted artifacts are drift-tracked: `deploy` and `remove` both refuse when the live copy
+changed outside SysForge, until you pick a winner (`--force`, or `--adopt-live` to fold the
+live copy back in).
+
+To override system defaults without touching `/etc/sysforge/`, create user copies in
+`~/.config/sysforge/`.
+
+That is the everyday surface. For the rest — PGO/`--pgo`, `--cleansrc`, `--install-only`,
+throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
+semantics — see `sysforge --help`, the [man page](man/sysforge.1), and
+[DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned and abandoned
+features live in [ROADMAP.md](ROADMAP.md).
 
 ---
 

@@ -1019,6 +1019,30 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`2.6.1-B25` — README quick start no longer prints commands that fail or
+  misteach the makepkg seam.** `sysforge doctor mesa-git` has not parsed since
+  the `doctor` split (2.6.1-F1) — bare `doctor` takes no package arguments — so
+  the one-package health check now reads `sysforge doctor pkg mesa-git`. Quick
+  start step 4 taught `sysforge build neovim-git -m "-si"`, but bare makepkg
+  short flags are forwarded implicitly and `-m` is reserved for long flags,
+  value-taking flags, and flags sysforge claims itself; it now reads `sysforge
+  build neovim-git -si`. The "other common verbs" list also gained the verbs it
+  had been silently missing — `build`, `update`, `fetch`, `resolve`, `artifact
+  review`, and `revert-to-stock` — the last of which the maintenance paragraph
+  had been describing longhand as `state forget` plus a manual `pacman -S`.
+
+  The opening "Commands:" paragraph — a single sentence naming fourteen verbs
+  and inlining the artifact drift-resolution flags — is gone. It was a partial
+  duplicate of a reference (`--help`, the man page, DESIGN.md) that is always
+  current where the paragraph was not, and the reader who wants an overview is
+  better served by the quick start. That block is now a **Common commands**
+  section split into five task-titled groups (build & maintain, lifecycle,
+  manifest & state, inspect & diagnose, config & artifacts), and the
+  `makepkg`/`pacman` relationship and stop-maintaining paragraphs became
+  bulleted lists rather than prose runs.
+
+---
+
 - **`2.6.1-F1` — `sysforge doctor --rust PKG` no longer appears to ignore its
   argument.** It never did — it skipped silently, in two places: a package that
   could not be resolved to a PKGBUILD, and one with no `rust-toolchain.toml`,
