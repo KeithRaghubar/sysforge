@@ -159,7 +159,8 @@ def test_find_pkgbuild_repo_package_uses_pkgctl(tmp_path):
 
     with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path / "other"), \
          patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
-         patch("sysforge.primitives.aur.pkgctl_checkout", side_effect=fake_checkout) as mock_pkgctl, \
+         patch("sysforge.primitives.aur.pkgctl_checkout",
+               side_effect=fake_checkout) as mock_pkgctl, \
          patch("sysforge.primitives.aur.aur_info") as mock_aur:
         result = find_pkgbuild("htop", config)
 

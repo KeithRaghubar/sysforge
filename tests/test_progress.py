@@ -213,10 +213,9 @@ def test_tracker_releases_region_on_exit(monkeypatch):
 def test_tracker_releases_on_exception(monkeypatch):
     _fake_tty_stderr(monkeypatch)
     progress.init()
-    with pytest.raises(RuntimeError):
-        with progress.tracker(3, "p") as tick:
-            tick("a")
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), progress.tracker(3, "p") as tick:
+        tick("a")
+        raise RuntimeError("boom")
     assert progress._reserved is False
 
 

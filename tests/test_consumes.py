@@ -73,7 +73,9 @@ def test_load_consumes_inference_user_overrides_system():
     """User file alone wins when extends_system is absent/false."""
     with tempfile.TemporaryDirectory() as d:
         system = _write_toml(f"{d}/sys.toml", '[consumes_inference]\ncargo = ["makepkg"]\n')
-        user = _write_toml(f"{d}/user.toml", '[consumes_inference]\ncargo = ["makepkg", "rust", "env"]\n')
+        user = _write_toml(
+            f"{d}/user.toml",
+            '[consumes_inference]\ncargo = ["makepkg", "rust", "env"]\n')
         result = load_consumes_inference(paths=[user, system])
     assert result == {"cargo": ["makepkg", "rust", "env"]}
 

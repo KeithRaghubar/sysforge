@@ -134,8 +134,10 @@ def test_parse_sccache_text_no_size():
 # ---------------------------------------------------------------------------
 
 def test_diff_ccache_positive_delta():
-    before = {"direct_hits": 10, "preprocessed_hits": 2, "misses": 5, "files": 100, "size_bytes": 1000}
-    after  = {"direct_hits": 15, "preprocessed_hits": 3, "misses": 8, "files": 120, "size_bytes": 2000}
+    before = {"direct_hits": 10, "preprocessed_hits": 2, "misses": 5,
+              "files": 100, "size_bytes": 1000}
+    after = {"direct_hits": 15, "preprocessed_hits": 3, "misses": 8,
+             "files": 120, "size_bytes": 2000}
     d = diff_ccache(before, after)
     assert d["direct_hits"] == 5
     assert d["preprocessed_hits"] == 1
@@ -312,7 +314,8 @@ def test_probe_thinlto_cache_wl_with_other_flags(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_emit_build_stats_with_hits(capsys):
-    cc = {"direct_hits": 8, "preprocessed_hits": 2, "misses": 5, "files": 100, "size_bytes": 1048576}
+    cc = {"direct_hits": 8, "preprocessed_hits": 2, "misses": 5,
+          "files": 100, "size_bytes": 1048576}
     sc = {"hits": 3, "misses": 1, "size_str": "200 MiB"}
 
     with patch("sysforge.log._VERBOSITY", 2):
@@ -371,8 +374,10 @@ def test_emit_session_report_empty(capsys):
 
 def test_emit_session_report_with_records(capsys):
     reset_session()
-    cc1 = {"direct_hits": 10, "preprocessed_hits": 0, "misses": 5, "files": 100, "size_bytes": 1048576}
-    cc2 = {"direct_hits": 20, "preprocessed_hits": 5, "misses": 3, "files": 200, "size_bytes": 2097152}
+    cc1 = {"direct_hits": 10, "preprocessed_hits": 0, "misses": 5,
+           "files": 100, "size_bytes": 1048576}
+    cc2 = {"direct_hits": 20, "preprocessed_hits": 5, "misses": 3,
+           "files": 200, "size_bytes": 2097152}
     record_build_result("pkg-a", cc1, None)
     record_build_result("pkg-b", cc2, None)
 
@@ -470,7 +475,8 @@ def test_emit_system_probes_emits_info(capsys, tmp_path):
     pkg_dir.mkdir()
     (pkg_dir / "foo-1.0-1-x86_64.pkg.tar.zst").write_bytes(b"A" * 512)
 
-    with patch("sysforge.primitives.cache_probe.probe_ldso_mtime", return_value="2026-01-01 12:00:00"), \
+    with patch("sysforge.primitives.cache_probe.probe_ldso_mtime",
+               return_value="2026-01-01 12:00:00"), \
          patch("sysforge.primitives.cache_probe.probe_pacman_cache",
                return_value={"count": 1, "size_bytes": 512, "path": str(pkg_dir)}), \
          patch("sysforge.log._VERBOSITY", 2):

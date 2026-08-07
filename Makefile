@@ -155,8 +155,11 @@ test-x: ## Run the suite, stop on first failure
 # silently tests the wrong tree.
 lint: lint-py lint-sh ## Lint Python and shell (ruff + shellcheck)
 
+# Every Python tree in the repo, not just the shipped package (2.6.1-STD8).
+# .claude/hooks/ruff-on-edit.sh already blocks on tests/, so scoping the gate
+# narrower than the hook only meant debt accumulated where nothing reported it.
 lint-py: ## Lint Python only (ruff)
-	ruff check sysforge/
+	ruff check sysforge/ tests/ tools/
 
 # Every tracked shell script plus the bash completion (which has no shebang, so
 # it declares `shellcheck shell=bash` inline). Run at shellcheck's default

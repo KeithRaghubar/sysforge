@@ -86,7 +86,8 @@ def test_record_self_install_provisions_dir_via_fs_provision(tmp_path):
 
     d = tmp_path / "sentinels"
     with patch("sysforge.primitives.fs_provision.ensure_writable_dir") as mock_prov:
-        mock_prov.side_effect = lambda p, **kw: (Path(p).mkdir(parents=True, exist_ok=True), Path(p))[1]
+        mock_prov.side_effect = (
+            lambda p, **kw: (Path(p).mkdir(parents=True, exist_ok=True), Path(p))[1])
         ir.record_self_install(["mesa"], sentinel_dir=d)
 
     mock_prov.assert_called_once()

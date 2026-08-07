@@ -81,7 +81,8 @@ def _capture_invoke(pkgbuild_path, conf_path, resolved_profile, **kwargs):
         m.returncode = 0
         return m
 
-    def fake_run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kwargs):
+    def fake_run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes,
+                          preexec_fn=None, **_kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         return 0
@@ -172,9 +173,8 @@ def test_inherited_cc_stripped_when_no_override(tmp_path):
     captured = {}
 
     with patch.dict(os.environ, {"CC": "gcc", "PATH": "/usr/bin", "HOME": "/root"},
-                    clear=True):
-        with _patch_makepkg(captured):
-            invoke_makepkg(pb, conf, {})
+                    clear=True), _patch_makepkg(captured):
+        invoke_makepkg(pb, conf, {})
 
     assert "CC" not in captured["env"]
 
@@ -188,9 +188,8 @@ def test_inherited_cc_replaced_by_extra_env(tmp_path):
     captured = {}
 
     with patch.dict(os.environ, {"CC": "gcc", "PATH": "/usr/bin", "HOME": "/root"},
-                    clear=True):
-        with _patch_makepkg(captured):
-            invoke_makepkg(pb, conf, {}, extra_env={"CC": "clang"})
+                    clear=True), _patch_makepkg(captured):
+        invoke_makepkg(pb, conf, {}, extra_env={"CC": "clang"})
 
     assert captured["env"].get("CC") == "clang"
 
@@ -212,9 +211,8 @@ def test_venv_env_vars_popped(tmp_path):
         "PYTHONPATH": f"{venv}/lib/python3/site-packages",
         "PATH": "/usr/bin:/bin",
         "HOME": "/root",
-    }, clear=True):
-        with _patch_makepkg(captured):
-            invoke_makepkg(pb, conf, {})
+    }, clear=True), _patch_makepkg(captured):
+        invoke_makepkg(pb, conf, {})
 
     env = captured["env"]
     assert "VIRTUAL_ENV" not in env
@@ -253,9 +251,8 @@ def test_pager_env_overridden_for_non_interactive_build(tmp_path):
         "LESS": "-R",
         "PATH": "/usr/bin",
         "HOME": "/root",
-    }, clear=True):
-        with _patch_makepkg(captured):
-            invoke_makepkg(pb, conf, {})
+    }, clear=True), _patch_makepkg(captured):
+        invoke_makepkg(pb, conf, {})
 
     env = captured["env"]
     assert env.get("PAGER") == "cat"
@@ -279,9 +276,8 @@ def test_pager_env_preserved_for_interactive_build(tmp_path):
         "PAGER": "less",
         "PATH": "/usr/bin",
         "HOME": "/root",
-    }, clear=True):
-        with _patch_makepkg(captured):
-            invoke_makepkg(pb, conf, {}, interactive=True)
+    }, clear=True), _patch_makepkg(captured):
+        invoke_makepkg(pb, conf, {}, interactive=True)
 
     assert captured["env"].get("PAGER") == "less"
 

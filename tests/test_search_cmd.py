@@ -76,7 +76,8 @@ def test_sections_ordered_and_empty_omitted(monkeypatch, capsys):
 def test_aur_failure_is_nonfatal(monkeypatch, capsys):
     monkeypatch.setattr(search_cmd.pacman, "search_local", lambda t: "local/foo 1-1\n")
     monkeypatch.setattr(search_cmd.pacman, "search_repo", lambda t: "")
-    monkeypatch.setattr(search_cmd.aur, "aur_search", lambda t: [])  # helper already swallows errors
+    # helper already swallows errors
+    monkeypatch.setattr(search_cmd.aur, "aur_search", lambda t: [])
 
     verb = search_cmd.SearchVerb()
     res = verb.execute(SimpleNamespace(term="foo"), PreCheckResult(ctx={}))

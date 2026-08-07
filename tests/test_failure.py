@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.failure import handle_failure, _FAILURE_DEFAULTS, _ALWAYS_ABORT
+from sysforge.primitives.failure import handle_failure, _ALWAYS_ABORT
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,8 @@ def test_warn_and_fallback_does_not_raise():
 # ---------------------------------------------------------------------------
 
 def test_fallback_returns_fallback_value():
-    result = handle_failure("no_rule_matched", "no match", cfg(no_rule_matched="fallback"), fallback=42)
+    result = handle_failure("no_rule_matched", "no match",
+                            cfg(no_rule_matched="fallback"), fallback=42)
     assert result == 42
 
 
@@ -102,7 +103,8 @@ def test_profile_missing_always_aborts_despite_config():
 
 def test_tempfile_write_failed_always_aborts_despite_config():
     with pytest.raises(RuntimeError):
-        handle_failure("tempfile_write_failed", "disk full", cfg(tempfile_write_failed="warn_and_fallback"))
+        handle_failure("tempfile_write_failed", "disk full",
+                       cfg(tempfile_write_failed="warn_and_fallback"))
 
 
 def test_all_always_abort_scenarios_covered():

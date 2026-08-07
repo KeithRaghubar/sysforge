@@ -801,9 +801,7 @@ def _is_allowlisted_sudo(elts: list) -> bool:
         return True
     if head == "-n" and len(elts) >= 2 and const(elts[1]) == "true":
         return True                        # sudo -n true  (probe)
-    if head == "-u":                       # sudo -u <any> ...  (drop-privilege)
-        return True
-    return False
+    return head == "-u"                    # sudo -u <any> ...  (drop-privilege)
 
 
 def _privilege_seam_findings_for_tree(tree: ast.AST, rel: str) -> list[Finding]:

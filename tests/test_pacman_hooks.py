@@ -21,10 +21,7 @@ def fake_dest(tmp_path, monkeypatch):
     real = pacman_hooks.shipped_sources()
     arts = []
     for art in real:
-        if art.name == pacman_hooks.HELPER_NAME:
-            dest = helper
-        else:
-            dest = hook_dir / art.name
+        dest = helper if art.name == pacman_hooks.HELPER_NAME else hook_dir / art.name
         arts.append(pacman_hooks.HookArtifact(dest, art.content, art.mode))
     monkeypatch.setattr(pacman_hooks, "shipped_sources", lambda: arts)
     return arts

@@ -31,7 +31,7 @@ Covers:
 import sys
 import os
 import io
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -40,7 +40,7 @@ from sysforge.primitives.makepkg_wrapper import (
     resolve_env_vars,
     emit_makepkg_conf,
 )
-from sysforge.primitives.profile import CONF_KEY_MAP, SYSFORGE_KEYS
+from sysforge.primitives.profile import SYSFORGE_KEYS
 
 
 # ---------------------------------------------------------------------------

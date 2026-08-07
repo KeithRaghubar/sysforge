@@ -603,6 +603,31 @@ https://keepachangelog.com/en/1.1.0/
   compare equal, leaving their relative order the one spot in the accumulator
   that no lint constrained.
 
+---
+
+- **`2.6.1-STD8` — `make lint` now covers every Python tree in the repo, not
+  just the shipped package.** `lint-py` ran `ruff check sysforge/` while
+  `.claude/hooks/ruff-on-edit.sh` already blocked on `tests/` — so `tests/` was
+  enforced, but only for whoever edited it, only on files they touched, and
+  invisibly to `make preflight`. 189 violations accumulated there (plus four in
+  `tools/`), and the hook fired on pre-existing debt in files an author had
+  merely touched: strict enough to interrupt, scoped so it could only ever
+  surface someone else's backlog. Standards row 26 now names the three trees —
+  `sysforge/`, `tests/`, `tools/` — and the gate and the hook enforce the same
+  set.
+
+  The backlog is cleared rather than grandfathered, so the gate ships green.
+  Twenty violations were auto-fixed; the 34 over-length lines were rewrapped by
+  hand; `tools/` was fixed outright and is deliberately not relaxed, since it
+  holds `check_standards.py`, `check_shipped.py`, and the release script's
+  Python siblings. Two rule groups join `S` in the `"tests/**"` per-file-ignores
+  with stated reasons: `PTH`, which fires on the `sys.path` import bootstrap
+  repeated across ~25 test files, and `SIM117`, where collapsing stacked
+  monkeypatch context managers costs a line-length violation per test and reads
+  worse. A future relaxation is a per-file-ignores entry with a comment, never a
+  directory dropped from the gate. Four `SIM115` findings were real — files
+  opened without a context manager, leaking descriptors inside the suite.
+
 ## Deprecated
 
 - **`2.6.1-STD3` — `profiles.toml`'s `build_mode = "patched_pkgbuild"` is now a

@@ -1089,7 +1089,8 @@ class TestStepEditorRetryFlow(_EditorOptsMixin):
              patch("sysforge.pipeline.stages.reconfigure._prompt",
                    side_effect=lambda *a, **k: next(prompts)), \
              patch.object(_r.shutil, "which",
-                          side_effect=lambda x: f"/usr/bin/{x}" if x in {"nano", "vim"} else None), \
+                          side_effect=lambda x: (f"/usr/bin/{x}"
+                                                 if x in {"nano", "vim"} else None)), \
              patch("sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui"):
             result = _step_editor(None, None, self._opts(), "nano")
         assert result == "vim"

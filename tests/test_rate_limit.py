@@ -174,9 +174,8 @@ def test_http_get_429_raises_rate_limited_and_updates_window():
     sleep_fn, now_fn, _ = _fake_clock()
     rl = RateLimiter(_sleep=sleep_fn, _now=now_fn)
     err = _http_error(429, retry_after="30")
-    with patch("urllib.request.urlopen", side_effect=err):
-        with pytest.raises(RateLimited):
-            http_get_with_rate_limit("https://example/", rl)
+    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(RateLimited):
+        http_get_with_rate_limit("https://example/", rl)
     assert rl.remaining_penalty_s() == 30.0
 
 
@@ -184,9 +183,8 @@ def test_http_get_503_raises_rate_limited():
     sleep_fn, now_fn, _ = _fake_clock()
     rl = RateLimiter(_sleep=sleep_fn, _now=now_fn)
     err = _http_error(503, retry_after="15")
-    with patch("urllib.request.urlopen", side_effect=err):
-        with pytest.raises(RateLimited):
-            http_get_with_rate_limit("https://example/", rl)
+    with patch("urllib.request.urlopen", side_effect=err), pytest.raises(RateLimited):
+        http_get_with_rate_limit("https://example/", rl)
     assert rl.remaining_penalty_s() == 15.0
 
 

@@ -106,9 +106,8 @@ class TestVendoredDeps:
         info = ar.MatchInfo(detail={"kind": "git_submodule",
                                     "project_root": str(tmp_path)})
         with patch("sysforge.primitives.auto_repair.shutil.which",
-                   return_value=None):
-            with pytest.raises(RuntimeError, match="git binary not on PATH"):
-                ar._repair_vendored_deps(tmp_path, info)
+                   return_value=None), pytest.raises(RuntimeError, match="git binary not on PATH"):
+            ar._repair_vendored_deps(tmp_path, info)
 
     def test_repair_raises_on_unknown_kind(self, tmp_path):
         # Defensive else-branch (lines 182-183).
@@ -188,9 +187,8 @@ class TestSrcinfoDrift:
     def test_preflight_abort_raises(self, tmp_path):
         (tmp_path / ".SRCINFO").write_text("stale\n")
         with patch("sysforge.primitives.auto_repair._printsrcinfo",
-                   return_value="fresh\n"):
-            with pytest.raises(RuntimeError, match=".SRCINFO drift"):
-                ar.preflight_srcinfo(tmp_path, "abort")
+                   return_value="fresh\n"), pytest.raises(RuntimeError, match=".SRCINFO drift"):
+            ar.preflight_srcinfo(tmp_path, "abort")
         # File NOT modified on abort.
         assert (tmp_path / ".SRCINFO").read_text() == "stale\n"
 

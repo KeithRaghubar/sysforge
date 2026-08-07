@@ -124,7 +124,8 @@ def test_check_stale_no_recovery_cmd_clears_on_confirm(tmp_path):
     """Sentinel without recovery_cmd: 'y' clears the sentinel and proceeds."""
     StageSentinel(tmp_path).mark_started("update")  # no recovery_cmd
     with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
-         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y") as prompt_mock, \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice",
+               return_value="y") as prompt_mock, \
          patch("sysforge.primitives.stage_sentinel.subprocess.run") as run_mock:
         result = check_and_recover_stale_sentinel(tmp_path)
     assert result is True

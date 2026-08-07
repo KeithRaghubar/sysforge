@@ -96,7 +96,8 @@ def test_tools_available_all_present(monkeypatch):
 
 
 def test_tools_available_reports_missing(monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: None if t == "perf2bolt" else f"/usr/bin/{t}")
+    monkeypatch.setattr(bolt.shutil, "which",
+                        lambda t: None if t == "perf2bolt" else f"/usr/bin/{t}")
     ok, missing = bolt.tools_available()
     assert not ok and missing == ["perf2bolt"]
 

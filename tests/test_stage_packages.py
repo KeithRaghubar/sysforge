@@ -399,7 +399,8 @@ def test_repo_mode_build_from_source_builds_repo_pkg_from_source(tmp_path):
 
 
 def test_enable_build_from_source_overrides_pacman_repo_mode(tmp_path):
-    """enable_build_from_source=true on a repo pkg forces source build regardless of global repo_mode."""
+    """enable_build_from_source=true on a repo pkg forces a source build
+    regardless of the global repo_mode."""
     builds_dir = tmp_path / "builds"
     make_pkgbuild(builds_dir, "htop")
     pkg_file = tmp_path / "packages.toml"
@@ -412,7 +413,8 @@ def test_enable_build_from_source_overrides_pacman_repo_mode(tmp_path):
     with patch("sysforge.pipeline.stages.packages.makepkg_run",
                side_effect=lambda path, **kw: built.append(Path(path).parent.name)), \
          patch("sysforge.pipeline.stages.packages.subprocess.run",
-               side_effect=lambda cmd, **kw: pacman_installed.append(cmd[-1]) or MagicMock(returncode=0)):
+               side_effect=lambda cmd, **kw: (pacman_installed.append(cmd[-1])
+                                             or MagicMock(returncode=0))):
         PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
 
     assert "htop" in built             # enable_build_from_source → source build
@@ -428,7 +430,8 @@ def test_repo_mode_invalid_raises(tmp_path):
     failure about the same key reaching the same user.
     """
     pkg_file = tmp_path / "packages.toml"
-    pkg_file.write_text('[build]\nrepo_mode = "hybrid"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
+    pkg_file.write_text(
+        '[build]\nrepo_mode = "hybrid"\n\n[[package]]\nname = "htop"\nsource = "repo"\n')
     with pytest.raises(ConfigError, match="Invalid.*repo_mode"):
         _load_packages({"packages_file": str(pkg_file)})
 

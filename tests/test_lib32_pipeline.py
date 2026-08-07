@@ -423,13 +423,12 @@ def test_step5_lib32_scrubs_icf_from_profile_ldflags(is_lib32, expect_icf):
         with patch(
             "sysforge.primitives.makepkg_wrapper.shutil.which",
             side_effect=lambda n: f"/usr/bin/{n}" if n == "lld" else None,
-        ):
-            with emit_makepkg_conf(
-                resolved, frozenset({"makepkg", "env"}),
-                system_conf_path=str(system_conf),
-                is_lib32=is_lib32,
-            ) as conf_path:
-                text = Path(conf_path).read_text()
+        ), emit_makepkg_conf(
+            resolved, frozenset({"makepkg", "env"}),
+            system_conf_path=str(system_conf),
+            is_lib32=is_lib32,
+        ) as conf_path:
+            text = Path(conf_path).read_text()
     ld_line = next(
         (line for line in text.splitlines() if line.startswith("LDFLAGS=")), ""
     )

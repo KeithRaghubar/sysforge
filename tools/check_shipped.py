@@ -1114,7 +1114,9 @@ def check_manpage(repo: Path) -> list[Finding]:
         return [Finding("manpage", "warn", "man/sysforge.1",
                         "scdoc not installed - skipping regen-diff")]
 
-    with tempfile.NamedTemporaryFile(encoding="utf-8", mode="w", suffix=".scd", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(
+        encoding="utf-8", mode="w", suffix=".scd", delete=False
+    ) as tmp:
         scd_path = Path(tmp.name)
     try:
         env = {**os.environ}
@@ -1161,10 +1163,7 @@ def check_manpage(repo: Path) -> list[Finding]:
 
 
 def _which(name: str) -> bool:
-    for p in os.environ.get("PATH", "").split(":"):
-        if p and (Path(p) / name).exists():
-            return True
-    return False
+    return any(p and (Path(p) / name).exists() for p in os.environ.get("PATH", "").split(":"))
 
 
 # ===========================================================================

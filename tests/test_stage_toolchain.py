@@ -632,7 +632,8 @@ def test_remove_staging_no_dir_noop(tmp_path):
 
 def test_state_set_get_result(tmp_path):
     state = PipelineState(tmp_path)
-    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "cxx": "/usr/bin/clang++", "ld": "lld"})
+    state.set_stage_result(
+        "toolchain", {"cc": "/usr/bin/clang", "cxx": "/usr/bin/clang++", "ld": "lld"})
     result = state.get_stage_result("toolchain")
     assert result["cc"] == "/usr/bin/clang"
     assert result["cxx"] == "/usr/bin/clang++"
@@ -2872,7 +2873,8 @@ def test_pkg_fingerprint_stable_across_staged_vs_system_clang(tmp_path):
     """
     pkgbuild = make_pkgbuild(tmp_path, "llvm")
     staged = _fake_clang(tmp_path / "stage2" / "clang", "clang version 19.1.0", "staged")
-    system = _fake_clang(tmp_path / "usr" / "clang", "clang version 19.1.0", "installed-bytes-differ")
+    system = _fake_clang(tmp_path / "usr" / "clang", "clang version 19.1.0",
+                         "installed-bytes-differ")
     ctx = _reuse_ctx(tmp_path)
     _, fp_staged = _pkg_fingerprint(ctx, "llvm", pkgbuild, staged, None, None, None, [])
     _, fp_system = _pkg_fingerprint(ctx, "llvm", pkgbuild, system, None, None, None, [])
@@ -3711,8 +3713,9 @@ def test_pgo_profile_runtime_injected_into_bootstrap_and_train(tmp_path):
         assert call["lfe"] == fake_rt_flag, \
             "Pass 2 links against stage1's instrumented .a → profile runtime required"
     for call in p2:
-        assert call["lfe"] == fake_rt_flag, \
-            "Pass 3 non_pgo find_package(LLVM) hits stage1's instrumented .a → profile runtime required"
+        assert call["lfe"] == fake_rt_flag, (
+            "Pass 3 non_pgo find_package(LLVM) hits stage1's instrumented .a "
+            "→ profile runtime required")
     for call in p3:
         assert call["lfe"] is None, \
             "Pass 4 uses stage2 (non-instrumented) — profile runtime must NOT leak through"

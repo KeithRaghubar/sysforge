@@ -84,9 +84,17 @@ ignore = [
 # Test code is not production attack surface: pytest uses bare `assert` (S101),
 # fixtures construct throwaway /tmp paths (S108) and dummy credentials
 # (S105–S107), and exercise the subprocess/shell seams directly (S602/S604).
-# The bandit `S` rules target shipped code; `make lint` scopes to sysforge/ but
-# this keeps `ruff check tests/` and the edit hook coherent. (2.3.0-F1)
-"tests/**" = ["S"]
+# The bandit `S` rules target shipped code. (2.3.0-F1)
+#
+# PTH and SIM117 join them at 2.6.1-STD8, when `make lint` grew to cover
+# tests/ and tools/. Both fire almost exclusively on idioms that are correct in
+# test code: PTH on the `sys.path.insert(0, os.path.join(os.path.dirname(
+# __file__), ".."))` import bootstrap repeated across ~25 files, and SIM117 on
+# nested `with` blocks stacking monkeypatch/mock context managers, where
+# collapsing them produces one over-long line per test and reads worse. Neither
+# is relaxed for sysforge/ or tools/, where pathlib migration and `with`-depth
+# are real signals about code that handles user paths.
+"tests/**" = ["S", "PTH", "SIM117"]
 
 # Coverage is run via `make coverage`, which layers pytest-cov into an
 # ephemeral `uv run --no-sync --with pytest-cov` overlay (no system/venv

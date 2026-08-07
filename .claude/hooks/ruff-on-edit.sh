@@ -17,8 +17,10 @@ file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev
 
 repo="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
+# The same three trees `make lint-py` gates (2.6.1-STD8) — the hook and the
+# gate must agree, or one of them is training people to ignore it.
 case "$file_path" in
-    "$repo"/sysforge/*|"$repo"/tests/*) ;;
+    "$repo"/sysforge/*|"$repo"/tests/*|"$repo"/tools/*) ;;
     *) exit 0 ;;
 esac
 

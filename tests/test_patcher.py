@@ -402,7 +402,8 @@ def test_apply_preserves_non_managed_make_invocations():
     with tempfile.TemporaryDirectory() as d:
         pb = _make_pkgbuild(d, pkgbuild)
         pkgmeta = {
-            "globals": {"pkgbase": "linux-custom", "pkgname": ["linux-custom", "linux-custom-headers"]},
+            "globals": {"pkgbase": "linux-custom",
+                        "pkgname": ["linux-custom", "linux-custom-headers"]},
             "functions": {},
         }
         patched = apply_patch_pkgbuild(pb, pkgmeta)

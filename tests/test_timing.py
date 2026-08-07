@@ -1,4 +1,6 @@
 """Tests for sysforge.primitives.timing — the pure phase-timing primitive."""
+from pathlib import Path
+
 import pytest
 
 from sysforge.primitives.timing import (
@@ -32,9 +34,8 @@ def test_phase_measures_duration(monkeypatch):
 
 def test_raising_phase_still_records_and_propagates():
     t = PhaseTimer()
-    with pytest.raises(ValueError):
-        with t.phase("boom"):
-            raise ValueError("nope")
+    with pytest.raises(ValueError), t.phase("boom"):
+        raise ValueError("nope")
     assert len(t.records) == 1
     assert t.records[0].name == "boom"
 
@@ -121,6 +122,6 @@ def test_primitive_is_log_free():
     import sysforge.primitives.timing as timing
 
     assert timing.__file__ is not None
-    src = open(timing.__file__).read()
+    src = Path(timing.__file__).read_text()
     assert "sysforge.log" not in src
     assert "from sysforge import log" not in src

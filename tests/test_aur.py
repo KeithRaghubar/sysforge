@@ -4,7 +4,8 @@ test_aur.py — unit tests for sysforge.primitives.aur
 Covers:
     aur_info               — successful batch query, empty result, network error, bad JSON
     aur_clone              — successful clone, git failure
-    git_fetch_and_compare  — not-a-repo skip, no-tracking skip, up_to_date, fetched, diverged, rate-limited
+    git_fetch_and_compare  — not-a-repo skip, no-tracking skip, up_to_date,
+                             fetched, diverged, rate-limited
     is_{transient,rate_limit}_git_error — classifier smoke tests
     fetch_aur_name_cache   — fresh cache skip, download + write, network failure, force refresh
 """
@@ -1512,7 +1513,8 @@ def test_git_fetch_and_compare_rate_limited(tmp_path):
         if cmd[3:5] == ["rev-parse", "HEAD"]:
             return _cp(stdout="a" * 40)
         if "fetch" in cmd:
-            return _cp(returncode=128, stderr="fatal: unable to access: error: 429 Too Many Requests")
+            return _cp(returncode=128,
+                       stderr="fatal: unable to access: error: 429 Too Many Requests")
         return _cp()
 
     with patch("subprocess.run", side_effect=fake_run):

@@ -40,14 +40,13 @@ def test_runtime_error_preserves_sentinel(tmp_path):
 def test_clean_exit_requested_translates_to_runtime_error(tmp_path):
     """CleanExitRequested inside scope → RuntimeError with retry+recovery hints,
     sentinel left in place for next-run recovery prompt."""
-    with pytest.raises(RuntimeError) as exc_info:
-        with sentinel_scope(
-            tmp_path,
-            "toolchain",
-            recovery_cmd="sudo pacman -S llvm llvm-libs",
-            retry_cmd="sysforge run toolchain",
-        ):
-            raise CleanExitRequested()
+    with pytest.raises(RuntimeError) as exc_info, sentinel_scope(
+        tmp_path,
+        "toolchain",
+        recovery_cmd="sudo pacman -S llvm llvm-libs",
+        retry_cmd="sysforge run toolchain",
+    ):
+        raise CleanExitRequested()
     msg = str(exc_info.value)
     assert "interrupted by user" in msg.lower()
     assert "sysforge run toolchain" in msg
@@ -57,15 +56,14 @@ def test_clean_exit_requested_translates_to_runtime_error(tmp_path):
 
 def test_metadata_round_trips_through_sentinel_file(tmp_path):
     """Extra kwargs land in the sentinel TOML for the recovery prompt."""
-    with pytest.raises(RuntimeError):
-        with sentinel_scope(
-            tmp_path,
-            "toolchain",
-            recovery_cmd="sudo pacman -S llvm",
-            compiler="llvm",
-            pgo=True,
-        ):
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), sentinel_scope(
+        tmp_path,
+        "toolchain",
+        recovery_cmd="sudo pacman -S llvm",
+        compiler="llvm",
+        pgo=True,
+    ):
+        raise RuntimeError("boom")
     record = StageSentinel(tmp_path).get_active()
     assert record is not None
     assert record["compiler"] == "llvm"
@@ -75,13 +73,12 @@ def test_metadata_round_trips_through_sentinel_file(tmp_path):
 
 def test_sentinel_scope_omits_none_recovery_cmd(tmp_path):
     """recovery_cmd=None must not land in the sentinel as the string 'None'."""
-    with pytest.raises(RuntimeError):
-        with sentinel_scope(tmp_path, "update", recovery_cmd=None):
-            record = StageSentinel(tmp_path).get_active()
-            assert record is not None
-            assert record["stage"] == "update"
-            assert "recovery_cmd" not in record
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), sentinel_scope(tmp_path, "update", recovery_cmd=None):
+        record = StageSentinel(tmp_path).get_active()
+        assert record is not None
+        assert record["stage"] == "update"
+        assert "recovery_cmd" not in record
+        raise RuntimeError("boom")
     # Persisted record after exception: still no recovery_cmd key.
     record = StageSentinel(tmp_path).get_active()
     assert record is not None

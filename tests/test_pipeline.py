@@ -6,7 +6,6 @@ These tests require SYSFORGE_CONFIG_DIR to point at tests/data, which is
 handled by conftest.py. All tests here use the test fixture configs under
 tests/data/etc/sysforge/ and tests/data/user/.config/sysforge/.
 """
-import os
 from pathlib import Path
 
 import pytest
@@ -249,17 +248,17 @@ def test_no_duplicate_groups(sys_metas_matched):
 
 def test_conf_contains_cflags(htop_profile):
     with emit_makepkg_conf(htop_profile) as conf_path:
-        content = open(conf_path).read()
+        content = Path(conf_path).read_text()
     assert "CFLAGS=" in content
 
 def test_conf_excludes_build_mode(htop_profile):
     with emit_makepkg_conf(htop_profile) as conf_path:
-        content = open(conf_path).read()
+        content = Path(conf_path).read_text()
     assert "build_mode" not in content
 
 def test_conf_excludes_makepkg_flags(htop_profile):
     with emit_makepkg_conf(htop_profile) as conf_path:
-        content = open(conf_path).read()
+        content = Path(conf_path).read_text()
     assert "makepkg_flags" not in content
 
 def test_conf_tempfile_cleaned_up(htop_profile):

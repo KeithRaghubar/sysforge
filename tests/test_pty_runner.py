@@ -184,7 +184,8 @@ def test_utf8_split_across_chunks(tmp_path):
     # means the byte at offset 4095 (the second byte of é) is in chunk 2.
     payload = "a" * 4094 + "é"
     rc = run_with_pty(
-        [sys.executable, "-c", f"import sys; sys.stdout.write({payload!r}); sys.stdout.write('\\n')"],
+        [sys.executable, "-c",
+         f"import sys; sys.stdout.write({payload!r}); sys.stdout.write('\\n')"],
         cwd=tmp_path,
         env={"PATH": "/usr/bin:/bin"},
         line_callback=lines.append,

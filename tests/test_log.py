@@ -14,6 +14,7 @@ Covers:
                                       no crash when handle is None
     simultaneous unified + pkg log  — message written to both files
 """
+import contextlib
 import os
 import sys
 
@@ -35,16 +36,12 @@ def _log_reset():
     yield
     # Close handles defensively (tests may leave them open on failure)
     if log._unified_log_fh is not None:
-        try:
+        with contextlib.suppress(Exception):
             log._unified_log_fh.close()
-        except Exception:
-            pass
         log._unified_log_fh = None
     if log._pkg_log_fh is not None:
-        try:
+        with contextlib.suppress(Exception):
             log._pkg_log_fh.close()
-        except Exception:
-            pass
         log._pkg_log_fh = None
     log.set_verbosity(saved)
 

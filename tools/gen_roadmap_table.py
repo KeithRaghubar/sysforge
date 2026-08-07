@@ -251,7 +251,9 @@ def render_table(entries: list[Entry], sort: str = "triage",
         rule = tuple("-" * w for w in widths)
 
         def line(row: tuple[str, ...], fill: str = " ") -> str:
-            padded = (c.ljust(w, fill) for c, w in zip(row, widths))
+            # strict: a row that does not match the column widths is a bug in
+            # the caller, not something to silently truncate.
+            padded = (c.ljust(w, fill) for c, w in zip(row, widths, strict=True))
             return f"|{fill}" + f"{fill}|{fill}".join(padded) + f"{fill}|"
 
         body = "\n".join([line(_HEADER), line(rule, "-"), *(line(c) for c in cells)])

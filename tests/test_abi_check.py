@@ -38,6 +38,13 @@ from sysforge.primitives.abi_check import (
     check_so_files,
 )
 
+# std::string::_M_assign(std::string const&) — a real mangled name, kept as a
+# constant so the nm-output fixtures below stay inside the line limit.
+_ASSIGN = (
+    "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assign"
+    "ERKS4_"
+)
+
 
 # ---------------------------------------------------------------------------
 # _list_sos_in_pkg
@@ -99,7 +106,7 @@ def test_list_sos_passes_archive_with_f_and_closes_stdin():
         _list_sos_in_pkg(pkg)
 
     argv = mock.call_args.args[0]
-    assert "bsdtar" == argv[0]
+    assert argv[0] == "bsdtar"
     # The package path must be the archive operand, immediately preceded by -f
     # (whether spelled "-tf" or "-t -f").
     assert str(pkg) in argv
@@ -152,7 +159,7 @@ def test_extract_sos_empty_members_no_subprocess(tmp_path):
 
 def test_undefined_versioned_parses_undef_symbols():
     nm_out = (
-        "                 U _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_@LLVM_22.1\n"
+        f"                 U {_ASSIGN}@LLVM_22.1\n"
         "0000000000000000 T _ZN4llvm5Value3useEv@@LLVM_22.1\n"  # defined, not U
         "                 U __gxx_personality_v0@GCC_3.0\n"
         "                 w __cxa_finalize@@GLIBC_2.17\n"  # defined weak, not U
@@ -161,7 +168,7 @@ def test_undefined_versioned_parses_undef_symbols():
                return_value=_mock_run(nm_out)):
         result = _undefined_versioned(Path("libfoo.so.1"))
 
-    assert ("_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_", "LLVM_22.1") in result
+    assert (_ASSIGN, "LLVM_22.1") in result
     assert ("__gxx_personality_v0", "GCC_3.0") in result
     # defined symbols must not appear
     assert not any(ver == "LLVM_22.1" and "Value" in sym for sym, ver in result)
@@ -251,7 +258,7 @@ def test_build_ldconfig_map_returns_empty_on_failure():
 
 def test_exported_versioned_parses_defined_symbols():
     nm_out = (
-        "00007a6c10 W _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_@@LLVM_22.1\n"
+        f"00007a6c10 W {_ASSIGN}@@LLVM_22.1\n"
         "000000001234 T _ZN4llvm5Value3useEv@@LLVM_22.1\n"
         "                 U __gxx_personality_v0@GCC_3.0\n"  # undefined — exclude
     )
@@ -260,7 +267,7 @@ def test_exported_versioned_parses_defined_symbols():
                return_value=_mock_run(nm_out)):
         result = _exported_versioned("/usr/lib/libLLVM.so.22.1", cache)
 
-    assert ("_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_", "LLVM_22.1") in result
+    assert (_ASSIGN, "LLVM_22.1") in result
     assert ("_ZN4llvm5Value3useEv", "LLVM_22.1") in result
     # undefined must not appear
     assert ("__gxx_personality_v0", "GCC_3.0") not in result
@@ -287,9 +294,9 @@ def test_demangle_returns_readable_names():
     demangled_out = "std::string::_M_assign(std::string const&)\n"
     with patch("sysforge.primitives.abi_check.subprocess.run",
                return_value=_mock_run(demangled_out)):
-        result = _demangle(["_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"])
+        result = _demangle([_ASSIGN])
 
-    assert result["_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_"] == "std::string::_M_assign(std::string const&)"
+    assert result[_ASSIGN] == "std::string::_M_assign(std::string const&)"
 
 
 def test_demangle_empty_input():
