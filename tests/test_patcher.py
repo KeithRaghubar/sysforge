@@ -315,19 +315,28 @@ def test_write_profile_toml_format():
     assert "[profiles.pkgbuild_extracted]" in content
     assert 'CFLAGS = "-O3"' in content
 
-def test_write_excludes_metadata_keys():
-    """Internal __ keys must not appear in the written TOML."""
+def test_write_excludes_metadata_keys(tmp_path):
+    """Internal __ keys must not appear as keys in the written TOML.
+
+    Scoped to key lines, not the whole file: the header carries
+    `# Source: <pkgbuild_path>`, and tempfile's name alphabet is `a-z0-9_`, so
+    a bare `"__" not in content` also failed whenever the temp dir happened to
+    contain a double underscore -- ~0.42% of runs (2.6.1-B24). The directory
+    below hard-codes that case so the assertion can never depend on it again.
+    """
     profile = {
         "CFLAGS": "-O3",
         "__conditional_blocks__": [],
         "__skipped_lines__": [],
     }
-    with tempfile.TemporaryDirectory() as d:
-        pkgbuild_path = Path(d) / "PKGBUILD"
-        pkgbuild_path.touch()
-        out = write_extracted_profile(profile, pkgbuild_path)
-        content = out.read_text()
-    assert "__" not in content
+    workdir = tmp_path / "tmpa__bcdef"
+    workdir.mkdir()
+    pkgbuild_path = workdir / "PKGBUILD"
+    pkgbuild_path.touch()
+    content = write_extracted_profile(profile, pkgbuild_path).read_text()
+
+    keys = [ln.split("=", 1)[0].strip() for ln in content.splitlines() if "=" in ln]
+    assert keys == ["CFLAGS"], f"metadata keys leaked into the profile: {keys}"
 
 
 # ---------------------------------------------------------------------------

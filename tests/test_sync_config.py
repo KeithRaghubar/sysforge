@@ -6,8 +6,9 @@ defaults into a live config dir, plus a pacnew-style ``.sfnew`` companion for
 comment/example drift the key-anchored merge can't carry.
 
 tomlkit is a dev-only dependency (ephemeral uv overlay for `make sync-config`),
-so these tests ``importorskip`` it — they run under
-``uv run --with tomlkit pytest`` and skip under a plain `make test`.
+so these tests ``importorskip`` it. `make coverage` layers tomlkit into its
+overlay and so always runs them; a plain `make test` uses the system pytest and
+runs them only if python-tomlkit happens to be installed there (2.6.1-B23).
 """
 import importlib.util
 from pathlib import Path

@@ -965,6 +965,35 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`2.6.1-B23` — The eleven `tests/test_sync_config.py` tests now run in a
+  gate instead of by accident.** They `importorskip` `tomlkit`, which is
+  deliberately dev-only and never declared in `pyproject.toml`, and their
+  docstring said they run under `uv run --with tomlkit pytest` — but no
+  Makefile target did that. `make test` invokes the *system* pytest
+  (`python-pytest` is a `DEV_DEPS_CORE` package), so whether they executed
+  depended on `python-tomlkit` happening to be installed system-wide;
+  `make coverage` runs in a `uv` overlay that never had it, so the coverage
+  ratchet measured 4,558 of the suite's 4,569 tests. `make coverage` now layers
+  `--with tomlkit` alongside `--with pytest-cov`, keeping tomlkit out of the
+  system and the venv exactly as before while making the instrumented suite —
+  the run `make preflight` gates on — the complete one.
+
+---
+
+- **`2.6.1-B24` — `test_write_excludes_metadata_keys` no longer fails about
+  once in every 240 runs.** `write_extracted_profile` records its input as a
+  `# Source: <pkgbuild_path>` header comment, and the test asserted `"__" not
+  in content` across the whole rendered file. Because `tempfile`'s name
+  alphabet is `a-z0-9_`, a `/tmp/tmp<8 chars>` directory contains a double
+  underscore in about 0.42% of runs, and the assertion then failed on the
+  temporary path rather than on anything the filter did. It now compares the
+  written key list against `["CFLAGS"]`, which tests the actual contract — that
+  internal `__` keys are excluded as *keys* — and the fixture directory
+  hard-codes a `__`-bearing name so the previously flaky case is now a
+  permanent regression guard. Surfaced by 2.6.1-B23 above.
+
+---
+
 - **`2.6.1-F1` — `sysforge doctor --rust PKG` no longer appears to ignore its
   argument.** It never did — it skipped silently, in two places: a package that
   could not be resolved to a PKGBUILD, and one with no `rust-toolchain.toml`,

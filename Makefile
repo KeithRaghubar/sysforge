@@ -191,8 +191,14 @@ audit: ## Audit the dependency chain for known CVEs
 # `uv run --no-sync` pattern as check-shipped/man) so nothing is added to
 # the system or the venv. Prints a term summary and writes coverage.json;
 # the ratchet baseline lives in tests/COVERAGE_BASELINE.md.
+#
+# tomlkit rides the same overlay (2.6.1-B23). tests/test_sync_config.py
+# importorskips it, and `make test` runs the system pytest, so whether those
+# tests execute there depends on python-tomlkit happening to be installed.
+# This is the one target that runs them deterministically -- making the
+# instrumented suite, not `make test`, the complete run.
 coverage: ## Run the suite with a coverage report
-	uv run --no-sync --with pytest-cov pytest \
+	uv run --no-sync --with pytest-cov --with tomlkit pytest \
 	  --cov=sysforge \
 	  --cov-report=term-missing:skip-covered \
 	  --cov-report=json:coverage.json \
