@@ -94,10 +94,43 @@ canonical ordering.
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
 | `2.5.1-F4` | Split the Abandoned section out of ROADMAP.md into a dedicated docs/ file | low | medium | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
+| `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 <!-- END roadmap-table -->
 
 ### Features
+
+- **`3.0.0-F1` — Preflight the Rust toolchain when the kernel fragment requests `CONFIG_RUST`.**
+  The kernel stage never authors kconfig itself — it merges hardware, device and manual
+  `[[kconfig]]` entries into `sysforge.config` and lets the PKGBUILD's `prepare()` overlay them
+  (`stages/kernel.py` module docstring). That is the right division of labour, and `CONFIG_RUST=y`
+  should stay a user decision, not a sysforge default: the in-tree Rust drivers cover none of the
+  tested-hardware scope (§Tested hardware — x86_64/Zen 3/NVMe), and the Nvidia path here is an
+  out-of-tree DKMS module that kernel Rust does not touch. What is missing is the *precondition*
+  check. `CONFIG_RUST` is unique among kconfig symbols in depending on host tooling rather than on
+  the kernel source: `scripts/rust_is_available.sh` demands a `rustc` inside the version window the
+  tree pins plus a matching `bindgen`, and when it fails kconfig drops the symbol during
+  `olddefconfig` — the silent-loss shape `2.6.1-F23` exists to *detect*. This item is the other
+  half: refuse to start the build rather than discover the loss after it. Two things make the
+  failure likelier here than upstream assumes — `RUSTC_WRAPPER=sccache` and a rustup install that
+  shadows the distro `rust` (the live workstation case, already documented in
+  `primitives/rust_probe.py`), so the `rustc` the kernel resolves is frequently not the one the
+  operator thinks. The seam exists: `primitives/toolchain_preflight.py` already probes rustc with
+  pin awareness (`_probe_rust_native`, `rust_toolchain_pins`), and `doctor.py`'s `rust` axis already
+  reports rustup-shadow provenance. Add a requirement token (`rust:kernel`) contributed when the
+  merged fragment carries `CONFIG_RUST=y`, resolving to a `rustc` + `bindgen` presence and
+  version-window probe, and surface the shadow provenance in the failure message rather than a bare
+  "not found". Design decisions: **where the version window comes from** (parse the tree's
+  `scripts/min-tool-version.sh` / `rust_is_available.sh`, versus a table sysforge maintains and must
+  chase — the former is the only one that stays correct across kernel versions) and whether this is
+  a hard preflight failure or a loud warn, given the stage's existing preference for warning over
+  hard-failing a curated-table entry. Dual-toolchain parity applies: the check must behave
+  identically on the gcc and llvm kernel paths, since `CONFIG_RUST` is orthogonal to `LLVM=1`.
+  *Priority: low · Effort: medium · Bump: patch* — no behaviour change unless a fragment actually
+  requests `CONFIG_RUST`; it converts a post-build silent drop into a pre-build refusal.
+  **Standards home on adoption:** none new — this extends the existing toolchain-preflight seam.
+
+---
 
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
   which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`
@@ -232,7 +265,11 @@ canonical ordering.
   versus a Python check that would need the file back out of the build tree) and **severity** — a
   dropped symbol is a silent loss of intent, but hard-failing a kernel build over one stale entry in
   a curated table is worse than warning loudly, so this likely warns per-symbol and leaves boot
-  safety (`kernel_safety.py`) as the only hard gate. *Priority: med · Effort: medium · Bump: patch* —
+  safety (`kernel_safety.py`) as the only hard gate. A third void mechanism belongs in the same
+  check: a symbol whose *host-tooling* dependency is unmet, of which `CONFIG_RUST` is the only
+  instance today — `scripts/rust_is_available.sh` fails and kconfig unsets it with no fragment-level
+  signal. `3.0.0-F1` prevents that case up front; this item is what catches it if the preflight is
+  absent or wrong, so neither supersedes the other. *Priority: med · Effort: medium · Bump: patch* —
   no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
   one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
 
