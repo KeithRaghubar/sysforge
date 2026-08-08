@@ -868,3 +868,82 @@ def test_grammar_docs_all_forms_present_in_real_repo():
         block = check_shipped._key_comment_block(path.read_text(encoding="utf-8"), key)
         missing = [tok for tok in required if tok not in block]
         assert not missing, f"{fname}:{key} missing forms {missing} in block:\n{block}"
+
+
+# ---------------------------------------------------------------------------
+# completion_widths (3.0.0-B2)
+# ---------------------------------------------------------------------------
+
+
+def _write_completion(tmp_path, body):
+    comp = tmp_path / "completions"
+    comp.mkdir(parents=True, exist_ok=True)
+    (comp / "_sysforge").write_text(body, encoding="utf-8")
+    return tmp_path
+
+
+def test_completion_widths_clean_against_real_repo():
+    """The shipped zsh completion fits an 80-column listing."""
+    assert check_shipped.check_completion_widths(check_shipped.REPO) == []
+
+
+def test_completion_widths_flags_over_budget_arguments_spec(tmp_path):
+    """A description too long for its block's budget is drift."""
+    repo = _write_completion(tmp_path, (
+        "_verb() {\n"
+        "  _arguments \\\n"
+        "    '--short[fine]' \\\n"
+        f"    '--long[{'x' * 90}]'\n"
+        "}\n"
+    ))
+    findings = check_shipped.check_completion_widths(repo)
+    assert [f.message for f in findings if "--long" in f.message]
+    assert all(f.group == "completion_widths" for f in findings)
+    assert not [f for f in findings if "--short" in f.message]
+
+
+def test_completion_widths_budget_shrinks_with_longest_option_name(tmp_path):
+    """Budget is COLUMNS - longest match in the block - 4, so a long flag
+    name in the block tightens every description beside it."""
+    desc = "y" * 60
+    loose = _write_completion(tmp_path / "loose", (
+        "_verb() {\n  _arguments \\\n" f"    '--a[{desc}]'\n" "}\n"
+    ))
+    tight = _write_completion(tmp_path / "tight", (
+        "_verb() {\n  _arguments \\\n"
+        f"    '--a[{desc}]' \\\n"
+        "    '--a-very-long-option-name[ok]'\n"
+        "}\n"
+    ))
+    assert check_shipped.check_completion_widths(loose) == []
+    assert [f for f in check_shipped.check_completion_widths(tight)
+            if "--a:" in f.message]
+
+
+def test_completion_widths_covers_describe_arrays(tmp_path):
+    """_describe arrays are their own compadd call and are budgeted too."""
+    repo = _write_completion(tmp_path, (
+        "_verb() {\n"
+        "  local commands=(\n"
+        f"    'build:{'z' * 90}'\n"
+        "  )\n"
+        "  _describe 'command' commands\n"
+        "}\n"
+    ))
+    findings = check_shipped.check_completion_widths(repo)
+    assert [f for f in findings if "_describe" in f.message]
+
+
+def test_completion_widths_reads_brace_form_option_names(tmp_path):
+    """'(-q --quiet)'{-q,--quiet}'[desc]' contributes both names, and the
+    longer one sets the block's padding."""
+    repo = _write_completion(tmp_path, (
+        "_verb() {\n"
+        "  _arguments \\\n"
+        "    '(-q --quiet)'{-q,--quiet}'[fine]'\n"
+        "}\n"
+    ))
+    blocks = check_shipped._completion_blocks(
+        (repo / "completions/_sysforge").read_text(encoding="utf-8"))
+    names = {n for _, _, entries in blocks for _, n, _ in entries}
+    assert names == {"-q", "--quiet"}

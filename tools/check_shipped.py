@@ -974,6 +974,101 @@ def check_completions(repo: Path) -> list[Finding]:
     return findings
 
 
+# ===========================================================================
+# Group: completion_widths
+# ===========================================================================
+
+# A zsh completion listing renders one row per match as
+#
+#     <match><pad>  -- <description>
+#
+# where the match column is padded to the longest match in that generator
+# call. When a row exceeds the terminal width, zsh abandons the inline
+# two-column table and emits every description as its own list entry, so the
+# whole block renders with names and descriptions detached (3.0.0-B2). The
+# budget is therefore per-call, and one over-wide row degrades every row
+# beside it.
+COMPLETION_TARGET_COLUMNS = 80
+
+# Width of the "  -- " gutter compdescribe inserts between the padded match
+# column and the description.
+_DESC_GUTTER = 4
+
+# An `_arguments` option spec: an optional (exclusion list), an optional bare
+# option name, then the bracketed description. The brace form
+# `'(-m --makepkg)'{-m,--makepkg}'[desc]'` carries its names in the braces
+# instead, picked up separately below.
+_ARG_SPEC_RE = re.compile(r"'(?:\([^)]*\))?(-[^'\[]*)?\[([^]]*)\]")
+_BRACE_NAMES_RE = re.compile(r"\{([^}]*)\}'\[")
+
+# A `_describe` array entry: 'name:description' alone on its line. Lines
+# holding an `_arguments` spec are excluded by the absence of a bracket.
+_DESCRIBE_ENTRY_RE = re.compile(r"^\s*'([^':]+):([^']+)'\s*$")
+
+_FUNC_RE = re.compile(r"^(\w+)\s*\(\)\s*\{")
+
+
+def _completion_blocks(text: str) -> list[tuple[str, str, list[tuple[int, str, str]]]]:
+    """Group completion entries by the generator call that emits them.
+
+    Returns (function, kind, [(lineno, match, description)]). Each
+    `_arguments` spec list and each `_describe` array is a separate compadd
+    call and so is budgeted independently.
+    """
+    # Keyed by (function, kind) — one entry per generator call. A function
+    # holds at most one `_arguments` spec list and one `_describe` array, so
+    # the key is enough to keep the two apart without tracking run boundaries.
+    grouped: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
+    func = "<toplevel>"
+
+    for lineno, line in enumerate(text.splitlines(), 1):
+        m = _FUNC_RE.match(line)
+        if m:
+            func = m.group(1)
+            continue
+
+        for spec in _ARG_SPEC_RE.finditer(line):
+            brace = _BRACE_NAMES_RE.search(line)
+            raw = brace.group(1).split(",") if brace else [spec.group(1) or ""]
+            names = [n.strip() for n in raw if n.strip().startswith("-")]
+            for name in names:
+                grouped.setdefault((func, "_arguments"), []).append(
+                    (lineno, name, spec.group(2)))
+
+        if "[" not in line:
+            d = _DESCRIBE_ENTRY_RE.match(line)
+            if d:
+                grouped.setdefault((func, "_describe"), []).append(
+                    (lineno, d.group(1), d.group(2)))
+
+    return [(fn, kind, entries) for (fn, kind), entries in grouped.items()]
+
+
+def check_completion_widths(repo: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    zsh = repo / "completions/_sysforge"
+    if not zsh.exists():
+        return [Finding("completion_widths", "error", "completions/_sysforge",
+                        "completion file missing")]
+
+    for func, kind, entries in _completion_blocks(zsh.read_text()):
+        pad = max(len(name) for _, name, _ in entries)
+        budget = COMPLETION_TARGET_COLUMNS - pad - _DESC_GUTTER
+        for lineno, name, desc in entries:
+            if len(desc) <= budget:
+                continue
+            findings.append(Finding(
+                "completion_widths", "error",
+                f"completions/_sysforge:{lineno}",
+                f"{func} ({kind}) {name}: description is {len(desc)} chars, "
+                f"budget {budget} "
+                f"({COMPLETION_TARGET_COLUMNS} cols - {pad} pad - {_DESC_GUTTER}); "
+                f"shorten it, or the whole block loses its inline layout",
+            ))
+
+    return findings
+
+
 def _import_build_parser(repo: Path):
     """Import sysforge.cli._build_parser with CONFIG_DIR set to the repo fixtures.
 
@@ -1304,6 +1399,7 @@ GROUPS = {
     "provisioning":    check_provisioning,
     "hooks":           check_hooks,
     "completions":     check_completions,
+    "completion_widths": check_completion_widths,
     "versions":        check_versions,
     "manpage":         check_manpage,
     "dev_install":     check_dev_install_parity,

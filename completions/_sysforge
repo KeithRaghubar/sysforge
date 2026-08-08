@@ -8,13 +8,13 @@ _sysforge() {
     '(-V --version)'{-V,--version}'[print sysforge version and exit]' \
     '(-h --help)'{-h,--help}'[show this help message and exit]' \
     '(-v --verbose)'{-v,--verbose}'[increase verbosity (repeat for more: -vv, -vvv)]' \
-    '--quiet[suppress all non-error output (verbosity 0), overriding -v and config]' \
+    '--quiet[suppress all non-error output, overriding -v]' \
     '--py-profile[run the verb under cProfile, print top functions at exit]' \
     '--py-profile-out[write raw cProfile stats to FILE]:file:_files' \
     '--timings[print phase wall-clock timing report after build/update]' \
     '--color[colorize output]:when:(auto always never)' \
     '--no-throttle[ignore the configured build throttle for this run]' \
-    '--turbo[run the build at higher-than-default priority (stronger than --no-throttle)]' \
+    '--turbo[raise build priority (stronger than --no-throttle)]' \
     '1: :_sysforge_commands' \
     '*:: :->args'
 
@@ -68,16 +68,16 @@ _sysforge_commands() {
     'help:print help for sysforge or for a COMMAND (alias for --help)'
     'doctor:health-check installed package depends + linkage'
     'resolve:show which profile would apply to a package'
-    'env:print the inherited env chain (shell vars, parent processes, shell init files)'
+    'env:print the inherited env chain'
     'log:page the unified or per-package sysforge log through $PAGER'
     'state:inspect or repair build_state.toml (list, repair, orphans)'
     'artifact:inventory user-authored scripts, units, and pacman hooks'
-    'setup:configure system integration (pacman IgnoreGroup for sf-build; install/refresh pacman hooks)'
-    'config:adopt .sfnew/.pacnew config companions left by make sync-config (merge)'
+    'setup:configure system integration (IgnoreGroup, pacman hooks)'
+    'config:adopt .sfnew/.pacnew config companions (merge)'
     'packages:manage packages.toml override entries (list, add, remove)'
     'run:execute a pipeline stage'
-    'revert-to-stock:undo a source-built/optimized package back to the repo version'
-    'uninstall:remove package(s); demote any sysforge-tracked ones out of build state'
+    'revert-to-stock:restore a source-built package to the repo version'
+    'uninstall:remove package(s); demote tracked ones from build state'
   )
   _describe 'command' commands
 }
@@ -136,7 +136,7 @@ _sysforge_makepkg_flags() {
 
 _sysforge_build() {
   _arguments \
-    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags (usually optional: bare short flags pass through)]:flags' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
     '--interactive[strip --noconfirm from makepkg_flags]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cc[override C compiler for this build]:compiler' \
@@ -146,14 +146,14 @@ _sysforge_build() {
     '--log-dir[directory for per-package log]:directory:_files -/' \
     '--persist-log[keep log after a successful build]' \
     '--cache-report[print ccache/sccache summary after build]' \
-    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
+    '--abi-check[post-build ABI check on built shared libraries]' \
     '--no-update[skip git pull --rebase before building]' \
-    '--cleansrc[purge src dir and re-clone before building (refuses if local work present)]' \
-    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
+    '--cleansrc[purge src dir and re-clone (refuses if dirty)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
-    '--force[build all args from source this run only; never prompt/modify packages.toml]' \
-    '--pgo[mesa instrumentation PGO (LLVM only): record=instrument, use=optimize -> mesa-sysforge]:mode:(record use)' \
+    '--force[build from source this run only; no packages.toml write]' \
+    '--pgo[instrumentation PGO, LLVM only]:mode:(record use)' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \
   && return
@@ -163,7 +163,7 @@ _sysforge_build() {
 _sysforge_fetch() {
   _arguments \
     '--no-update[skip git pull --rebase for already-cloned packages]' \
-    '--cleansrc[purge src dirs and re-clone (refuses if local work present)]' \
+    '--cleansrc[purge src dirs and re-clone (refuses if dirty)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
@@ -174,23 +174,23 @@ _sysforge_update() {
   _arguments \
     '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
-    '--devel[resolve VCS packages (-git, -svn, -hg, -bzr) via pkgver() and rebuild only those past installed; reuses per-package upstream commits via git ls-remote on subsequent runs]' \
+    '--devel[rebuild VCS packages newer than installed]' \
     '--offline[no network: skip pulls, clones, and AUR RPC]' \
-    '--install-only[skip rebuild; install only pre-built artifacts in PKGDEST newer than installed (implies --offline)]' \
-    '--interactive[pause on build failures to allow manual correction]' \
-    '--no-cleanbuild[skip automatic --cleanbuild; useful to re-run only the install step]' \
-    '--cleansrc[purge src dirs and re-clone before building (only for packages needing rebuild)]' \
-    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
+    '--install-only[install pre-built PKGDEST artifacts only]' \
+    '--interactive[pause on build failures for manual fixes]' \
+    '--no-cleanbuild[skip automatic --cleanbuild]' \
+    '--cleansrc[purge src dirs and re-clone (rebuilds only)]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
-    '(--no-review)--review[prompt to review source-change diffs (default: auto-accept with a logged notice)]' \
-    '(--review)--no-review[skip the PKGBUILD review gate entirely (no auto-accept notices)]' \
-    '--no-toolchain-preflight[skip toolchain pre-flight (rust/cmake/meson + lib32 cross targets)]' \
-    '--include-stage-owned[include packages owned by a pipeline stage (e.g. kernel-stage linux-custom)]' \
-    '--explain-drift[list drifted packages (toolchain-variant + flag drift, with per-key diff), then exit]' \
-    '--rebuild-on-toolchain-drift[promote UP_TO_DATE packages with toolchain drift to NEEDS_REBUILD]' \
-    '--rebuild-on-flag-drift[promote UP_TO_DATE packages with flag drift to NEEDS_REBUILD]' \
-    '--rebuild-on-drift[rebuild anything drifted: both toolchain and flag drift]' \
-    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags (usually optional: bare short flags pass through)]:flags' \
+    '(--no-review)--review[prompt to review source-change diffs]' \
+    '(--review)--no-review[skip the PKGBUILD review gate]' \
+    '--no-toolchain-preflight[skip the toolchain pre-flight]' \
+    '--include-stage-owned[include stage-owned packages]' \
+    '--explain-drift[list drifted packages, then exit]' \
+    '--rebuild-on-toolchain-drift[rebuild on toolchain drift]' \
+    '--rebuild-on-flag-drift[rebuild on flag drift]' \
+    '--rebuild-on-drift[rebuild on toolchain or flag drift]' \
+    '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--cache-report[print ccache/sccache summary after run]' \
@@ -240,21 +240,21 @@ _sysforge_doctor_subcommands() {
 
 _sysforge_doctor_system() {
   _arguments \
-    '--graphics[graphics system-state probes: nvidia-drm modeset, driver skew, explicit-sync, Steam GPU accel, session type]' \
-    '--gfxperf[advisory graphics-performance sweep (stutter/tearing contributors)]' \
-    '--hardware[inventory PCI/USB devices + audit running kernel for missing drivers / boot-config gaps]' \
-    '--distro[report the running distribution and its support tier, from os-release(5)]' \
-    '--toolchain[check configured toolchain (toolchain.toml) matches the installed LLVM]' \
-    '--rust[effective Rust toolchain owner + non-stable rustup default (WARN); opt-in]' \
-    '--cache[compile-cache readiness: ccache/sccache installed, dir writable, size cap set]' \
-    '--pacman[local pacman-db consistency, stale lock, .pacnew drift, orphans (read-only)]' \
-    '--state[sysforge state integrity: build failures, stale sentinel, state drift]' \
-    '--boot[running-system boot readiness: kernel artifacts, fallback, /boot space, DKMS]' \
-    '--restart[processes still running superseded code after an upgrade: restart / re-login / reboot]' \
+    '--graphics[nvidia-drm modeset, driver skew, explicit-sync, session type]' \
+    '--gfxperf[advisory graphics-performance sweep]' \
+    '--hardware[inventory PCI/USB devices; audit kernel drivers]' \
+    '--distro[running distribution and its support tier]' \
+    '--toolchain[configured toolchain vs installed LLVM]' \
+    '--rust[Rust toolchain owner + rustup default; opt-in]' \
+    '--cache[compile-cache readiness: ccache/sccache]' \
+    '--pacman[pacman-db consistency, .pacnew drift, orphans]' \
+    '--state[state integrity: failures, sentinel, drift]' \
+    '--boot[boot readiness: kernel artifacts, space, DKMS]' \
+    '--restart[processes running superseded code after upgrade]' \
     '--storage[storage/filesystem: build-dir free space + /etc/fstab integrity]' \
-    '--services[failed systemd units + firmware a driver could not load + boot errors]' \
-    '--audio[PipeWire/WirePlumber: failed audio user services + vanished output sink]' \
-    '--network[no default route, connection-manager conflicts, DNS provisioner conflict]' \
+    '--services[failed units, missing firmware, boot errors]' \
+    '--audio[failed audio services + vanished output sink]' \
+    '--network[default route, manager and DNS conflicts]' \
     '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in)]' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]'
 }
@@ -262,14 +262,14 @@ _sysforge_doctor_system() {
 _sysforge_doctor_pkg() {
   _arguments \
     '--abi[depends-satisfaction + soname/ABI linkage walk over the targets]' \
-    '--rust[per-target rust-toolchain.toml pin + whether that toolchain is installed]' \
-    '--integrity[verify the targets package-owned files vs alpm mtree via pacman -Qkk]' \
-    '--all[target every installed package, foreign + non-foreign (suppresses opt-in axes)]' \
-    '--repo[target every non-foreign (native repo) package (suppresses opt-in axes)]' \
+    '--rust[per-target rust-toolchain.toml pin + install]' \
+    '--integrity[verify target files vs alpm mtree (pacman -Qkk)]' \
+    '--all[target every installed package (no opt-in axes)]' \
+    '--repo[target every native repo package (no opt-in axes)]' \
     '--graphics[target the installed graphics stack; a peer of --all / --repo]' \
     '--shallow[do not recurse into transitive dependencies]' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only packages with issues]' \
-    '(-s --suggest)'{-s,--suggest}'[reverse-lookup candidate packages for each missing soname via pacman -Fq]' \
+    '(-s --suggest)'{-s,--suggest}'[look up packages for each missing soname]' \
     '--apply[hand REBUILD candidates to sysforge update; implies --suggest]' \
     '--no-confirm[skip the y/N prompt before --apply rebuilds]' \
     '--dry-run[report --apply work without rebuilding]' \
@@ -357,7 +357,7 @@ _sysforge_packages() {
 
   _arguments -C \
     '--packages[path to packages.toml]:file:_files' \
-    '--orphans[with list: show only entries whose package is not currently installed]' \
+    '--orphans[with list: only entries not installed]' \
     '1: :_sysforge_packages_subcommands' \
     '*:: :->args'
 
@@ -392,9 +392,9 @@ _sysforge_packages_list() {
 _sysforge_packages_add() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
-    '--source[pin routing (metadata; doesn'\''t satisfy validation alone)]:source:(repo aur local)' \
-    '--enable-build-from-source[build this repo package from source instead of pacman]' \
-    '--no-cache[disable ccache/sccache for this package (required for PGO)]' \
+    '--source[pin routing (metadata only)]:source:(repo aur local)' \
+    '--enable-build-from-source[build from source]' \
+    '--no-cache[disable ccache/sccache (required for PGO)]' \
     '--reason[free-form note attached to the entry]:text' \
     '1: :_sysforge_pkg_names'
 }
@@ -550,7 +550,7 @@ _sysforge_run_pipeline() {
     '--purge-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after pipeline]' \
-    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
+    '--abi-check[post-build ABI check on built shared libraries]' \
     '--no-update[skip git pull --rebase before each build]'
 }
 
@@ -568,17 +568,17 @@ _sysforge_run_toolchain() {
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after run]' \
-    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
+    '--abi-check[post-build ABI check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--rebuild-profdata[force a full 3-pass PGO build even if profdata exists]' \
-    '--reuse-built[opt-in: reuse unchanged Pass-3 PGO packages from cache instead of rebuilding]' \
-    '--auto-pgo[bypass PGO confirmation prompts; required for non-interactive PGO]' \
-    '--allow-dirty-llvm[bypass the LLVM safety pre-flight refusal on dirty/diverged trees]' \
-    '--allow-version-skew[override the Gate-1 abort on PKGBUILD pkgver skew across the lockstep suite]' \
-    '--skip-build-space-check[override the Gate-1 build-filesystem free-space check]' \
-    '--rebuild-soname-consumers[prompt|auto|off: rebuild installed libLLVM consumers (mesa, …) on a soname bump]:mode:(prompt auto off)' \
-    '--cleansrc[purge each toolchain src dir and re-clone (refuses if local work present)]' \
-    '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard (overwrites local commits)]' \
+    '--rebuild-profdata[force a full 3-pass PGO build]' \
+    '--reuse-built[reuse unchanged Pass-3 packages; opt-in]' \
+    '--auto-pgo[bypass PGO confirmation prompts]' \
+    '--allow-dirty-llvm[bypass the dirty-tree pre-flight refusal]' \
+    '--allow-version-skew[override the Gate-1 pkgver-skew abort]' \
+    '--skip-build-space-check[override the Gate-1 space check]' \
+    '--rebuild-soname-consumers[rebuild libLLVM consumers on a soname bump]:mode:(prompt auto off)' \
+    '--cleansrc[purge toolchain src dirs and re-clone]' \
+    '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
   && return
   _sysforge_makepkg_flags
 }
@@ -593,7 +593,7 @@ _sysforge_run_packages() {
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
-    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
+    '--abi-check[post-build ABI check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files'
 }
@@ -602,27 +602,27 @@ _sysforge_run_kernel() {
   _arguments \
     '--dry-run[show what would run without executing]' \
     '--no-update[skip git pull --rebase before each build]' \
-    '--cleansrc[purge the kernel src dir and re-clone (refuses on dirty trees)]' \
-    '--cleansrc-force[like --cleansrc but bypasses the dirty/diverged guard]' \
-    '--non-interactive[disable interactive kconfig and patch interactive targets to olddefconfig]' \
+    '--cleansrc[purge the kernel src dir and re-clone]' \
+    '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
+    '--non-interactive[use olddefconfig, no interactive kconfig]' \
     '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
-    '--base-config[override kernel.toml base_config (pkgbuild|running|<path>)]:source:(pkgbuild running)' \
+    '--base-config[override kernel.toml base_config]:source:(pkgbuild running)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
-    '--skip-boot-audit[override the pre-install boot-critical kconfig audit (Gate 2) — dangerous]' \
-    '--headers[build the -headers subpackage (default on; DKMS/out-of-tree modules need it)]' \
-    '--no-headers[drop the -headers subpackage — DKMS/out-of-tree modules cannot rebuild]' \
-    '--docs[build the -docs subpackage (kernel HTML/man documentation)]' \
+    '--skip-boot-audit[override the Gate-2 boot audit; dangerous]' \
+    '--headers[build the -headers subpackage (default on)]' \
+    '--no-headers[drop -headers; DKMS cannot rebuild]' \
+    '--docs[build the -docs subpackage]' \
     '--no-docs[drop the -docs subpackage (the default)]' \
-    '--keep-hotplug-drivers[re-enable hotplug driver classes as modules after minimization]' \
-    '--no-keep-hotplug-drivers[do not re-enable hotplug drivers post-minimization (the default)]' \
-    '--autofdo[sample-based kernel optimization (AutoFDO; LLVM only)]:step:(record capture use)' \
-    '--propeller[layer Propeller basic-block layout on the --autofdo cycle]' \
+    '--keep-hotplug-drivers[re-enable hotplug drivers as modules]' \
+    '--no-keep-hotplug-drivers[leave hotplug drivers off (default)]' \
+    '--autofdo[sample-based kernel FDO, LLVM only]:step:(record capture use)' \
+    '--propeller[layer Propeller block layout on --autofdo]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
-    '--abi-check[run post-build ABI compatibility check on built shared libraries]' \
+    '--abi-check[post-build ABI check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files'
 }
@@ -687,7 +687,7 @@ _sysforge_config_subcommands() {
 
 _sysforge_config_merge() {
   _arguments \
-    '--config-dir[live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge)]:directory:_files -/' \
+    '--config-dir[live config dir to scan]:directory:_files -/' \
     '--list[list companion files without prompting (non-interactive)]' \
     '--dry-run[same as --list: report companions without merging]' \
     '--no-pager[do not pipe diffs through $PAGER]'
