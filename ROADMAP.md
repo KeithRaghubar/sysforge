@@ -82,6 +82,7 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
+| `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
@@ -352,6 +353,31 @@ canonical ordering.
   is a wrong editor, not merely a wrong label. Derive both from the list (`index=len(raw) + 1`,
   `winner = len(raw)`). Two lines; do it the next time that file is touched.
   *Priority: low · Effort: small · Bump: patch* — latent; no current misbehaviour.
+
+---
+
+- **`3.0.0-B1` — stage-owned advisory is blind to pinned repo checkouts.**
+  `update._detect_stage_owned_updates` exists to tell the user when a package it skipped
+  (`owner_stage` set) has upstream movement waiting on `run toolchain` / `run kernel`. It resolves
+  the candidate version through `_check_one_pkgbase`, which for a `repo_class = "source"` entry
+  compares the installed version against `pkgbuild_ver` — the version parsed from the **local**
+  PKGBUILD. Stage-owned packages are excluded from the walk and therefore from `_sync_sources`, so
+  for a `source = "repo"` checkout that tree is a detached-HEAD pin (`source_sync._pin_repo_checkout`)
+  which only ever advances *inside* the owning stage's own run. Installed version and local
+  `pkgbuild_ver` are the same value by construction, the check never yields `NEEDS_REBUILD`, and no
+  advisory is emitted — the one case the feature was built for. Observed live: `spirv-llvm-translator`
+  sat at 22.1.2-1 while `extra` carried 22.1.5-1, and the intervening `update` run printed only the
+  `info`-level "skipping 8 toolchain-stage package(s)" line with no "Stage-owned updates available"
+  block. The user-visible signal degrades to pacman's own `warning: … ignoring package upgrade`,
+  which names the symptom but attributes it to `IgnoreGroup = sf-build` rather than to a stage that
+  has not run. AUR-sourced stage-owned packages are unaffected (RPC supplies the upstream version
+  without a sync). Fix in the advisory path only — for stage-owned entries classified `source =
+  "repo"`, read the candidate from pacman's sync DB (`source_sync.get_pacman_sync_version`, already
+  the authority the pin itself targets) instead of the un-synced local PKGBUILD; leave the walk's
+  exclusion and the pin's lifecycle untouched, since syncing stage-owned sources from `update` is
+  exactly the double-processing the `owner_stage` skip exists to prevent. Test both origins (repo
+  entry → advisory from sync DB; AUR entry → advisory from RPC, unchanged).
+  *Priority: med · Effort: small · Bump: patch* — advisory-only; no build or install behaviour changes.
 
 ---
 
