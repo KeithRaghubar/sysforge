@@ -251,7 +251,7 @@ def _check_one_pkgbase(
         # None for multi-git-source / unparseable PKGBUILDs / network errors,
         # and we fall through to the canonical path in that case.
         if built_upstream_commit is not None:
-            current_commit = peek_upstream_commit(pkgbuild_dir)
+            current_commit = peek_upstream_commit(pkgbuild_dir, pkgbase=pkgbase)
             if current_commit is not None and current_commit == built_upstream_commit:
                 return _UpdateResult(
                     pkgbase=pkgbase, pkgnames=pkgnames, action="UP_TO_DATE",
@@ -260,7 +260,7 @@ def _check_one_pkgbase(
                     source=source,
                 )
 
-        resolved = evaluate_vcs_pkgver(pkgbuild_dir)
+        resolved = evaluate_vcs_pkgver(pkgbuild_dir, pkgbase=pkgbase)
         if resolved is None:
             _log.warn(
                 f"{pkgbase}: pkgver() evaluation failed — skipping rebuild "

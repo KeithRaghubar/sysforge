@@ -12,7 +12,7 @@ to avoid a facade-import-order cycle. ``update.py`` re-exports them so existing
 """
 
 from sysforge.primitives.source_sync import (
-    STATUS_FAILED, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
+    STATUS_FAILED, STATUS_FROZEN, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
 )
 
 
@@ -32,5 +32,6 @@ _SYNC_STATUS_TO_ACTION = {
     STATUS_FAILED: "PULL_FAILED",
     STATUS_RATE_LIMITED: "RATE_LIMITED",
     STATUS_PURGE_REFUSED: "PURGE_REFUSED",
+    STATUS_FROZEN: "FROZEN",
 }
 _SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)

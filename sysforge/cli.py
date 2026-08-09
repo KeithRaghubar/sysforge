@@ -149,6 +149,9 @@ _GLOBAL_HOIST_FLAGS = {
     "--color": True,
     "--no-throttle": False,
     "--turbo": False,
+    "--frozen": False,
+    "--no-frozen": False,
+    "--thaw": True,
 }
 
 
@@ -1373,6 +1376,36 @@ def _build_parser() -> argparse.ArgumentParser:
             "the [ui] color config key."
         ),
     )
+    parser.add_argument(
+        "--frozen",
+        action="store_true",
+        dest="frozen",
+        help=(
+            "Source freeze: refuse all new source downloads (AUR clones, git "
+            "fetches, VCS version probes) for this run. Existing checkouts "
+            "still build. Overrides [security] freeze_sources = false."
+        ),
+    )
+    parser.add_argument(
+        "--no-frozen",
+        action="store_true",
+        dest="no_frozen",
+        help=(
+            "Lift the source freeze for this run, overriding "
+            "[security] freeze_sources = true. Wins over --frozen."
+        ),
+    )
+    parser.add_argument(
+        "--thaw",
+        action="append",
+        metavar="PKG[,PKG...]",
+        default=None,
+        help=(
+            "Exempt the named pkgbases from the source freeze; everything else "
+            "stays frozen. Repeatable, and accepts a comma-separated list. "
+            "Run-scoped only — there is no persistent trust list."
+        ),
+    )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True
 
@@ -1488,6 +1521,11 @@ def _main():
     args = parser.parse_args()
     log.set_verbosity(_resolve_verbosity(args))
     log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
+    # Source freeze (3.0.0-F2): resolve once, install before any verb runs, so
+    # every egress seam sees the same policy no matter how deep it sits.
+    from sysforge.primitives.config import load_sysforge_toml
+    from sysforge.primitives.net_policy import resolve_net_policy, set_policy
+    set_policy(resolve_net_policy(args, load_sysforge_toml().get("security", {})))
     from sysforge.primitives.build_throttle import set_run_override
     set_run_override(_resolve_throttle_override(args))
     if getattr(args, "dry_run", False):

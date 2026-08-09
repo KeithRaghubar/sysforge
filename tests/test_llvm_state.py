@@ -312,6 +312,43 @@ def test_collect_state_uses_cache_for_divergence(src_root, config, monkeypatch):
     assert report.states[0].divergence == "up_to_date"
 
 
+def test_collect_state_falls_back_to_cache_when_frozen(
+    src_root, config, frozen_policy, monkeypatch
+):
+    """Important-3 (3.0.0-F2): a read-only status probe must not blow up.
+
+    ``collect_llvm_state`` runs on the ``update``/``run toolchain`` preflight
+    path with no build in flight — ``NetworkFrozen`` propagating out of it
+    would surface as an unhandled error on a purely informational command.
+    It must instead fall back to the cached divergence, exactly like the
+    ``offline`` branch immediately above it in the source.
+    """
+    pkg = src_root / "llvm-git"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm-git.git")
+
+    head = subprocess.run(
+        ["git", "-C", str(pkg), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    class _FakeCache:
+        def all(self):
+            return {"llvm-git": {"head_commit": head}}
+
+    class _FakeScheduler:
+        cache = _FakeCache()
+
+    monkeypatch.setattr(
+        "sysforge.primitives.source_sync.get_scheduler", lambda **_: _FakeScheduler()
+    )
+
+    # frozen_policy makes the real seam raise NetworkFrozen; go through the
+    # real seam (not a stand-in raiser) so this proves the actual except
+    # clause in llvm_state.py, not just that *some* exception is swallowed.
+    report = collect_llvm_state(["llvm-git"], config)
+    assert report.states[0].divergence == "up_to_date"
+
+
 def test_collect_state_records_install_origin(src_root, config, monkeypatch):
     pkg = src_root / "llvm"
     _init_repo(pkg, remote_url="https://gitlab.archlinux.org/archlinux/packaging/packages/llvm.git")

@@ -41,6 +41,7 @@ from sysforge.primitives.aur import (
     git_fetch_and_compare,
     head_reachable_from_remote,
 )
+from sysforge.primitives.net_policy import NetworkFrozen
 from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
 from sysforge.primitives.render import arrow, tag_header, version_pair
 
@@ -390,22 +391,35 @@ def collect_llvm_state(
                     pkgbuild_dir, cache_all.get(name),
                 )
             else:
-                # is_vcs suppresses the false "local modifications" warning on
-                # an ``llvm-git``-style tree carrying only a pkgver() bump
-                # (2.6.1-B1); the reported divergence itself is unchanged.
-                outcome = git_fetch_and_compare(
-                    pkgbuild_dir, is_vcs=is_vcs_pkgbase(name),
-                )
-                divergence = _divergence_from_outcome(outcome)
-                # For ``diverged``, head_after is the upstream FETCH_HEAD —
-                # the local HEAD is in head_before. For other statuses
-                # head_after reflects the post-fetch local HEAD.
-                local_head = (
-                    outcome.head_before if outcome.status == "diverged"
-                    else (outcome.head_after or outcome.head_before)
-                )
-                head_short = _short(local_head)
-                upstream_short = _short(outcome.head_after)
+                try:
+                    # is_vcs suppresses the false "local modifications"
+                    # warning on an ``llvm-git``-style tree carrying only a
+                    # pkgver() bump (2.6.1-B1); the reported divergence
+                    # itself is unchanged. ``pkgbase=name`` threads the
+                    # authoritative --thaw name through to the freeze check
+                    # (3.0.0-F2) rather than relying on the dir-name fallback.
+                    outcome = git_fetch_and_compare(
+                        pkgbuild_dir, is_vcs=is_vcs_pkgbase(name), pkgbase=name,
+                    )
+                except NetworkFrozen:
+                    # Source freeze (3.0.0-F2): this is a read-only status
+                    # probe, not a build — fall back to the cached divergence
+                    # the same way the offline branch above does, rather than
+                    # letting the refusal escape as an unhandled error.
+                    divergence, head_short, upstream_short = (
+                        _divergence_from_cache(pkgbuild_dir, cache_all.get(name))
+                    )
+                else:
+                    divergence = _divergence_from_outcome(outcome)
+                    # For ``diverged``, head_after is the upstream FETCH_HEAD
+                    # — the local HEAD is in head_before. For other statuses
+                    # head_after reflects the post-fetch local HEAD.
+                    local_head = (
+                        outcome.head_before if outcome.status == "diverged"
+                        else (outcome.head_after or outcome.head_before)
+                    )
+                    head_short = _short(local_head)
+                    upstream_short = _short(outcome.head_after)
             if divergence == "diverged":
                 has_diverged = True
 

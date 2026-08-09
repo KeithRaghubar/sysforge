@@ -28,6 +28,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.git_ops import purge_src
+from sysforge.primitives.net_policy import KIND_REPO_CHECKOUT, get_policy
 
 # [BUILD_PREP], not [BUILD]: this module does pre-build *acquisition* (clone the
 # packaging repo via pkgctl, import validpgpkeys) — it never compiles anything.
@@ -50,7 +51,14 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     prior clone — pkgctl exits 0 with "Skip cloning: Directory exists" in
     that case, silently masking the missing checkout. Purge first so the
     re-clone runs (purge_src refuses if the leftover has uncommitted work).
+
+    Source freeze (3.0.0-F2): checked as the *first* statement — this is a
+    code-ingress seam exactly like ``aur_clone``, just from a different origin.
+    The scheduler's ``_clone`` converts the raise into ``STATUS_FROZEN``;
+    ``config.find_pkgbuild`` lets it propagate.
     """
+    get_policy().check(KIND_REPO_CHECKOUT, name)
+
     timeout = timeout or None  # 0 → disable
     if (dest.exists()
             and (dest / ".git").exists()

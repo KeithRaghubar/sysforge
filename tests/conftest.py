@@ -293,6 +293,25 @@ def no_network(monkeypatch):
     return _blocked
 
 
+@pytest.fixture
+def frozen_policy():
+    """Install a source freeze for the duration of a test, then reset.
+
+    Yields a callable so a test can re-install a narrower policy (e.g. with
+    thawed packages) without repeating the teardown.
+    """
+    from sysforge.primitives.net_policy import NetPolicy, reset_policy, set_policy
+
+    def _install(*, thawed=()):
+        set_policy(NetPolicy(frozen=True, thawed=frozenset(thawed)))
+
+    _install()
+    try:
+        yield _install
+    finally:
+        reset_policy()
+
+
 # ---------------------------------------------------------------------------
 # Verb behavior harness (Phase 0 — behavior-first testing).
 #

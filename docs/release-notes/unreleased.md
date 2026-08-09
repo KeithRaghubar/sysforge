@@ -22,6 +22,17 @@ finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
 
+## Added
+
+- **`3.0.0-F2` — Frozen sources: a hard gate on AUR/VCS downloads.** New
+  `[security] freeze_sources` config key and global `--frozen` / `--no-frozen` /
+  `--thaw PKG` flags refuse all new source ingress at five seams: AUR clones,
+  `pkgctl repo clone` checkouts, source-sync fetches, and both VCS pkgver seams. Existing checkouts still build. A refused
+  package is a per-package blocker (`STATUS_FROZEN`) — the run continues and
+  exits non-zero with the blocked set named. Ships off; lifts are run-scoped
+  only. makepkg's own `source=()` downloads cannot be mediated and are warned
+  about instead.
+
 ## Fixed
 
 - **`3.0.0-B2` — zsh completion listing split names from descriptions on over-wide rows.** Option

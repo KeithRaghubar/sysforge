@@ -81,6 +81,9 @@ from sysforge.primitives.git_ops import (
     purge_src,
     purge_srcdest,
 )
+from sysforge.primitives.net_policy import (
+    NetworkFrozen,
+)
 from sysforge.primitives.pacman import get_pacman_sync_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
@@ -99,6 +102,11 @@ STATUS_SKIPPED_OFFLINE = "skipped_offline"
 STATUS_SKIPPED_NO_TRACKING = "no_tracking"
 STATUS_SKIPPED_LOCAL = "skipped_local"
 STATUS_PURGE_REFUSED = "purge_refused"
+
+# 3.0.0-F2: the source freeze denied this package's fetch. A *blocker*, not a
+# skip — the build must not proceed against a checkout we were refused
+# permission to refresh.
+STATUS_FROZEN        = "frozen"
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
@@ -382,6 +390,8 @@ class SourceSyncScheduler:
                 pkgctl_checkout(pkgbase, pkgbuild_dir, timeout=self.clone_timeout)
             else:
                 aur_clone(pkgbase, pkgbuild_dir, timeout=self.clone_timeout)
+        except NetworkFrozen as e:
+            return SyncResult(pkgbase=pkgbase, status=STATUS_FROZEN, error=str(e))
         except RuntimeError as e:
             err = str(e)
             if source != "repo" and is_rate_limit_error(err):
@@ -455,10 +465,17 @@ class SourceSyncScheduler:
         self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None,
         *, source: str = "aur", sync_db_name: str | None = None,
     ) -> SyncResult:
-        outcome: GitFetchOutcome = git_fetch_and_compare(
-            pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
-            is_vcs=_is_vcs(pkgbase),
-        )
+        try:
+            # pkgbase is threaded through explicitly (not left to
+            # git_fetch_and_compare's dir-name fallback) so the single freeze
+            # check inside the seam always sees the authoritative --thaw
+            # name, even when the checkout dir name differs from pkgbase.
+            outcome: GitFetchOutcome = git_fetch_and_compare(
+                pkgbuild_dir, timeout=self.fetch_timeout, limiter=self.limiter,
+                is_vcs=_is_vcs(pkgbase), pkgbase=pkgbase,
+            )
+        except NetworkFrozen as e:
+            return SyncResult(pkgbase=pkgbase, status=STATUS_FROZEN, error=str(e))
 
         repo_stable = source == "repo" and self.repo_track == "stable"
 

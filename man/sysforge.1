@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-08\-07"
+.TH "sysforge" "1" "2026\-08\-09"
 .PP
 .PP
 .SH NAME
@@ -176,6 +176,26 @@ Run the build at \fIhigher\fR than default priority: negative niceness and
 best\-effort IO, with no CPU ceiling or job cap.\& Stronger than
 \fB\-\-no\-throttle\fR.\& Lowering niceness may require privilege; when the kernel
 refuses, the build runs at the current priority (best\-effort, never fatal).\&
+.PP
+.RE
+\fB\-\-frozen\fR
+.RS 4
+Source freeze: refuse all new source downloads (AUR clones, git fetches,
+VCS version probes) for this run.\& Existing checkouts still build.\&
+Overrides \fB[security] freeze_sources = false\fR.\&
+.PP
+.RE
+\fB\-\-no\-frozen\fR
+.RS 4
+Lift the source freeze for this run, overriding
+\fB[security] freeze_sources = true\fR.\& Wins over \fB\-\-frozen\fR.\&
+.PP
+.RE
+\fB\-\-thaw\fR \fIPKG\fR[,\fIPKG\fR.\&.\&.\&]
+.RS 4
+Exempt the named pkgbases from the source freeze; everything else stays
+frozen.\& Repeatable, and accepts a comma\-separated list.\& Run\-scoped only —
+there is no persistent trust list.\&
 .PP
 .RE
 .SH COMMANDS

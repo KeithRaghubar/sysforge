@@ -38,6 +38,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+
 from sysforge import log
 from sysforge.primitives.paths import USER_CACHE_DIR
 
@@ -64,6 +65,7 @@ from sysforge.primitives.build_prep import (
     pkgctl_checkout,
     pkgctl_switch_version,
 )
+from sysforge.primitives.net_policy import KIND_AUR_CLONE, get_policy
 
 # One module, one tag. The RPC-query/clone narration previously logged under a
 # separate [MANIFEST] tag, but it is the same concern as the name-cache refresh
@@ -233,6 +235,10 @@ def aur_clone(
     ``depth`` passes ``--depth`` for a shallow clone; useful when the caller
     only needs the current PKGBUILD, not full history.
     """
+    # Source freeze (3.0.0-F2): refuse before any process is spawned. Raising
+    # here (rather than returning) is what lets the sync scheduler convert the
+    # denial into a per-package STATUS_FROZEN blocker.
+    get_policy().check(KIND_AUR_CLONE, name)
     timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"
     extra: list[str] = []

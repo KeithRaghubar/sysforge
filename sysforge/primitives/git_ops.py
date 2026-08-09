@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.net_policy import KIND_SOURCE_FETCH, get_policy
 
 _log = log.get_logger("GIT")
 
@@ -66,6 +67,7 @@ def git_fetch_and_compare(
     timeout: int | None = 30,
     limiter=None,
     is_vcs: bool = False,
+    pkgbase: str | None = None,
 ) -> GitFetchOutcome:
     """Shallow-fetch upstream and report the outcome without destructive ops.
 
@@ -84,6 +86,14 @@ def git_fetch_and_compare(
     "local modifications" is a false positive. It deliberately does NOT relax
     the fast-forward gate — see the comment at the dirty branch below.
     """
+    # Source freeze (3.0.0-F2): refuse before the repo probe. The scheduler is
+    # the only caller that converts this into a status; other callers see the
+    # raise. ``pkgbase`` is the authoritative --thaw name; callers that don't
+    # track pkgbase separately (e.g. llvm_state) fall back to the checkout
+    # dir name, which is only correct when it matches the pkgbase — the
+    # scheduler always passes the real pkgbase explicitly to avoid that trap.
+    get_policy().check(KIND_SOURCE_FETCH, pkgbase or Path(pkgbuild_dir).name)
+
     timeout = timeout or None  # 0 → disable
 
     def _run(cmd: list[str]):

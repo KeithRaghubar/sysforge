@@ -51,9 +51,14 @@ _sysforge() {
         return 0
     fi
 
+    if [[ $prev == "--thaw" ]]; then
+        COMPREPLY=()
+        return 0
+    fi
+
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-h --help -v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-h --help -v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo --frozen --no-frozen --thaw" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi

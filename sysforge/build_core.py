@@ -832,6 +832,9 @@ def build_and_install(
                         outcome.install_failed = True
             search_dir = pkgdest if pkgdest else target.pkgbuild_path.parent
             build_start = time.time()
+            from sysforge.primitives.net_policy import get_policy, warn_ungated_sources
+            if get_policy().frozen:
+                warn_ungated_sources(target.pkgbuild_path.parent)
             with timer.phase(f"build: {target.pkgbase}"):
                 try:
                     build_run(target.pkgbuild_path, options=BuildOptions(

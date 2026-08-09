@@ -224,3 +224,10 @@ roots = [
     { path = "/etc/systemd/system", class = "systemd-unit" },
     { path = "/etc/pacman.d/hooks", class = "pacman-hook" },
 ]
+
+[security]
+# Refuse all source downloads (AUR clones, git fetches, VCS version probes).
+# Existing checkouts still build; a refused package is reported as a blocker
+# and the run exits non-zero without aborting the other packages.
+# Lift per-run with --no-frozen, or per-package with --thaw PKG.
+freeze_sources = false

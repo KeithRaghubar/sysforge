@@ -1253,6 +1253,125 @@ def test_pull_failure_continues_to_next_package(update_scenario, capsys):
     assert "Nothing to rebuild" in combined
 
 
+def test_frozen_sync_denial_causes_nonzero_exit(update_scenario, capsys):
+    """Important-4 (3.0.0-F2): a source-freeze denial is a blocker, not a
+    skip. Unlike a plain PULL_FAILED (which lets the run finish cleanly),
+    htop's FROZEN status must both appear in the summary and abort the run
+    with a non-zero exit — silently printing nothing and exiting 0 is
+    exactly the failure mode this feature exists to prevent. neovim
+    genuinely needs a rebuild so the run doesn't take the earlier
+    "Nothing to rebuild" exit before failed_pkgs is populated.
+    """
+    from sysforge.primitives.source_sync import STATUS_FROZEN
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.1\npkgrel=1\n")
+    update_scenario.fake_sync(
+        {"htop": (STATUS_FROZEN, "source freeze active — refused: htop")}
+    )
+    with pytest.raises(RuntimeError, match="htop"):
+        update_scenario.run(
+            _make_args(offline=False),
+            installed={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+            foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+        )
+    combined = "".join(capsys.readouterr())
+    assert "source freeze active" in combined
+    assert "1 source freeze" in combined
+
+
+def test_frozen_only_run_still_exits_nonzero(update_scenario, capsys):
+    """New-2 (review): every candidate frozen, NOTHING buildable.
+
+    Without a genuinely-rebuildable neighbour, htop's FROZEN status strips it
+    from ``to_build``, leaving ``to_build`` and ``pending_pacman_upgrade``
+    both empty — the exact shape that used to hit the early "Nothing to
+    rebuild." return before ``failed_pkgs``/the raise were ever reached.
+    That earlier exit is precisely the silent "prints a line, exits 0" mode
+    the freeze feature exists to close.
+    """
+    from sysforge.primitives.source_sync import STATUS_FROZEN
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.fake_sync(
+        {"htop": (STATUS_FROZEN, "source freeze active — refused: htop")}
+    )
+    with pytest.raises(RuntimeError, match="htop"):
+        update_scenario.run(
+            _make_args(offline=False),
+            installed={"htop": "0.9.0-1"},
+            foreign={"htop": "0.9.0-1"},
+        )
+    combined = "".join(capsys.readouterr())
+    # Must NOT be the silent early exit.
+    assert "Nothing to rebuild" not in combined
+    assert "source freeze active" in combined
+    assert "1 source freeze" in combined
+    assert "htop" in combined
+
+
+def test_frozen_survives_review_gate_abort(update_scenario, monkeypatch, capsys):
+    """New (review round 3): a THIRD early-return route — the PKGBUILD
+    review-gate abort at build_core's ``outcome.aborted`` — must not swallow
+    the freeze either. A mixed run: htop is frozen (excluded from
+    to_build), neovim genuinely needs a rebuild and reaches the review gate,
+    where the user aborts. Before this fix that abort's early ``return``
+    happened before the frozen check, so the whole run quietly exited 0 with
+    htop's denial dropped.
+    """
+    from sysforge.primitives.source_sync import STATUS_FROZEN
+    import sysforge.build_core as _build_core
+    from sysforge.primitives.pkgbuild_review import DECISION_ABORT
+
+    monkeypatch.setattr(_build_core, "review_target", lambda *a, **k: DECISION_ABORT)
+
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.1\npkgrel=1\n")
+    update_scenario.fake_sync(
+        {"htop": (STATUS_FROZEN, "source freeze active — refused: htop")}
+    )
+    with pytest.raises(RuntimeError, match="htop"):
+        update_scenario.run(
+            _make_args(offline=False, review=True),
+            installed={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+            foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+        )
+    combined = "".join(capsys.readouterr())
+    # The per-package summary (Phase 4, ahead of the build/review phase)
+    # already printed the frozen line before the review gate was ever
+    # reached, so it survives the abort.
+    assert "source freeze active" in combined
+    assert "1 source freeze" in combined
+    assert "Aborted at PKGBUILD review" in combined
+
+
+def test_build_failure_keeps_pre_freeze_exit_code(update_scenario, monkeypatch, capsys):
+    """New-1 (review): the freeze-scoped exit-code raise must not reach
+    ordinary build failures or cleansrc refusals — those exited 0 before
+    this feature and must keep doing so; a general exit-code fix for them is
+    explicitly out of scope for this change (flagged separately, not fixed
+    here).
+    """
+    import sysforge.primitives.makepkg_wrapper as _mw
+
+    def _boom(*a, **k):
+        raise RuntimeError("simulated build failure")
+
+    monkeypatch.setattr(_mw, "run", _boom)
+
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    # Must NOT raise: a build failure alone (no frozen packages involved)
+    # keeps its pre-existing exit-0 behavior.
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    # Tightened oracle: assert the actual failure line, not just that "htop"
+    # appears somewhere (which would pass even if the failure were reported
+    # under the wrong label).
+    assert "Build failed for 'htop'" in combined
+    assert "simulated build failure" in combined
+
+
 # ---------------------------------------------------------------------------
 # get_foreign_packages
 # ---------------------------------------------------------------------------
@@ -1525,6 +1644,15 @@ def test_sync_status_purge_refused_maps_to_purge_refused(tmp_path):
     assert result.action == "PURGE_REFUSED"
 
 
+def test_sync_status_frozen_maps_to_frozen(tmp_path):
+    """Important-4 (3.0.0-F2): a source-freeze denial must reach a
+    recognizable action, not silently fall back to PULL_FAILED (which would
+    print the wrong message) or vanish."""
+    result = _check_pkgbase_with_sync_status(tmp_path, "frozen")
+    assert result is not None
+    assert result.action == "FROZEN"
+
+
 def test_sync_status_unknown_falls_back_to_pull_failed(tmp_path):
     """Defensive: an unmapped sync status still produces a recognizable action."""
     result = _check_pkgbase_with_sync_status(tmp_path, "some_future_status")
@@ -1601,6 +1729,26 @@ def test_print_summary_verbose_shows_all_lines(capsys):
     assert "[RATE_LIMITED]" in captured
     # No -v hint when already verbose
     assert "run with -v" not in captured
+
+
+def test_print_summary_frozen_always_shown_and_counted(capsys):
+    """Important-4 (3.0.0-F2): a FROZEN result must not be silently dropped.
+
+    Before the fix, ``_ACTION_FORMATS`` had no "FROZEN" entry, so the
+    package vanished from both the totals header and the per-package lines
+    — even under ``-v`` — leaving a refusal that prints nothing.
+    """
+    from sysforge.update import _UpdateResult, _print_summary
+    results = _make_summary_results() + [
+        _UpdateResult("mesa", ["mesa"], "FROZEN", None, None,
+                      Path("/tmp/mesa/PKGBUILD")),
+    ]
+    args = SimpleNamespace(verbose=0)
+    _print_summary(results, args)
+    captured = capsys.readouterr().out
+    assert "1 source freeze" in captured
+    assert "[FROZEN]" in captured
+    assert "mesa" in captured
 
 
 # ---------------------------------------------------------------------------

@@ -131,6 +131,12 @@ Mechanism lives in the cited §DESIGN section.
 - **Privilege escalation**: `primitives/privilege.py` (`privileged_argv`/
   `run_privileged`) — never hand-roll `["sudo", …]`; auth probes (`-v`/`-n true`)
   and drop-priv (`-u`) are the only exceptions. §22.
+- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at five
+  seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, and both `vcs_pkgver.py`
+  probes — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
+  on the **authoritative pkgbase**, threaded explicitly (never the checkout dir name — a rename
+  breaks it). A new code-ingress seam gets its own `KIND_*`, never a reuse. `update.py`'s single
+  `_raise_if_frozen` is the one home for the non-zero exit. §Config Layer / §primitives-layer.
 
 ## Toolchain & kernel deep invariants (rationale: DESIGN.md §07)
 

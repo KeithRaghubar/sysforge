@@ -122,6 +122,20 @@ recovery command.
 	*--no-throttle*. Lowering niceness may require privilege; when the kernel
 	refuses, the build runs at the current priority (best-effort, never fatal).
 
+*--frozen*
+	Source freeze: refuse all new source downloads (AUR clones, git fetches,
+	VCS version probes) for this run. Existing checkouts still build.
+	Overrides *[security] freeze_sources = false*.
+
+*--no-frozen*
+	Lift the source freeze for this run, overriding
+	*[security] freeze_sources = true*. Wins over *--frozen*.
+
+*--thaw* _PKG_[,_PKG_...]
+	Exempt the named pkgbases from the source freeze; everything else stays
+	frozen. Repeatable, and accepts a comma-separated list. Run-scoped only —
+	there is no persistent trust list.
+
 # COMMANDS
 
 @OPTIONS@

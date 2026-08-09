@@ -33,6 +33,12 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+from sysforge.primitives.net_policy import (
+    KIND_VCS_PEEK,
+    KIND_VCS_RESOLVE,
+    NetworkFrozen,
+    get_policy,
+)
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
 _log = log.get_logger("VCS_PKGVER")
@@ -53,13 +59,33 @@ _UNRESOLVED_BASH_VAR = re.compile(r"\$(?:\{[^}]*\}|\w+)")
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
 
-def evaluate_vcs_pkgver(pkgbuild_dir: Path, *, timeout: int = 300) -> str | None:
+def evaluate_vcs_pkgver(
+    pkgbuild_dir: Path, *, timeout: int = 300, pkgbase: str | None = None,
+) -> str | None:
     """Run pkgver() in pkgbuild_dir and return ``[epoch:]pkgver-pkgrel`` or None.
 
     Returns None on any failure; stderr (or the exception) is logged at WARN
     so operators can investigate transient or persistent breakage.
     """
     pkgbuild_dir = Path(pkgbuild_dir)
+
+    # Source freeze (3.0.0-F2). This seam is both an egress and an *execution*:
+    # `makepkg -od` sources the PKGBUILD and runs pkgver(). --nobuild suppresses
+    # build(), not top-level statements, so under freeze this must not run at
+    # all. Degrading to None (rather than raising) hands update_version.py the
+    # existing DEVEL_EVAL_FAILED action — a defined, non-fatal, per-package
+    # outcome — so no new status is needed.
+    #
+    # ``pkgbase`` is the authoritative --thaw name (same contract as
+    # ``git_ops.git_fetch_and_compare``): the checkout dir name is only correct
+    # when it matches the pkgbase, which a coexist ``-sysforge`` rename or a
+    # kernel local-rename breaks. Callers that track the pkgbase pass it.
+    try:
+        get_policy().check(KIND_VCS_RESOLVE, pkgbase or pkgbuild_dir.name)
+    except NetworkFrozen as e:
+        _log.warn(f"{e} — pkgver() not evaluated")
+        return None
+
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
         _log.warn(f"{pkgbuild_dir}: PKGBUILD missing — cannot evaluate pkgver()")
@@ -201,7 +227,9 @@ def _single_git_source(globals_: dict) -> tuple[str, str, str | None] | None:
     return (clone_name, url, fragment)
 
 
-def peek_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 30) -> str | None:
+def peek_upstream_commit(
+    pkgbuild_dir: Path, *, timeout: int = 30, pkgbase: str | None = None,
+) -> str | None:
     """Resolve the current upstream commit SHA via ``git ls-remote``.
 
     Cheap probe used by ``sysforge update --devel`` to short-circuit the
@@ -213,6 +241,18 @@ def peek_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 30) -> str | None
     or timeout, or empty/malformed ls-remote output.
     """
     pkgbuild_dir = Path(pkgbuild_dir)
+
+    # Source freeze (3.0.0-F2). Gated as a *pair* with evaluate_vcs_pkgver:
+    # this peek is the cheap short-circuit and None here means "fall through"
+    # to the resolve, so gating only this one would make the freeze route
+    # every VCS package into the heavier, code-executing path. ``pkgbase`` is
+    # the authoritative --thaw name — see evaluate_vcs_pkgver.
+    try:
+        get_policy().check(KIND_VCS_PEEK, pkgbase or pkgbuild_dir.name)
+    except NetworkFrozen as e:
+        _log.warn(str(e))
+        return None
+
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
         return None

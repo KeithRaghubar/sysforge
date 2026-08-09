@@ -92,6 +92,7 @@ from sysforge.build_core import make_build_options
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
+    STATUS_FROZEN,
     STATUS_PURGE_REFUSED,
     STATUS_RATE_LIMITED,
     SyncRequest,
@@ -100,7 +101,7 @@ from sysforge.primitives.source_sync import (
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
 _SYNC_BLOCKING_STATUSES = frozenset({
-    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED, STATUS_FROZEN,
 })
 
 

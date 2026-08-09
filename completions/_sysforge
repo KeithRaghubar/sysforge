@@ -15,6 +15,9 @@ _sysforge() {
     '--color[colorize output]:when:(auto always never)' \
     '--no-throttle[ignore the configured build throttle for this run]' \
     '--turbo[raise build priority (stronger than --no-throttle)]' \
+    '--frozen[refuse all new source downloads for this run]' \
+    '--no-frozen[lift the source freeze for this run]' \
+    '*--thaw[exempt pkgbases from the source freeze]:pkgbase:' \
     '1: :_sysforge_commands' \
     '*:: :->args'
 

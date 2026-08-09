@@ -147,6 +147,7 @@ from sysforge.primitives.resource_guard import make_child_preexec
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
+    STATUS_FROZEN,
     STATUS_PURGE_REFUSED,
     STATUS_RATE_LIMITED,
     SyncRequest,
@@ -157,7 +158,7 @@ from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 from sysforge.ui import progress
 
 _SYNC_BLOCKING_STATUSES = frozenset({
-    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+    STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED, STATUS_FROZEN,
 })
 
 
@@ -185,8 +186,9 @@ def _sync_pkgbuild_dirs(
     bypassing the dirty-tree refusal in ``purge_src``.
 
     Blocker statuses (``STATUS_FAILED`` / ``STATUS_RATE_LIMITED`` /
-    ``STATUS_PURGE_REFUSED``) raise ``RuntimeError``; ``STATUS_DIVERGED`` is
-    surfaced as a warning so users can opt to keep their local edits.
+    ``STATUS_PURGE_REFUSED`` / ``STATUS_FROZEN``) raise ``RuntimeError``;
+    ``STATUS_DIVERGED`` is surfaced as a warning so users can opt to keep
+    their local edits.
     """
     from sysforge.primitives.aur import repo_packages
     from sysforge.update_sync import _resolve_fetch_timeout

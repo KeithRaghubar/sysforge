@@ -97,6 +97,7 @@ from sysforge.primitives.profile import (
 )
 from sysforge.primitives import restart_probe
 from sysforge.primitives.source_sync import (
+    STATUS_FROZEN,
     STATUS_PURGE_REFUSED,
     get_scheduler,
 )
@@ -580,6 +581,26 @@ def _emit_timings(timer: PhaseTimer, args) -> None:
         emit(line)
 
 
+def _raise_if_frozen(frozen_sync_pkgs: dict) -> None:
+    """Turn source-freeze denials into the run's non-zero exit — one home.
+
+    3.0.0-F2: ``_cmd_update_body`` has several returns after the sync phase,
+    and each one re-deriving "did the freeze refuse anything?" is how a fourth
+    return added later silently exits 0 — the exact silent-success shape this
+    feature exists to close. Every post-sync exit calls this instead. (The
+    read-only ``--check-drift`` / ``--dry-run`` returns sit *before* the sync
+    phase and correctly exit 0.)
+
+    ``RuntimeError`` is the runner's established "exit 1" seam
+    (``verbs/runner.py`` catches it around ``execute()``).
+    """
+    if frozen_sync_pkgs:
+        raise RuntimeError(
+            f"{len(frozen_sync_pkgs)} package(s) refused by the source freeze: "
+            f"{', '.join(sorted(frozen_sync_pkgs))}"
+        )
+
+
 def _cmd_update_body(args) -> None:
     # ── Phase 0: Init ─────────────────────────────────────────────────────
     _ui_progress.phase("loading state and config")
@@ -1014,13 +1035,27 @@ def _cmd_update_body(args) -> None:
     # Exclude packages that failed source sync (cleansrc refusal, etc.)
     cleansrc_failures = {k: msg for k, (status, msg) in sync_failures.items()
                          if status == STATUS_PURGE_REFUSED}
+    # Source-freeze denials (3.0.0-F2): a blocker like cleansrc refusal, but
+    # a distinct reason — kept in its own map so it isn't mislabeled as a
+    # cleansrc failure in the summary, while still counting as a build
+    # failure (non-zero exit) below.
+    frozen_sync_pkgs = {k: msg for k, (status, msg) in sync_failures.items()
+                        if status == STATUS_FROZEN}
     if sync_failures:
         to_build = [r for r in to_build if r.pkgbase not in sync_failures]
 
-    if not to_build and not pending_pacman_upgrade:
+    # New-2 (review): a run where every candidate was refused by the source
+    # freeze must not take this early "nothing to rebuild" exit — that is
+    # exactly the "prints a line, exits 0" mode the freeze feature exists to
+    # close. Falling through with an empty to_build is already a supported
+    # path (see the pacman-upgrade-only `if not to_build: pass` branch just
+    # below) — it proceeds to Phase 6.5, then reaches the summary print and
+    # the frozen-set raise at the end of this function.
+    if not to_build and not pending_pacman_upgrade and not frozen_sync_pkgs:
         _ui_progress.phase(None)
         print("[SYSFORGE] Nothing to rebuild.")
         _emit_timings(timer, args)
+        _raise_if_frozen(frozen_sync_pkgs)
         return
 
     pkgdest = get_pkgdest()
@@ -1109,7 +1144,11 @@ def _cmd_update_body(args) -> None:
         )
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate — build_core already
-            # printed the abort line; nothing was built or installed.
+            # printed the abort line; nothing was built or installed. A
+            # mixed run (some packages frozen, some buildable) must not let
+            # this early return swallow the freeze denial — same silent-
+            # success shape as the "Nothing to rebuild" route at :1034.
+            _raise_if_frozen(frozen_sync_pkgs)
             return
         built_pkgs = outcome.built_pkgs
         failed_pkgs = outcome.failed_pkgs
@@ -1153,6 +1192,9 @@ def _cmd_update_body(args) -> None:
 
     # Sync failures from cleansrc refusals count as build failures.
     failed_pkgs.extend(sorted(cleansrc_failures))
+    # Frozen sync denials are blockers too (3.0.0-F2) — must count toward a
+    # non-zero exit like PURGE_REFUSED, not print nothing and exit 0.
+    failed_pkgs.extend(sorted(frozen_sync_pkgs))
 
     # review_skipped_pkgs are inside to_build (they reached the gate), so add
     # them back into the skipped count.
@@ -1202,6 +1244,17 @@ def _cmd_update_body(args) -> None:
     # may have dropped this run; the start-of-cmd_update consume already
     # surfaced anything left by transactions outside sysforge.
     _consume_pacman_hook_sentinels(silent=True)
+
+    # 3.0.0-F2 (Important-4, narrowed per New-1 review): a source-freeze
+    # denial is a blocker, not a skip — it must not print a summary line and
+    # then exit 0. Gated on frozen_sync_pkgs specifically, NOT the wider
+    # failed_pkgs (which also carries build failures and cleansrc refusals
+    # that exited 0 before this feature and must keep doing so — this commit
+    # is scoped to the freeze, not a general exit-code fix). The summary/log/
+    # sentinel work above has already run, so raise last. RuntimeError is the
+    # runner's established "exit 1" seam (verbs/runner.py catches it around
+    # execute()).
+    _raise_if_frozen(frozen_sync_pkgs)
 
 
 # ---------------------------------------------------------------------------

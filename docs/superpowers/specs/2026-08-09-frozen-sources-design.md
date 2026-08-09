@@ -39,6 +39,14 @@ lift.
 **Gated** (code, or pointers to code sysforge will execute):
 
 1. AUR git clone — `primitives/aur.py:216` `aur_clone`.
+1b. Official-repo checkout — `primitives/build_prep.py` `pkgctl_checkout` (`pkgctl repo
+   clone` from gitlab.archlinux.org). Added after the final whole-branch review, which
+   found it ungated: it is code ingress exactly like `aur_clone`, reached by any
+   `repo_mode = build_from_source` / `enable_build_from_source` package via the sync
+   scheduler's `source="repo"` branch and directly by `config.find_pkgbuild`'s
+   `is_repo_package` branch. It gets its own kind (`KIND_REPO_CHECKOUT`), not a reuse of
+   `KIND_AUR_CLONE` — different origin, different trust story, and a future policy may
+   treat them differently.
 2. Source-sync git fetch — `primitives/git_ops.py:63` `git_fetch_and_compare`, reached via
    the `source_sync` scheduler.
 3. VCS upstream peek — `primitives/vcs_pkgver.py:248` `git ls-remote`.
@@ -104,7 +112,7 @@ def warn_ungated_sources(pkgbuild_dir: Path) -> list[str]
 `net_policy.py` imports nothing from sysforge except `log`, keeping it in the leaf layer
 per `tests/test_module_layering.py`.
 
-The policy is resolved **once** at verb entry and stored module-globally; the three seams
+The policy is resolved **once** at verb entry and stored module-globally; the five seams
 consult `get_policy()`. The global is deliberate: the seams sit at very different depths
 (`aur_clone` under the scheduler, `ls-remote` under `makepkg_wrapper`), and threading a
 parameter through them reproduces the `--offline` weakness where a new call site defaults
@@ -119,6 +127,7 @@ use and existing tests are unaffected.
 | Seam | Location | On denial |
 |---|---|---|
 | AUR clone | `aur.py:216` `aur_clone` | raise `NetworkFrozen` |
+| Repo checkout | `build_prep.py` `pkgctl_checkout` | scheduler catches → `STATUS_FROZEN`; `config.find_pkgbuild` propagates the raise |
 | Source fetch | `git_ops.py:63` `git_fetch_and_compare` | scheduler catches → `STATUS_FROZEN` |
 | VCS ls-remote | `vcs_pkgver.py:248` | return `None` + `warn()` |
 | VCS pkgver resolve | `vcs_pkgver.py` `evaluate_vcs_pkgver` | return `None` → `DEVEL_EVAL_FAILED` |

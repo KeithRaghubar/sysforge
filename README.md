@@ -135,6 +135,19 @@ live copy back in).
 To override system defaults without touching `/etc/sysforge/`, create user copies in
 `~/.config/sysforge/`.
 
+**Freezing source downloads**
+
+```bash
+sysforge update --frozen              # refuse new AUR/VCS source egress for this run
+sysforge update --thaw mesa-git       # ...except mesa-git
+sysforge update --no-frozen           # lift an [security] freeze_sources = true default
+```
+
+`--frozen` (or `[security] freeze_sources = true` in `sysforge.toml`) blocks new AUR clones,
+official-repo (`pkgctl`) checkouts, source-sync fetches, and VCS version probes; existing
+checkouts still build. `--thaw` and
+`--no-frozen` are both run-scoped lifts only — nothing persists.
+
 That is the everyday surface. For the rest — PGO/`--pgo`, `--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics — see `sysforge --help`, the [man page](man/sysforge.1), and

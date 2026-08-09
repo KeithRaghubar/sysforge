@@ -42,6 +42,8 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
                           "{pkgbase}: AUR rate-limited (skipped, retry later){star}"),
     "PURGE_REFUSED":     ("PURGE_REFUSED",     "purge refused",
                           "{pkgbase}: --cleansrc refused (local work present, skipped){star}"),
+    "FROZEN":            ("FROZEN",            "source freeze",
+                          "{pkgbase}: source freeze denied fetch (use --thaw){star}"),
     "SKIPPED_NO_CHECKUPDATES": ("NO_CHECKUPDATES", "skipped (no checkupdates)",
                           "{pkgbase}: checkupdates unavailable, install pacman-contrib{star}"),
 }
@@ -49,7 +51,7 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
 # Actions that are always printed per-package regardless of verbosity.
 # Everything else only appears under -v / verbose mode.
 _ALWAYS_VERBOSE_ACTIONS = frozenset({
-    "NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE", "DOWNGRADE",
+    "NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE", "DOWNGRADE", "FROZEN",
 })
 
 
