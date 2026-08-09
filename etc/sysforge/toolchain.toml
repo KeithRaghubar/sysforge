@@ -1,6 +1,9 @@
 # =============================================================================
 # toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
 #
+# Everything down to line 30 ("END OF HEADER") is documentation;
+# the settings themselves start below it.
+#
 # This stage is opt-in. Building a custom toolchain is a deliberate choice;
 # most users should leave this disabled and rely on the system compiler.
 # Set enabled = true and configure the fields below to build and install a
@@ -17,7 +20,14 @@
 #
 # The built compiler is automatically propagated to subsequent stages via
 # pipeline state: packages and kernel will use CC/CXX from this result.
-# =============================================================================
+#
+# COMMENT CONVENTION — two kinds of `#` lines appear below:
+#   # text          prose. Explanation only; nothing to uncomment.
+#   #key = value    a real setting, shown at its default or with an example
+#                   value. Delete the single leading `#` to activate it.
+# Section headers are always live — only their keys are commented out, so
+# activating a setting is a one-line edit.
+# ============================== END OF HEADER ================================
 
 enabled = false
 
@@ -43,35 +53,35 @@ drift_detect = "fingerprint"
 # compiler — "gcc" (default when unset) or "llvm". LLVM enables the 4-pass
 #   PGO bootstrap, but is fragile across LLVM major bumps — leave on "gcc"
 #   unless you specifically want PGO LLVM.
-# compiler = "gcc"
+#compiler = "gcc"
 
 # pgo — LLVM only: enable 4-pass PGO bootstrap (ignored for gcc)
-# pgo     = true
+#pgo     = true
 
 # skip_build — default false. true registers the existing system compiler
 #   into pipeline state without building anything (useful to re-propagate
 #   CC/CXX to later stages).
-# skip_build = false
+#skip_build = false
 
 # Staging dirs where each pass's binaries are extracted for use as CC/CXX by
 # the next pass (kept off the live /usr). Each must be on the same filesystem
 # as /usr with ~2 GB free. Defaults shown; override only to relocate them.
 #
 # pgo_staging1 — pass-1 (bootstrap) staging
-# pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"
+#pgo_staging1 = "/var/tmp/sysforge-llvm-stage1"
 #
 # pgo_staging — pass-3 (instrumented) staging
-# pgo_staging  = "/var/tmp/sysforge-llvm-stage2"
+#pgo_staging  = "/var/tmp/sysforge-llvm-stage2"
 #
 # pgo_staging3 — pass-4 (optimized) staging
-# pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"
+#pgo_staging3 = "/var/tmp/sysforge-llvm-stage3"
 
 # pgo_store — path where profraw files are written during pass 3 and merged
 #   to profdata. Profraw files are deleted after merging; profdata is
 #   preserved for reuse. On subsequent runs, compatible profdata (same LLVM
 #   major) skips passes 1-3. Use --rebuild-profdata to force a full 4-pass
 #   build. Needs ~500 MB free during pass 3.
-# pgo_store = "/var/cache/sysforge/llvm-pgo"
+#pgo_store = "/var/cache/sysforge/llvm-pgo"
 
 # ---------------------------------------------------------------------------
 # Build-safety gates (LLVM path only — the GCC path is register-only and skips
@@ -84,14 +94,14 @@ drift_detect = "fingerprint"
 #   hosting the staging dirs / pgo_store / build output. A full 4-pass LLVM
 #   build needs substantial scratch space; falling short mid-build leaves a
 #   half-built tree. Override a trip with --skip-build-space-check.
-# min_build_free_gb = 40
+#min_build_free_gb = 40
 
 # require_multilib — require the [multilib] repo to be enabled in
 #   /etc/pacman.conf when any lib32-* package is in the build scope (lib32
 #   builds need lib32-glibc etc. from multilib). Set false to skip this check
 #   (e.g. a pure-64-bit config that lists no lib32 packages — the check is
 #   already a no-op then).
-# require_multilib = true
+#require_multilib = true
 
 # rebuild_soname_consumers — what to do when the built libLLVM changes its
 #   soname (an LLVM version bump, e.g. libLLVM.so.22.1 → libLLVM.so.23.0) and
@@ -108,7 +118,7 @@ drift_detect = "fingerprint"
 #                          runs).
 #     "off"              — build the new toolchain but leave consumers for
 #                          you to rebuild manually (`sysforge build <pkgs>`).
-# rebuild_soname_consumers = "prompt"
+#rebuild_soname_consumers = "prompt"
 
 # reuse_unchanged — opt-in input-fingerprint reuse for the multi-package PGO
 #   build (Pass 4 only). When true (or with --reuse-built), a Pass-4 package
@@ -120,7 +130,7 @@ drift_detect = "fingerprint"
 #   Any input change, config edit, or missing artifact forces a rebuild — it
 #   never reuses a stale build. Off by default (a fresh 4-pass build always
 #   rebuilds everything; --rebuild-profdata also bypasses the cache).
-# reuse_unchanged = false
+#reuse_unchanged = false
 
 # ---------------------------------------------------------------------------
 # BOLT post-link optimization (Pass 5 — LLVM/PGO path only) — EXPERIMENTAL
@@ -158,21 +168,21 @@ enabled = false
 # libllvm — also BOLT libLLVM.so (shared lib; more fragile than the clang
 #   executable — leave off unless you know you want it). The clang
 #   executable is BOLTed regardless.
-# libllvm = false
+#libllvm = false
 
 # training_workload — path to a .cpp the freshly-built clang compiles under
 #   perf to collect the profile; empty = a generated header-heavy C++ TU
 #   (front-end + optimizer + codegen).
-# training_workload = ""
+#training_workload = ""
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #
-# [packages]
-# pgo     = ["llvm", "llvm-libs"]
-# non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
-# lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
+[packages]
+#pgo     = ["llvm", "llvm-libs"]
+#non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
+#lib32   = ["lib32-llvm", "lib32-llvm-libs", "lib32-clang", "lib32-spirv-llvm-translator"]
 
 # training_corpus — extra packages compiled by the instrumented stage1 clang
 #   during Pass 3 to enrich clang.profdata. "llvm" is the implicit base (the
@@ -184,7 +194,7 @@ enabled = false
 #   makedepends must already be installed; a corpus build failure is
 #   non-fatal (the run continues with LLVM-only data). Default ["llvm"]
 #   (self-build only). LLVM/PGO path only.
-# training_corpus = ["llvm", "mesa"]
+#training_corpus = ["llvm", "mesa"]
 
 # The [packages] section only applies to compiler = "llvm" (the GCC path is
 # register-only — no build, no package list).
@@ -207,6 +217,6 @@ enabled = false
 #
 # Setting `targets = []` here disables filtering entirely (force build all).
 #
-# [llvm]
-# targets = ["X86", "AMDGPU", "NVPTX"]
+[llvm]
+#targets = ["X86", "AMDGPU", "NVPTX"]
 # ---------------------------------------------------------------------------

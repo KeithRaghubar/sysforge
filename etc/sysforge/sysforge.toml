@@ -1,17 +1,27 @@
 # =============================================================================
 # sysforge.toml — global SysForge settings
 #
+# Everything down to line 16 ("END OF HEADER") is documentation;
+# the settings themselves start below it.
+#
 # System default: /etc/sysforge/sysforge.toml
 # Override individual values by creating this file or editing it in place.
-# =============================================================================
+#
+# COMMENT CONVENTION — two kinds of `#` lines appear below:
+#   # text          prose. Explanation only; nothing to uncomment.
+#   #key = value    a real setting, shown at its default or with an example
+#                   value. Delete the single leading `#` to activate it.
+# Section headers are always live — only their keys are commented out, so
+# activating a setting is a one-line edit.
+# ============================== END OF HEADER ================================
 
 [ui]
 # Colorize output: "auto" colours when writing to a terminal and honours
 # NO_COLOR / FORCE_COLOR; "always" forces colour on (e.g. piping into a pager);
 # "never" disables it. The --color CLI flag overrides this.
 color = "auto"
-# editor = "vim"       # Override $EDITOR for sysforge reconfigure
-# merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
+#editor = "vim"       # Override $EDITOR for sysforge reconfigure
+#merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
 
@@ -22,7 +32,7 @@ color = "auto"
 # narration), 3 = +debug (full config/conf dumps). CLI flags always win:
 # --quiet forces 0, -v/-vv/-vvv force 1/2/3. File logs always record every
 # level regardless of this setting. Invalid values are clamped/ignored.
-# verbosity = 0
+#verbosity = 0
 
 [git]
 # Timeout in seconds for the per-source git fetch sysforge runs to refresh a
@@ -43,12 +53,12 @@ clone_timeout = 60
 # min_fetch_interval_ms — minimum delay between successive source fetches, in
 #   milliseconds. Spaces out RPC/clone/fetch traffic so a large update doesn't
 #   hammer the AUR. Default 500.
-# min_fetch_interval_ms = 500
+#min_fetch_interval_ms = 500
 #
 # rate_limit_abort_s — when the AUR returns 429/503, sysforge honours the
 #   Retry-After budget; if the accumulated penalty would exceed this many
 #   seconds, it aborts the remaining queue instead of waiting it out. Default 120.
-# rate_limit_abort_s = 120
+#rate_limit_abort_s = 120
 
 [build]
 # Which python interpreter PKGBUILD build() steps should use. A bare `python`
@@ -60,14 +70,14 @@ clone_timeout = 60
 #   "3.12"            → /usr/bin/python3.12
 #   "/path/to/python" → that absolute path
 # The resolved interpreter is logged at DEBUG.
-# python = "system"
+#python = "system"
 
 # repo_track — "stable" | "main" — which line source=repo checkouts follow.
 #   "stable" (default) pins the checkout to the release tag matching pacman's
 #   sync-DB version, so a source build produces the same version pacman
 #   would install. "main" tracks the packaging repo's main branch
 #   (testing-track: may build a version newer than the stable repos).
-# repo_track = "stable"
+#repo_track = "stable"
 
 # --- Build CPU/IO throttling ------------------------------------------------
 # Keep compilation from saturating the machine so interactive apps stay
@@ -79,12 +89,12 @@ clone_timeout = 60
 #   build yield CPU to foreground apps the instant you need it, with no
 #   throughput loss when the machine is otherwise idle. No privilege needed.
 #   Recommended starting point for "don't disturb my other apps".
-# nice = 19
+#nice = 19
 #
 # ionice — IO scheduling class: "idle" (only when nothing else wants the disk)
 #   or "best-effort". Pairs with nice so a heavy build doesn't stall the UI on
 #   disk IO either.
-# ionice = "idle"
+#ionice = "idle"
 #
 # cpu_quota — hard CPU ceiling, in either of two forms:
 #     "600%"  absolute, where 100% = one core's worth (caps the build at six
@@ -99,20 +109,20 @@ clone_timeout = 60
 #   it). Enforced via a transient systemd-run --scope cgroup; if the user slice
 #   lacks CPU-controller delegation or systemd-run is missing, sysforge warns and
 #   falls back to nice/ionice. Unlike nice, this is a firm cap, not a soft yield.
-# cpu_quota = "600%"
+#cpu_quota = "600%"
 #
 # jobs — parallel build jobs; rewrites the -j token in the emitted MAKEFLAGS
 #   (e.g. jobs = 6 → -j6). Coarser than the above — single-threaded link
 #   phases still use a full core and some build systems ignore it — but it
 #   directly bounds peak parallelism.
-# jobs = 6
+#jobs = 6
 #
 # mem_limit — per-build memory ceiling so a runaway build (OOM-prone link,
 #   sanitizer, LTO) can't take down the workstation. A byte count or a binary
 #   size suffix (e.g. "24G", "512M"). Off the cpu_quota path it's an RLIMIT_AS
 #   clamp on the makepkg child; with cpu_quota set it's delivered as the tighter
 #   cgroup MemoryMax on the systemd-run scope instead. Unset = no ceiling.
-# mem_limit = "24G"
+#mem_limit = "24G"
 
 # pre_build_snapshot — take an optional btrfs snapshot before builds run.
 # Off by default. When on and the root is btrfs: delegates to snapper if a
@@ -120,9 +130,9 @@ clone_timeout = 60
 # a raw read-only `btrfs subvolume snapshot` that sysforge does NOT auto-reap
 # (you own its cleanup). No-op on non-btrfs roots and under --dry-run. A
 # snapshot failure never blocks the build.
-# pre_build_snapshot = false
+#pre_build_snapshot = false
 
-# [failure_handling]
+[failure_handling]
 # Per-scenario behaviour for build-failure auto-repair (DESIGN.md §1242).
 # Values: "auto_repair" | "auto_repair_with_warning" | "prompt_user" |
 #         "abort" | "warn_and_fallback" | "fallback" | "error".
@@ -130,10 +140,10 @@ clone_timeout = 60
 # silent fixes for the safe scenarios, explicit user consent for
 # checksum_mismatch — silent auto-fix would mask supply-chain compromise,
 # DO NOT relax this without an equivalent compensating control.
-# vendored_deps_missing = "auto_repair"
-# pgp_key_missing       = "auto_repair"
-# srcinfo_drift         = "auto_repair_with_warning"
-# checksum_mismatch     = "prompt_user"
+#vendored_deps_missing = "auto_repair"
+#pgp_key_missing       = "auto_repair"
+#srcinfo_drift         = "auto_repair_with_warning"
+#checksum_mismatch     = "prompt_user"
 
 [safety]
 # LLVM source-tree safety pre-flight. Surfaces variant, origin, dirty
@@ -169,14 +179,14 @@ llvm_preflight        = true
 # renderer.
 #
 # filter_drivers — master switch. Set true to enable mesa driver filtering.
-# filter_drivers = false
+#filter_drivers = false
 #
 # gallium / vulkan — optional explicit override lists. A non-empty list pins
 # that axis (still baseline-enforced); absent/empty means "autodetect". Tokens
 # must be valid meson driver names (e.g. radeonsi, nouveau, iris for gallium;
 # amd, intel, nouveau for vulkan).
-# gallium = ["radeonsi"]
-# vulkan  = ["amd"]
+#gallium = ["radeonsi"]
+#vulkan  = ["amd"]
 
 [pgo]
 # Instrumentation PGO is "just a build flag" — `sysforge build <pkg> --pgo=record`
@@ -186,7 +196,7 @@ llvm_preflight        = true
 # List the pkgbases you've decided are worth it here to silence that warning.
 # mesa is always treated as allowed (the original, fully-wired case) whether or
 # not it appears below, so the default list is empty.
-# allow = ["mesa"]
+#allow = ["mesa"]
 
 [update]
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching

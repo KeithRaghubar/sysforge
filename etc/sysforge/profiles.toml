@@ -2,6 +2,9 @@
 # profiles.toml — compiler flag profiles, package matching rules, and
 # flag-resolution reference data (conflict groups + consumes inference)
 #
+# Everything down to line 203 ("END OF HEADER") is documentation;
+# the settings themselves start below it.
+#
 # SysForge resolves a profile for each package by evaluating [[rules]] in
 # priority order. The highest-priority matching rule wins; [defaults] profile
 # is used when no rule matches.
@@ -10,6 +13,17 @@
 #   [paths] [defaults] [profiles.*] [[rules]]   — profile selection
 #   [append_conflict_groups]                    — mutually exclusive flag sets
 #   [consumes_inference]                        — makedepends → conf type map
+#
+# COMMENT CONVENTION — two kinds of `#` lines appear below:
+#   # text          prose. Explanation only; nothing to uncomment.
+#   #key = value    a real setting, shown at its default or with an example
+#                   value. Delete the single leading `#` to activate it.
+# The only activatable blocks in this file are the [[rules]] examples under
+# "Rules — add your own below", and each needs its whole block (a rule's
+# `profile` and `priority` are required), so uncomment all of one or none.
+# Every other table here is already live. The indented key reference that
+# follows is prose throughout — it documents each key's syntax in place, so
+# uncommenting a line there would land it outside the table it belongs to.
 # =============================================================================
 #
 # ── [paths] ──────────────────────────────────────────────────────────────────
@@ -186,7 +200,7 @@
 #
 #   append_groups = ["pgo", "lto"]   # additive across all matched rules
 #
-# =============================================================================
+# ============================== END OF HEADER ================================
 
 [paths]
 pkgbuild_src_dir = "~/src"
@@ -248,29 +262,29 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprog
 # =============================================================================
 
 # Example: match a specific package
-# [[rules]]
-# pkgnames = ["htop"]
-# profile  = "optimized"
-# priority = 0
+#[[rules]]
+#pkgnames = ["htop"]
+#profile  = "optimized"
+#priority = 0
 
 # Example: match any package using cmake + ninja
-# [[rules]]
-# makedepends_all = ["cmake", "ninja"]
-# profile         = "optimized"
-# priority        = 5
+#[[rules]]
+#makedepends_all = ["cmake", "ninja"]
+#profile         = "optimized"
+#priority        = 5
 
 # Example: LLVM toolchain packages (used with sysforge run toolchain)
-# [[rules]]
-# pkgnames = ["llvm", "clang", "lld"]
-# profile  = "pgo_llvm_toolchain"
-# priority = 20
-# append_groups = ["pgo"]
+#[[rules]]
+#pkgnames = ["llvm", "clang", "lld"]
+#profile  = "pgo_llvm_toolchain"
+#priority = 20
+#append_groups = ["pgo"]
 
 # Example: custom kernel (pkgnames must match kernel.toml's pkgname default)
-# [[rules]]
-# pkgnames = ["linux-sysforge"]
-# profile  = "kernel"
-# priority = 20
+#[[rules]]
+#pkgnames = ["linux-sysforge"]
+#profile  = "kernel"
+#priority = 20
 
 # =============================================================================
 # Append conflict groups — mutually exclusive flag sets for token-level merges

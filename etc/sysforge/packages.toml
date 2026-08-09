@@ -1,6 +1,9 @@
 # =============================================================================
 # packages.toml — SysForge package manifest
 #
+# Everything down to line 51 ("END OF HEADER") is documentation;
+# the settings themselves start below it.
+#
 # Roles (see DESIGN.md §Package Manifest):
 #   - Pipeline `run packages` (bootstrap): every entry is installed.
 #   - `sysforge update` / `sysforge build` (steady-state): entries are
@@ -20,7 +23,8 @@
 #                            HINT for how to obtain the package; set when
 #                            classification is ambiguous. Does NOT by itself put
 #                            the package under tracking (building it does).
-#   enable_build_from_source optional  true = build this repo package from source
+#   enable_build_from_source
+#                  optional  true = build this repo package from source
 #                            instead of installing the binary via pacman
 #   cache          optional  false = disable ccache/sccache (required for PGO)
 #
@@ -34,12 +38,21 @@
 # are auto-fetched. Repo packages are installed via pacman -S --needed (no
 # build step) unless repo_mode = "build_from_source" is set or
 # enable_build_from_source = true.
-# =============================================================================
-
-# [build]
 #
+# COMMENT CONVENTION — two kinds of `#` lines appear below:
+#   # text          prose. Explanation only; nothing to uncomment.
+#   #key = value    a real setting, shown at its default or with an example
+#                   value. Delete the single leading `#` to activate it.
+# Section headers are always live — only their keys are commented out, so
+# activating a setting is a one-line edit. The example blocks at the
+# bottom ([group.cosmic], [[package]]) are the exception: each declares a named
+# entity rather than a settings table, so uncomment a whole block or none of it
+# — the header alone is an incomplete entry.
+# ============================== END OF HEADER ================================
+
+[build]
 # pkgbuild_src_dir — override the path from profiles.toml for this manifest
-# pkgbuild_src_dir = "~/src"
+#pkgbuild_src_dir = "~/src"
 #
 # repo_mode — "pacman" (default) | "build_from_source" — bootstrap mode for
 #   repo packages, and a steady-state bulk-drift switch:
@@ -63,27 +76,27 @@
 #   per-package enable_build_from_source = true overrides regardless
 #   Requires `pacman-contrib` for the checkupdates fast path; without it,
 #   pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
-# repo_mode    = "pacman"
+#repo_mode = "pacman"
 #
 # review — PKGBUILD review gate: before building a package whose source
 #   changed since the last accepted build, show the full source-tree diff
 #   and prompt (view/accept/skip/abort). false disables the gate;
 #   --no-review disables per run. Non-interactive runs auto-accept with a
 #   warning.
-# review = true
+#review = true
 #
 # Standing defaults for build-run flags. The matching CLI flags
 # (--abi-check / --cache-report / --persist-log) still win when passed.
 # Note: --force ignores these (explicit this-run-only override).
 #
 # abi_check — run post-build ABI check (build verb)
-# abi_check = false
+#abi_check = false
 #
 # cache_report — print ccache/sccache summary after each build
-# cache_report = false
+#cache_report = false
 #
 # persist_log — keep the per-package log after a successful build
-# persist_log = false
+#persist_log = false
 
 
 # =============================================================================
@@ -111,8 +124,8 @@
 # bootstrap.toml [desktop] environment for unattended installs).
 # =============================================================================
 
-# [group.cosmic]
-# packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
+#[group.cosmic]
+#packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
 
 
 # =============================================================================
@@ -125,6 +138,6 @@
 # reflector is used by the configure stage to set up /etc/pacman.d/mirrorlist.
 # =============================================================================
 
-# [[package]]
-# name = "sysforge-git"
-# source = "aur"
+#[[package]]
+#name = "sysforge-git"
+#source = "aur"

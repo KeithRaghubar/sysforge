@@ -667,12 +667,33 @@ class TestManpageScdocSkewEndToEnd:
 check_shipped = _load_check_shipped()
 
 
-def _write_config_dir(root: Path, files: dict[str, str]) -> Path:
-    """Build a synthetic repo with etc/sysforge/<name>.toml files."""
+def _fixture_header(name: str) -> str:
+    """The documentation header every shipped config carries, sized for a
+    synthetic fixture. Built from check_shipped's own banner constant so the
+    two can't drift apart."""
+    return (
+        "# " + "=" * 77 + "\n"
+        f"# {name} — synthetic fixture\n"
+        "#\n"
+        '# Everything down to line 7 ("END OF HEADER") is documentation;\n'
+        "# the settings themselves start below it.\n"
+        "#\n"
+        f"{check_shipped._END_OF_HEADER}\n"
+    )
+
+
+def _write_config_dir(root: Path, files: dict[str, str], *, header: bool = True) -> Path:
+    """Build a synthetic repo with etc/sysforge/<name>.toml files.
+
+    Each file gets the standard documentation header unless ``header=False``,
+    so the fixtures match the shape check_config_comments expects of a real
+    shipped config.
+    """
     cfg = root / "etc" / "sysforge"
     cfg.mkdir(parents=True)
     for name, body in files.items():
-        (cfg / name).write_text(body, encoding="utf-8")
+        text = (_fixture_header(name) + body) if header else body
+        (cfg / name).write_text(text, encoding="utf-8")
     return root
 
 
@@ -710,6 +731,53 @@ def test_config_comments_flags_nonexistent_section_reference(tmp_path):
     })
     findings = check_shipped.check_config_comments(repo)
     assert any("[cache]" in f.message for f in findings)
+
+
+def test_header_marker_accepts_a_correct_pointer(tmp_path):
+    """The stock header — banner present, pointer citing its real line."""
+    repo = _write_config_dir(tmp_path, {"packages.toml": "[build]\n"})
+    assert check_shipped.check_config_comments(repo) == []
+
+
+def test_header_marker_flags_stale_pointer(tmp_path):
+    """A paragraph added to the header pushes the banner down; the pointer
+    that still cites the old line is the failure this guard exists for."""
+    repo = _write_config_dir(tmp_path, {"packages.toml": "[build]\n"})
+    path = repo / "etc" / "sysforge" / "packages.toml"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines.insert(3, "# an added paragraph")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    findings = check_shipped.check_config_comments(repo)
+    assert any("END OF HEADER is at line 8" in f.message for f in findings)
+
+
+def test_header_marker_flags_missing_banner(tmp_path):
+    repo = _write_config_dir(tmp_path, {"packages.toml": "[build]\n"}, header=False)
+    findings = check_shipped.check_config_comments(repo)
+    assert any("no END OF HEADER banner" in f.message for f in findings)
+
+
+def test_header_marker_flags_banner_without_pointer(tmp_path):
+    """A banner nobody is told about is only half the affordance."""
+    repo = _write_config_dir(
+        tmp_path,
+        {"packages.toml": f"# packages.toml\n{check_shipped._END_OF_HEADER}\n[build]\n"},
+        header=False,
+    )
+    findings = check_shipped.check_config_comments(repo)
+    assert any("no header pointer" in f.message for f in findings)
+
+
+def test_header_marker_flags_duplicate_banners(tmp_path):
+    repo = _write_config_dir(tmp_path, {"packages.toml": "[build]\n"})
+    path = repo / "etc" / "sysforge" / "packages.toml"
+    path.write_text(
+        path.read_text(encoding="utf-8") + f"{check_shipped._END_OF_HEADER}\n",
+        encoding="utf-8",
+    )
+    findings = check_shipped.check_config_comments(repo)
+    assert any("2 END OF HEADER banners" in f.message for f in findings)
 
 
 def test_config_comments_allows_cross_file_section_reference(tmp_path):

@@ -33,6 +33,24 @@ https://keepachangelog.com/en/1.1.0/
   only. makepkg's own `source=()` downloads cannot be mediated and are warned
   about instead.
 
+## Changed
+
+- **`3.0.0-STD1` — Shipped configs distinguish prose comments from activatable settings.**
+  Every file in `etc/sysforge/` now follows one convention, declared in its own header:
+  explanatory prose is `# text` (hash plus a space), while a setting you can turn on is
+  `#key = value` flush against the hash, so activating it is a one-character edit. Section
+  headers are no longer commented out — only their keys are — which removes the three-line
+  dance of uncommenting a header, a blank line, and then the setting; `[build]`, `[desktop]`,
+  `[makepkg]`, `[kconfig]`, `[packages]`, `[llvm]` and `[failure_handling]` all ship live and
+  empty, which every reader treats as identical to absent. The exceptions are blocks that
+  declare a named entity rather than a settings table (`[[package]]`, `[group.*]`, `[[rules]]`):
+  those stay fully commented, since a header without its keys is an incomplete entry.
+  Each file also gained an `END OF HEADER` banner and a pointer near the top citing its line
+  number, so it is obvious where documentation stops and configuration starts — the
+  `config_comments` group in `tools/check_shipped.py` verifies the banner exists exactly once
+  and that the cited line still matches, so the number cannot go stale. `packages.toml`'s field
+  reference also had its `enable_build_from_source` row realigned to the column the other rows use.
+
 ## Fixed
 
 - **`3.0.0-B2` — zsh completion listing split names from descriptions on over-wide rows.** Option

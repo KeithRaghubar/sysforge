@@ -23,7 +23,9 @@ Default groups (each runs in order, all surface to a single summary):
     config_comments  etc/sysforge/*.toml comment prose: no comment may name a
                      config file or a schema section that does not exist, and a
                      key whose validator accepts multiple surface forms must
-                     have its comment show every form (_GRAMMAR_DOCS).
+                     have its comment show every form (_GRAMMAR_DOCS). Each
+                     file also carries exactly one END OF HEADER banner whose
+                     line number matches the pointer at the top of the file.
     pkgbuild         backup=() matches install lines; install sources exist;
                      sha256sums is not a placeholder.
     pkgbuild_parity  PKGBUILD vs PKGBUILD-git: depends/makedepends/optdepends/
@@ -452,6 +454,49 @@ def _key_comment_block(text: str, key: str) -> str:
     return ""
 
 
+# The banner closing every shipped config's documentation block, and the
+# header pointer that cites its line number. The pointer is the only
+# hardcoded line number in the shipped configs, so it is checked rather
+# than trusted: _check_header_marker below keeps it honest.
+_END_OF_HEADER = "# " + "=" * 30 + " END OF HEADER " + "=" * 32
+_HEADER_PTR_RE = re.compile(r'^# Everything down to line (\d+) \("END OF HEADER"\)')
+
+
+def _check_header_marker(rel: str, text: str) -> list[Finding]:
+    """Every shipped config carries an END OF HEADER banner, and the pointer
+    near the top cites its real line number.
+
+    Both halves are load-bearing for a hand-edited file: the banner is where
+    the reader stops reading prose, and the pointer is what tells them the
+    banner exists before they have scrolled to it. A line number goes stale
+    the first time anyone adds a paragraph above it, so it is verified here
+    instead of being maintained by hand.
+    """
+    lines = text.splitlines()
+    marks = [i for i, ln in enumerate(lines) if ln == _END_OF_HEADER]
+    if not marks:
+        return [Finding("config_comments", "error", rel,
+                        "no END OF HEADER banner; every shipped config ends its "
+                        "documentation block with one")]
+    if len(marks) > 1:
+        return [Finding("config_comments", "error", f"{rel}:{marks[1] + 1}",
+                        f"{len(marks)} END OF HEADER banners; expected exactly one")]
+    actual = marks[0] + 1
+
+    for i, ln in enumerate(lines[:actual]):
+        m = _HEADER_PTR_RE.match(ln)
+        if not m:
+            continue
+        if int(m.group(1)) != actual:
+            return [Finding("config_comments", "error", f"{rel}:{i + 1}",
+                            f"header pointer says the documentation ends at line "
+                            f"{m.group(1)}, but END OF HEADER is at line {actual}")]
+        return []
+    return [Finding("config_comments", "error", f"{rel}:1",
+                    "END OF HEADER banner present but no header pointer citing its "
+                    'line ("# Everything down to line N (\"END OF HEADER\") …")')]
+
+
 def check_config_comments(repo: Path) -> list[Finding]:
     """Assert no shipped comment names a config file or section that does not exist."""
     cfg_dir = repo / "etc" / "sysforge"
@@ -466,6 +511,8 @@ def check_config_comments(repo: Path) -> list[Finding]:
         rel = str(path.relative_to(repo))
         text = path.read_text(encoding="utf-8")
         own_sections = _KNOWN_SECTIONS.get(path.name, set())
+
+        findings.extend(_check_header_marker(rel, text))
 
         for block in _comment_blocks(text):
             for lineno, body in block:
