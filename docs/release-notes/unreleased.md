@@ -35,6 +35,20 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
+- **`2.5.1-F4` — Abandoned roadmap entries moved to their own file.** `ROADMAP.md` now
+  carries forward-looking work only; the `## Abandoned / decided against` section — the
+  record of what was considered and rejected, with each entry's rationale and reopen
+  condition — lives in `docs/ROADMAP-ABANDONED.md`. The two files remain **one ID
+  namespace**: an abandoned ID is never reissued, so `make next-id` reads both alongside
+  `docs/release-notes/`, and `make check-standards` still rejects an ID listed as both
+  Planned and Abandoned — a cross-file check now rather than a state machine over one
+  file's headings. Two new guards keep the split honest: the `roadmap_ids` group fails if
+  an `## Abandoned` heading reappears in `ROADMAP.md`, and the extractor keeps honouring
+  that heading anyway, so a misfiled section is reported without its IDs ever falling back
+  into the allocation pool.
+
+---
+
 - **`3.0.0-STD1` — Shipped configs distinguish prose comments from activatable settings.**
   Every file in `etc/sysforge/` now follows one convention, declared in its own header:
   explanatory prose is `# text` (hash plus a space), while a setting you can turn on is

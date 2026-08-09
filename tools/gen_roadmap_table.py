@@ -90,8 +90,10 @@ def _planned_section(text: str) -> str:
 
     A bare `---` is deliberately *not* a terminator: entries are separated by
     horizontal rules for readability, so treating one as the section end would
-    truncate the table to the first entry. The rule that closes the section is
-    immediately followed by `## Abandoned`, which terminates it either way.
+    truncate the table to the first entry. Since `2.5.1-F4` moved the abandoned
+    entries to `docs/ROADMAP-ABANDONED.md`, `## Planned` runs to EOF, so the
+    loop's fallthrough — not a heading — is what usually ends it; a later `##`
+    still terminates it if one is ever added back.
     """
     lines = text.splitlines()
     out: list[str] = []

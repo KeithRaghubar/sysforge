@@ -152,9 +152,12 @@ resolves — missing paths and renamed symbols fail; tokens that cannot be mappe
 to a repo file are skipped (fail-safe, no prose false positives).
 
 **Roadmap ID collision check.** The `check_standards` `roadmap_ids` group
-cross-checks `ROADMAP.md` (open items) against `docs/release-notes/` (shipped
-items). Errors: an open ID reusing a shipped number, an ID in both Planned and
-Abandoned, a shipped `Q`-typed ID. Warn: sequence gaps within the active
+cross-checks the three homes of one ID namespace: `ROADMAP.md` (open items),
+`docs/ROADMAP-ABANDONED.md` (abandoned items — a retired number is never
+reissued) and `docs/release-notes/` (shipped items). Errors: an open ID reusing
+a shipped number, an ID listed both as Planned and as Abandoned (a cross-file
+check since `2.5.1-F4` split the sections), an `## Abandoned` heading back in
+`ROADMAP.md`, a shipped `Q`-typed ID. Warn: sequence gaps within the active
 `pyproject.toml` version prefix. Allocate the next ID with
 `python tools/check_standards.py --next-id <version>-<TYPE>`. Known limitation:
 a release-note that mentions a still-Planned ID in prose (a forward or "see

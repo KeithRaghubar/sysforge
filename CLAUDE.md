@@ -43,9 +43,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 ## Process Conventions
 
 - **Doc update order**: `docs/design/*.md` (+ `make design`) → README.md → CLAUDE.md.
-- **DESIGN = implemented only; `/ROADMAP.md` = planned + abandoned.** Roadmap IDs
+- **DESIGN = implemented only; `/ROADMAP.md` = planned; `docs/ROADMAP-ABANDONED.md` = abandoned**
+  (one ID namespace across both — a retired ID is never reissued). Roadmap IDs
   (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset on major/minor bump, not patch) live in
-  ROADMAP + `docs/release-notes/`, never DESIGN. **Never hand-pick an ID for a new item — run `make
+  those two + `docs/release-notes/`, never DESIGN. **Never hand-pick an ID for a new item — run `make
   next-id TYPE=F` (F/B/Q/STD)**, which derives the cycle from `pyproject.toml` (open items keep their
   origin-cycle prefixes, so copying a neighbour mis-numbers new items right after a release). Triage
   `notes.txt` into ROADMAP. Implementing an
@@ -65,8 +66,8 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 - **Every Planned ROADMAP entry ends with a `*Priority: <low|med|high> · Effort: <small|medium|large> ·
   Bump: <patch|minor|major>*` tag** (§ROADMAP.md "Priority, effort & bump tags"). The `## Planned` summary table is **generated** from
   those tags — run `make roadmap-table` after any add/remove/retag; `make check-roadmap-table`
-  (preflight-wired, mirrors `check-design`) fails on drift or an untagged/invalid entry. Abandoned
-  entries carry no tag. `make roadmap-view SORT=<col> [REVERSE=1]` prints the same table sorted by
+  (preflight-wired, mirrors `check-design`) fails on drift or an untagged/invalid entry.
+  `docs/ROADMAP-ABANDONED.md` entries carry no tag and are outside the table. `make roadmap-view SORT=<col> [REVERSE=1]` prints the same table sorted by
   any column (read-only — it never rewrites the committed triage ordering).
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`

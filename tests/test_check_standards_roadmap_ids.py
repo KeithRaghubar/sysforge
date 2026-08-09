@@ -4,10 +4,16 @@
 
 """Unit guards for tools/check_standards.py::check_roadmap_ids and its extractors.
 
-Guards the roadmap-ID collision detector: ROADMAP.md (open items) and
-docs/release-notes/ (shipped items) are disjoint homes for the same ID space,
-and nothing else cross-checks them, so an open ID can silently reuse a shipped
-number (the 2.1.0-B2/B3 vs shipped B2-B7 incident this check exists to prevent).
+Guards the roadmap-ID collision detector: ROADMAP.md (open items),
+docs/ROADMAP-ABANDONED.md (retired items) and docs/release-notes/ (shipped
+items) are disjoint homes for the same ID space, and nothing else cross-checks
+them, so an open ID can silently reuse a shipped number (the 2.1.0-B2/B3 vs
+shipped B2-B7 incident this check exists to prevent).
+
+Since `2.5.1-F4` split the abandoned entries into their own file, the
+"abandoned IDs stay spent" half is a *cross-file* property rather than a
+state machine over one file's headings — the failure mode being guarded is
+`make next-id` handing back a number already spent on a retired item.
 """
 from __future__ import annotations
 
@@ -61,6 +67,26 @@ def test_roadmap_bullet_after_abandoned_header_is_abandoned():
     }
 
 
+def test_default_state_abandoned_classifies_headingless_bullets():
+    """docs/ROADMAP-ABANDONED.md has no `## Abandoned` heading — the file *is* it."""
+    text = "# Abandoned / decided against\n\n- **`2.2.0-Q3`** — dropped.\n"
+    assert check_standards.roadmap_ids_from_text(text, "abandoned") == {
+        "2.2.0-Q3": "abandoned",
+    }
+
+
+def test_default_state_abandoned_survives_a_subsection_heading():
+    """A `## ` subsection resets to the file's default, not to 'planned'."""
+    text = (
+        "# Abandoned\n\n- **`2.2.0-Q3`** — dropped.\n\n"
+        "## Older decisions\n\n- **`2.2.0-F9`** — also dropped.\n"
+    )
+    assert check_standards.roadmap_ids_from_text(text, "abandoned") == {
+        "2.2.0-Q3": "abandoned",
+        "2.2.0-F9": "abandoned",
+    }
+
+
 def test_roadmap_non_id_abandoned_entry_is_ignored():
     text = "## Abandoned\n\n- **`-sysforge` suffix** — scrapped.\n"
     assert check_standards.roadmap_ids_from_text(text) == {}
@@ -76,13 +102,23 @@ def test_shipped_ignores_html_comment_examples():
     assert check_standards.shipped_ids_from_text(text) == {"2.2.0-F4"}
 
 
-def _mkrepo(tmp_path: Path, roadmap: str, notes: dict[str, str], version="2.2.0"):
+def _mkrepo(tmp_path: Path, roadmap: str, notes: dict[str, str], version="2.2.0",
+            abandoned: str | None = None):
+    """A minimal repo skeleton: pyproject + the three ID homes.
+
+    `abandoned` writes docs/ROADMAP-ABANDONED.md; omitting it leaves the file
+    absent, which is also the "tool must not crash" case.
+    """
     (tmp_path / "pyproject.toml").write_text(
         f'[project]\nname = "sysforge"\nversion = "{version}"\n', encoding="utf-8"
     )
     (tmp_path / "ROADMAP.md").write_text(roadmap, encoding="utf-8")
     nd = tmp_path / "docs" / "release-notes"
     nd.mkdir(parents=True)
+    if abandoned is not None:
+        (tmp_path / "docs" / "ROADMAP-ABANDONED.md").write_text(
+            abandoned, encoding="utf-8"
+        )
     for name, body in notes.items():
         (nd / name).write_text(body, encoding="utf-8")
     return tmp_path
@@ -99,16 +135,35 @@ def test_planned_id_also_shipped_is_error(tmp_path):
                and "shipped" in f.message for f in findings), findings
 
 
-def test_planned_id_also_abandoned_is_error(tmp_path):
+def test_planned_id_also_abandoned_across_files_is_error(tmp_path):
     repo = _mkrepo(
         tmp_path,
-        "## Planned\n\n- **`2.2.0-F1`** — live.\n\n"
-        "## Abandoned\n\n- **`2.2.0-F1`** — dropped.\n",
+        "## Planned\n\n- **`2.2.0-F1`** — live.\n",
         {},
+        abandoned="# Abandoned\n\n- **`2.2.0-F1`** — dropped.\n",
     )
     findings = check_standards.check_roadmap_ids(repo)
     assert any(f.severity == "error" and "2.2.0-F1" in f.message
                and "Abandoned" in f.message for f in findings), findings
+
+
+def test_abandoned_heading_back_in_roadmap_is_error(tmp_path):
+    """The split is enforced, not just documented — the section must not regrow."""
+    repo = _mkrepo(
+        tmp_path,
+        "## Planned\n\n- **`2.2.0-F1`** — live.\n\n"
+        "## Abandoned / decided against\n\n- **`2.2.0-F5`** — dropped.\n",
+        {},
+    )
+    findings = check_standards.check_roadmap_ids(repo)
+    assert any(f.severity == "error" and "ROADMAP-ABANDONED" in f.message
+               for f in findings), findings
+
+
+def test_missing_abandoned_file_is_not_an_error(tmp_path):
+    repo = _mkrepo(tmp_path, "## Planned\n\n- **`2.2.0-F1`** — live.\n", {})
+    assert [f for f in check_standards.check_roadmap_ids(repo)
+            if f.severity == "error"] == []
 
 
 def test_shipped_q_id_is_error(tmp_path):
@@ -171,11 +226,17 @@ def test_real_repo_has_no_roadmap_id_errors():
 
 
 def test_next_id_returns_max_plus_one_including_abandoned(tmp_path):
+    """The whole hazard of the 2.5.1-F4 split: a retired number stays spent.
+
+    F5 lives in the separate abandoned file, so a next_id that only read
+    ROADMAP.md would hand back F4 — reissuing exactly the IDs a reader is most
+    likely to look up later.
+    """
     repo = _mkrepo(
         tmp_path,
-        "## Planned\n\n- **`2.2.0-F1`** — a.\n\n"
-        "## Abandoned\n\n- **`2.2.0-F5`** — dropped (still consumes the number).\n",
+        "## Planned\n\n- **`2.2.0-F1`** — a.\n",
         {"v2.2.0.md": "# v2.2.0\n\n## Added\n\n- shipped (2.2.0-F3).\n"},
+        abandoned="# Abandoned\n\n- **`2.2.0-F5`** — dropped (still consumes the number).\n",
     )
     assert check_standards.next_id(repo, "2.2.0-F") == "2.2.0-F6"
 

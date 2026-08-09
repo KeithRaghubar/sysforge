@@ -40,10 +40,12 @@ Groups:
                 citations must grep-resolve in the cited module. Fail-safe:
                 tokens that cannot be mapped to a repo file (class attributes,
                 CLI flags, globs, prose) are skipped, never flagged.
-    roadmap_ids Cross-checks ROADMAP.md (open items) against docs/release-notes/
-                (shipped items): flags an open ID reusing a shipped number, an ID
-                listed both Planned and Abandoned, a shipped Q-typed ID, and
-                (warn) sequence gaps in the active pyproject version's prefix.
+    roadmap_ids Cross-checks the three homes of one ID namespace — ROADMAP.md
+                (open), docs/ROADMAP-ABANDONED.md (spent), docs/release-notes/
+                (shipped): flags an open ID reusing a shipped number, an ID
+                listed both as Planned and as Abandoned, an Abandoned heading
+                back in ROADMAP.md, a shipped Q-typed ID, and (warn) sequence
+                gaps in the active pyproject version's prefix.
     run_seam    External-command execution discipline: subprocess calls use
                 argv-list form (never a string command), and shell=True carries
                 a justified `# noqa: S602` from the single-site allowlist.
@@ -72,7 +74,8 @@ Drift detection cases (verify these still fire after editing this script):
     - Cite a nonexistent `tools/foo.sh` path in a CLAUDE.md file.
     - Rename a function cited as `module.symbol` in sysforge/CLAUDE.md.
     - Add an ID to ROADMAP Planned that already appears in a shipped v*.md.
-    - List the same ID in both the Planned and Abandoned ROADMAP sections.
+    - List the same ID in ROADMAP.md Planned and in docs/ROADMAP-ABANDONED.md.
+    - Re-add an `## Abandoned` heading to ROADMAP.md.
     - Reference a Q-typed ID in a shipped release-notes file.
     - Add `subprocess.run("echo hi")` (string form) to a sysforge/*.py file.
     - Add `shell=True` without `# noqa: S602` to a sysforge/*.py file.
@@ -549,16 +552,29 @@ def _parse_id(s: str) -> tuple[str, str, int] | None:
     return m.group(1), m.group(2), int(m.group(3))
 
 
-def roadmap_ids_from_text(text: str) -> dict[str, str]:
-    """Map each bold-bullet ROADMAP entry ID to 'planned' or 'abandoned'."""
-    state = "planned"
+def roadmap_ids_from_text(text: str, default_state: str = "planned") -> dict[str, str]:
+    """Map each bold-bullet ROADMAP entry ID to 'planned' or 'abandoned'.
+
+    ``default_state`` is the state a bullet carries before any state-changing
+    heading: 'planned' for `ROADMAP.md`, 'abandoned' for
+    `docs/ROADMAP-ABANDONED.md`, whose entries have no `## Abandoned` heading
+    above them because the whole file is that section.
+
+    The in-file `^## Abandoned` transition is kept as a fallback so a stray
+    section re-added to `ROADMAP.md` still classifies its IDs as spent rather
+    than silently returning them to the `next-id` pool. `check_roadmap_ids`
+    separately reports that heading as misfiled — losing an ID is the failure
+    worth being defensive about, naming the wrong home is the one worth
+    reporting.
+    """
+    state = default_state
     out: dict[str, str] = {}
     for line in text.splitlines():
         if re.match(r"^##\s+Abandoned", line):
             state = "abandoned"
             continue
         if re.match(r"^##\s+", line):
-            state = "planned"
+            state = default_state
             continue
         m = _ROADMAP_ENTRY_RE.match(line)
         if m:
@@ -589,11 +605,24 @@ def _project_version(repo: Path) -> str:
     return ""
 
 
+#: The two homes of the roadmap ID namespace, and the state a bare bullet in
+#: each one carries. `next_id` must read both: an abandoned ID stays spent, and
+#: dropping this file from the walk would reissue exactly the numbers a reader
+#: is most likely to look up later.
+_ROADMAP_FILES: tuple[tuple[str, str], ...] = (
+    ("ROADMAP.md", "planned"),
+    ("docs/ROADMAP-ABANDONED.md", "abandoned"),
+)
+
+
 def _gather_ids(repo: Path) -> tuple[dict[str, str], set[str]]:
     roadmap: dict[str, str] = {}
-    roadmap_md = repo / "ROADMAP.md"
-    if roadmap_md.is_file():
-        roadmap = roadmap_ids_from_text(roadmap_md.read_text(encoding="utf-8"))
+    for rel, default_state in _ROADMAP_FILES:
+        md = repo / rel
+        if md.is_file():
+            roadmap.update(
+                roadmap_ids_from_text(md.read_text(encoding="utf-8"), default_state)
+            )
     shipped: set[str] = set()
     notes_dir = repo / "docs" / "release-notes"
     if notes_dir.is_dir():
@@ -619,27 +648,42 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
             f"{i} is open in ROADMAP but already shipped in release-notes "
             f"(collision — allocate a fresh ID via --next-id)",
         ))
-    # Check 2: an ID that is both Planned and Abandoned. roadmap_ids_from_text
-    # keeps a single final state per ID (last section wins), so an ID bulleted
-    # under both headers would otherwise vanish from one side of this
-    # intersection — re-scan the raw text tracking both memberships directly.
+    # Check 2: an ID that is both planned and abandoned. Now a cross-file
+    # question (2.5.1-F4 split the sections into two files), and
+    # `_gather_ids` merges them into one dict — last file wins — so an ID
+    # bulleted in both would vanish from one side of this intersection.
+    # Re-scan each file tracking both memberships directly.
+    seen_planned: set[str] = set()
+    seen_abandoned: set[str] = set()
+    for rel, default_state in _ROADMAP_FILES:
+        md = repo / rel
+        if not md.is_file():
+            continue
+        for i, s in roadmap_ids_from_text(
+            md.read_text(encoding="utf-8"), default_state
+        ).items():
+            (seen_abandoned if s == "abandoned" else seen_planned).add(i)
+    for i in sorted(seen_planned & seen_abandoned):
+        findings.append(Finding(
+            "roadmap_ids", "error", "ROADMAP.md",
+            f"{i} is listed both as Planned and in "
+            f"docs/ROADMAP-ABANDONED.md (Abandoned)",
+        ))
+    # Check 3: the Abandoned section back in ROADMAP.md. Entries there are
+    # still counted as spent (roadmap_ids_from_text keeps the transition), so
+    # this is a filing error rather than a namespace hazard — but left alone it
+    # regrows the section the split removed.
     roadmap_md = repo / "ROADMAP.md"
     if roadmap_md.is_file():
-        state = "planned"
-        seen_planned: set[str] = set()
-        seen_abandoned: set[str] = set()
-        for line in roadmap_md.read_text(encoding="utf-8").splitlines():
+        for n, line in enumerate(
+            roadmap_md.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if re.match(r"^##\s+Abandoned", line):
-                state = "abandoned"
-                continue
-            m = _ROADMAP_ENTRY_RE.match(line)
-            if m:
-                (seen_abandoned if state == "abandoned" else seen_planned).add(m.group(1))
-        for i in sorted(seen_planned & seen_abandoned):
-            findings.append(Finding(
-                "roadmap_ids", "error", "ROADMAP.md",
-                f"{i} is listed in both Planned and Abandoned sections",
-            ))
+                findings.append(Finding(
+                    "roadmap_ids", "error", f"ROADMAP.md:{n}",
+                    "abandoned entries live in docs/ROADMAP-ABANDONED.md; "
+                    "ROADMAP.md carries forward-looking work only",
+                ))
     # Check 4: a Q-typed ID that shipped without promotion to F/B/STD. Only the
     # mutable accumulator (unreleased.md) is checked — released v*.md files are
     # immutable history and are grandfathered against past-process Q misses.
@@ -676,6 +720,9 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
 
 def next_id(repo: Path, prefix: str) -> str:
     """Next free ID for a roadmap prefix, across all three sources.
+
+    The sources are ROADMAP.md (planned), docs/ROADMAP-ABANDONED.md (spent —
+    an abandoned number is never reissued) and docs/release-notes/ (shipped).
 
     Accepts either a bare ``<TYPE>`` (e.g. ``F``) — the version is derived from
     ``pyproject.toml`` so the caller can't misattribute the cycle, which is the

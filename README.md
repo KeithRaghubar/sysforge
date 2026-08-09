@@ -151,8 +151,9 @@ checkouts still build. `--thaw` and
 That is the everyday surface. For the rest — PGO/`--pgo`, `--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics — see `sysforge --help`, the [man page](man/sysforge.1), and
-[DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned and abandoned
-features live in [ROADMAP.md](ROADMAP.md).
+[DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned features live in
+[ROADMAP.md](ROADMAP.md); ideas considered and rejected, with the reasoning, live in
+[docs/ROADMAP-ABANDONED.md](docs/ROADMAP-ABANDONED.md).
 
 ---
 
