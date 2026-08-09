@@ -85,11 +85,13 @@ canonical ordering.
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
+| `3.0.0-B4` | a failed build reports failure and exits 0 | med | small | minor |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
 | `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
+| `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
@@ -379,6 +381,41 @@ canonical ordering.
   gate this rides on.
 
 ### Bugs
+
+- **`3.0.0-B4` — a failed build reports failure and exits 0.**
+  `UpdateVerb.execute` returns a bare `ExecResult()` regardless of `failed_pkgs`, so a run where
+  makepkg or the install step failed for one or more packages prints the failure lines and still
+  exits 0. `outcome.failed_pkgs` (appended in `build_core.py:892,896`) and the `STATUS_PURGE_REFUSED`
+  cleansrc refusals collected at `update.py` both land in `failed_pkgs` for summary counting only —
+  nothing converts them into an exit code. Only the source-freeze path added by `3.0.0-F2` reaches
+  `_raise_if_frozen`. The consequence is that any script or timer wrapping `sysforge update` cannot
+  distinguish a clean run from one where half the queue failed to build; the information is on
+  stdout but not in the one channel automation reads. Fix by routing `failed_pkgs` through the same
+  `_raise_if_frozen`-shaped exit seam, which means auditing every early return in `_cmd_update_body`
+  the way `3.0.0-F2` had to — the read-only `--check-drift` and `--dry-run` returns must keep
+  exiting 0. Worth a deliberate decision on whether a *partial* failure should exit non-zero or
+  whether that breaks existing callers who tolerate it; state the choice in the release note.
+  *Priority: med · Effort: small · Bump: minor* — one seam, but it is a user-visible exit-code
+  change that automation may depend on.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.0.0-B5` — the ungated-source warning never fires on stage builds.**
+  `warn_ungated_sources` (`primitives/net_policy.py`) is wired only at `build_core.py:836`, so a
+  frozen run warns about `source=()` entries the freeze cannot mediate for ordinary packages but
+  says nothing for toolchain and kernel builds, which reach `makepkg_wrapper` without passing
+  through `build_core`. Those are precisely the builds where an unmediated `source=()` fetch
+  matters most — they run longest, pull the most code, and are the ones a user is most likely to
+  leave running unattended under `--frozen` believing the freeze covers them. The gap is silent:
+  the freeze itself still holds at all five gated seams, so nothing fails; the user simply is not
+  told what remains uncovered. Fix by hoisting the call to a seam both paths cross, rather than
+  duplicating it at each stage — a second call site would drift the same way the frozen-exit check
+  did before `3.0.0-F2` centralised it.
+  *Priority: low · Effort: small · Bump: patch* — advisory only, no enforcement change.
+  **Standards home on adoption:** none new.
+
+---
 
 - **`3.0.0-B3` — a killed bootstrap leaves the target with passwordless root.**
   `pipeline/stages/configure.py:370-373` writes `/etc/sudoers.d/99-sysforge-bootstrap-build`
