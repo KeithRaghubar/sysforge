@@ -23,6 +23,12 @@ existing controls do not cover that case:
 - The PKGBUILD review gate (`primitives/pkgbuild_review.py`) is the existing supply-chain
   control, but it auto-accepts on non-TTY runs and `update` passes `interactive=False` by
   default — silent in exactly the unattended case where malware lands.
+- Neither control sits early enough for `--devel`. `update_version.py:263` calls
+  `evaluate_vcs_pkgver`, whose `makepkg -od` invocation (`vcs_pkgver.py:42`) **sources the
+  PKGBUILD and runs `pkgver()`**. `--nobuild` suppresses `build()`, not top-level statements,
+  and running `pkgver()` is the invocation's entire purpose. Hostile code therefore executes
+  as the build user during the *version check* — upstream of the build, and so upstream of
+  every gate placed at the build.
 
 This feature adds a **source freeze**: an enforced denial of code ingress. Existing
 checkouts still build; nothing new arrives without a deliberate, per-run, per-package
@@ -36,6 +42,9 @@ lift.
 2. Source-sync git fetch — `primitives/git_ops.py:63` `git_fetch_and_compare`, reached via
    the `source_sync` scheduler.
 3. VCS upstream peek — `primitives/vcs_pkgver.py:248` `git ls-remote`.
+4. VCS pkgver resolve — `primitives/vcs_pkgver.py` `evaluate_vcs_pkgver`. Both an egress
+   (`makepkg -od` fetches sources) and an execution (it runs `pkgver()` and every top-level
+   PKGBUILD statement). See [The `--devel` execution path](#devel-exec).
 
 **Not gated:** AUR RPC info/search/`packages.gz` (`aur.py:102-105`). Metadata only.
 Leaving it open keeps version reporting accurate under freeze — the user still *sees* that
@@ -112,11 +121,44 @@ use and existing tests are unaffected.
 | AUR clone | `aur.py:216` `aur_clone` | raise `NetworkFrozen` |
 | Source fetch | `git_ops.py:63` `git_fetch_and_compare` | scheduler catches → `STATUS_FROZEN` |
 | VCS ls-remote | `vcs_pkgver.py:248` | return `None` + `warn()` |
+| VCS pkgver resolve | `vcs_pkgver.py` `evaluate_vcs_pkgver` | return `None` → `DEVEL_EVAL_FAILED` |
 
 The scheduler is the only caller that converts the exception into a status; `aur_clone`'s
-other callers see the raise. `vcs_pkgver` degrades rather than raises because its contract
-is already "`None` on any failure" with a defined fallback — turning it into a hard error
-would break `--devel` in a way the freeze does not intend.
+other callers see the raise. Both `vcs_pkgver` seams degrade rather than raise because that
+module's contract is already "`None` on any failure" with a defined fallback at every call
+site — turning either into a hard error would break `--devel` in a way the freeze does not
+intend.
+
+<a id="devel-exec"></a>
+### The `--devel` execution path
+
+Gating the `ls-remote` peek **alone would make the freeze actively harmful**, and the
+ordering at `update_version.py:250-263` is why:
+
+1. `peek_upstream_commit` is the *cheap short-circuit* — if upstream HEAD still matches the
+   SHA in `build_state.toml`, the package is `UP_TO_DATE` and nothing further runs.
+2. `None` from that peek means "fall through to the canonical path".
+3. The canonical path is `evaluate_vcs_pkgver` — which fetches sources and executes the
+   PKGBUILD.
+
+Denying only the peek therefore *raises* the probability of reaching the execution, for
+every VCS package, on every frozen run. The two seams must be gated together.
+
+`evaluate_vcs_pkgver` returns `None` under freeze, which `update_version.py:268` already
+maps to the `DEVEL_EVAL_FAILED` action — an existing, non-fatal, per-package outcome. No new
+status is required; the freeze reuses a decision path `--devel` already understands. The
+`warn()` names the freeze as the cause so it is not mistaken for the transient-flake case
+the action was built for.
+
+**Cache-poisoning note.** `_RESOLVE_CMD` (`vcs_pkgver.py:42`) carries `--skippgpcheck`, so
+the probe fetches into the shared `SRCDEST` with signature verification off. For entries
+carrying real checksums a later build re-verifies and catches a swap; for `git+` / `SKIP`
+entries — exactly the VCS packages this path serves — there is nothing to re-verify, so an
+unverified clone placed by the *version check* silently becomes the *build's* input.
+Gating this seam closes that hand-off under freeze. Removing `--skippgpcheck` outright is
+**not** in scope: the probe would then fail on expired or unimported keys, which is the
+transient-breakage case `DEVEL_EVAL_FAILED` exists to absorb, and the freeze is the right
+control for a trust decision rather than the flag.
 
 `source_sync.py` gains `STATUS_FROZEN = "frozen"` alongside the existing statuses
 (`source_sync.py:92-101`), classified as a **blocker**. Reusing the blocker machinery
@@ -196,7 +238,11 @@ risk, not the answer the user asked for.
 - `frozen_policy` fixture in `tests/conftest.py` setting and tearing down the module
   policy.
 - Per-seam denial tests: `aur_clone` raises `NetworkFrozen`; the scheduler reports
-  `STATUS_FROZEN`; `vcs_pkgver` returns `None` and warns.
+  `STATUS_FROZEN`; both `vcs_pkgver` seams return `None` and warn.
+- **Fall-through regression test** (the reason this seam pair exists): a VCS package under
+  `--devel` with a recorded `built_upstream_commit`, frozen, must reach `DEVEL_EVAL_FAILED`
+  **without `makepkg` being invoked at all**. Assert on a patched `subprocess.run` — a test
+  that only checks the returned action would pass while the execution still happened.
 - `--thaw` test: one pkgbase syncs while its neighbour reports `STATUS_FROZEN` in the same
   run.
 - Precedence tests covering all four rows, including `--no-frozen` overriding
@@ -226,6 +272,8 @@ Per project conventions, in the same change:
 
 - Persistent per-package trust allowlists (rejected: stale entries are a silent hole).
 - Gating AUR RPC metadata.
+- Removing `--skippgpcheck` from `vcs_pkgver._RESOLVE_CMD` (see the cache-poisoning note) —
+  the freeze gates the seam instead of weakening the probe's failure tolerance.
 - Intercepting makepkg's `source=()` network (warned instead).
 - Changing the review gate's non-TTY auto-accept — filed separately as `3.0.0-F3`, which
   closes the other half of the same threat model: this item stops hostile code *arriving*,

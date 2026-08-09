@@ -85,6 +85,7 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
+| `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
@@ -140,12 +141,22 @@ canonical ordering.
   control covers that: `--offline` (`cli.py:403`) *skips* network work as a convenience, threaded
   per-callsite (`update.py:588`, `update_sync.py:72`) and unknown to the egress primitives
   themselves — `aur.py`'s `urlopen` sites and `vcs_pkgver.py:248`'s `git ls-remote` never consult
-  it, so any path that forgets the check reaches the network. Add a leaf primitive
+  it, so any path that forgets the check reaches the network. Worse, `--devel` executes hostile
+  code *before* any gate can see it: `update_version.py:263` calls `evaluate_vcs_pkgver`, whose
+  `makepkg -od` (`vcs_pkgver.py:42`) sources the PKGBUILD and runs `pkgver()` — `--nobuild`
+  suppresses `build()`, not top-level statements. Add a leaf primitive
   `primitives/net_policy.py` holding a frozen `NetPolicy(frozen, thawed)` resolved once at verb
-  entry and consulted at three seams — `aur.py:216` `aur_clone` (raise `NetworkFrozen`),
+  entry and consulted at four seams — `aur.py:216` `aur_clone` (raise `NetworkFrozen`),
   `git_ops.py:63` `git_fetch_and_compare` (scheduler catches → new blocker status
-  `STATUS_FROZEN`), and `vcs_pkgver.py:248` (return `None` + warn, matching its existing
-  "`None` on any failure" contract). The module-global is deliberate: a threaded parameter defaults
+  `STATUS_FROZEN`), and both `vcs_pkgver` seams (return `None` + warn, matching its existing
+  "`None` on any failure" contract): `:248` `peek_upstream_commit` and `evaluate_vcs_pkgver`,
+  the latter degrading into the existing `DEVEL_EVAL_FAILED` action. **Gating the peek alone
+  would be actively harmful** — it is the cheap short-circuit at `update_version.py:250`, and
+  `None` there means "fall through", so denying only it *raises* the odds of reaching the
+  execution path. That seam also carries `--skippgpcheck`, fetching into the shared `SRCDEST`
+  with verification off, so an unverified clone placed by the version check becomes a later
+  build's input for exactly the `git+`/`SKIP` entries nothing re-verifies. The module-global is
+  deliberate: a threaded parameter defaults
   *permissive* at any new call site, a consulted global defaults *denied* — for a security gate
   that asymmetry is the point. AUR RPC metadata (`aur.py:102-105`) stays ungated so version
   reporting survives the freeze — informed refusal beats blind refusal. Surface: global
@@ -409,6 +420,26 @@ canonical ordering.
   gate this rides on.
 
 ### Bugs
+
+- **`3.0.0-B3` — a killed bootstrap leaves the target with passwordless root.**
+  `pipeline/stages/configure.py:370-373` writes `/etc/sudoers.d/99-sysforge-bootstrap-build`
+  granting the build user `NOPASSWD: ALL`, because `makepkg -s` must sync makedeps
+  non-interactively while building sysforge itself inside the target. The `finally` at `:423`
+  removes it, which covers exceptions and non-zero exits — but not `SIGKILL`, an OOM kill, or
+  power loss mid-build. Those leave a freshly installed system carrying an unconditional
+  passwordless-root rule for its primary user, in a file the user has no reason to look for.
+  Low likelihood, maximum blast radius, and the failure is silent: the install otherwise looks
+  incomplete rather than insecure. Two independent fixes, both cheap and worth taking together —
+  scope the rule to what it actually needs (`NOPASSWD: /usr/bin/pacman`) so even a leaked drop
+  is not root-equivalent, and sweep for stale `99-sysforge-bootstrap-*` drops at bootstrap entry
+  so a `--resume` after a kill cleans up its predecessor. A `pre_check` refusal is the wrong
+  shape here: the sweep must run on the path that would otherwise re-create the file.
+  *Priority: med · Effort: small · Bump: patch* — narrow trigger, but the residue is a
+  privilege-escalation primitive and the fix touches one stage.
+  **Standards home on adoption:** none new — the privilege seam (`primitives/privilege.py`)
+  does not cover sudoers *provisioning*, only invocation.
+
+---
 
 - **`2.6.1-B11` — `format_assignment` can emit env-file syntax `env_chain` cannot read back.**
   In `primitives/env_persist.py`, values failing the `_SAFE_VALUE` pattern fall back to
