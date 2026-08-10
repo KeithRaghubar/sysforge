@@ -3,10 +3,14 @@
 # SPDX-License-Identifier: MIT
 """Tests for sysforge.primitives.env_persist."""
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 
+from sysforge.primitives.env_chain import _parse_shell_init_file
 from sysforge.primitives.env_persist import (
     EnvTarget,
+    apply_write,
     format_assignment,
     plan_write,
     system_target,
@@ -50,6 +54,35 @@ def test_format_assignment_quotes_value_with_spaces():
     assert format_assignment("EDITOR", "code -w", "export") == "export EDITOR='code -w'"
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a'b",             # shlex.quote renders 'a'"'"'b' — no reader parses it
+        'a"b',
+        "vim\nrm -rf /",   # a newline becomes a second, bogus assignment line
+        "vim\r",
+        "",                # no meaningful assignment
+        " vim",            # leading space is lost by the reader's strip()
+        "vim ",
+    ],
+)
+@pytest.mark.parametrize("syntax", ["bare", "export"])
+def test_format_assignment_rejects_values_it_cannot_round_trip(value, syntax):
+    """The primitive is safe on its own terms, not by caller discipline.
+
+    Today's only caller pre-filters through ``shutil.which``; a second caller
+    must not be able to write an unparseable ``/etc/environment`` line.
+    """
+    with pytest.raises(ValueError, match="cannot be persisted"):
+        format_assignment("EDITOR", value, syntax)
+
+
+def test_plan_write_rejects_an_unpersistable_value(tmp_path):
+    """Rejection lands at plan time, before anything is written."""
+    with pytest.raises(ValueError, match="cannot be persisted"):
+        plan_write(_export_target(tmp_path), {"EDITOR": "a'b"}, None)
+
+
 def test_plan_create_when_file_absent(tmp_path):
     plan = plan_write(_export_target(tmp_path), VARS, None)
     assert plan.action == "create"
@@ -90,6 +123,48 @@ def test_plan_replace_drops_duplicate_assignments(tmp_path):
     # Last assignment is what the shell actually applies, so it is the
     # "current" value reported to the user.
     assert plan.changes[0].current == "emacs"
+
+
+def test_plan_reads_current_from_the_split_export_form(tmp_path):
+    """``KEY=value; export KEY`` is a form ``env_chain`` parses, so the
+    planner must not report ``currently unset`` beneath a chain display
+    showing the real old value."""
+    existing = "EDITOR=vim; export EDITOR\nVISUAL=vim; export VISUAL\n"
+    plan = plan_write(_export_target(tmp_path), VARS, existing)
+    assert [c.current for c in plan.changes] == ["vim", "vim"]
+
+
+def test_plan_replaces_the_split_export_form_in_place(tmp_path):
+    """It is replaced, not appended beneath — otherwise the file grows a
+    duplicate assignment on every run."""
+    existing = "EDITOR=vim; export EDITOR\n"
+    plan = plan_write(_export_target(tmp_path), {"EDITOR": "nvim"}, existing)
+    assert plan.action == "replace"
+    assert plan.new_text == "export EDITOR=nvim\n"
+
+
+def test_plan_nochange_when_split_export_form_already_correct(tmp_path):
+    existing = "EDITOR=nvim; export EDITOR\nVISUAL=nvim; export VISUAL\n"
+    plan = plan_write(_export_target(tmp_path), VARS, existing)
+    assert plan.action == "nochange"
+
+
+@pytest.mark.parametrize("factory", [_bare_target, _export_target])
+def test_plan_current_agrees_with_env_chain_on_the_split_form(factory, tmp_path):
+    """The planner's ``current`` must be the value ``env_chain`` reports.
+
+    ``_parse_shell_init_file`` applies the split-export pattern before its
+    ``allow_bare`` fallback, so it reads this form on *both* targets. A
+    planner that disagreed would print ``currently unset`` — or the whole
+    line as the value — beneath a chain display showing the real one.
+    """
+    target = factory(tmp_path)
+    existing = "EDITOR=vim; export EDITOR\n"
+    target.path.write_text(existing)
+    kv, _ = _parse_shell_init_file(target.path, allow_bare=target.syntax == "bare")
+
+    plan = plan_write(target, {"EDITOR": "nvim"}, existing)
+    assert plan.changes[0].current == kv["EDITOR"] == "vim"
 
 
 def test_plan_nochange_when_both_already_correct(tmp_path):
@@ -136,14 +211,6 @@ def test_user_target_follows_home(tmp_path, monkeypatch):
     assert t.needs_root is False
 
 
-from unittest.mock import patch
-
-import pytest
-
-from sysforge.primitives.env_chain import _parse_shell_init_file
-from sysforge.primitives.env_persist import apply_write
-
-
 def test_apply_write_creates_file(tmp_path):
     target = _export_target(tmp_path)
     apply_write(plan_write(target, VARS, None))
@@ -176,13 +243,19 @@ def test_apply_write_escalates_when_unwritable(tmp_path):
     with patch(
         "sysforge.primitives.env_persist.Path.write_text",
         side_effect=PermissionError,
-    ), patch("sysforge.primitives.env_persist.subprocess.run") as run:
+    ), patch(
+        "sysforge.primitives.env_persist.privileged_argv",
+        return_value=["<escalated>", "cp"],
+    ) as priv, patch("sysforge.primitives.env_persist.subprocess.run") as run:
         run.return_value.returncode = 0
         apply_write(plan)
-    argv = run.call_args[0][0]
-    assert argv[0] == "sudo"
-    assert argv[1] == "cp"
-    assert argv[-1] == str(target.path)
+
+    # Assert on the seam, not on the literal it abstracts: an "sudo" assertion
+    # here would pin the very implementation detail §22 exists to hide.
+    inner = priv.call_args[0][0]
+    assert inner[0] == "cp"
+    assert inner[-1] == str(target.path)
+    assert run.call_args[0][0] == ["<escalated>", "cp"]
 
 
 def test_apply_write_raises_when_escalation_fails(tmp_path):
@@ -208,3 +281,26 @@ def test_round_trip_env_chain_reads_back_what_we_wrote(factory, tmp_path):
     kv, _ = _parse_shell_init_file(target.path, allow_bare=allow_bare)
     assert kv["EDITOR"] == "nvim"
     assert kv["VISUAL"] == "nvim"
+
+
+@pytest.mark.parametrize("factory", [_bare_target, _export_target])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "nvim",                    # safe: written bare
+        "code -w",                 # space: shlex.quote, the one form all readers agree on
+        "/usr/bin/env nvim",
+        "emacsclient -a=",         # '=' is inside _SAFE_VALUE
+        "nvim#1",                  # '#' must not be taken as an inline comment
+    ],
+)
+def test_round_trip_holds_for_every_value_the_writer_accepts(value, factory, tmp_path):
+    """The counterpart to the rejection matrix: anything
+    ``_reject_unpersistable`` lets through must survive the round trip, or the
+    rejection rule is drawn in the wrong place."""
+    target = factory(tmp_path)
+    apply_write(plan_write(target, {"EDITOR": value}, None))
+    kv, _ = _parse_shell_init_file(
+        target.path, allow_bare=target.syntax == "bare"
+    )
+    assert kv["EDITOR"] == value

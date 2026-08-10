@@ -92,18 +92,13 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
-| `2.6.1-B11` | format_assignment can emit env-file syntax env_chain cannot read back | med | small | patch |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `3.0.0-B4` | a failed build reports failure and exits 0 | med | small | minor |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
-| `2.6.1-F19` | warn when sysforge.toml [ui] editor will shadow a newly persisted EDITOR | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
-| `2.6.1-B12` | plan_write misses the KEY=value; export KEY assignment form | low | small | patch |
-| `2.6.1-B13` | describe_editor_chain hardcodes the detected rung's index | low | small | patch |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
-| `2.6.1-F20` | complete the editor chain display: source values, $VISUAL origins, one snapshot | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
@@ -208,36 +203,6 @@ canonical ordering.
   *Priority: med · Effort: small · Bump: patch* — diagnostic only; no resolution or install
   behaviour changes. **Standards home on adoption:** none new — §`build_diag`'s existing matcher
   table covers it.
-
----
-
-- **`2.6.1-F19` — warn when `sysforge.toml [ui] editor` will shadow a newly persisted `EDITOR`.**
-  Follow-up to `2.6.1-F18`. The persistence prompt writes the chosen editor to `/etc/environment`
-  and/or `~/.zshenv` independently of the sysforge target, but `[ui] editor` is rung 2 of the
-  resolution chain and `$EDITOR` is rung 3 — so a user who persists to a file target while
-  `[ui] editor` holds a *different* value gets a system-wide `EDITOR` that sysforge itself ignores,
-  silently, with no warning at persist time. Reachable in two runs: pick target 1 on the first, a
-  different editor and target 2 only on the second. This is exactly the shadowing confusion F18's
-  chain display exists to surface, so leaving the *write* path silent about it undercuts the
-  feature. `_offer_persist_editor` should detect a conflicting rung-2 value when `"sysforge"` is not
-  among the selected targets and say so before writing — naming both values and what will actually
-  launch. *Priority: med · Effort: small · Bump: patch* — additive warning; no write behaviour
-  changes. **Standards home on adoption:** none new.
-
----
-
-- **`2.6.1-F20` — complete the editor chain display: source values, `$VISUAL` origins, one snapshot.**
-  Follow-up to `2.6.1-F18`, three coupled gaps in `_format_editor_chain`. (1) `SourceRow.value` is
-  computed and never rendered — with `~/.zshenv` setting `vim` and `/etc/environment` setting `nano`
-  the user sees two paths and no way to tell which produced the `$EDITOR` shown above them. (2) The
-  sub-listing hangs only off the `$EDITOR` rung; rung 4 (`$VISUAL`) gets none, though the feature
-  writes `VISUAL` too. (3) `sources_defining()` collects its own `EnvChainSnapshot` per call, so
-  fixing (2) doubles a collection that already reads ~14 init files and spawns a `systemctl` probe —
-  hoist one `collect_env_chain()` into `_format_editor_chain` and pass it down. Also close the
-  renderer test gap noted during F18 review: no test covers `winner == -1` with a populated rung
-  list, nor a single-element `sources_defining` result (the `from`/`also` prefix boundary).
-  *Priority: low · Effort: small · Bump: patch* — display only; no resolution or write behaviour
-  changes. **Standards home on adoption:** none new.
 
 ---
 
@@ -423,48 +388,6 @@ canonical ordering.
   privilege-escalation primitive and the fix touches one stage.
   **Standards home on adoption:** none new — the privilege seam (`primitives/privilege.py`)
   does not cover sudoers *provisioning*, only invocation.
-
----
-
-- **`2.6.1-B11` — `format_assignment` can emit env-file syntax `env_chain` cannot read back.**
-  In `primitives/env_persist.py`, values failing the `_SAFE_VALUE` pattern fall back to
-  `shlex.quote`, which renders an embedded single quote as `'a'"'"'b'` — a form neither
-  `env_chain._strip_quotes` nor pam_env parses — and passes a newline through literally, which in
-  `/etc/environment` becomes a second, bogus assignment line. Unreachable today *only because of the
-  caller*: `_select_new_editor` returns nothing that has not passed `shutil.which`, so spaces,
-  quotes, newlines and the empty string cannot reach the writer. That is safety by caller
-  discipline, not by construction, and it fails the moment a second caller appears — in a primitive
-  whose write target is a root-owned file that PAM parses at login. Make the primitive safe on its
-  own terms: reject (or explicitly reformat) values outside `_SAFE_VALUE` rather than emitting
-  unparseable output, with tests for quote, newline, `=` and empty-string values. While in the file,
-  fix `test_apply_write_escalates_when_unwritable`, which asserts `argv[0] == "sudo"` — the literal
-  the §22 privilege seam exists to abstract; assert on the `privileged_argv` call instead.
-  *Priority: med · Effort: small · Bump: patch* — hardening; no reachable behaviour change today.
-  **Standards home on adoption:** none new — §22's privilege seam row already covers the argv fix.
-
----
-
-- **`2.6.1-B12` — `plan_write` misses the `KEY=value; export KEY` assignment form.**
-  `primitives/env_persist.py`'s per-syntax regexes match `KEY=value` (bare) and `export KEY=value`
-  (export), but not the split `KEY=value; export KEY` form — which `env_chain`'s reader *does*
-  parse. A `~/.zshenv` written that way makes the persistence prompt report `EDITOR currently unset
-  → nvim` directly beneath a chain display that shows the real old value, and the new `export` line
-  is appended rather than replacing the old assignment. The resulting file still resolves correctly
-  in zsh (last assignment wins), so this is a display-and-tidiness defect rather than a correctness
-  one — but a wrong "currently" reading is precisely what makes a system-file write look routine.
-  Teach `plan_write` the third form, and add a round-trip case for it.
-  *Priority: low · Effort: small · Bump: patch* — parser gap; writes stay correct either way.
-
----
-
-- **`2.6.1-B13` — `describe_editor_chain` hardcodes the detected rung's index.**
-  In `primitives/editor.py` the detected/last-resort rung is built with `index=5` and claimed as the
-  winner via `winner = 4`, both literals matching the current length of the four-entry `raw` list
-  above them. Adding or removing a rung mis-numbers the whole display and points the winner at the
-  wrong row — and since `resolve_editor()` is now a reader over this function, a wrong winner index
-  is a wrong editor, not merely a wrong label. Derive both from the list (`index=len(raw) + 1`,
-  `winner = len(raw)`). Two lines; do it the next time that file is touched.
-  *Priority: low · Effort: small · Bump: patch* — latent; no current misbehaviour.
 
 ---
 

@@ -43,6 +43,38 @@ _log = log.get_logger("ENV")
 # realistic case, but a user may configure "code -w".
 _SAFE_VALUE = re.compile(r"^[A-Za-z0-9_.:/@%+=,-]+$")
 
+# Characters with no encoding every reader of these files agrees on. A quote
+# survives shlex.quote as '…'"'"'…', which neither env_chain._strip_quotes nor
+# pam_env parses; a newline in /etc/environment becomes a second, bogus
+# assignment line. There is no "escape harder" answer — the file is read by
+# pam_env, by env_chain and by the user's shell, and they disagree — so the
+# primitive refuses instead of writing something ambiguous.
+_UNENCODABLE = ("'", '"', "\n", "\r", "\0")
+
+
+def _reject_unpersistable(name: str, value: str) -> None:
+    """Raise when ``value`` has no form every reader parses identically.
+
+    Called from :func:`format_assignment`, so rejection lands at *plan* time —
+    before any file is touched — for every caller, not only the disciplined
+    ones. Today's sole caller filters through ``shutil.which`` and can reach
+    none of these, which is safety by caller discipline; this makes it safety
+    by construction in a primitive whose write target PAM parses at login.
+    """
+    if not value:
+        raise ValueError(f"{name} cannot be persisted: value is empty")
+    if value != value.strip():
+        raise ValueError(
+            f"{name} cannot be persisted: value has leading or trailing "
+            "whitespace, which readers strip"
+        )
+    for ch in _UNENCODABLE:
+        if ch in value:
+            raise ValueError(
+                f"{name} cannot be persisted: value contains {ch!r}, which "
+                "has no encoding every reader of this file agrees on"
+            )
+
 
 @dataclass(frozen=True)
 class EnvTarget:
@@ -110,6 +142,9 @@ class WritePlan:
 
 
 def format_assignment(name: str, value: str, syntax: str) -> str:
+    """Render one assignment line, or raise ``ValueError`` on a value that
+    cannot round-trip through :mod:`sysforge.primitives.env_chain`."""
+    _reject_unpersistable(name, value)
     rendered = value if _SAFE_VALUE.match(value) else shlex.quote(value)
     return f"{name}={rendered}" if syntax == "bare" else f"export {name}={rendered}"
 
@@ -122,9 +157,25 @@ def _strip_quotes(value: str) -> str:
 
 
 def _assignment_re(name: str, syntax: str) -> re.Pattern[str]:
-    if syntax == "bare":
-        return re.compile(rf"^\s*{re.escape(name)}=(.*)$")
-    return re.compile(rf"^\s*export\s+{re.escape(name)}=(.*)$")
+    """Every assignment form for ``name`` that ``env_chain`` reads back.
+
+    The alternation order mirrors ``env_chain._parse_shell_init_file``: the
+    split ``KEY=value; export KEY`` form is matched before the plain form on
+    *both* syntaxes, because the reader applies it before its ``allow_bare``
+    fallback too. Matching a strict subset of what the reader accepts is what
+    makes the planner report ``currently unset`` beneath a chain display
+    showing the real value, then append rather than replace.
+    """
+    n = re.escape(name)
+    split = rf"{n}=(?P<split>.*?)\s*;\s*export\s+{n}\s*"
+    plain = rf"{n}=(?P<plain>.*)" if syntax == "bare" else rf"export\s+{n}=(?P<plain>.*)"
+    return re.compile(rf"^\s*(?:{split}|{plain})$")
+
+
+def _captured(m: re.Match[str]) -> str:
+    """The value from whichever assignment form matched."""
+    split = m.group("split")
+    return m.group("plain") if split is None else split
 
 
 def plan_write(
@@ -138,6 +189,9 @@ def plan_write(
     applies) while the **first** is the one rewritten and the rest dropped, so
     the result holds exactly one assignment per variable.
     """
+    for name, value in variables.items():
+        _reject_unpersistable(name, value)
+
     lines = [] if existing_text is None else existing_text.splitlines()
     patterns = {name: _assignment_re(name, target.syntax) for name in variables}
 
@@ -150,7 +204,7 @@ def plan_write(
         for name, pattern in patterns.items():
             m = pattern.match(line)
             if m:
-                hits[name].append((idx, m.group(1)))
+                hits[name].append((idx, _captured(m)))
 
     changes = tuple(
         VarChange(

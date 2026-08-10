@@ -1426,6 +1426,112 @@ def test_chain_display_lists_origin_and_not_offered_sources():
     assert "not offered: PAM syntax (pam_env.conf)" in text
 
 
+def _chain_rungs(editor="vim", visual=""):
+    from sysforge.primitives.editor import ChainRung
+
+    return [
+        ChainRung(1, "SYSFORGE_EDITOR", "SYSFORGE_EDITOR", "", False, ""),
+        ChainRung(2, "sysforge.toml [ui]", "sysforge.toml", "", False, ""),
+        ChainRung(3, "$EDITOR", "$EDITOR", editor, bool(editor), ""),
+        ChainRung(4, "$VISUAL", "$VISUAL", visual, bool(visual), ""),
+        ChainRung(5, "detected on PATH", "detected", "vi", True, "vi"),
+    ]
+
+
+def test_chain_display_renders_each_sources_value():
+    """`2.6.1-F20` (1/3). Two files setting EDITOR differently is exactly the
+    ambiguity the display exists to resolve, so the value each source
+    contributes has to be on the line naming that source."""
+    from sysforge.primitives.env_chain import SourceRow
+
+    rows = [
+        SourceRow("user_zshenv", "/home/u/.zshenv", "vim", True, ""),
+        SourceRow("etc_environment", "/etc/environment", "nano", True, ""),
+    ]
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(_chain_rungs(), 2),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.collect_env_chain", return_value=object()
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=rows
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "/home/u/.zshenv" in text and "vim" in text
+    assert "/etc/environment" in text and "nano" in text
+    zshenv_line = next(ln for ln in text.splitlines() if "/home/u/.zshenv" in ln)
+    assert "vim" in zshenv_line and "nano" not in zshenv_line
+
+
+def test_chain_display_sub_lists_visual_sources_too():
+    """`2.6.1-F20` (2/3). The feature writes VISUAL as well as EDITOR, so
+    leaving rung 4 without a source listing hides half of what it wrote."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(_chain_rungs(editor="vim", visual="nano"), 2),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.collect_env_chain", return_value=object()
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining"
+    ) as sources:
+        sources.return_value = []
+        _format_editor_chain()
+    assert [c.args[0] for c in sources.call_args_list] == ["EDITOR", "VISUAL"]
+
+
+def test_chain_display_collects_one_env_snapshot_for_every_lookup():
+    """`2.6.1-F20` (3/3). ``sources_defining`` collects its own snapshot when
+    passed none — reading ~14 init files and spawning a systemctl probe. Two
+    sub-listings must not mean two collections."""
+    snap = object()
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(_chain_rungs(editor="vim", visual="nano"), 2),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.collect_env_chain", return_value=snap
+    ) as collect, patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=[]
+    ) as sources:
+        _format_editor_chain()
+    assert collect.call_count == 1
+    assert [c.args[1] for c in sources.call_args_list] == [snap, snap]
+
+
+def test_chain_display_single_source_uses_from_and_never_also():
+    """Boundary left uncovered by F18 review: a one-element result must not
+    reach the ``also`` branch."""
+    from sysforge.primitives.env_chain import SourceRow
+
+    rows = [SourceRow("user_zshenv", "/home/u/.zshenv", "vim", True, "")]
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(_chain_rungs(), 2),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.collect_env_chain", return_value=object()
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=rows
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "from  /home/u/.zshenv" in text
+    assert "also" not in text
+
+
+def test_chain_display_marks_nothing_in_use_when_no_rung_resolves():
+    """Boundary left uncovered by F18 review: ``winner == -1`` with a
+    populated rung list must not mark a winner or claim shadowing."""
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.describe_editor_chain",
+        return_value=(_chain_rungs(editor="ghost"), -1),
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.collect_env_chain", return_value=object()
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure.sources_defining", return_value=[]
+    ):
+        text = "\n".join(_format_editor_chain())
+    assert "← in use" not in text
+    assert "shadowed by" not in text
+
+
 def test_parse_target_selection_accepts_numbers_and_names():
     assert _parse_target_selection("1 3", ["sysforge", "system", "user"]) == (
         ["sysforge", "user"], [],
@@ -1495,6 +1601,67 @@ def test_persist_nochange_target_skips_the_confirm(tmp_path, monkeypatch):
     ) as confirm:
         _offer_persist_editor("nvim")
     confirm.assert_not_called()
+
+
+def test_persist_warns_when_sysforge_toml_will_shadow_the_new_editor(
+    tmp_path, monkeypatch, capsys,
+):
+    """`2.6.1-F19`. ``[ui] editor`` is rung 2 and ``$EDITOR`` is rung 3, so
+    persisting to a file target while ``[ui] editor`` holds a different value
+    writes a system-wide EDITOR sysforge itself ignores. The write path must
+    say so — leaving it silent undercuts the chain display F18 added."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+        return_value={"ui": {"editor": "emacs"}},
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ):
+        _offer_persist_editor("nvim")
+    out = capsys.readouterr().err
+    assert "emacs" in out and "nvim" in out
+    assert "[ui] editor" in out
+
+
+def test_persist_does_not_warn_when_sysforge_is_among_the_targets(
+    tmp_path, monkeypatch, capsys,
+):
+    """Selecting target 1 rewrites ``[ui] editor`` itself, so there is no
+    shadowing left to warn about."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+        return_value={"ui": {"editor": "emacs"}},
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._save_sysforge_toml_ui"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="1 3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ):
+        _offer_persist_editor("nvim")
+    assert "will be ignored" not in capsys.readouterr().err
+
+
+def test_persist_does_not_warn_when_sysforge_toml_already_agrees(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SYSFORGE_EDITOR", "")
+    with patch(
+        "sysforge.pipeline.stages.reconfigure.load_sysforge_toml",
+        return_value={"ui": {"editor": "nvim"}},
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt", return_value="3"
+    ), patch(
+        "sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"
+    ):
+        _offer_persist_editor("nvim")
+    assert "will be ignored" not in capsys.readouterr().err
 
 
 def test_persist_failure_on_one_target_does_not_skip_the_next(tmp_path, monkeypatch):

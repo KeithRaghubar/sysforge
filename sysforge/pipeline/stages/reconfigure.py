@@ -64,7 +64,7 @@ from sysforge.primitives.editor import (
     resolve_editor as _resolve_editor,
     run_tty_argv as _run_editor_argv,
 )
-from sysforge.primitives.env_chain import sources_defining
+from sysforge.primitives.env_chain import collect_env_chain, sources_defining
 from sysforge.primitives.env_persist import (
     apply_write,
     plan_write,
@@ -651,6 +651,32 @@ def _persist_to_file_target(target, new_editor: str) -> None:
     _log.ui(f"  Wrote {target.path} — takes effect: {target.scope_note}.")
 
 
+def _warn_if_sysforge_toml_shadows(new_editor: str, selected: list[str]) -> None:
+    """Warn when ``[ui] editor`` will override the ``EDITOR`` about to be written.
+
+    ``sysforge.toml [ui] editor`` is rung 2 of the resolution chain and
+    ``$EDITOR`` is rung 3, so persisting to a file target alone while rung 2
+    holds a *different* value gives the user a system-wide ``EDITOR`` that
+    sysforge itself ignores — silently, and reachable in two runs (pick target
+    1 first, a different editor and target 2 second). This is the shadowing
+    the chain display exists to surface; leaving the *write* path quiet about
+    it undercuts the feature. Naming both values and what will actually launch
+    is the whole point — a bare "conflict" line would not tell the user which
+    editor they are getting.
+    """
+    if "sysforge" in selected:
+        return                       # rung 2 is being rewritten to agree
+    configured = load_sysforge_toml().get("ui", {}).get("editor")
+    if not configured or configured == new_editor:
+        return
+    _log.warn(
+        f"  sysforge.toml [ui] editor = {configured} outranks $EDITOR, so the "
+        f"{new_editor} you are about to write will be ignored by sysforge "
+        f"itself — it will keep launching {configured}. Other programs will "
+        f"use {new_editor}. Include target 1 to change both."
+    )
+
+
 def _offer_persist_editor(new_editor: str) -> None:
     """Adopt ``new_editor`` for this run, then offer to persist it.
 
@@ -681,6 +707,8 @@ def _offer_persist_editor(new_editor: str) -> None:
     if not selected:
         _log.ui("  Not persisted — the pick applies to this run only.")
         return
+
+    _warn_if_sysforge_toml_shadows(new_editor, selected)
 
     for key in selected:
         if key == "sysforge":
@@ -743,8 +771,20 @@ def _format_editor_chain() -> list[str]:
     holding a value that lost are marked ``(shadowed by N)``: without it, two
     rungs showing different editors is ambiguous about which one runs, which
     is precisely the confusion this step exists to resolve.
+
+    Env rungs carry a sub-listing of the files that assign them, each with the
+    value it contributes — two files setting ``EDITOR`` differently is the very
+    ambiguity this display resolves, so naming the source without its value
+    only moves the question. ``$VISUAL`` is listed alongside ``$EDITOR``
+    because the persistence step writes both.
+
+    One :func:`collect_env_chain` snapshot serves every lookup: ``sources_defining``
+    collects its own when passed none, and that reads ~14 init files and spawns
+    a ``systemctl`` probe — per sub-listing, not per render.
     """
     rungs, winner = describe_editor_chain()
+    snap = collect_env_chain()
+    sub_listed = {"$EDITOR": "EDITOR", "$VISUAL": "VISUAL"}
     lines = [
         "  Resolution chain for EDITOR  "
         "(1 = highest priority if set; first match wins):"
@@ -762,11 +802,14 @@ def _format_editor_chain() -> list[str]:
         else:
             note = ""
         lines.append(f"    {rung.index}  {rung.label:<22} {shown:<12} {note}".rstrip())
-        if rung.source == "$EDITOR":
-            for j, row in enumerate(sources_defining("EDITOR")):
-                prefix = "from" if j == 0 else "also"
-                reason = f"   (not offered: {row.reason})" if not row.offered else ""
-                lines.append(f"         {prefix}  {row.path or row.source}{reason}")
+        var = sub_listed.get(rung.source)
+        if var is None:
+            continue
+        for j, row in enumerate(sources_defining(var, snap)):
+            prefix = "from" if j == 0 else "also"
+            reason = f"   (not offered: {row.reason})" if not row.offered else ""
+            origin = row.path or row.source
+            lines.append(f"         {prefix}  {origin:<34} = {row.value}{reason}")
     return lines
 
 

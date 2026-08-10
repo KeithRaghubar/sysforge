@@ -75,6 +75,30 @@ def test_no_winner_when_nothing_resolves(monkeypatch):
         assert rungs[4].value == ""
 
 
+def test_rung_indices_and_winner_are_derived_not_hardcoded(monkeypatch):
+    """Characterization guard for `2.6.1-B13`.
+
+    The detected/last-resort rung's ``index`` and the winner it claims were
+    literals matching the length of the env-rung list above them. They agree
+    today, so this cannot fail before the fix — it exists to fail *after* a
+    future rung is added or removed, which is the defect's real trigger.
+    Since ``resolve_editor`` is a reader over this function, a stale winner
+    index is a wrong editor, not merely a wrong label.
+    """
+    for var in ("SYSFORGE_EDITOR", "EDITOR", "VISUAL"):
+        monkeypatch.delenv(var, raising=False)
+    with _no_config(), patch(
+        "sysforge.primitives.editor.shutil.which", side_effect=lambda c: f"/usr/bin/{c}"
+    ):
+        rungs, winner = describe_editor_chain()
+
+    # Every rung's displayed index is its own 1-based position.
+    assert [r.index for r in rungs] == list(range(1, len(rungs) + 1))
+    # The last-resort rung is last, and when it wins, winner points at it.
+    assert rungs[-1].source == "detected"
+    assert rungs[winner].index == winner + 1
+
+
 def test_detected_rung_lists_all_candidates_in_detail(monkeypatch):
     for var in ("SYSFORGE_EDITOR", "EDITOR", "VISUAL"):
         monkeypatch.delenv(var, raising=False)

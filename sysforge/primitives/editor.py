@@ -107,9 +107,12 @@ def describe_editor_chain() -> tuple[list[ChainRung], int]:
             winner = i
 
     found = [c for c in _DETECT_FALLBACKS if shutil.which(c)]
+    # Derived, never literal: the display index and the winner it claims both
+    # follow `raw`'s length, so adding or removing a rung above cannot
+    # mis-number the chain or point `resolve_editor` at the wrong row.
     rungs.append(
         ChainRung(
-            index=5,
+            index=len(raw) + 1,
             label="detected on PATH",
             source="detected",
             value=found[0] if found else "",
@@ -118,7 +121,7 @@ def describe_editor_chain() -> tuple[list[ChainRung], int]:
         )
     )
     if winner < 0 and found:
-        winner = 4
+        winner = len(raw)
     return rungs, winner
 
 

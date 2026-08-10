@@ -36,9 +36,22 @@ warns and continues to the next, never aborting the stage.
 Before prompting, the step renders the whole resolution order via `editor.describe_editor_chain()`
 (the single home for editor precedence — `resolve_editor` is a thin reader over it, so the display
 cannot disagree with the editor that actually launches), annotated with the winning rung, any rung
-that holds a value but lost (`shadowed by N`), and any rung set to a command not on PATH.
-`env_chain.sources_defining()` supplies the files each value came from, including sources sysforge
-will not write (PAM, login-shell-only inits) with the reason shown inline.
+that holds a value but lost (`shadowed by N`), and any rung set to a command not on PATH. Rung
+indices and the winner are derived from the rung list, never written as literals, so adding a rung
+cannot mis-number the display or (since `resolve_editor` reads the winner) point at the wrong editor.
+`env_chain.sources_defining()` supplies the files each value came from — each shown *with the value
+it contributes*, since two files setting `EDITOR` differently is the ambiguity the display exists to
+resolve — including sources sysforge will not write (PAM, login-shell-only inits) with the reason
+shown inline. Both `$EDITOR` and `$VISUAL` carry this sub-listing, because the persistence step
+writes both. One `collect_env_chain()` snapshot is taken per render and threaded into every lookup:
+`sources_defining()` collects its own when passed none, and that reads ~14 init files and spawns a
+`systemctl` probe.
+
+Persisting to a file target *without* also selecting `sysforge.toml` while `[ui] editor` holds a
+different value is warned about before the write. `[ui] editor` is rung 2 and `$EDITOR` is rung 3,
+so that combination produces a system-wide `EDITOR` sysforge itself ignores — the warning names both
+values and which one will actually launch, rather than letting the write silently contradict the
+chain display above it.
 
 Writes go through `primitives/env_persist.py`, which splits pure planning (`plan_write` — returns
 the per-variable before/after and one of `create`/`append`/`replace`/`nochange`) from application
@@ -47,6 +60,18 @@ the content to a chmod'd temp file and copies it into place through the §22 pri
 `/etc/environment`. Neither path is a rename-based atomic replace). The
 syntax difference between targets is load-bearing: `env_persist` must write what
 `env_chain._parse_shell_init_file` accepts for that file, guarded by a round-trip test.
+
+Two consequences of that round-trip contract are enforced in the primitive rather than assumed of
+its callers. On the **write** side, a value with no encoding every reader of the file agrees on —
+quotes, newlines, carriage returns, NULs, surrounding whitespace, the empty string — is rejected at
+plan time instead of escaped harder: these files are read by pam_env, by `env_chain` and by the
+user's shell, and they disagree, so there is no correct encoding to pick. Ordinary quoting
+(`code -w` → `'code -w'`) is the one form all three accept and stays legal. On the **read** side,
+`plan_write` recognises every assignment form `env_chain` does — bare, `export KEY=value`, and the
+split `KEY=value; export KEY` — in the reader's own precedence order, so the `current` value it
+reports and the one `env_chain` reports cannot diverge. Matching a strict subset of the reader is
+what makes the prompt say `currently unset` beneath a chain display showing the real value, then
+append a duplicate rather than replace.
 
 Resolution is `primitives/editor.py`'s single home (`resolve_editor` → `SYSFORGE_EDITOR` > `sysforge.toml [ui].editor` > `$EDITOR` > `$VISUAL` > detected `vim`/`nano`/`vi`; `editor_usable` requires it on PATH). Three enforcement points sit on top of it:
 
