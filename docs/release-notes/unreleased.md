@@ -90,6 +90,19 @@ https://keepachangelog.com/en/1.1.0/
   and that the cited line still matches, so the number cannot go stale. `packages.toml`'s field
   reference also had its `enable_build_from_source` row realigned to the column the other rows use.
 
+---
+
+- **`3.0.0-STD2` — The post-release manual steps have one home.** The sha256 push and both AUR
+  pushes were spelled out only inside `tools/release.sh`'s final heredoc, so the sole way to see
+  them was to reach Phase 4 of a real release — and a release interrupted after that block scrolled
+  past left no record of what remained. `docs/RELEASE-CHECKLIST.md`, already the authoritative
+  runbook, gains a `Stage 7 — Post-release manual steps` carrying the commands and its own tick
+  boxes; Stage 6's `AUR repos updated per the final instructions the script prints` becomes a
+  reference to it, so the checklist no longer defers to output it cannot show. Phase 4 now prints a
+  pointer, the version to substitute, and a `sed` one-liner that reprints the stage on demand
+  without invoking the pipeline. The three prose mirrors of Phase 4 inside the script — the header
+  phase map and both plan previews, fresh and `--resume` — were updated in step.
+
 ## Fixed
 
 - **`2.6.1-B11` — `format_assignment` could emit env-file syntax `env_chain` cannot read

@@ -199,7 +199,7 @@ push, publishes the signed GitHub release, and validates both PKGBUILDs in a cle
 - [ ] Push when prompted: `git push origin main && git push origin vX.Y.Z`
 - [ ] Signed GitHub release published with `.asc` + `SHA256SUMS` assets
 - [ ] Both PKGBUILDs validated in the clean chroot
-- [ ] AUR repos updated per the final instructions the script prints
+- [ ] Stage 7 below completed
 
 **If it fails after the tag exists**, do not re-run a `release-*` bump target — it would compute a
 fresh bump from the already-bumped version. Fix forward, commit, then:
@@ -207,6 +207,39 @@ fresh bump from the already-bumped version. Fix forward, commit, then:
 ```bash
 make release-resume
 ```
+
+## Stage 7 — Post-release manual steps
+
+The script stops here: the signed GitHub release exists, but the sha256 commit is unpushed and
+neither AUR repo knows about the new version. Substitute the released version for `X.Y.Z`.
+
+Push the sha256 commit the chroot validation produced:
+
+```bash
+git push origin main
+```
+
+Push to AUR (`sysforge`, stable):
+
+```bash
+git clone ssh://aur@aur.archlinux.org/sysforge.git /tmp/aur-sysforge
+cp PKGBUILD .SRCINFO sysforge.install /tmp/aur-sysforge/
+cd /tmp/aur-sysforge && git add -A && git commit -m "Update to X.Y.Z" && git push
+```
+
+Push to AUR (`sysforge-git`, VCS — note the `-git` suffixed sources land as plain names):
+
+```bash
+git clone ssh://aur@aur.archlinux.org/sysforge-git.git /tmp/aur-sysforge-git
+cp PKGBUILD-git /tmp/aur-sysforge-git/PKGBUILD
+cp .SRCINFO-git /tmp/aur-sysforge-git/.SRCINFO
+cp sysforge.install /tmp/aur-sysforge-git/
+cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to X.Y.Z" && git push
+```
+
+- [ ] sha256 commit pushed to `origin/main`
+- [ ] `sysforge` AUR repo updated
+- [ ] `sysforge-git` AUR repo updated
 
 ---
 

@@ -11,7 +11,7 @@
 # Phase 2: pause for `git push origin main && git push origin vNEW`.
 # Phase 3: fetch sha256, update PKGBUILD, chroot validate, regen .SRCINFOs,
 #          second commit (PKGBUILD only — .SRCINFOs are gitignored).
-# Phase 4: print final push + AUR instructions.
+# Phase 4: point at the post-release manual steps (docs/RELEASE-CHECKLIST.md Stage 7).
 #
 # If interrupted between phases, re-run the same command. Resume is detected
 # automatically when the local tag for the current pyproject.toml version
@@ -391,7 +391,7 @@ This run will:
     - clean-chroot validate PKGBUILD and PKGBUILD-git ($CHROOT_ROOT)$CHROOT_NOTE
     - regenerate .SRCINFO and .SRCINFO-git (gitignored — local artifacts for AUR push)
     - git add PKGBUILD; git commit -m "release: $TAG sha256"
-  Phase 4: print final push + AUR push instructions
+  Phase 4: point at the post-release manual steps (RELEASE-CHECKLIST Stage 7)
 EOF
 else
     cat <<EOF
@@ -421,8 +421,8 @@ Phase 3 — post-tag artifacts:
   - regenerate .SRCINFO and .SRCINFO-git (gitignored — local artifacts for AUR push)
   - git add PKGBUILD; git commit -m "release: $TAG sha256"
 
-Phase 4 — final instructions:
-  - print: git push origin main, AUR clone+copy+commit+push commands
+Phase 4 — pointer to the post-release manual steps:
+  - print: see docs/RELEASE-CHECKLIST.md "Stage 7" (sha256 push + both AUR pushes)
 
 EOF
 fi
@@ -735,23 +735,11 @@ fi
 cat <<EOF
 
 ==> Phase 4: done. The signed GitHub release $TAG is already published
-    (tag, commits, and release tarball are GPG-signed). Final manual steps:
+    (tag, commits, and release tarball are GPG-signed).
 
-1. Push the sha256 commit:
+    Three manual steps remain: push the sha256 commit, then push both AUR
+    repos. The commands live in docs/RELEASE-CHECKLIST.md "Stage 7 —
+    Post-release manual steps" (version to substitute: $NEW):
 
-    git push origin main
-
-2. Push to AUR (sysforge stable):
-
-    git clone ssh://aur@aur.archlinux.org/sysforge.git /tmp/aur-sysforge
-    cp PKGBUILD .SRCINFO sysforge.install /tmp/aur-sysforge/
-    cd /tmp/aur-sysforge && git add -A && git commit -m "Update to $NEW" && git push
-
-3. Push to AUR (sysforge-git VCS):
-
-    git clone ssh://aur@aur.archlinux.org/sysforge-git.git /tmp/aur-sysforge-git
-    cp PKGBUILD-git /tmp/aur-sysforge-git/PKGBUILD
-    cp .SRCINFO-git /tmp/aur-sysforge-git/.SRCINFO
-    cp sysforge.install /tmp/aur-sysforge-git/
-    cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to $NEW" && git push
+    sed -n '/^## Stage 7/,/^---$/p' docs/RELEASE-CHECKLIST.md
 EOF
