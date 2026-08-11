@@ -555,6 +555,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             self.builds = builds
             self.fake_run = fake_run  # .commands exposes every emitted argv
             self.pkgdest = None
+            self.exit_code: int | None = None  # set by run() (3.0.0-B4)
             self._build_cfg = {}
             self._overrides = []
 
@@ -744,7 +745,11 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
                              stdout="".join(f"{n} {v}\n" for n, v in foreign.items()))
             fake_run.respond(["pacman", "-Q"],
                              stdout="".join(f"{n} {v}\n" for n, v in installed.items()))
-            cmd_update(args)
+            # 3.0.0-B4: the run's exit code is now part of its observable
+            # behavior. `run()` keeps returning the recorded builds (every
+            # existing caller reads those); the code lands on the scenario so
+            # exit-code tests can assert it without a second harness.
+            self.exit_code = cmd_update(args)
             return builds
 
     return _Scenario()

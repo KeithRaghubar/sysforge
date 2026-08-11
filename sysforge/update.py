@@ -449,8 +449,8 @@ def _reconcile_external_demotions(bs: BuildState) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def cmd_update(args) -> None:
-    """Entry point for `sysforge update`."""
+def cmd_update(args) -> int:
+    """Entry point for `sysforge update`. Returns the run's exit code."""
 
     # reminders_only: leave the buildstate + self-install sentinels in place so
     # the body's _reconcile_external_demotions can read them; it unlinks them.
@@ -459,7 +459,7 @@ def cmd_update(args) -> None:
     _suppress_pagers_in_env(getattr(args, "interactive", False))
 
     try:
-        _cmd_update_body(args)
+        return _cmd_update_body(args)
     finally:
         # B2: sysforge's own Phase 5 (pacman -U) / Phase 6.5 (pacman -Syu)
         # transactions drop kernel/toolchain reminder sentinels. Swallow them
@@ -601,7 +601,38 @@ def _raise_if_frozen(frozen_sync_pkgs: dict) -> None:
         )
 
 
-def _cmd_update_body(args) -> None:
+def _failure_exit_code(
+    *,
+    failed_pkgs,
+    install_failed: bool = False,
+    pacman_upgrade_failed: bool = False,
+) -> int:
+    """Turn a run's failure tallies into the process exit code — one home.
+
+    3.0.0-B4: the summary already prints what failed, but automation reads
+    the exit code, and every ``update`` route used to return 0 regardless.
+    This is the counterpart of :func:`_raise_if_frozen` for the *non*-freeze
+    failures: build failures, cleansrc ``STATUS_PURGE_REFUSED`` denials
+    (both land in ``failed_pkgs``), a failed ``pacman -U`` install and a
+    failed ``pacman -Syu``.
+
+    A **partial** failure exits 1: one package out of twenty failing to
+    build is still a run that did not do what was asked, and a wrapper that
+    wants to tolerate it can compare the summary counts. The freeze path
+    keeps its ``RuntimeError`` (``_raise_if_frozen``) because a refused sync
+    leaves a sentinel worth prompting about; an ordinary build failure does
+    not, so it travels as ``ExecResult.exit_code`` instead — non-zero exit
+    without arming the recovery prompt (``verbs/runner.py``).
+
+    Read-only routes (``--check-drift``, ``--dry-run``) return before any of
+    these tallies exist and keep exiting 0.
+    """
+    if failed_pkgs or install_failed or pacman_upgrade_failed:
+        return 1
+    return 0
+
+
+def _cmd_update_body(args) -> int:
     # ── Phase 0: Init ─────────────────────────────────────────────────────
     _ui_progress.phase("loading state and config")
     timer = PhaseTimer()
@@ -706,7 +737,7 @@ def _cmd_update_body(args) -> None:
                 "and no repo packages with overrides in packages.toml).",
                 file=sys.stderr,
             )
-            return
+            return 0
 
     pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
 
@@ -956,11 +987,11 @@ def _cmd_update_body(args) -> None:
                 for line in diffs:
                     print(line)
         _emit_timings(timer, args)
-        return
+        return 0
 
     if getattr(args, "dry_run", False):
         _emit_timings(timer, args)
-        return
+        return 0
 
     # --rebuild-on-drift (or [update] rebuild_on_drift) is the umbrella that
     # opts into both drift axes; CLI flags still win over config.
@@ -1056,7 +1087,7 @@ def _cmd_update_body(args) -> None:
         print("[SYSFORGE] Nothing to rebuild.")
         _emit_timings(timer, args)
         _raise_if_frozen(frozen_sync_pkgs)
-        return
+        return 0
 
     pkgdest = get_pkgdest()
     built_pkg_files: list = []
@@ -1149,7 +1180,10 @@ def _cmd_update_body(args) -> None:
             # this early return swallow the freeze denial — same silent-
             # success shape as the "Nothing to rebuild" route at :1034.
             _raise_if_frozen(frozen_sync_pkgs)
-            return
+            # 3.0.0-B4: packages that failed to build *before* the operator
+            # aborted at a later target's review gate still count — the abort
+            # exits early but does not un-fail them.
+            return _failure_exit_code(failed_pkgs=outcome.failed_pkgs)
         built_pkgs = outcome.built_pkgs
         failed_pkgs = outcome.failed_pkgs
         pgo_skipped_pkgs = outcome.pgo_skipped_pkgs
@@ -1256,6 +1290,16 @@ def _cmd_update_body(args) -> None:
     # execute()).
     _raise_if_frozen(frozen_sync_pkgs)
 
+    # 3.0.0-B4: everything else that failed (build failures, cleansrc
+    # PURGE_REFUSED denials, a failed pacman -U install, a failed pacman
+    # -Syu) becomes the exit code rather than a RuntimeError — reported, but
+    # without arming the sentinel recovery prompt the freeze path wants.
+    return _failure_exit_code(
+        failed_pkgs=failed_pkgs,
+        install_failed=install_failed,
+        pacman_upgrade_failed=pacman_upgrade_failed,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Verb wrapper
@@ -1306,5 +1350,8 @@ class UpdateVerb(Verb):
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
-        cmd_update(args)
-        return ExecResult()
+        # 3.0.0-B4: a run where any package failed to build/install exits
+        # non-zero. ExecResult.exit_code (not RuntimeError) is the seam:
+        # non-zero without preserving the sentinel, since a reported build
+        # failure needs no recovery prompt on the next invocation.
+        return ExecResult(exit_code=cmd_update(args))

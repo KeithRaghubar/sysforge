@@ -94,7 +94,6 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
-| `3.0.0-B4` | a failed build reports failure and exits 0 | med | small | minor |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
@@ -335,25 +334,6 @@ canonical ordering.
   gate this rides on.
 
 ### Bugs
-
-- **`3.0.0-B4` — a failed build reports failure and exits 0.**
-  `UpdateVerb.execute` returns a bare `ExecResult()` regardless of `failed_pkgs`, so a run where
-  makepkg or the install step failed for one or more packages prints the failure lines and still
-  exits 0. `outcome.failed_pkgs` (appended in `build_core.py:892,896`) and the `STATUS_PURGE_REFUSED`
-  cleansrc refusals collected at `update.py` both land in `failed_pkgs` for summary counting only —
-  nothing converts them into an exit code. Only the source-freeze path added by `3.0.0-F2` reaches
-  `_raise_if_frozen`. The consequence is that any script or timer wrapping `sysforge update` cannot
-  distinguish a clean run from one where half the queue failed to build; the information is on
-  stdout but not in the one channel automation reads. Fix by routing `failed_pkgs` through the same
-  `_raise_if_frozen`-shaped exit seam, which means auditing every early return in `_cmd_update_body`
-  the way `3.0.0-F2` had to — the read-only `--check-drift` and `--dry-run` returns must keep
-  exiting 0. Worth a deliberate decision on whether a *partial* failure should exit non-zero or
-  whether that breaks existing callers who tolerate it; state the choice in the release note.
-  *Priority: med · Effort: small · Bump: minor* — one seam, but it is a user-visible exit-code
-  change that automation may depend on.
-  **Standards home on adoption:** none new.
-
----
 
 - **`3.0.0-B5` — the ungated-source warning never fires on stage builds.**
   `warn_ungated_sources` (`primitives/net_policy.py`) is wired only at `build_core.py:836`, so a

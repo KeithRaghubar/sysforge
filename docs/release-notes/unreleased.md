@@ -140,3 +140,20 @@ https://keepachangelog.com/en/1.1.0/
   `compgen -W` word lists with no descriptions. A new `completion_widths` group in
   `tools/check_shipped.py` computes the per-call budget and fails on any description that exceeds
   it, so a long flag name or a wordy description can no longer reintroduce the fault unnoticed.
+
+---
+
+- **`3.0.0-B4` — a failed build reported failure and exited 0.** `UpdateVerb.execute` returned a
+  bare `ExecResult()` no matter what `failed_pkgs` held, so a run where makepkg or the install step
+  failed for one or more packages printed the failure lines and still exited 0 — any script or timer
+  wrapping `sysforge update` could not tell a clean run from one where half the queue failed. Build
+  failures, cleansrc `PURGE_REFUSED` denials, a failed `pacman -U` install and a failed `pacman
+  -Syu` now all route through one `_failure_exit_code` seam and exit 1. **This is a deliberate,
+  user-visible exit-code change:** a *partial* failure exits non-zero too — one package out of
+  twenty failing is still a run that did not do what was asked, and a wrapper that wants to tolerate
+  it should read the summary counts rather than the exit status. The read-only routes are unchanged
+  and still exit 0: `--dry-run`, `--explain-drift`, "no packages in scope" and "Nothing to rebuild".
+  Unlike the source-freeze denial added by `3.0.0-F2`, which raises and preserves the stage sentinel
+  so the next run stops at the recovery prompt, an ordinary build failure travels back as
+  `ExecResult.exit_code` — reported and non-zero, but without arming a recovery prompt it does not
+  need. `doctor --apply`'s delegated rebuild propagates the same code.

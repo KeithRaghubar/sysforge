@@ -1562,10 +1562,12 @@ def _apply_rebuilds(
         cc=None, cxx=None, ld=None,
     )
     try:
-        cmd_update(update_args)
+        # 3.0.0-B4: cmd_update now reports a failed rebuild in its return
+        # value — propagate it rather than reporting success for a delegated
+        # run that failed.
+        return cmd_update(update_args)
     except SystemExit as e:
         return int(e.code) if isinstance(e.code, int) else 1
-    return 0
 
 
 # ---------------------------------------------------------------------------

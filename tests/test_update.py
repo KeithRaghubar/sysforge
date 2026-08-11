@@ -1343,12 +1343,13 @@ def test_frozen_survives_review_gate_abort(update_scenario, monkeypatch, capsys)
     assert "Aborted at PKGBUILD review" in combined
 
 
-def test_build_failure_keeps_pre_freeze_exit_code(update_scenario, monkeypatch, capsys):
-    """New-1 (review): the freeze-scoped exit-code raise must not reach
-    ordinary build failures or cleansrc refusals — those exited 0 before
-    this feature and must keep doing so; a general exit-code fix for them is
-    explicitly out of scope for this change (flagged separately, not fixed
-    here).
+def test_build_failure_exits_nonzero(update_scenario, monkeypatch, capsys):
+    """3.0.0-B4: a build failure exits 1.
+
+    Unlike the freeze path it does *not* raise — a reported build failure
+    needs no sentinel recovery prompt on the next run — so the code travels
+    back through ``cmd_update``'s return value into
+    ``ExecResult.exit_code``.
     """
     import sysforge.primitives.makepkg_wrapper as _mw
 
@@ -1358,8 +1359,6 @@ def test_build_failure_keeps_pre_freeze_exit_code(update_scenario, monkeypatch, 
     monkeypatch.setattr(_mw, "run", _boom)
 
     update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
-    # Must NOT raise: a build failure alone (no frozen packages involved)
-    # keeps its pre-existing exit-0 behavior.
     update_scenario.run(
         _make_args(),
         installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
@@ -1370,6 +1369,63 @@ def test_build_failure_keeps_pre_freeze_exit_code(update_scenario, monkeypatch, 
     # under the wrong label).
     assert "Build failed for 'htop'" in combined
     assert "simulated build failure" in combined
+    assert update_scenario.exit_code == 1
+
+
+def test_cleansrc_refusal_exits_nonzero(update_scenario, capsys):
+    """3.0.0-B4: a cleansrc ``STATUS_PURGE_REFUSED`` denial rides in
+    ``failed_pkgs`` alongside build failures and must exit non-zero for the
+    same reason — the queue did not do what was asked. neovim genuinely
+    needs a rebuild so the run doesn't take the "Nothing to rebuild" exit
+    first."""
+    from sysforge.primitives.source_sync import STATUS_PURGE_REFUSED
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.1\npkgrel=1\n")
+    update_scenario.fake_sync(
+        {"htop": (STATUS_PURGE_REFUSED, "refused to purge untracked files")}
+    )
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+        foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
+    )
+    capsys.readouterr()
+    assert update_scenario.exit_code == 1
+
+
+def test_successful_run_exits_zero(update_scenario, capsys):
+    """3.0.0-B4 guard-rail: the non-zero exit is scoped to failures — a run
+    that rebuilds everything it set out to rebuild still exits 0."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    capsys.readouterr()
+    assert update_scenario.exit_code == 0
+
+
+def test_nothing_to_rebuild_exits_zero(update_scenario, capsys):
+    """3.0.0-B4: the early "Nothing to rebuild." return is a clean run."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.3.0\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    assert "Nothing to rebuild" in "".join(capsys.readouterr())
+    assert update_scenario.exit_code == 0
+
+
+def test_dry_run_with_pending_rebuild_exits_zero(update_scenario, capsys):
+    """3.0.0-B4: the read-only routes return before any failure tally
+    exists and must keep exiting 0 — a pending rebuild is not a failure."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(dry_run=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    capsys.readouterr()
+    assert update_scenario.exit_code == 0
 
 
 # ---------------------------------------------------------------------------

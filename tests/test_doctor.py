@@ -1595,8 +1595,10 @@ def _apply_doctor_setup(tmp_path, monkeypatch, *, foreign=True):
 def test_apply_dry_run_does_not_invoke_update(tmp_path, monkeypatch, capsys):
     target = _apply_doctor_setup(tmp_path, monkeypatch)
     called = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: called.append(args))
+                        lambda args: (called.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, dry_run=True, no_confirm=True,
@@ -1613,8 +1615,10 @@ def test_apply_dry_run_does_not_invoke_update(tmp_path, monkeypatch, capsys):
 def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, capsys):
     target = _apply_doctor_setup(tmp_path, monkeypatch)
     captured = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: captured.append(args))
+                        lambda args: (captured.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True,
@@ -1637,8 +1641,10 @@ def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys
     """
     target = _apply_doctor_setup(tmp_path, monkeypatch, foreign=False)
     called = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: called.append(args))
+                        lambda args: (called.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True,
@@ -1663,8 +1669,10 @@ def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys
 def test_apply_prompt_decline_skips_rebuild(tmp_path, monkeypatch, capsys):
     _apply_doctor_setup(tmp_path, monkeypatch)
     called = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: called.append(args))
+                        lambda args: (called.append(args), 0)[1])
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
 
     rc = doctor.cmd_doctor_pkg(_make_args(
@@ -1680,8 +1688,10 @@ def test_apply_prompt_decline_skips_rebuild(tmp_path, monkeypatch, capsys):
 def test_apply_prompt_y_invokes_update(tmp_path, monkeypatch, capsys):
     _apply_doctor_setup(tmp_path, monkeypatch)
     called = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: called.append(args))
+                        lambda args: (called.append(args), 0)[1])
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
 
     rc = doctor.cmd_doctor_pkg(_make_args(
@@ -1696,8 +1706,10 @@ def test_apply_implies_suggest(tmp_path, monkeypatch, capsys):
     """--apply without --suggest still surfaces classified candidates."""
     _apply_doctor_setup(tmp_path, monkeypatch)
     captured = []
+    # 3.0.0-B4: cmd_update now returns the run's exit code and doctor
+    # propagates it, so the stub has to return one.
     monkeypatch.setattr("sysforge.update.cmd_update",
-                        lambda args: captured.append(args))
+                        lambda args: (captured.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
         packages=["driftpkg"], apply=True, no_confirm=True, suggest=False,
