@@ -170,3 +170,39 @@ https://keepachangelog.com/en/1.1.0/
   so the next run stops at the recovery prompt, an ordinary build failure travels back as
   `ExecResult.exit_code` — reported and non-zero, but without arming a recovery prompt it does not
   need. `doctor --apply`'s delegated rebuild propagates the same code.
+
+---
+
+- **`3.0.0-B6` — `pkgver=${_tarver//-/_}` never resolved, so the package rebuilt every run.**
+  The static parser's `_expand_vars` matched only `$var` and `${var}`: its `_VAR_REF` pattern
+  requires `}` immediately after the name, so bash's replace forms `${var/PAT/REPL}` and
+  `${var//PAT/REPL}` fell through unexpanded even though the referenced scalar was already in the
+  symbol table. A real AUR PKGBUILD deriving `pkgver` that way (`_tarver=8.12.32;
+  pkgver=${_tarver//-/_}`) therefore reported the literal `${_tarver//-/_}` as its version. The
+  downstream guard in `update_version.py` did fire on the residual `${…}` and substitute the cached
+  AUR RPC version, so the walk itself stayed correct — but the unresolved value still reached
+  `build_state`, leaving a recorded `pkgver`/`pkgrel` matching neither the PKGBUILD nor the install,
+  and the package presented as a same-version reinstall (`8.12.30-21 → 8.12.30-21`). Scalar
+  expansion now routes the replace family through `_apply_array_transform`, the same helper the
+  array path already used, so the two surfaces share one set of semantics. Only that family is
+  handled: `${var:-default}`, `${var%suffix}`, `${var#prefix}` and any pattern carrying glob
+  metacharacters still yield no substitution and are preserved verbatim, keeping the RPC rescue the
+  authority for what the parser genuinely cannot evaluate.
+
+---
+
+- **`3.0.0-B7` — `sync-config` silently superseded a live value when a section header was commented
+  out.** A live config carrying a pre-`3.0.0-STD1` vintage still had `# [build]` commented, and the
+  add-only merge has no way to flip an existing line from commented to active. The consequence was
+  not cosmetic: a commented header does not disable its section, it reassigns every key beneath it
+  to the preceding table or to the top level, so `repo_mode` stayed syntactically valid and was read
+  from the wrong place — silently inert. `sync-config` then saw `[build]` as absent and appended a
+  *second* `[build]` table holding the shipped default, which supersedes the operator's orphaned
+  value on reparse — a breach of the tool's never-overwrite guarantee that no existing check could
+  observe, because `_comment_signature` subtraction is one-directional and activating a header
+  *removes* its commented form from the shipped file. `sync_file` now compares header liveness in
+  both directions on the pre-merge text; a header active in shipped but only commented in live
+  reports the new `needs merge` status, **skips the write entirely** rather than merge into a file
+  whose structure it has misread, and spills the `.sfnew` companion pointing at `sysforge config
+  merge`. A header commented out in shipped is an example block (`#[group.cosmic]`), not a live
+  section, and is correctly excluded.

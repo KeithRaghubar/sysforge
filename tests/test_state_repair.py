@@ -149,7 +149,10 @@ def test_repair_skips_unresolvable_parameter_expansion(tmp_path, capsys, monkeyp
     (pkgbuild_dir / "PKGBUILD").write_text(
         "_tarver=8.10.0-1\n"
         "pkgname=1password\n"
-        'pkgver="${_tarver//-/_}"\n'  # parser cannot statically resolve this
+        # Command substitution: the static parser cannot resolve this. (The
+        # ${var//-/_} replace form used to live here, but the parser now
+        # resolves it — see test_parser.py::test_scalar_parameter_expansion_*.)
+        'pkgver="$(printf %s "$_tarver" | tr - _)"\n'
         "pkgrel=39\n"
         "arch=(x86_64)\n"
     )

@@ -267,6 +267,91 @@ def test_array_parameter_expansion_unsupported_transform_preserved(tmp_path):
     assert deps == ["${_a[@]:1:2}"]
 
 
+def test_scalar_parameter_expansion_replace_all(tmp_path):
+    """``pkgver=${_tarver//-/_}`` resolves via the scalar symbol table.
+
+    Regression for a real AUR PKGBUILD that derives pkgver from a private
+    scalar with a replace-all transform. Left unexpanded, the literal
+    ``${_tarver//-/_}`` reached the version comparison and never matched the
+    installed version, so the package was rebuilt and reinstalled every run.
+    """
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "_tarver=8.12.32\n"
+        "pkgver=${_tarver//-/_}\n"
+        "pkgrel=33\n"
+        "arch=(x86_64)\n"
+    )
+    g = parse_pkgbuild(pkgbuild)["globals"]
+    assert g["pkgver"] == "8.12.32"
+    assert g["pkgrel"] == "33"
+
+
+def test_scalar_parameter_expansion_replace_all_substitutes(tmp_path):
+    """The replace-all transform actually rewrites every match, not just one."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "_tarver=1-2-3\n"
+        "pkgver=${_tarver//-/_}\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgver"] == "1_2_3"
+
+
+def test_scalar_parameter_expansion_replace_first(tmp_path):
+    """``${var/PAT/REPL}`` replaces only the first occurrence."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "_v=1-2-3\n"
+        "pkgver=${_v/-/_}\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgver"] == "1_2-3"
+
+
+def test_scalar_parameter_expansion_unknown_scalar_preserved(tmp_path):
+    """An unresolvable scalar stays verbatim so the RPC rescue can fire."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "pkgver=${_missing//-/_}\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgver"] == "${_missing//-/_}"
+
+
+def test_scalar_parameter_expansion_unsupported_transform_preserved(tmp_path):
+    """A transform we do not interpret is left verbatim rather than guessed at."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "_v=1.0-git\n"
+        "pkgver=${_v%-git}\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgver"] == "${_v%-git}"
+
+
+def test_scalar_parameter_expansion_glob_pattern_preserved(tmp_path):
+    """Glob metacharacters in the pattern are not literal — leave the token alone."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgname=foo\n"
+        "_v=a1b2\n"
+        "pkgver=${_v//[0-9]/_}\n"
+        "pkgrel=1\n"
+        "arch=(x86_64)\n"
+    )
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgver"] == "${_v//[0-9]/_}"
+
+
 def test_arch_specific_makedepends_merged(tmp_path):
     """makedepends_x86_64 entries merge into the canonical makedepends array.
 

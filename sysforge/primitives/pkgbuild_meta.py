@@ -263,9 +263,25 @@ def _merge_arch_arrays(globals_dict):
 # misleading partial substitution.
 _VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
+# Matches a scalar reference carrying a replace transform: ${var/PAT/REPL} and
+# ${var//PAT/REPL}.  Only the replace family is matched — the name must be
+# followed immediately by `/`, so ${var:-default}, ${var%suffix} and
+# ${var#prefix} stay outside this pattern (and thus untouched), and an array
+# reference such as ${a[@]/#/python-} cannot match because `[` intervenes.
+_VAR_XFORM_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(/[^}]*)\}")
+
 
 def _expand_vars(value, scalars, max_iters=8):
     """Substitute $var / ${var} references using scalars until a fixed point.
+
+    Also resolves the ``${var/PAT/REPL}`` / ``${var//PAT/REPL}`` replace forms,
+    which real PKGBUILDs use to derive `pkgver` from a private scalar (e.g.
+    ``_tarver=8.12.32; pkgver=${_tarver//-/_}``).  Left unexpanded, that literal
+    reaches the version comparison and never matches the installed version, so
+    the package is rebuilt and reinstalled on every run.  Transform semantics
+    are shared with the array path via :func:`_apply_array_transform`, so an
+    unsupported transform or a glob pattern yields ``None`` there and the token
+    is preserved verbatim rather than partially substituted.
 
     Unknown names are preserved verbatim.  Bounded iteration guards against
     self-referential scalars like `_a="$_a"`.
@@ -275,7 +291,15 @@ def _expand_vars(value, scalars, max_iters=8):
             name = m.group(1) or m.group(2)
             v = scalars.get(name)
             return v if isinstance(v, str) else m.group(0)
-        new = _VAR_REF.sub(repl, value)
+
+        def repl_xform(m):
+            v = scalars.get(m.group(1))
+            if not isinstance(v, str):
+                return m.group(0)
+            out = _apply_array_transform([v], m.group(2))
+            return out[0] if out else m.group(0)
+
+        new = _VAR_REF.sub(repl, _VAR_XFORM_REF.sub(repl_xform, value))
         if new == value:
             return new
         value = new

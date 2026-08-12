@@ -106,6 +106,81 @@ def test_sfnew_written_for_commented_example_drift(tmp_path):
     assert "interactive" not in target.read_text(encoding="utf-8")
 
 
+def test_sfnew_written_when_live_comments_out_a_shipped_live_header(tmp_path):
+    """A section header active in shipped but commented out in live is drift.
+
+    Regression for a live packages.toml carrying a pre-3.0.0-STD1 vintage where
+    ``[build]`` was still commented. The add-only, key-anchored merge cannot flip
+    an existing line from commented to active, and the comment-signature
+    subtraction is one-directional (it only sees comments shipped has that live
+    lacks), so the stale ``# [build]`` was invisible — every key beneath it was
+    silently reassigned to the previous table or to the top level, disabling
+    ``repo_mode`` with no warning.
+    """
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text("[build]\nrepo_mode = \"pacman\"\n", encoding="utf-8")
+    target.write_text("# [build]\nrepo_mode = \"build_from_source\"\n", encoding="utf-8")
+
+    _status, _added, sfnew = sync_file(shipped, target, dry_run=False)
+
+    assert sfnew == _sfnew(target), "commented-out shipped-live header must surface as drift"
+    # add-only guarantee: the live file is never rewritten to uncomment it.
+    assert target.read_text(encoding="utf-8").startswith("# [build]")
+
+
+def test_commented_header_never_gets_a_duplicate_shipped_default_table(tmp_path):
+    """The merge must not append a second copy of a table whose live header is
+    commented out. tomlkit reads the orphaned keys as top-level, so the table
+    looks absent and the shipped default would be injected below the operator's
+    own value — not an overwrite textually, but it supersedes it on reparse.
+    """
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text("[build]\nrepo_mode = \"pacman\"\n", encoding="utf-8")
+    target.write_text("# [build]\nrepo_mode = \"build_from_source\"\n", encoding="utf-8")
+
+    status, added, _sfnew_path = sync_file(shipped, target, dry_run=False)
+
+    out = target.read_text(encoding="utf-8")
+    assert out.count("[build]") == 1, "shipped default table was injected as a duplicate"
+    assert "pacman" not in out, "operator's repo_mode was superseded by the shipped default"
+    assert "build_from_source" in out
+    assert added == [], "nothing may be reported as merged when the write is skipped"
+    assert status == "needs merge"
+
+
+def test_commented_header_drift_detected_for_array_of_tables(tmp_path):
+    """The check covers ``[[aot]]`` headers, not just ``[table]``."""
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text("[[rules]]\nname = \"a\"\n", encoding="utf-8")
+    target.write_text("# [[rules]]\nname = \"a\"\n", encoding="utf-8")
+
+    _status, _added, sfnew = sync_file(shipped, target, dry_run=False)
+
+    assert sfnew == _sfnew(target)
+
+
+def test_no_drift_when_shipped_header_is_itself_a_commented_example(tmp_path):
+    """A header commented out in *shipped* is an example block, not a live
+    section — live keeping it commented is correct and must not spill a .sfnew."""
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text(
+        "[build]\nrepo_mode = \"pacman\"\n\n#[group.cosmic]\n#packages = []\n",
+        encoding="utf-8",
+    )
+    target.write_text(
+        "[build]\nrepo_mode = \"pacman\"\n\n#[group.cosmic]\n#packages = []\n",
+        encoding="utf-8",
+    )
+
+    _status, _added, sfnew = sync_file(shipped, target, dry_run=False)
+
+    assert sfnew is None
+
+
 def test_no_sfnew_when_commented_example_adopted_uncommented(tmp_path):
     """A commented example the live file has already adopted by uncommenting it
     into an identical active key is not drift — no .sfnew should be written."""

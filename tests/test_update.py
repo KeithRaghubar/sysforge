@@ -319,7 +319,11 @@ def test_unresolved_pkgver_uses_cached_rpc_version(tmp_path):
     pkg_dir = tmp_path / pkgbase
     _write_pkgbuild(
         pkg_dir,
-        '_tarver=8.12.10-36\npkgname=1password\npkgver=${_tarver//-/_}\npkgrel=36\n',
+        # Command substitution is genuinely unevaluatable by the static parser.
+        # (The ${var//-/_} replace form used to live here, but the parser now
+        # resolves it — see test_parser.py::test_scalar_parameter_expansion_*.)
+        '_tarver=8.12.10-36\npkgname=1password\n'
+        'pkgver=$(printf %s "$_tarver" | tr - _)\npkgrel=36\n',
     )
     entry = {"pkgbuild_dir": str(pkg_dir)}
 
@@ -336,6 +340,35 @@ def test_unresolved_pkgver_uses_cached_rpc_version(tmp_path):
     assert result is not None
     assert result.action == "UP_TO_DATE"
     assert result.pkgbuild_ver == "8.12.10-36"
+
+
+def test_replace_form_pkgver_resolves_without_rpc(tmp_path):
+    """``pkgver=${_tarver//-/_}`` is resolved statically — no RPC cache needed.
+
+    Regression for 3.0.0-B6: the literal used to survive into the comparison and
+    the package presented as a same-version reinstall on every run. The empty
+    ``rpc_version_by_base`` proves the verdict comes from the PKGBUILD itself.
+    """
+    pkgbase = "1password"
+    pkg_dir = tmp_path / pkgbase
+    _write_pkgbuild(
+        pkg_dir,
+        '_tarver=8.12.32\npkgname=1password\npkgver=${_tarver//-/_}\npkgrel=33\n',
+    )
+
+    result = _check_one_pkgbase(
+        pkgbase=pkgbase,
+        pkgnames=[pkgbase],
+        entry={"pkgbuild_dir": str(pkg_dir)},
+        sync_failures={},
+        all_installed={pkgbase: "8.12.32-33"},
+        unrecorded_names=set(),
+        skip_sync_check=False,
+        rpc_version_by_base={},
+    )
+    assert result is not None
+    assert result.pkgbuild_ver == "8.12.32-33"
+    assert result.action == "UP_TO_DATE"
 
 
 def test_unresolved_pkgver_without_cache_is_skipped(tmp_path):
@@ -371,7 +404,11 @@ def test_unresolved_pkgver_renamed_uses_origin_pkgbase_rpc(tmp_path):
     pkg_dir = tmp_path / origin
     _write_pkgbuild(
         pkg_dir,
-        '_tarver=8.12.10-36\npkgname=1password\npkgver=${_tarver//-/_}\npkgrel=36\n',
+        # Command substitution is genuinely unevaluatable by the static parser.
+        # (The ${var//-/_} replace form used to live here, but the parser now
+        # resolves it — see test_parser.py::test_scalar_parameter_expansion_*.)
+        '_tarver=8.12.10-36\npkgname=1password\n'
+        'pkgver=$(printf %s "$_tarver" | tr - _)\npkgrel=36\n',
     )
     entry = {"pkgbuild_dir": str(pkg_dir), "origin_pkgbase": origin}
 

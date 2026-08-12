@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -102,6 +103,42 @@ def _active_signature(text: str) -> set[str]:
         if stripped and not stripped.startswith("#"):
             sig.add(stripped)
     return sig
+
+
+_HEADER_RE = re.compile(r"^\s*(\[\[?[^\[\]]+\]\]?)\s*$")
+_COMMENTED_HEADER_RE = re.compile(r"^\s*#\s*(\[\[?[^\[\]]+\]\]?)\s*$")
+
+
+def _live_headers(text: str) -> set[str]:
+    """Set of section headers that are active (uncommented) in a TOML text."""
+    return {m.group(1) for line in text.splitlines()
+            if (m := _HEADER_RE.match(line))}
+
+
+def _commented_headers(text: str) -> set[str]:
+    """Set of section headers that appear commented out in a TOML text."""
+    return {m.group(1) for line in text.splitlines()
+            if (m := _COMMENTED_HEADER_RE.match(line))}
+
+
+def _headers_commented_out_in_live(shipped_text: str, live_text: str) -> set[str]:
+    """Headers active in *shipped* but only present commented out in *live*.
+
+    The merge is add-only and key-anchored, so it can inject a missing table but
+    can never flip an existing line from commented to active. That blind spot is
+    dangerous rather than merely cosmetic: a commented-out header does not
+    disable its section, it *reassigns* every key beneath it to the preceding
+    table (or to the top level), so settings stay syntactically valid and are
+    silently read from the wrong place — the mode that left a live packages.toml
+    with an inert ``repo_mode`` under a stale ``# [build]``.
+
+    :func:`_comment_signature` cannot see this: it only reports comments shipped
+    has that live lacks, and activating a header *removes* the commented form
+    from shipped. A header that is itself commented out in shipped is an example
+    block (``#[group.cosmic]``), not a live section, so it is correctly excluded.
+    """
+    return (_live_headers(shipped_text)
+            & _commented_headers(live_text)) - _live_headers(live_text)
 
 
 def _first_section_index(body) -> int:
@@ -186,11 +223,26 @@ def sync_file(shipped: Path, target: Path,
         return ("created", [], None)
 
     shipped_text = shipped.read_text(encoding="utf-8")
+    live_text = target.read_text(encoding="utf-8")
+
+    # Detected on the *pre-merge* text: a header active in shipped but only
+    # present commented out in live means tomlkit reads the keys beneath it as
+    # belonging to the previous table (or to the top level). The merge would
+    # then see the table as absent and append a second, shipped-default copy of
+    # it — which does not overwrite the operator's line textually but silently
+    # supersedes it, breaking this tool's never-overwrite guarantee. An add-only
+    # merge cannot be performed safely on a file whose structure it has misread,
+    # so skip the write entirely and surface the drift via .sfnew instead.
+    stale_headers = _headers_commented_out_in_live(shipped_text, live_text)
+
     src = tomlkit.parse(shipped_text)
-    dst = tomlkit.parse(target.read_text(encoding="utf-8"))
+    dst = tomlkit.parse(live_text)
     added = merge_container(src, dst)
     merged_text = tomlkit.dumps(dst)
-    if added and not dry_run:
+    if stale_headers:
+        added = []
+        merged_text = live_text
+    elif added and not dry_run:
         target.write_text(merged_text, encoding="utf-8")
 
     # Comment/example drift the key-merge cannot carry → .sfnew companion.
@@ -203,8 +255,9 @@ def sync_file(shipped: Path, target: Path,
         - _comment_signature(merged_text)
         - _active_signature(merged_text)
     )
+
     sfnew_written: Path | None = None
-    if missing_comments:
+    if missing_comments or stale_headers:
         sfnew_written = sfnew_path
         if not dry_run:
             sfnew_path.write_text(shipped_text, encoding="utf-8")
@@ -213,7 +266,12 @@ def sync_file(shipped: Path, target: Path,
         # companion so the dir doesn't accumulate orphaned .sfnew files.
         sfnew_path.unlink()
 
-    status = "updated" if added else "up to date"
+    if stale_headers:
+        status = "needs merge"
+    elif added:
+        status = "updated"
+    else:
+        status = "up to date"
     return (status, added, sfnew_written)
 
 
@@ -245,6 +303,18 @@ def main(argv: list[str] | None = None) -> int:
         status, added, sfnew = sync_file(shipped, target, args.dry_run)
         if sfnew is not None:
             sfnew_count += 1
+        if status == "needs merge":
+            # Structural drift: a section header live in shipped is commented
+            # out here, so the keys under it are read as belonging elsewhere.
+            # Merging would inject a duplicate table carrying shipped defaults,
+            # so the write was skipped — this needs the operator's eyes.
+            print(f"  {shipped.name}: NEEDS MERGE — a section header is commented "
+                  f"out; settings under it are inert")
+            if sfnew is not None:
+                print(f"      ~ merge skipped to avoid overriding your values — "
+                      f"{wrote} {sfnew.name}")
+                print("      ~ resolve with: sysforge config merge")
+            continue
         if status == "up to date":
             note = (f": comments/examples differ — {wrote} {sfnew.name}"
                     if sfnew is not None else "")
