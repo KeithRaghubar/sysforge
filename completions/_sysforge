@@ -187,6 +187,8 @@ _sysforge_update() {
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '(--no-review)--review[prompt to review source-change diffs]' \
     '(--review)--no-review[skip the PKGBUILD review gate]' \
+    '(--no-sysupgrade)--sysupgrade[finish the run with one pacman -Syu]' \
+    '(--sysupgrade)--no-sysupgrade[skip the trailing pacman -Syu]' \
     '--no-toolchain-preflight[skip the toolchain pre-flight]' \
     '--include-stage-owned[include stage-owned packages]' \
     '--explain-drift[list drifted packages, then exit]' \

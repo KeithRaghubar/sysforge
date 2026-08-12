@@ -144,3 +144,45 @@ def test_pacman_upgrade_unknown_version_falls_back_to_bare_name(capsys, monkeypa
     out = capsys.readouterr().out
     assert "glibc" in out
     assert "→" not in out
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F4: flag-triggered system upgrade — variant presentation
+# ---------------------------------------------------------------------------
+
+def test_system_upgrade_renders_without_package_list(capsys, monkeypatch):
+    """A `--sysupgrade` run has no classified pacman-class package list, so the
+    Pacman-Syu block reports the transaction itself rather than per-package
+    lines."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(system_upgrade_ran=True)
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "system upgraded" in out
+    assert "Pacman-Syu:" in out
+    assert "system upgrade (pacman resolved the transaction)" in out
+
+
+def test_system_upgrade_failure_label(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(system_upgrade_ran=True, pacman_upgrade_failed=True)
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "Pacman-Syu (transaction FAILED):" in out
+    assert "(pacman -Syu FAILED)" in out
+
+
+def test_classified_list_wins_over_system_upgrade_flag(capsys, monkeypatch):
+    """When the walk did classify pacman-class packages, the per-package block
+    is what renders — the variant presentation is the no-list case only."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(pacman_upgrade_pkgs=["firefox"], system_upgrade_ran=True,
+               versions={"firefox": ("130.0-1", "131.0-1")})
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "1 pacman-upgraded" in out
+    assert "firefox" in out
+    assert "pacman resolved the transaction" not in out

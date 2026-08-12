@@ -459,6 +459,16 @@ def _add_update_parser(sub):
     review_group.add_argument("--no-review", action="store_true", dest="no_review",
         help="Skip the PKGBUILD review gate entirely (no auto-accept notices). "
              "Also configurable via [build] review = false in packages.toml.")
+    sysupgrade_group = p.add_mutually_exclusive_group()
+    sysupgrade_group.add_argument("--sysupgrade", action="store_true", dest="sysupgrade",
+        help="Finish the run with a single `pacman -Syu` system upgrade, after "
+             "source-built artifacts are installed (they stay protected by the "
+             "`IgnoreGroup = sf-build` line `sysforge setup` adds). Independent "
+             "of repo_mode — no extra packages enter the version-check walk. "
+             "Also settable via [build] system_upgrade = true in packages.toml.")
+    sysupgrade_group.add_argument("--no-sysupgrade", action="store_true", dest="no_sysupgrade",
+        help="Skip the trailing system upgrade even when "
+             "[build] system_upgrade = true is set in packages.toml.")
     p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
         help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
              "lib32 cross targets) that normally runs before the build loop.")

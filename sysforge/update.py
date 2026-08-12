@@ -518,6 +518,7 @@ def _build_result_summary(
     *, results, built_pkgs, failed_pkgs, pacman_upgrade_pkgs,
     installed_deps, pgo_skipped_pkgs, cleansrc_failures,
     install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
+    system_upgrade_ran=False,
 ) -> ResultSummary:
     """Assemble a ``ResultSummary`` from ``update``'s per-run state.
 
@@ -539,6 +540,7 @@ def _build_result_summary(
         skipped=skipped,
         versions=versions,
         stage_owned_updates=list(stage_owned_updates),
+        system_upgrade_ran=system_upgrade_ran,
     )
 
 
@@ -716,6 +718,16 @@ def _cmd_update_body(args) -> int:
         review_mode = "prompt"
     else:
         review_mode = "auto"
+
+    # 3.0.0-F4: the trailing `pacman -Syu` (Phase 6.5) is an update-run
+    # option, not a consequence of `repo_mode`. Off by default, so a plain
+    # run behaves exactly as before; --no-sysupgrade is the explicit-off leg
+    # that outranks the config default (same shape as --no-review).
+    if getattr(args, "no_sysupgrade", False):
+        system_upgrade = False
+    else:
+        system_upgrade = resolve_flag_default(
+            args, "sysupgrade", build_cfg, "system_upgrade")
 
     # ── Phase 1: Package set assembly ─────────────────────────────────────
     _ui_progress.phase("assembling package set")
@@ -1082,7 +1094,13 @@ def _cmd_update_body(args) -> int:
     # path (see the pacman-upgrade-only `if not to_build: pass` branch just
     # below) — it proceeds to Phase 6.5, then reaches the summary print and
     # the frozen-set raise at the end of this function.
-    if not to_build and not pending_pacman_upgrade and not frozen_sync_pkgs:
+    # 3.0.0-F4: a requested system upgrade is work in its own right — an
+    # otherwise-idle run must fall through to Phase 6.5 rather than print
+    # "Nothing to rebuild." and exit. Offline runs never dispatch it, so the
+    # early exit still applies there.
+    sysupgrade_pending = system_upgrade and not offline
+    if (not to_build and not pending_pacman_upgrade and not frozen_sync_pkgs
+            and not sysupgrade_pending):
         _ui_progress.phase(None)
         print("[SYSFORGE] Nothing to rebuild.")
         _emit_timings(timer, args)
@@ -1205,15 +1223,23 @@ def _cmd_update_body(args) -> int:
     _ui_progress.phase(None)
     pacman_upgrade_pkgs = sorted(r.pkgbase for r in pending_pacman_upgrade)
     pacman_upgrade_failed = False
-    if pacman_upgrade_pkgs and not offline:
+    system_upgrade_ran = False
+    if (pacman_upgrade_pkgs or sysupgrade_pending) and not offline:
         noconfirm = getattr(args, "noconfirm", False)
         cmd = privileged_argv(["pacman", "-Syu"])
         if noconfirm:
             cmd.append("--noconfirm")
-        _log.info(
-            f"Running pacman -Syu for {len(pacman_upgrade_pkgs)} repo "
-            f"package(s): {' '.join(pacman_upgrade_pkgs)}"
-        )
+        if pacman_upgrade_pkgs:
+            _log.info(
+                f"Running pacman -Syu for {len(pacman_upgrade_pkgs)} repo "
+                f"package(s): {' '.join(pacman_upgrade_pkgs)}"
+            )
+        else:
+            # 3.0.0-F4 flag-only route: no classified package list exists —
+            # pacman resolves the transaction itself, one subprocess, no
+            # widened walk and no checkupdates probe.
+            system_upgrade_ran = True
+            _log.info("Running pacman -Syu (system upgrade requested)")
         import subprocess as _subprocess
         with timer.phase("pacman -Syu"):
             rc = _subprocess.run(cmd).returncode
@@ -1258,6 +1284,7 @@ def _cmd_update_body(args) -> int:
         pacman_upgrade_failed=pacman_upgrade_failed,
         skipped=skipped,
         stage_owned_updates=stage_owned_updates,
+        system_upgrade_ran=system_upgrade_ran,
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.

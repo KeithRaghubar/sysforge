@@ -1951,6 +1951,75 @@ def test_default_mode_does_not_call_checkupdates(update_scenario):
 
 
 # ---------------------------------------------------------------------------
+# 3.0.0-F4: the trailing pacman -Syu as a standalone update-run option
+# ---------------------------------------------------------------------------
+
+def _up_to_date_scenario(scenario):
+    """A run with one in-scope AUR package that needs nothing — the shape that
+    otherwise takes the early "Nothing to rebuild." exit."""
+    scenario.add_pkg("htop", "pkgname=htop\npkgver=3.3.0\npkgrel=1\n")
+    return dict(installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"})
+
+
+def test_sysupgrade_flag_fires_syu_without_pacman_class(update_scenario, capsys):
+    """--sysupgrade runs the trailing -Syu on a default (repo_mode = "pacman")
+    install, where no result ever carries NEEDS_PACMAN_UPGRADE."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert _syu_fired(update_scenario)
+    # Flag-only route: pacman does its own resolution, no walk widening.
+    assert not _checkupdates_called(update_scenario)
+    assert update_scenario.exit_code == 0
+
+
+def test_sysupgrade_config_default_fires(update_scenario):
+    """[build] system_upgrade = true alone enables the trailing -Syu."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.set_build_key("system_upgrade", True)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False), **kw)
+    assert _syu_fired(update_scenario)
+
+
+def test_no_sysupgrade_flag_beats_config_default(update_scenario):
+    """--no-sysupgrade wins over [build] system_upgrade = true (CLI precedence)."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.set_build_key("system_upgrade", True)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False, no_sysupgrade=True), **kw)
+    assert not _syu_fired(update_scenario)
+
+
+def test_sysupgrade_default_off(update_scenario):
+    """Neither flag nor config → today's behaviour: no trailing -Syu."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False), **kw)
+    assert not _syu_fired(update_scenario)
+
+
+def test_sysupgrade_suppressed_when_offline(update_scenario, capsys):
+    """--offline outranks --sysupgrade — no network transaction is dispatched."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=True, sysupgrade=True), **kw)
+    assert not _syu_fired(update_scenario)
+    assert "Nothing to rebuild" in "".join(capsys.readouterr())
+
+
+def test_sysupgrade_failure_sets_exit_code(update_scenario):
+    """A failing flag-triggered -Syu is a run failure, same as the classified
+    route (3.0.0-B4 exit-code discipline)."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.fake_run.respond("pacman -Syu", returncode=1)
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert _syu_fired(update_scenario)
+    assert update_scenario.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
 # Stage-owned packages — kernel ownership filter
 # ---------------------------------------------------------------------------
 

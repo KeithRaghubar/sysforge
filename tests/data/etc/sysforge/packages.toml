@@ -35,6 +35,9 @@ repo_mode = "build_from_source"  # "pacman" (default) | "build_from_source" — 
 #                       #                      `checkupdates` and one terminal `sudo pacman -Syu`
 #                       #                      after the source builds. Requires pacman-contrib.
 #                       # per-package enable_build_from_source = true overrides to source-build regardless
+# system_upgrade = false # finish each `sysforge update` run with one `sudo pacman -Syu`.
+#                       # Independent of repo_mode — no walk widening, no checkupdates
+#                       # probe; --sysupgrade / --no-sysupgrade override per run.
 # review = true         # PKGBUILD review gate: diff prompt before building changed
 #                       # sources (view/accept/skip/abort). false disables; --no-review
 #                       # disables per run. Non-interactive runs auto-accept + warn.

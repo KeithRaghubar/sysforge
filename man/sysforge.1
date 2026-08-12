@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-08\-09"
+.TH "sysforge" "1" "2026\-08\-12"
 .PP
 .PP
 .SH NAME
@@ -414,6 +414,16 @@ Prompt to review the full source\-tree diff for packages whose source changed si
 \fB\-\-no\-review\fR
 .RS 4
 Skip the PKGBUILD review gate entirely (no auto\-accept notices).\& Also configurable via [build] review = false in packages.\&toml.\&
+.PP
+.RE
+\fB\-\-sysupgrade\fR
+.RS 4
+Finish the run with a single `pacman \-Syu` system upgrade, after source\-built artifacts are installed (they stay protected by the `IgnoreGroup = sf\-build` line `sysforge setup` adds).\& Independent of repo_mode — no extra packages enter the version\-check walk.\& Also settable via [build] system_upgrade = true in packages.\&toml.\&
+.PP
+.RE
+\fB\-\-no\-sysupgrade\fR
+.RS 4
+Skip the trailing system upgrade even when [build] system_upgrade = true is set in packages.\&toml.\&
 .PP
 .RE
 \fB\-\-no\-toolchain\-preflight\fR
@@ -1569,7 +1579,8 @@ and the \fBrun\fR stages.\&
 /etc/sysforge/packages.\&toml
 .RS 4
 Package manifest: build\-rule overrides applied to the live install
-set, the [build] table (repo_mode, review, pkgbuild_src_dir), and the
+set, the [build] table (repo_mode, system_upgrade, review,
+pkgbuild_src_dir), and the
 bootstrap install list.\& Managed by \fBsysforge packages\fR.\&
 Read by: \fBbuild\fR, \fBupdate\fR, \fBrun packages\fR, \fBrun pipeline\fR,
 \fBrun reconfigure\fR.\&

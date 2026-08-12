@@ -78,6 +78,15 @@
 #   pacman-class packages are reported as SKIPPED_NO_CHECKUPDATES.
 #repo_mode = "pacman"
 #
+# system_upgrade — false (default) | true — finish every `sysforge update`
+#   run with a single `sudo pacman -Syu`. Independent of repo_mode: no extra
+#   packages enter the version-check walk and no `checkupdates` probe runs —
+#   pacman resolves the transaction itself. It fires after the source-built
+#   artifacts are installed, so the `IgnoreGroup = sf-build` line from
+#   `sysforge setup` protects them. --sysupgrade / --no-sysupgrade override
+#   per run.
+#system_upgrade = false
+#
 # review — PKGBUILD review gate: before building a package whose source
 #   changed since the last accepted build, show the full source-tree diff
 #   and prompt (view/accept/skip/abort). false disables the gate;

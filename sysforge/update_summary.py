@@ -130,6 +130,10 @@ class ResultSummary:
     cleansrc_failures: list[str] = field(default_factory=list)
     install_only: bool = False
     pacman_upgrade_failed: bool = False
+    # 3.0.0-F4: the trailing `pacman -Syu` ran as a requested system upgrade
+    # rather than off a classified pacman-class package list, so there are no
+    # per-package lines to render — only the fact that the transaction ran.
+    system_upgrade_ran: bool = False
     skipped: int = 0
     # pkgbase -> (installed_ver, pkgbuild_ver)
     versions: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
@@ -171,7 +175,8 @@ def _print_result_summary(
         + (f", {len(summary.pgo_skipped_pkgs)} pgo-skipped"
            if summary.pgo_skipped_pkgs else "")
         + (f", {len(summary.pacman_upgrade_pkgs)} pacman-upgraded"
-           if summary.pacman_upgrade_pkgs else "")
+           if summary.pacman_upgrade_pkgs
+           else (", system upgraded" if summary.system_upgrade_ran else ""))
         + (" (pacman -Syu FAILED)" if summary.pacman_upgrade_failed else "")
         + "."
     )
@@ -195,6 +200,12 @@ def _print_result_summary(
         label = ("Pacman-Syu (transaction FAILED):"
                  if summary.pacman_upgrade_failed else "Pacman-Syu:")
         _section(label, [_fmt_pkg(summary, pb) for pb in summary.pacman_upgrade_pkgs])
+    elif summary.system_upgrade_ran:
+        # 3.0.0-F4: flag/config-triggered `pacman -Syu` — pacman resolved the
+        # transaction, so the only fact this renderer owns is that it ran.
+        label = ("Pacman-Syu (transaction FAILED):"
+                 if summary.pacman_upgrade_failed else "Pacman-Syu:")
+        _section(label, ["system upgrade (pacman resolved the transaction)"])
 
     if summary.failed_pkgs:
         _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])

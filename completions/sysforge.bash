@@ -209,7 +209,8 @@ _sysforge_update() {
     _sysforge_flag_arg && return
     local flags="--packages --dry-run --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
-        --review --no-review --no-toolchain-preflight --include-stage-owned \
+        --review --no-review --sysupgrade --no-sysupgrade \
+        --no-toolchain-preflight --include-stage-owned \
         --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \
         -m --makepkg --state-dir --profile-conf --cache-report \
         --no-pkg-log --persist-log --log-dir"

@@ -643,7 +643,10 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             if self._build_cfg:
                 lines.append("[build]")
                 for k, v in self._build_cfg.items():
-                    lines.append(f'{k} = "{v}"')
+                    if isinstance(v, bool):
+                        lines.append(f"{k} = {str(v).lower()}")
+                    else:
+                        lines.append(f'{k} = "{v}"')
                 lines.append("")
             for ov in self._overrides:
                 lines.append("[[package]]")
@@ -658,6 +661,11 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
         def set_repo_mode(self, mode):
             """Set ``[build] repo_mode`` (e.g. "build_from_source") in packages.toml."""
             self._build_cfg["repo_mode"] = mode
+            self._write_packages()
+
+        def set_build_key(self, key, value):
+            """Set an arbitrary ``[build]`` key (e.g. ``system_upgrade``)."""
+            self._build_cfg[key] = value
             self._write_packages()
 
         def add_override(self, name, **fields):

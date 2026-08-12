@@ -44,6 +44,19 @@ https://keepachangelog.com/en/1.1.0/
   only. makepkg's own `source=()` downloads cannot be mediated and are warned
   about instead.
 
+---
+
+- **`3.0.0-F4` — decouple `update`'s trailing `pacman -Syu` from `repo_mode`.** The
+  Phase 6.5 system upgrade is now an update-run option in its own right: new
+  `[build] system_upgrade` key in `packages.toml` plus `--sysupgrade` /
+  `--no-sysupgrade`. Previously the only way to get it was `repo_mode =
+  "build_from_source"`, whose actual job is to pull every installed repo package
+  into the version-check walk — a ~180-package walk became ~1300 to earn one
+  `pacman -Syu`. The flag route widens no walk and runs no `checkupdates` probe:
+  pacman resolves the transaction itself, one subprocess. Ordering is unchanged —
+  source artifacts still install first, shielded by `IgnoreGroup = sf-build`.
+  Defaults off, so an existing config behaves exactly as before.
+
 ## Changed
 
 - **`2.5.1-F4` — Abandoned roadmap entries moved to their own file.** `ROADMAP.md` now

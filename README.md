@@ -70,6 +70,7 @@ sysforge build neovim-git -si
 sysforge update
 sysforge update --devel       # VCS packages too
 sysforge update --dry-run     # preview only
+sysforge update --sysupgrade  # ...then one `pacman -Syu` for the repo packages
 ```
 
 Anything you `build` is then *maintained*: `sysforge update` rebuilds it from source as
@@ -207,7 +208,7 @@ For a graphical desktop you don't have to enumerate every package: `sysforge pac
 
 A custom kernel goes in `kernel.toml` (not `packages.toml`) and a custom LLVM toolchain in `toolchain.toml` — the kernel and toolchain stages own those packages, and `sysforge update` skips stage-owned packages by default. Build/IO/memory throttling (including a per-build `mem_limit` ceiling), `PACKAGER`/`MAKEFLAGS` defaults, and per-profile knobs are documented inline in the shipped configs and in [DESIGN.md](DESIGN.md).
 
-`packages.toml [build]` also carries per-flag defaults for `sysforge build` — `abi_check`, `cache_report`, `persist_log` — so you don't have to pass `--abi-check`/`--cache-report`/`--persist-log` every run; the CLI flag still wins if given. Similarly, `sysforge.toml [update]` carries `rebuild_on_drift` (+ the per-axis `rebuild_on_toolchain_drift`/`rebuild_on_flag_drift`) so `sysforge update` can default to rebuilding drifted packages without passing `--rebuild-on-drift` each time.
+`packages.toml [build]` also carries per-flag defaults for `sysforge build` — `abi_check`, `cache_report`, `persist_log` — so you don't have to pass `--abi-check`/`--cache-report`/`--persist-log` every run; the CLI flag still wins if given. Similarly, `sysforge.toml [update]` carries `rebuild_on_drift` (+ the per-axis `rebuild_on_toolchain_drift`/`rebuild_on_flag_drift`) so `sysforge update` can default to rebuilding drifted packages without passing `--rebuild-on-drift` each time. `packages.toml [build] system_upgrade = true` does the same for `--sysupgrade`, the trailing `pacman -Syu` that refreshes your repo packages after the source builds are installed (`--no-sysupgrade` opts out for one run).
 
 By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv` add warnings/info/debug. To raise that baseline permanently set `sysforge.toml [log] verbosity` (0–3) — for example `verbosity = 2` to always see progress narration. A CLI flag always wins, and `--quiet` forces silence (verbosity 0) for a single run.
 

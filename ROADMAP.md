@@ -95,7 +95,6 @@ canonical ordering.
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
-| `3.0.0-F4` | decouple update's trailing pacman -Syu from repo_mode | med | small | minor |
 | `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -206,44 +205,6 @@ canonical ordering.
 
 ---
 
-- **`3.0.0-F4` — decouple `update`'s trailing `pacman -Syu` from `repo_mode`.** Phase 6.5
-  (`update.py:1196`) is the only way `sysforge update` refreshes repo packages, and it fires solely
-  when the walk produced `NEEDS_PACMAN_UPGRADE` results — which requires at least one entry carrying
-  `repo_class = "pacman"` (`update.py:767`), which `update_assemble._resolve_repo_class` assigns only
-  to packages whose source resolved to `repo`, which in turn enter `target_names` only under
-  `repo_mode = "build_from_source"` (`update_assemble.py:112`). So on a default install the trailing
-  upgrade silently never runs, and the only way to enable it is a setting whose actual job is to pull
-  **every** installed non-foreign package into the version-check walk — on a typical desktop that
-  swaps a ~180-package walk for a ~1300-package one to earn one `sudo pacman -Syu`. The batched
-  `checkupdates` fast path (`update.py:772`) exists to make that walk bearable; it is an optimisation
-  for a cost the operator should not be paying at all. The coupling is also semantically wrong: Phase
-  6.5 discards the per-package classification it gated on and issues one unconditional transaction,
-  as its own comment concedes (`update.py:1200-1202`) — nothing about it concerns source builds.
-  Add `[build] system_upgrade` to `packages.toml` alongside `repo_mode`, with a `--sysupgrade` /
-  `--no-sysupgrade` CLI pair through the existing `config.resolve_flag_default` seam, and widen the
-  Phase 6.5 gate to `if (pacman_upgrade_pkgs or system_upgrade) and not offline`. No walk changes and
-  no `checkupdates` call on this path — pacman does its own resolution, so the flag-only route stays
-  one subprocess. Ordering correctness is inherited unchanged: source artifacts still install in
-  Phase 6 and `IgnoreGroup = sf-build` still shields them before the transaction runs.
-  `update_summary` needs a variant presentation — the `Pacman-Syu:` block keys off the classified
-  package list (`update_summary.py:195`), which a flag-triggered upgrade does not have, while the
-  `pacman_upgrade_failed` axis (`:175`) already carries failure. Ships the shipped-config +
-  `tests/data` fixture parity for `check-shipped`, both completions, the manpage, and tests for the
-  CLI-over-config precedence matrix.
-  **Explicitly out of scope — considered and rejected:** a third `repo_mode` value (e.g. `"syu"`).
-  `repo_mode` answers "are repo packages maintained as binaries or from source", and is read at four
-  independent seams — walk membership (`update_assemble.py:91`), the `build` opt-in prompt
-  (`build_cmd.py:170`), the packages stage (`stages/packages.py:363`, `:430`) and the LLVM
-  stock-install decision (`llvm_state.py:567`). A third value's honest answer at every one of them
-  except Phase 6.5 is "identical to `pacman`", i.e. a permanent synonym inside a `resolve_enum`
-  chokepoint. Keep the enum two-valued and make the trailing upgrade what it actually is: an
-  update-run option.
-  *Priority: med · Effort: small · Bump: minor* — additive config key + CLI flag; no existing
-  default changes (`system_upgrade` defaults false, so a `repo_mode = "pacman"` run behaves exactly
-  as today). **Standards home on adoption:** none new — the flag rides the existing
-  §Config Layer `resolve_flag_default` precedence seam.
-
----
 
 - **`2.6.1-F21` — one home for replacing an existing config file.** Six sites hand-roll the same
   stage-to-temp-then-install shape with three different spellings and two different privilege

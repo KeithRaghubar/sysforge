@@ -150,7 +150,8 @@ recovery command.
 
 /etc/sysforge/packages.toml
 	Package manifest: build-rule overrides applied to the live install
-	set, the [build] table (repo_mode, review, pkgbuild_src_dir), and the
+	set, the [build] table (repo_mode, system_upgrade, review,
+	pkgbuild_src_dir), and the
 	bootstrap install list. Managed by *sysforge packages*.
 	Read by: *build*, *update*, *run packages*, *run pipeline*,
 	*run reconfigure*.
