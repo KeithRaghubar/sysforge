@@ -155,19 +155,6 @@ pkgname = "linux-sysforge"
 #   so the injected seed is a runtime no-op.
 # base_config = "pkgbuild"
 
-# ---------------------------------------------------------------------------
-# kconfig — kernel config fragment
-#
-# Entries are written to a sysforge.config fragment and applied via
-# scripts/config before the build. Precedence (highest first): manual entries
-# below > hardware_profile [kconfig] > hardware_profile [kconfig_devices];
-# manual overrides warn on conflict.
-#
-# [kconfig]
-# CONFIG_HZ_1000 = "y"
-# CONFIG_NO_HZ_FULL = "y"
-# CONFIG_PREEMPT = "y"
-# ---------------------------------------------------------------------------
 
 # kconfig_merge — default: true — write the sysforge.config fragment
 #   (device + hardware + manual entries) for the PKGBUILD to merge. Set false
@@ -199,3 +186,28 @@ pkgname = "linux-sysforge"
 #   first kernel build (Gate 2 caches the source tree's module→kconfig map).
 #   Set false to build the fragment from [kconfig] + manual entries only.
 # device_kconfig = true
+
+# ---------------------------------------------------------------------------
+# kconfig — kernel config fragment
+#
+# Entries are written to a sysforge.config fragment and applied via
+# scripts/config before the build. Precedence (highest first): manual entries
+# below > hardware_profile [kconfig] > hardware_profile [kconfig_devices];
+# manual overrides warn on conflict.
+#
+# Each override is one [[kconfig]] array-of-tables entry with an 'option' and a
+# 'value'. Note this is NOT the same shape as hardware_profile.toml's [kconfig]
+# table. This block is deliberately the LAST thing in the file: a live TOML
+# table header captures every top-level key written below it, so a header
+# placed mid-file would silently swallow e.g. kconfig_targets. Add new
+# top-level keys ABOVE this block, never below it.
+#
+# [[kconfig]]
+# option = "CONFIG_HZ_1000"
+# value = "y"
+#
+# [[kconfig]]
+# option = "CONFIG_PREEMPT"
+# value = "y"
+# ---------------------------------------------------------------------------
+

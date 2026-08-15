@@ -802,8 +802,30 @@ def _validate_manual_kconfig(entries):
     Returns a dict {option: value} of validated entries.
     Raises RuntimeError on bad format or duplicate options.
     """
+    if isinstance(entries, dict):
+        # A `[kconfig]` table, not the `[[kconfig]]` array-of-tables this reads.
+        # Most often it is the TOML capture trap: a live `[kconfig]` header
+        # swallows every top-level key written below it.
+        captured = [k for k in entries if not _KCONFIG_OPTION_RE.match(k)]
+        detail = (
+            f" (top-level key(s) {', '.join(sorted(captured))} were swallowed by the "
+            f"table header — move them above it)"
+            if captured
+            else ""
+        )
+        raise RuntimeError(
+            f"[KERNEL] kernel.toml: kconfig is a table, but manual overrides use the "
+            f"[[kconfig]] array-of-tables form "
+            f'(e.g. [[kconfig]] / option = "CONFIG_HZ_1000" / value = "y"){detail}'
+        )
+
     seen = {}
     for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"[KERNEL] kernel.toml [[kconfig]] entry [{i}]: expected a table with "
+                f"'option' and 'value' keys, got {type(entry).__name__} {entry!r}"
+            )
         option = entry.get("option", "").strip()
         value = str(entry.get("value", "")).strip()
 

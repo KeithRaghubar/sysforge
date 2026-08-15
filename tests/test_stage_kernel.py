@@ -217,6 +217,23 @@ def test_validate_kconfig_empty_value():
     with pytest.raises(RuntimeError, match="empty value"):
         _validate_manual_kconfig([{"option": "CONFIG_HZ", "value": ""}])
 
+def test_validate_kconfig_table_form_is_rejected_with_guidance():
+    """A `[kconfig]` table (wrong schema) must name the right one, not AttributeError."""
+    with pytest.raises(RuntimeError, match=r"\[\[kconfig\]\]"):
+        _validate_manual_kconfig({"CONFIG_HZ_1000": "y"})
+
+
+def test_validate_kconfig_captured_top_level_key_names_the_key():
+    """A top-level key swallowed by a live `[kconfig]` header is reported by name."""
+    with pytest.raises(RuntimeError, match="kconfig_targets"):
+        _validate_manual_kconfig({"kconfig_targets": ["olddefconfig"]})
+
+
+def test_validate_kconfig_non_table_entry_is_rejected():
+    with pytest.raises(RuntimeError, match=r"entry \[0\]"):
+        _validate_manual_kconfig(["CONFIG_HZ_1000"])
+
+
 def test_validate_kconfig_duplicate_option():
     entries = [
         {"option": "CONFIG_HZ_1000", "value": "y"},

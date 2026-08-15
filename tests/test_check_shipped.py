@@ -531,7 +531,12 @@ class TestFullyPopulatedShippedConfigs:
         allow_top = cs._KNOWN_TOP_KEYS[name]
         allow_sec = cs._KNOWN_SECTIONS[name]
         for key, val in data.items():
-            if isinstance(val, (dict, list)):
+            # A section is a table, or an array-of-tables. A plain array of
+            # scalars (kconfig_targets = ["olddefconfig"]) is a top-level key.
+            is_section = isinstance(val, dict) or (
+                isinstance(val, list) and any(isinstance(v, dict) for v in val)
+            )
+            if is_section:
                 assert key in allow_sec, f"{name}: section [{key}] not allowlisted"
             else:
                 assert key in allow_top, f"{name}: key {key!r} not allowlisted"

@@ -253,3 +253,21 @@ https://keepachangelog.com/en/1.1.0/
   whose structure it has misread, and spills the `.sfnew` companion pointing at `sysforge config
   merge`. A header commented out in shipped is an example block (`#[group.cosmic]`), not a live
   section, and is correctly excluded.
+
+---
+
+- **`3.0.0-B8` — `run kernel` crashed with `AttributeError` because the shipped `kernel.toml`
+  documented a kconfig schema the kernel stage cannot read.** Manual overrides are an
+  `[[kconfig]]` array-of-tables of `option`/`value` pairs (per §Kernel stage), but the shipped
+  default documented them as a `[kconfig]` **table** of `CONFIG_X = "y"` keys — the shape
+  `hardware_profile.toml` uses, not the one `_validate_manual_kconfig` parses. The shipped file
+  additionally left that `[kconfig]` header **live** (uncommented) in the middle of an otherwise
+  flat file, so — the same header-liveness hazard as `3.0.0-B7`, in the opposite direction — it
+  captured every top-level key written below it: an operator's `kconfig_targets = ["olddefconfig"]`
+  silently became `kconfig.kconfig_targets`, inert for the feature it configured and fatal to the
+  stage, which then iterated a dict and called `.get` on a `str` key. The `[[kconfig]]` block now
+  documents the real schema, stays fully commented, and is deliberately the **last** block in both
+  the shipped file and its fixture so no header can capture a later key. `_validate_manual_kconfig`
+  gained the matching defense: a table raises a `RuntimeError` naming the `[[kconfig]]` form and
+  listing any non-`CONFIG_*` keys the header swallowed, and a non-table entry is rejected by index
+  — no more `AttributeError` from deep in the stage.
