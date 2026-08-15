@@ -7,6 +7,8 @@ Covers:
   - gstreamer PTP-no-rust → falls back to lib32 i686 target suggestion when
     E0463 is absent; suppressed when E0463 is also present (no dup noise)
   - meson "Unknown options" → stale build/ directory suggestion
+  - meson pkg-config version gate → module/floor/found parsed, owning package
+    resolved, repo-satisfiability verdict, AUR -git presence, and never a fix_cmd
   - clean logs → no suggestions, no false positives
   - render_suggestions: shape + empty case
 """
@@ -320,3 +322,87 @@ def test_cmake_error_log_sidecar_discovery(tmp_path):
     (cmake_dir / "CMakeError.log").write_text(_BROKEN_CLANG_MESON)
     out = diagnose([], tmp_path / "src")
     assert [s.signature for s in out] == ["toolchain:llvm-broken"]
+
+
+# ---------------------------------------------------------------------------
+# meson/pkg-config version gate (2.6.1-F12)
+# ---------------------------------------------------------------------------
+
+_PC_GATE_LOG = (
+    "Running compile:\n"
+    "Dependency lookup for wayland-client with method 'pkg-config' failed: "
+    "Invalid version, need 'wayland-client' ['>= 1.26.0'] found '1.25.0'\n"
+    "meson.build:41:0: ERROR: Dependency 'wayland-client' is required but not found.\n"
+)
+
+
+def _stub_gate(monkeypatch, *, owner, repo_ver, aur_git):
+    """Pin the three environment probes the pkg-config matcher makes."""
+    monkeypatch.setattr(_bd, "_pc_owner", lambda module: owner)
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_pacman_sync_version", lambda name: repo_ver
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.aur.aur_info",
+        lambda names: {names[0]: {}} if aur_git else {},
+    )
+
+
+def test_pkgconfig_gate_repo_below_floor_with_aur_git(monkeypatch):
+    _stub_gate(monkeypatch, owner="wayland", repo_ver="1.25.0-1", aur_git=True)
+    out = diagnose(_lines(_PC_GATE_LOG), None)
+    assert [s.signature for s in out] == ["pkgconfig:version-gate"]
+    s = out[0]
+    # No fix_cmd: the two routes have materially different costs.
+    assert s.fix_cmd is None
+    assert "needs >= 1.26.0, found 1.25.0" in s.message
+    assert "owned by wayland" in s.message
+    assert "still below the floor" in s.message
+    assert "wayland-git exists" in s.message
+
+
+def test_pkgconfig_gate_repo_satisfies_floor(monkeypatch):
+    """The repos already caught up — the operator just needs to sync."""
+    _stub_gate(monkeypatch, owner="wayland", repo_ver="1.26.0-1", aur_git=False)
+    s = diagnose(_lines(_PC_GATE_LOG), None)[0]
+    assert "satisfies the floor" in s.message
+    assert "no AUR wayland-git variant exists" in s.message
+    assert s.fix_cmd is None
+
+
+def test_pkgconfig_gate_owner_unresolved(monkeypatch):
+    """No .pc on disk (or a failed -Qo) still yields the parsed diagnosis."""
+    _stub_gate(monkeypatch, owner=None, repo_ver=None, aur_git=False)
+    s = diagnose(_lines(_PC_GATE_LOG), None)[0]
+    assert "could not resolve which package owns wayland-client.pc" in s.message
+    assert s.fix_cmd is None
+
+
+def test_pkgconfig_gate_probe_failure_does_not_mask_diagnosis(monkeypatch):
+    def _boom(module):
+        raise RuntimeError("pacman db locked")
+
+    monkeypatch.setattr(_bd, "_pc_owner", _boom)
+    s = diagnose(_lines(_PC_GATE_LOG), None)[0]
+    assert s.signature == "pkgconfig:version-gate"
+    assert "needs >= 1.26.0, found 1.25.0" in s.message
+
+
+def test_pkgconfig_gate_no_false_positive():
+    log = "Dependency wayland-client found: YES 1.26.0\n"
+    assert diagnose(_lines(log), None) == []
+
+
+def test_pc_owner_resolves_via_pacman(monkeypatch):
+    """_pc_owner asks pacman -Qo only for .pc paths that actually exist."""
+    seen = {}
+
+    monkeypatch.setattr(Path, "exists", lambda self: "lib/pkgconfig" in str(self))
+
+    def _owners(paths):
+        seen["paths"] = [str(p) for p in paths]
+        return {paths[0]: "wayland"}
+
+    monkeypatch.setattr("sysforge.primitives.pacman.owners_of", _owners)
+    assert _bd._pc_owner("wayland-client") == "wayland"
+    assert seen["paths"] == ["/usr/lib/pkgconfig/wayland-client.pc"]

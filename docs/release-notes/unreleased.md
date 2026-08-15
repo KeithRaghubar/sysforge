@@ -24,6 +24,22 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Added
 
+- **`2.6.1-F12` — Build diagnostics explain a pkg-config version gate.** A `-git`
+  package whose upstream raised a dependency floor fails at configure time against a repo
+  dep that hasn't caught up — meson reports `Invalid version, need 'wayland-client'
+  ['>= 1.26.0'] found '1.25.0'`, which is accurate but leaves the operator to work out by
+  hand which package owns `wayland-client.pc`, whether the repos can satisfy the floor at
+  all, and what the alternatives cost. `build_diag` now matches that line as
+  `pkgconfig:version-gate`: it parses the module, floor and found version, resolves the
+  owner of the `.pc`, compares the repo version against the floor, and says whether an AUR
+  `-git` variant of the owner exists. Every probe is best-effort, so a locked pacman DB or
+  an offline AUR degrades the message rather than losing the diagnosis. It deliberately
+  emits no copy-pasteable fix command: waiting for the repo bump and adopting the `-git`
+  dep have materially different costs — the latter forfeits the distro's soname-rebuild
+  guarantee — and a suggested command would pre-pick the riskier one.
+
+---
+
 - **`2.6.1-F19` — The editor persistence prompt warns when `sysforge.toml [ui] editor`
   will shadow what it is about to write.** `[ui] editor` is rung 2 of the editor
   resolution chain and `$EDITOR` is rung 3, so persisting to `/etc/environment` or

@@ -32,6 +32,9 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from sysforge.primitives import aur, pacman
+from sysforge.primitives.version import vercmp
+
 _TAG = "DIAG"
 
 # Cap how many bytes of any side-car log we slurp. The error of interest is
@@ -381,6 +384,129 @@ def _match_lib32_clang_libgcc(text: str, active: str | None) -> FixSuggestion | 
     )
 
 
+# ---------------------------------------------------------------------------
+# meson/pkg-config version gate: a dependency floor the repos can't satisfy yet
+# ---------------------------------------------------------------------------
+
+# Canonical meson-log.txt line when a pkg-config dependency is present but too
+# old, e.g. an upstream -git package that raised its floor ahead of the repos:
+#   Dependency lookup for wayland-client with method 'pkg-config' failed:
+#   Invalid version, need 'wayland-client' ['>= 1.26.0'] found '1.25.0'
+_RE_PC_VERSION_GATE = re.compile(
+    r"Dependency lookup for (?P<module>\S+) with method 'pkg-config' failed: "
+    r"Invalid version, need '(?P<need>[^']+)' \[(?P<constraints>[^\]]*)\] "
+    r"found '(?P<found>[^']*)'"
+)
+_RE_CONSTRAINT = re.compile(r"'(?P<op>[<>=!]+)\s*(?P<ver>[^']+)'")
+
+# Where a .pc file can live on Arch. Ordered most-likely-first; the first
+# existing candidate is what we ask pacman to resolve ownership for.
+_PKGCONFIG_DIRS = (
+    "/usr/lib/pkgconfig",
+    "/usr/share/pkgconfig",
+    "/usr/lib32/pkgconfig",
+)
+
+
+def _pc_owner(module: str) -> str | None:
+    """Resolve the package owning ``<module>.pc``, or None if undeterminable."""
+    candidates = [Path(d) / f"{module}.pc" for d in _PKGCONFIG_DIRS]
+    existing = [p for p in candidates if p.exists()]
+    if not existing:
+        return None
+    owners = pacman.owners_of(existing)
+    for p in existing:
+        owner = owners.get(p)
+        if owner:
+            return owner
+    return None
+
+
+def _satisfies(have: str, op: str, want: str) -> bool | None:
+    """Does ``have <op> want`` hold? None when the verdict isn't derivable."""
+    try:
+        c = vercmp(have, want)
+    except Exception:
+        return None
+    if op == ">=":
+        return c >= 0
+    if op == ">":
+        return c > 0
+    if op == "==" or op == "=":
+        return c == 0
+    return None
+
+
+def _match_pkgconfig_version_gate(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    m = _RE_PC_VERSION_GATE.search(text)
+    if m is None:
+        return None
+    module = m.group("module")
+    found = m.group("found") or "unknown"
+    constraints = m.group("constraints")
+    cm = _RE_CONSTRAINT.search(constraints)
+    op = cm.group("op") if cm else None
+    want = cm.group("ver").strip() if cm else None
+    need_txt = f"{op} {want}" if op and want else constraints.strip() or "a newer version"
+
+    parts = [
+        f"meson's pkg-config gate rejected {module}: needs {need_txt}, found {found}"
+    ]
+
+    # Best-effort enrichment — a probe failure must never mask the diagnosis.
+    try:
+        owner = _pc_owner(module)
+    except Exception:
+        owner = None
+    if owner is None:
+        parts.append(f"could not resolve which package owns {module}.pc")
+        return FixSuggestion(
+            signature="pkgconfig:version-gate",
+            message="; ".join(parts),
+            fix_cmd=None,
+        )
+    parts.append(f"{module}.pc is owned by {owner}")
+
+    try:
+        repo_ver = pacman.get_pacman_sync_version(owner)
+    except Exception:
+        repo_ver = None
+    if repo_ver is None:
+        parts.append(f"{owner} is not in the sync DBs (no repo version to compare)")
+    else:
+        verdict = _satisfies(repo_ver, op, want) if op and want else None
+        if verdict is True:
+            parts.append(f"the repos already carry {owner} {repo_ver}, which satisfies the floor "
+                         f"(sync and reinstall, then rebuild)")
+        elif verdict is False:
+            parts.append(f"the repos carry {owner} {repo_ver}, still below the floor")
+        else:
+            parts.append(f"the repos carry {owner} {repo_ver}")
+
+    # An AUR -git variant is the other route; naming it is not endorsing it.
+    try:
+        has_git = bool(aur.aur_info([f"{owner}-git"]))
+    except Exception:
+        has_git = False
+    if has_git:
+        parts.append(
+            f"an AUR {owner}-git exists — adopting it trades the repos' "
+            f"soname-rebuild guarantee for owning its rebuilds yourself"
+        )
+    else:
+        parts.append(f"no AUR {owner}-git variant exists")
+
+    return FixSuggestion(
+        signature="pkgconfig:version-gate",
+        message="; ".join(parts),
+        # Deliberately no fix_cmd: waiting for the repo bump and adopting the
+        # -git dep have materially different costs, and a copy-pasteable
+        # command would pre-pick the riskier one.
+        fix_cmd=None,
+    )
+
+
 _MATCHERS = (
     _match_rust_missing_std,
     _match_gst_ptp,
@@ -389,6 +515,7 @@ _MATCHERS = (
     _match_lib32_reduced_target_llvm,
     _match_lib32_clang_libgcc,
     _match_broken_llvm_toolchain,
+    _match_pkgconfig_version_gate,
 )
 
 

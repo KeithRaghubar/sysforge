@@ -94,7 +94,6 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
-| `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
@@ -178,33 +177,6 @@ canonical ordering.
   completeness; additive, no correctness impact.
 
 ---
-
-- **`2.6.1-F12` — Diagnose pkg-config/meson version-gate build failures.** A `-git` package whose
-  upstream has raised a dependency floor fails at configure time against a repo dep that hasn't
-  caught up, e.g. `xorg-xwayland-git`: `Dependency lookup for wayland-client with method
-  'pkg-config' failed: Invalid version, need 'wayland-client' ['>= 1.26.0'] found '1.25.0'`. The
-  message is accurate but leaves the operator to work out by hand which package owns
-  `wayland-client.pc`, whether the repos can satisfy the floor at all, and what the alternatives
-  cost. Add a `build_diag._MATCHERS` entry for the canonical meson/pkg-config gate line that parses
-  the module, required version and found version, resolves the owning package (`pacman -Qo` on the
-  `.pc`), and reports whether the repo version can satisfy the floor (`aur.is_repo_package` /
-  `aur.aur_info`) plus whether an AUR `-git` variant exists. Emit **no** `fix_cmd`: the two routes
-  (wait for the repo bump vs. adopt the `-git` dep and own its rebuilds) have materially different
-  costs, and a copy-pasteable command would pre-pick the riskier one.
-  **Explicitly out of scope — considered and rejected:** a dependency-resolution policy that prefers
-  `-git` deps for installed `-git` packages. Gitness is a lossy proxy for the real condition (a
-  version floor, which a repo bump usually satisfies on its own); the rule would fire constantly on
-  the benign case; and generalised beyond leaf packages it recommends replacing load-bearing repo
-  packages with unversioned moving targets, forfeiting the distro's soname-rebuild guarantee — for
-  which sysforge has no general equivalent (`assess_libllvm_soname_impact` is libLLVM-only).
-  The constraint typically lives in the project's `meson.build`, not the PKGBUILD `depends`, so it
-  is not knowable ahead of failure anyway — which is what makes this a diagnostic, not a policy.
-  *Priority: med · Effort: small · Bump: patch* — diagnostic only; no resolution or install
-  behaviour changes. **Standards home on adoption:** none new — §`build_diag`'s existing matcher
-  table covers it.
-
----
-
 
 - **`2.6.1-F21` — one home for replacing an existing config file.** Six sites hand-roll the same
   stage-to-temp-then-install shape with three different spellings and two different privilege
