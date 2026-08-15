@@ -619,6 +619,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                 plan.contribute(kconfig_plan.generate_step(targets))
         elif not plan.has(kconfig_plan.REVIEW):
             plan.contribute(kconfig_plan.review_step())
+        # Last slot: warn on any fragment symbol that did not survive into the
+        # resolved .config (F23). Unconditional — it reports on whatever the
+        # build ends up using, including an operator review's own edits, and is
+        # a runtime no-op when no fragment file was written.
+        plan.contribute(kconfig_plan.verify_step())
         plan.install(pkgbuild_path, noninteractive=not interactive)
 
         # Ship the resolved .config to /boot (pacman-tracked) when the PKGBUILD

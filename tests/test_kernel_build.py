@@ -246,6 +246,21 @@ def test_kernel_build_fills_seed_merge_and_hotplug(tmp_path, monkeypatch):
     assert kp.HOTPLUG_MERGE in seen["slots"]
 
 
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("kconfig_targets", [None, ["olddefconfig"], ["menuconfig"]])
+def test_kernel_build_always_fills_verify(
+    tmp_path, monkeypatch, interactive, kconfig_targets,
+):
+    # 2.6.1-F23: the survival check is unconditional — it reports on whatever
+    # .config the build ends up using, so no interactivity or kconfig_targets
+    # combination may leave it out.
+    seen = _installed_plan(monkeypatch)
+    _run_build_for_kernel(
+        tmp_path, interactive=interactive, kconfig_targets=kconfig_targets)
+    assert kp.VERIFY in seen["slots"]
+    assert seen["slots"][-1] == kp.VERIFY
+
+
 def test_non_interactive_run_passes_noninteractive(tmp_path, monkeypatch):
     seen = _installed_plan(monkeypatch)
     _run_build_for_kernel(tmp_path, interactive=False, kconfig_targets=None)

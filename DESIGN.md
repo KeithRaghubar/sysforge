@@ -889,6 +889,8 @@ value  = "y"                     # y | m | n | non-empty string
 
 Hardware-driven kconfig entries come from `hardware_profile.toml [kconfig]` (emitted by the hardware stage). The kernel stage locates that file via `config["hardware_profile"]` when present, else falls back to `state_dir / "hardware_profile.toml"` — the path the hardware stage actually writes — so a standalone `run kernel` after a standalone `run hardware` picks up the profile even though no in-process pipeline state carried the path (mirrors the resolution in the reconfigure hardware-profile review). These include both positive `=y` enables (CPU/GPU/NVMe-driven) and architecture-disable `=n` umbrellas — when the host is x86_64, the hardware stage writes `# CONFIG_ARM64 is not set`, the same for RISC-V/PowerPC/MIPS top-level keys and a curated set of ARM64 SoC families, culling unreachable subtrees from `make nconfig`. See §Hardware Detection → *Architecture-aware kconfig disable* for the registry. Device-driven entries come from `hardware_profile.toml [kconfig_devices]` (modular drivers, `=m`, for devices present on the machine — see §Hardware Detection → *Device-driven kconfig*), gated by `kernel.toml device_kconfig` (default true). Manual overrides from `kernel.toml [[kconfig]]` are merged on top — precedence is manual > hardware > device; manual wins on conflict with a `[WARN]` (including arch-disable entries — a cross-compile use case can re-enable `CONFIG_ARM64=y` per the override path), while device entries are machine-derived advisories that hardware/manual override silently. The combined result is written to `<pkgbuild_src_dir>/<srcdir>/sysforge.config` before `makepkg` runs, each entry annotated with a `# source: manual|hardware|device` line. sysforge **patches the merge into the PKGBUILD** so a stock kernel PKGBUILD applies the fragment without cooperation: the kernel build contributes a `kconfig_plan.BASE_SEED` and `FRAGMENT_MERGE` step to the ordered kconfig plan (see §Primitives Layer → `kconfig_plan.py`), rendered into `prepare()` right after the kconfig-setup anchor (a `make olddefconfig`/`oldconfig`/`defconfig` line, else the `.config` seed) — a file-guarded base-config seed (`cp "$startdir/sysforge.base.config" .config` + `make olddefconfig`, see *Base config* below) followed by a guarded `scripts/kconfig/merge_config.sh -m .config "$startdir/sysforge.config"` + `make olddefconfig` (a bool-only symbol receiving `=m` is normalized by `merge_config.sh`/`olddefconfig`). Both blocks are wrapped in `if [ -f … ]`, so when a source produced no file the step is a runtime no-op. A PKGBUILD that already calls `merge_config.sh` (or references the fragment) is detected and left untouched — no double-injection; a PKGBUILD with no anchor at all is warned about (the fragment can't be placed). The whole merge is gated by `kernel.toml kconfig_merge` (default true) — set it false to skip the fragment entirely; when disabled, any stale `sysforge.config` from a prior run is removed so the PKGBUILD doesn't merge a leftover (the `device_kconfig` toggle, by contrast, gates only the device-driven sub-source).
 
+**Requested symbols are verified against the resolved `.config`.** Writing a fragment line is not the same as getting the symbol: an illegal value for the symbol's type, a symbol upstream renamed or removed, or an unmet host-tooling dependency each void the request with no fragment-level signal, and the next `make olddefconfig` erases the evidence. The kernel build therefore contributes a final `kconfig_plan.VERIFY` slot (2.6.1-F23) that re-reads the resolved `.config` inside `prepare()` — after every merge *and* after any operator review — and warns per symbol whose requested value did not land. It warns rather than fails; `kernel_safety.py` remains the only hard gate. See §Primitives Layer → `kconfig_plan.py` for the mechanism.
+
 Manual override validation: `option` must match `CONFIG_[A-Z0-9_]+`; `value` must be non-empty (`n` to disable); duplicates within `kernel.toml` are an error.
 
 If no source provides any kconfig entries, no fragment is written. The fragment is written *after* the source sync (so a `--cleansrc` re-clone doesn't wipe it) and *after* compiler resolution, so its banner carries a toolchain-provenance line (`# toolchain variant: <variant>  cc: <path>`) giving a `.config` diff between two builds a trail of which toolchain produced it.
@@ -915,7 +917,7 @@ The snapshot **accumulates**: `_capture_lsmod_snapshot` union-merges each new `l
 - **`randconfig` is rejected outright** (not merely under non-interactive) — a randomized kernel config is a boot-safety hazard with no legitimate build-path use.
 - **`localmodconfig`/`localyesconfig`** additionally emit a `[WARN]`: they over-minimize the config to modules *currently loaded* on the build machine — high risk (a driver needed later but not loaded now gets stripped), low reward — and are what causes the lsmod snapshot (above) to accumulate at `<state_dir>/lsmod.snapshot`.
 
-The resolved sequence is threaded as `BuildOptions.kconfig_targets` (kernel.py → `makepkg_wrapper.py`), which contributes it as the `kconfig_plan.GENERATE` slot plus a UI tail split into `REVIEW` (see §Primitives Layer → `kconfig_plan.py`) — the caller fills these slots by key alongside `BASE_SEED`/`FRAGMENT_MERGE`/`HOTPLUG_MERGE`, so their fill order is irrelevant; `SLOT_ORDER` places `GENERATE` after the seed/merge slots and before `HOTPLUG_MERGE`/`REVIEW`, and a UI target left in the configured sequence for a run that turns out non-interactive is still stripped by `install`'s non-interactive rewrite pass. The configured sequence composes with the fragment merge rather than replacing it: `GENERATE` and `HOTPLUG_MERGE` both render into the `POST` region after the seed/merge blocks, so the sequence — any UI target last — shapes the fully seeded+merged `.config`. When a configured sequence is set, the caller fills `REVIEW` from the configured UI tail (or leaves it empty) instead of contributing an injected review — the two are mutually exclusive because they're the same slot. When set, the "Kernel build plan:" resolution summary shows the ordered sequence as `t1 → t2 → t3 (configured)` in place of the default kconfig-target line.
+The resolved sequence is threaded as `BuildOptions.kconfig_targets` (kernel.py → `makepkg_wrapper.py`), which contributes it as the `kconfig_plan.GENERATE` slot plus a UI tail split into `REVIEW` (see §Primitives Layer → `kconfig_plan.py`) — the caller fills these slots by key alongside `BASE_SEED`/`FRAGMENT_MERGE`/`HOTPLUG_MERGE`, so their fill order is irrelevant; `SLOT_ORDER` places `GENERATE` after the seed/merge slots and before `HOTPLUG_MERGE`/`REVIEW`/`VERIFY`, and a UI target left in the configured sequence for a run that turns out non-interactive is still stripped by `install`'s non-interactive rewrite pass. The configured sequence composes with the fragment merge rather than replacing it: `GENERATE` and `HOTPLUG_MERGE` both render into the `POST` region after the seed/merge blocks, so the sequence — any UI target last — shapes the fully seeded+merged `.config`. When a configured sequence is set, the caller fills `REVIEW` from the configured UI tail (or leaves it empty) instead of contributing an injected review — the two are mutually exclusive because they're the same slot. When set, the "Kernel build plan:" resolution summary shows the ordered sequence as `t1 → t2 → t3 (configured)` in place of the default kconfig-target line.
 
 **Review-menu gate is review-only, not resolve-only (`_REVIEW_KCONFIG_RE`).** The injected `REVIEW` contribution (below) is dropped by `KconfigPlan.install`'s drop rules only when the PKGBUILD already has a genuine operator-review target — an ncurses/X menu (`nconfig`, `menuconfig`, `xconfig`, `gconfig`, or the line-prompt `config`). `oldconfig` is deliberately excluded from that check: it is a non-interactive *resolve* step (applies defaults for any symbol the fragment merge didn't already set) rather than a review, so a PKGBUILD that only runs `make oldconfig` still gets the injected `REVIEW` slot rendered. This is distinct from `_INTERACTIVE_KCONFIG_RE`, the wider match `install`'s non-interactive rewrite pass uses to rewrite surviving `oldconfig` → `olddefconfig` on non-interactive runs (that pass needs `oldconfig` included). Both regexes live in `kconfig_plan.py` alongside the code that uses them.
 
@@ -1817,11 +1819,12 @@ Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key 
 
 ### `kconfig_plan.py`
 
-Sole home for the kernel PKGBUILD's kconfig region (2.5.1-F1). Five ordered slots —
-`BASE_SEED`, `FRAGMENT_MERGE`, `GENERATE`, `HOTPLUG_MERGE`, `REVIEW` — cover everything a kernel
-`prepare()` needs done to its config: seed a base `.config`, overlay the sysforge fragment, run
-the configured generation targets, re-enable hotplug drivers a minimizer stripped, then let the
-operator review the result. `SLOT_ORDER` is the **sole ordering authority**: contributors fill a
+Sole home for the kernel PKGBUILD's kconfig region (2.5.1-F1). Six ordered slots —
+`BASE_SEED`, `FRAGMENT_MERGE`, `GENERATE`, `HOTPLUG_MERGE`, `REVIEW`, `VERIFY` — cover everything a
+kernel `prepare()` needs done to its config: seed a base `.config`, overlay the sysforge fragment,
+run the configured generation targets, re-enable hotplug drivers a minimizer stripped, let the
+operator review the result, then verify the requested symbols actually landed. `SLOT_ORDER` is the
+**sole ordering authority**: contributors fill a
 `KconfigPlan` by slot key via `contribute(Step)`, so the order calls run in cannot affect the
 rendered result — refilling an already-filled slot raises. No step reads another step's output;
 the `# sysforge: kconfig-resolve` sentinel that the pre-refactor patchers used to tell their own
@@ -1868,6 +1871,40 @@ build. Four passes:
    a no-op after pass 2 removed every kconfig line, which is why pass 2's anchor offset can be
    recorded up front and reused.
 4. **Splice** the two regions into the text, high offset first so the lower offset stays valid.
+
+**Requested-symbol survival check (`VERIFY`, `verify_step`, 2.6.1-F23).** SysForge writes its
+fragments as plain text, and until this slot never checked that the symbols it asked for actually
+landed. Three mechanisms void a fragment line with no fragment-level signal: a value illegal for
+the symbol's type (`=m` on a `bool` — kconfig discards the whole assignment and warns mid-build), a
+symbol upstream has renamed or removed (dropped in silence), and an unmet *host-tooling* dependency
+(`CONFIG_RUST`, whose `scripts/rust_is_available.sh` probe fails and leaves the symbol unset —
+`3.0.0-F1` prevents that case up front, this catches it when that preflight is absent or wrong, so
+neither supersedes the other). `2.6.1-B17` was the first two at once, and each survived because the
+only evidence was a warning line scrolling past during a 20-minute build, erased from `.config` by
+the next `make olddefconfig`. `merge_config.sh` already models the check (`Value requested for
+CONFIG_X not in final .config`); `verify_step` does the equivalent for sysforge's own fragments —
+a shell function rendered into `prepare()` that walks `sysforge.config` and `sysforge.hotplug.config`,
+parses each `CONFIG_X=v` / `# CONFIG_X is not set` line, and warns per symbol whose requested value
+differs from the resolved one (an absent symbol and an `is not set` line both read as `n`, which is
+what kconfig means by them). Four properties:
+
+- **Shell, not Python** — the resolved `.config` exists only inside makepkg's build tree, which
+  sysforge never reads back.
+- **Last in `SLOT_ORDER`, after `REVIEW`** — it reports on the `.config` the build actually uses,
+  and an operator editing the config in `nconfig` can drop a requested symbol just as
+  `olddefconfig` can.
+- **Warn, never fail** — a dropped symbol is a silent loss of intent, but hard-failing a kernel
+  build over one stale entry in a curated table is worse. `kernel_safety.py` remains the only hard
+  gate.
+- **Type-agnostic** — it compares literal requested against literal resolved values, so it needs no
+  table of symbol types and cannot drift as the kernel tree changes.
+
+It is contributed unconditionally by the kernel build path, file-guarded (a runtime no-op when
+`kconfig_merge = false` wrote no fragment), idempotent via the `VERIFY_MARKER` substring, and
+errexit-safe under makepkg's `set -e` (every failing command sits in an `if` condition, and the
+call itself is `|| true`). `tests/test_kconfig_plan.py::TestVerifyShellBehaviour` executes the
+rendered function under `bash -e` against real fragment/`.config` pairs — the runtime behaviour is
+the whole point of the step and none of it is observable from the rendered text.
 
 Three rendered-text divergences from the pre-refactor patchers are deliberate and owner-approved,
 each pinned by its own test: the `# sysforge: kconfig-resolve` sentinel is no longer emitted (it

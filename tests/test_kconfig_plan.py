@@ -14,7 +14,7 @@ class TestSlotOrder:
 
     def test_every_slot_is_ordered_exactly_once(self):
         slots = {kp.BASE_SEED, kp.FRAGMENT_MERGE, kp.GENERATE,
-                 kp.HOTPLUG_MERGE, kp.REVIEW}
+                 kp.HOTPLUG_MERGE, kp.REVIEW, kp.VERIFY}
         assert set(kp.SLOT_ORDER) == slots
         assert len(kp.SLOT_ORDER) == len(slots)
 
@@ -715,3 +715,151 @@ class TestPortedFromPatcher:
         out = p.read_text()
         assert "menuconfig" not in out
         assert "nconfig" not in out
+
+
+class TestVerifySlot:
+    """The requested-symbol survival check (2.6.1-F23)."""
+
+    def test_verify_is_last_in_slot_order(self):
+        # It reports on the .config the build actually uses, so it must run
+        # after every merge AND after REVIEW — an operator editing the config
+        # in nconfig can drop a requested symbol just as olddefconfig can.
+        assert kp.SLOT_ORDER[-1] == kp.VERIFY
+        assert kp.SLOT_REGION[kp.VERIFY] == kp.POST
+
+    def test_verify_never_owns_generation(self):
+        # It contributes no kconfig make target, so it must not trip
+        # install()'s removal pass.
+        assert not kp.verify_step().owns_generation
+
+    def test_verify_is_idempotent_by_marker(self):
+        assert kp.verify_step().skip_if_present == kp.VERIFY_MARKER
+
+    def test_install_renders_verify_after_the_review_menu(self, tmp_path):
+        p = _write(tmp_path, STOCK)
+        plan = _full_plan()
+        plan.contribute(kp.verify_step())
+        plan.install(p, noninteractive=False)
+        out = p.read_text()
+        lines = out.splitlines()
+        review_at = next(i for i, ln in enumerate(lines) if "make nconfig" in ln)
+        verify_at = next(i for i, ln in enumerate(lines) if kp.VERIFY_MARKER in ln)
+        assert review_at < verify_at
+
+    def test_install_is_idempotent(self, tmp_path):
+        p = _write(tmp_path, STOCK)
+        for _ in range(2):
+            plan = _full_plan()
+            plan.contribute(kp.verify_step())
+            plan.install(p, noninteractive=True)
+        assert p.read_text().count(f"{kp.VERIFY_MARKER}()") == 1
+
+
+# --- the rendered shell, actually executed ---------------------------------
+# The check's whole value is what it prints at build time, and none of that is
+# observable from the rendered text. These run the rendered function under
+# bash -e (makepkg's own errexit) against a real fragment + .config pair.
+
+def _run_verify(tmp_path, fragment_lines, config_lines, *, write_fragment=True):
+    """Render verify_step()'s lines and run them; return (rc, stderr)."""
+    import subprocess
+
+    startdir = tmp_path / "startdir"
+    startdir.mkdir(exist_ok=True)
+    if write_fragment:
+        (startdir / kp.DEFAULT_FRAGMENT).write_text(
+            "\n".join(fragment_lines) + "\n", encoding="utf-8")
+    (tmp_path / ".config").write_text(
+        "\n".join(config_lines) + "\n", encoding="utf-8")
+    script = 'set -e\nstartdir="%s"\n' % startdir + kp._render(
+        kp.verify_step().lines, indent="")
+    proc = subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path,
+        capture_output=True, text=True, check=False,
+    )
+    return proc.returncode, proc.stderr
+
+
+class TestVerifyShellBehaviour:
+    def test_every_requested_symbol_survived_is_silent(self, tmp_path):
+        rc, err = _run_verify(
+            tmp_path,
+            ["# source: hardware", "CONFIG_USB=m", "CONFIG_HOTPLUG_PCI=y",
+             "# CONFIG_ARM64 is not set"],
+            ["CONFIG_USB=m", "CONFIG_HOTPLUG_PCI=y", "# CONFIG_ARM64 is not set"],
+        )
+        assert rc == 0
+        assert err == ""
+
+    def test_illegal_value_for_the_symbol_type_warns(self, tmp_path):
+        # 2.6.1-B17's first shape: `=m` on a bool. kconfig discards the whole
+        # assignment and the symbol falls back to its tree default.
+        rc, err = _run_verify(
+            tmp_path, ["CONFIG_HOTPLUG_PCI=m"], ["CONFIG_HOTPLUG_PCI=y"])
+        assert rc == 0
+        assert "CONFIG_HOTPLUG_PCI=m is not in the final .config" in err
+        assert "resolved to y" in err
+
+    def test_symbol_removed_upstream_warns_as_n(self, tmp_path):
+        # B17's second shape: CONFIG_THUNDERBOLT, dead since 5.6 — dropped in
+        # total silence, because nothing in .config mentions it at all.
+        rc, err = _run_verify(
+            tmp_path, ["CONFIG_THUNDERBOLT=m"], ["CONFIG_USB=y"])
+        assert rc == 0
+        assert "CONFIG_THUNDERBOLT=m is not in the final .config" in err
+        assert "resolved to n" in err
+
+    def test_host_tooling_dependency_unmet_warns(self, tmp_path):
+        # The third void mechanism: rust_is_available.sh fails and kconfig
+        # unsets CONFIG_RUST with no fragment-level signal (3.0.0-F1 prevents
+        # this up front; this catches it when that preflight is absent).
+        rc, err = _run_verify(
+            tmp_path, ["CONFIG_RUST=y"], ["# CONFIG_RUST is not set"])
+        assert rc == 0
+        assert "CONFIG_RUST=y is not in the final .config" in err
+        assert "resolved to n" in err
+
+    def test_requested_disable_that_came_back_on_warns(self, tmp_path):
+        # An arch-disable umbrella re-selected by a dependency.
+        rc, err = _run_verify(
+            tmp_path, ["# CONFIG_ARM64 is not set"], ["CONFIG_ARM64=y"])
+        assert rc == 0
+        assert "CONFIG_ARM64=n is not in the final .config" in err
+
+    def test_annotations_and_blank_lines_are_not_symbols(self, tmp_path):
+        # Every fragment entry carries a `# source: manual|hardware|device`
+        # annotation line; none of them may be parsed as a request.
+        rc, err = _run_verify(
+            tmp_path,
+            ["", "# source: manual", "# sysforge fragment", "CONFIG_USB=y"],
+            ["CONFIG_USB=y"],
+        )
+        assert rc == 0
+        assert err == ""
+
+    def test_absent_fragment_is_a_silent_no_op(self, tmp_path):
+        # kconfig_merge=false writes no fragment; the step must stay inert
+        # rather than erroring out under makepkg's set -e.
+        rc, err = _run_verify(
+            tmp_path, [], ["CONFIG_USB=y"], write_fragment=False)
+        assert rc == 0
+        assert err == ""
+
+    def test_quoted_string_and_numeric_values_compare_literally(self, tmp_path):
+        rc, err = _run_verify(
+            tmp_path,
+            ['CONFIG_LOCALVERSION="-sysforge"', "CONFIG_NR_CPUS=64"],
+            ['CONFIG_LOCALVERSION="-sysforge"', "CONFIG_NR_CPUS=32"],
+        )
+        assert rc == 0
+        assert "CONFIG_LOCALVERSION" not in err
+        assert "CONFIG_NR_CPUS=64 is not in the final .config" in err
+        assert "resolved to 32" in err
+
+    def test_prefix_symbols_are_not_confused(self, tmp_path):
+        # `grep "^CONFIG_USB="` must not match CONFIG_USB_STORAGE.
+        rc, err = _run_verify(
+            tmp_path, ["CONFIG_USB=y"], ["CONFIG_USB_STORAGE=m"])
+        assert rc == 0
+        assert "CONFIG_USB=y is not in the final .config" in err
+        assert "resolved to n" in err

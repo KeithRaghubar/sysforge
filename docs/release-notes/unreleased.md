@@ -35,6 +35,24 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`2.6.1-F23` — Requested kernel kconfig symbols are verified against the merged
+  `.config`.** SysForge wrote its kconfig fragments as plain text and never checked that
+  the symbols it asked for actually landed. Three mechanisms void a fragment line with no
+  fragment-level signal: a value illegal for the symbol's type (`=m` on a `bool` — kconfig
+  discards the whole assignment), a symbol upstream renamed or removed, and an unmet
+  host-tooling dependency (`CONFIG_RUST`). `2.6.1-B17` was the first two at once, and each
+  survived because the only evidence was a warning scrolling past during a 20-minute build,
+  erased from `.config` by the next `make olddefconfig`. A new `kconfig_plan.VERIFY` slot
+  — last in `SLOT_ORDER`, so it also catches what an operator's own `nconfig` review
+  dropped — re-reads the resolved `.config` inside `prepare()` and warns per symbol whose
+  requested value did not survive. It warns rather than fails: a dropped symbol is a silent
+  loss of intent, but hard-failing a kernel build over one stale entry in a curated table is
+  worse, and `kernel_safety.py` remains the only hard gate. The check compares literal
+  requested against literal resolved values, so it needs no table of symbol types and cannot
+  drift as the kernel tree changes.
+
+---
+
 - **`3.0.0-F2` — Frozen sources: a hard gate on AUR/VCS downloads.** New
   `[security] freeze_sources` config key and global `--frozen` / `--no-frozen` /
   `--thaw PKG` flags refuse all new source ingress at five seams: AUR clones,

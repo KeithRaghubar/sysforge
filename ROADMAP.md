@@ -95,7 +95,6 @@ canonical ordering.
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `2.6.1-F12` | Diagnose pkg-config/meson version-gate build failures | med | small | patch |
-| `2.6.1-F23` | Verify requested kconfig symbols survive into the merged .config | med | medium | patch |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
@@ -117,8 +116,9 @@ canonical ordering.
   check. `CONFIG_RUST` is unique among kconfig symbols in depending on host tooling rather than on
   the kernel source: `scripts/rust_is_available.sh` demands a `rustc` inside the version window the
   tree pins plus a matching `bindgen`, and when it fails kconfig drops the symbol during
-  `olddefconfig` — the silent-loss shape `2.6.1-F23` exists to *detect*. This item is the other
-  half: refuse to start the build rather than discover the loss after it. Two things make the
+  `olddefconfig` — the silent-loss shape the shipped `kconfig_plan.VERIFY` slot (`2.6.1-F23`)
+  *detects*. This item is the other half: refuse to start the build rather than discover the loss
+  from a warning after it. Two things make the
   failure likelier here than upstream assumes — `RUSTC_WRAPPER=sccache` and a rustup install that
   shadows the distro `rust` (the live workstation case, already documented in
   `primitives/rust_probe.py`), so the `rustc` the kernel resolves is frequently not the one the
@@ -233,32 +233,6 @@ canonical ordering.
 
 ---
 
-- **`2.6.1-F23` — Verify requested kconfig symbols survive into the merged `.config`.** SysForge
-  writes kconfig fragments (`sysforge.config`, `sysforge.hotplug.config`) as plain text and never
-  checks that the symbols it asked for actually landed. A fragment line can be voided outright with
-  no failure signal: a value illegal for the symbol's type (`=m` on a `bool` — kconfig discards the
-  whole assignment and warns mid-build), or a symbol upstream has since renamed or removed (dropped
-  in silence). `2.6.1-B17` was both at once — three bool symbols and a `CONFIG_THUNDERBOLT` entry
-  dead since 5.6 — and each survived because the only evidence was a warning line scrolling past
-  during a 20-minute build, erased from `.config` by the next `make olddefconfig`. The fix that
-  shipped pins the curated table's values in tests, which catches the known symbols but not the next
-  one. `merge_config.sh` already models the check: after merging it re-reads the result and reports
-  `Value requested for CONFIG_X not in final .config`. Do the equivalent for sysforge's own
-  fragments — after the merge slot runs, diff requested symbol/value pairs against the resolved
-  `.config` and surface any that did not take. Design decisions: **where** (a shell post-step
-  contributed via `kconfig_plan`, which runs inside `prepare()` where the merged `.config` exists,
-  versus a Python check that would need the file back out of the build tree) and **severity** — a
-  dropped symbol is a silent loss of intent, but hard-failing a kernel build over one stale entry in
-  a curated table is worse than warning loudly, so this likely warns per-symbol and leaves boot
-  safety (`kernel_safety.py`) as the only hard gate. A third void mechanism belongs in the same
-  check: a symbol whose *host-tooling* dependency is unmet, of which `CONFIG_RUST` is the only
-  instance today — `scripts/rust_is_available.sh` fails and kconfig unsets it with no fragment-level
-  signal. `3.0.0-F1` prevents that case up front; this item is what catches it if the preflight is
-  absent or wrong, so neither supersedes the other. *Priority: med · Effort: medium · Bump: patch* —
-  no behaviour change on the happy path; it converts a silent, self-erasing failure into a visible
-  one, and the whole `keep_hotplug_drivers` feature is only as good as this check.
-
----
 
 - **`2.6.1-F27` — Install stage target-root change summary.** Builds on `2.6.1-F24`; **built last,
   and deferrable.** The install stage pacstraps into a target root via `archinstall --silent`, so

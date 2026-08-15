@@ -32,11 +32,12 @@ FRAGMENT_MERGE = "fragment_merge"
 GENERATE = "generate"
 HOTPLUG_MERGE = "hotplug_merge"
 REVIEW = "review"
+VERIFY = "verify"
 
 #: The single ordering authority. Rendering walks this tuple; a step's position
 #: here is the only thing that decides where its lines land.
 SLOT_ORDER: tuple[str, ...] = (
-    BASE_SEED, FRAGMENT_MERGE, GENERATE, HOTPLUG_MERGE, REVIEW,
+    BASE_SEED, FRAGMENT_MERGE, GENERATE, HOTPLUG_MERGE, REVIEW, VERIFY,
 )
 
 # --- regions ---------------------------------------------------------------
@@ -57,6 +58,7 @@ SLOT_REGION: dict[str, str] = {
     GENERATE: POST,
     HOTPLUG_MERGE: POST,
     REVIEW: POST,
+    VERIFY: POST,
 }
 
 HOTPLUG_FRAGMENT = "sysforge.hotplug.config"
@@ -558,6 +560,84 @@ def hotplug_merge_step(fragment: str = HOTPLUG_FRAGMENT) -> Step:
             "{indent}fi",
         ),
         skip_if_present=fragment,
+    )
+
+
+#: Substring of :func:`verify_step`'s rendered text that proves the check is
+#: already installed — the idempotency marker, and the string tests match on.
+VERIFY_MARKER = "_sf_kconfig_verify"
+
+
+def verify_step(
+    fragments: tuple[str, ...] = (DEFAULT_FRAGMENT, HOTPLUG_FRAGMENT),
+) -> Step:
+    """Warn per symbol whose requested value did not survive into ``.config`` (F23).
+
+    SysForge writes its fragments as plain text and, until this step, never
+    checked that the symbols it asked for actually landed. Three mechanisms void
+    a fragment line with no fragment-level signal: a value illegal for the
+    symbol's type (``=m`` on a ``bool`` — kconfig discards the assignment and
+    warns mid-build), a symbol upstream renamed or removed (dropped in silence),
+    and an unmet *host-tooling* dependency (``CONFIG_RUST``, whose
+    ``scripts/rust_is_available.sh`` probe fails and leaves the symbol unset).
+    ``2.6.1-B17`` was the first two at once, and each survived because the only
+    evidence was a warning scrolling past during a 20-minute build, erased from
+    ``.config`` by the next ``make olddefconfig``.
+
+    ``merge_config.sh`` already models the check (``Value requested for
+    CONFIG_X not in final .config``); this does the equivalent for sysforge's
+    own fragments. Three properties matter:
+
+    * **Shell, not Python.** The resolved ``.config`` only exists inside
+      ``prepare()``'s build tree, which sysforge never reads back.
+    * **Warn, never fail.** A dropped symbol is a silent loss of intent, but
+      hard-failing a kernel build over one stale entry in a curated table is
+      worse. ``kernel_safety.py`` remains the only hard gate.
+    * **Last in :data:`SLOT_ORDER`.** It reports on the ``.config`` the build
+      actually uses, so it must run after :data:`REVIEW` — an operator editing
+      the config in ``nconfig`` can drop a requested symbol too.
+
+    Type-agnostic by construction: it compares the literal requested value
+    against the literal resolved one, so it needs no table of symbol types and
+    cannot drift as the kernel tree changes. An absent symbol and an ``is not
+    set`` line both read as ``n``, which is what kconfig means by them.
+
+    Errexit-safe under makepkg's ``set -e``: every failing command sits in an
+    ``if`` condition or is swallowed by ``|| true`` at the call.
+    """
+    return Step(
+        slot=VERIFY,
+        lines=(
+            "{indent}# sysforge: warn on requested kconfig symbols that did not"
+            " survive the merge (F23)",
+            f"{{indent}}{VERIFY_MARKER}() {{",
+            "{indent}  local _frag _line _sym _want _got",
+            "{indent}  for _frag in "
+            + " ".join(f'"$startdir/{f}"' for f in fragments)
+            + "; do",
+            "{indent}    [ -f \"$_frag\" ] || continue",
+            "{indent}    while IFS= read -r _line; do",
+            "{indent}      case $_line in",
+            "{indent}        CONFIG_*=*) _sym=${_line%%=*}; _want=${_line#*=} ;;",
+            "{indent}        '# CONFIG_'*' is not set')"
+            " _sym=${_line#\\# }; _sym=${_sym%% *}; _want=n ;;",
+            "{indent}        *) continue ;;",
+            "{indent}      esac",
+            "{indent}      if _got=$(grep -m1 \"^$_sym=\" .config); then",
+            "{indent}        _got=${_got#*=}",
+            "{indent}      else",
+            "{indent}        _got=n",
+            "{indent}      fi",
+            '{indent}      if [ "$_want" != "$_got" ]; then',
+            "{indent}        printf '%s\\n' \"==> sysforge: WARNING: requested"
+            " $_sym=$_want is not in the final .config (resolved to $_got)\" >&2",
+            "{indent}      fi",
+            "{indent}    done < \"$_frag\"",
+            "{indent}  done",
+            "{indent}}",
+            f"{{indent}}{VERIFY_MARKER} || true",
+        ),
+        skip_if_present=VERIFY_MARKER,
     )
 
 

@@ -207,11 +207,12 @@ Inline `make VAR=val` and `cmake -DKEY=val` lines are only removed when the key 
 
 ### `kconfig_plan.py`
 
-Sole home for the kernel PKGBUILD's kconfig region (2.5.1-F1). Five ordered slots —
-`BASE_SEED`, `FRAGMENT_MERGE`, `GENERATE`, `HOTPLUG_MERGE`, `REVIEW` — cover everything a kernel
-`prepare()` needs done to its config: seed a base `.config`, overlay the sysforge fragment, run
-the configured generation targets, re-enable hotplug drivers a minimizer stripped, then let the
-operator review the result. `SLOT_ORDER` is the **sole ordering authority**: contributors fill a
+Sole home for the kernel PKGBUILD's kconfig region (2.5.1-F1). Six ordered slots —
+`BASE_SEED`, `FRAGMENT_MERGE`, `GENERATE`, `HOTPLUG_MERGE`, `REVIEW`, `VERIFY` — cover everything a
+kernel `prepare()` needs done to its config: seed a base `.config`, overlay the sysforge fragment,
+run the configured generation targets, re-enable hotplug drivers a minimizer stripped, let the
+operator review the result, then verify the requested symbols actually landed. `SLOT_ORDER` is the
+**sole ordering authority**: contributors fill a
 `KconfigPlan` by slot key via `contribute(Step)`, so the order calls run in cannot affect the
 rendered result — refilling an already-filled slot raises. No step reads another step's output;
 the `# sysforge: kconfig-resolve` sentinel that the pre-refactor patchers used to tell their own
@@ -258,6 +259,40 @@ build. Four passes:
    a no-op after pass 2 removed every kconfig line, which is why pass 2's anchor offset can be
    recorded up front and reused.
 4. **Splice** the two regions into the text, high offset first so the lower offset stays valid.
+
+**Requested-symbol survival check (`VERIFY`, `verify_step`, 2.6.1-F23).** SysForge writes its
+fragments as plain text, and until this slot never checked that the symbols it asked for actually
+landed. Three mechanisms void a fragment line with no fragment-level signal: a value illegal for
+the symbol's type (`=m` on a `bool` — kconfig discards the whole assignment and warns mid-build), a
+symbol upstream has renamed or removed (dropped in silence), and an unmet *host-tooling* dependency
+(`CONFIG_RUST`, whose `scripts/rust_is_available.sh` probe fails and leaves the symbol unset —
+`3.0.0-F1` prevents that case up front, this catches it when that preflight is absent or wrong, so
+neither supersedes the other). `2.6.1-B17` was the first two at once, and each survived because the
+only evidence was a warning line scrolling past during a 20-minute build, erased from `.config` by
+the next `make olddefconfig`. `merge_config.sh` already models the check (`Value requested for
+CONFIG_X not in final .config`); `verify_step` does the equivalent for sysforge's own fragments —
+a shell function rendered into `prepare()` that walks `sysforge.config` and `sysforge.hotplug.config`,
+parses each `CONFIG_X=v` / `# CONFIG_X is not set` line, and warns per symbol whose requested value
+differs from the resolved one (an absent symbol and an `is not set` line both read as `n`, which is
+what kconfig means by them). Four properties:
+
+- **Shell, not Python** — the resolved `.config` exists only inside makepkg's build tree, which
+  sysforge never reads back.
+- **Last in `SLOT_ORDER`, after `REVIEW`** — it reports on the `.config` the build actually uses,
+  and an operator editing the config in `nconfig` can drop a requested symbol just as
+  `olddefconfig` can.
+- **Warn, never fail** — a dropped symbol is a silent loss of intent, but hard-failing a kernel
+  build over one stale entry in a curated table is worse. `kernel_safety.py` remains the only hard
+  gate.
+- **Type-agnostic** — it compares literal requested against literal resolved values, so it needs no
+  table of symbol types and cannot drift as the kernel tree changes.
+
+It is contributed unconditionally by the kernel build path, file-guarded (a runtime no-op when
+`kconfig_merge = false` wrote no fragment), idempotent via the `VERIFY_MARKER` substring, and
+errexit-safe under makepkg's `set -e` (every failing command sits in an `if` condition, and the
+call itself is `|| true`). `tests/test_kconfig_plan.py::TestVerifyShellBehaviour` executes the
+rendered function under `bash -e` against real fragment/`.config` pairs — the runtime behaviour is
+the whole point of the step and none of it is observable from the rendered text.
 
 Three rendered-text divergences from the pre-refactor patchers are deliberate and owner-approved,
 each pinned by its own test: the `# sysforge: kconfig-resolve` sentinel is no longer emitted (it
