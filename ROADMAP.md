@@ -101,6 +101,7 @@ canonical ordering.
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
+| `3.0.0-F5` | itemize the flag-triggered pacman -Syu in the result summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 <!-- END roadmap-table -->
 
@@ -163,6 +164,37 @@ canonical ordering.
   breaking behaviour change for automation; it is also the larger of the two holes, since it fires
   on code already on disk.
   **Standards home on adoption:** none new — extends the existing review-gate seam.
+
+---
+
+- **`3.0.0-F5` — itemize the flag-triggered `pacman -Syu` in the result summary.** Phase 6.5 has two
+  routes into the same `pacman -Syu` since `3.0.0-F4` decoupled it from `repo_mode`, and only one of
+  them can report what it did. The classified route builds `pacman_upgrade_pkgs` from results the
+  version-check stamped `NEEDS_PACMAN_UPGRADE` (`update_version.py`), each carrying an
+  `installed_ver`/`pkgbuild_ver` pair, so `update_summary._print_result_summary` renders one
+  `pkgbase: old → new` line per entry. The flag/config route (`--sysupgrade` / `[build]
+  system_upgrade`) deliberately does no widened walk and no `checkupdates` probe — it hands the whole
+  transaction to pacman — so the only fact in `ResultSummary` is the `system_upgrade_ran` boolean and
+  the renderer falls through to the single line `system upgrade (pacman resolved the transaction)`.
+  That line is honest but strictly less useful than what a `-Syu`-by-hand shows, and it is the common
+  case for anyone who turns `system_upgrade` on: the managed set rarely holds `build_mode = "pacman"`
+  entries, so the classified list is usually empty precisely when the flag route fires. Add a
+  reporting-only version capture for the flag route so both presentations itemize. Design decisions:
+  **where the version pairs come from** — a `checkupdates` probe *before* the transaction (cheap, one
+  subprocess, but it is a second resolver whose answer can disagree with what pacman actually did,
+  and it reintroduces exactly the probe F4 removed), versus reading `pacman -Qi`-style state or the
+  pacman log *after* the transaction (authoritative — it reports what happened rather than what was
+  predicted — but needs a parse seam that does not exist yet); the latter is the better fit for a
+  renderer whose contract is reporting facts. Also **whether the block stays capped or prints in
+  full** (a stock `-Syu` can be hundreds of packages, unlike the managed classified list) and whether
+  the capture is unconditional or earns a flag. The renderer stays presentation-only — the capture
+  belongs in `_build_result_summary`'s assembler, feeding the existing `pacman_upgrade_pkgs` +
+  version-map fields so the `elif system_upgrade_ran` fallback narrows to the genuinely-unknown case
+  (offline, or a failed transaction with nothing to read back). `render.version_pair` already owns
+  the `old → new` vocabulary; do not re-inline it. *Priority: low · Effort: medium · Bump: patch* —
+  reporting only, no change to what the transaction does, and the existing single-line output stays
+  as the fallback.
+  **Standards home on adoption:** none new — extends the existing result-summary renderer.
 
 ---
 
