@@ -1,26 +1,9 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. An entry leads with its
-roadmap ID, in the same shape ROADMAP.md entries use:
-
-    - **`1.2.0-F35` — <title sentence>.** <body>
-
-    ---
-
-    - **`1.2.0-F36` — …
-
-Entries are separated by a `---` rule and kept in ascending ID order within each
-section. Flag breaking changes with a **Breaking:** prefix opening the body, plus
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+The first release on the 3.x line: source ingress gains a hard gate (`--frozen`),
+the trailing `pacman -Syu` is finally an update-run option in its own right rather
+than a side effect of `repo_mode`, and the toolchain/flag drift rebuilds shipped in
+3.0.0 now actually rebuild.
 
 ## Added
 
@@ -72,15 +55,15 @@ https://keepachangelog.com/en/1.1.0/
 - **`3.0.0-F2` — Frozen sources: a hard gate on AUR/VCS downloads.** New
   `[security] freeze_sources` config key and global `--frozen` / `--no-frozen` /
   `--thaw PKG` flags refuse all new source ingress at five seams: AUR clones,
-  `pkgctl repo clone` checkouts, source-sync fetches, and both VCS pkgver seams. Existing checkouts still build. A refused
-  package is a per-package blocker (`STATUS_FROZEN`) — the run continues and
+  `pkgctl repo clone` checkouts, source-sync fetches, and both VCS pkgver seams.
+  Existing checkouts still build. A refused package is a per-package blocker (`STATUS_FROZEN`) — the run continues and
   exits non-zero with the blocked set named. Ships off; lifts are run-scoped
   only. makepkg's own `source=()` downloads cannot be mediated and are warned
   about instead.
 
 ---
 
-- **`3.0.0-F4` — decouple `update`'s trailing `pacman -Syu` from `repo_mode`.** The
+- **`3.0.0-F4` — `update`'s trailing `pacman -Syu` is decoupled from `repo_mode`.** The
   Phase 6.5 system upgrade is now an update-run option in its own right: new
   `[build] system_upgrade` key in `packages.toml` plus `--sysupgrade` /
   `--no-sysupgrade`. Previously the only way to get it was `repo_mode =
