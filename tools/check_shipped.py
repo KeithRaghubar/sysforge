@@ -29,7 +29,8 @@ Default groups (each runs in order, all surface to a single summary):
     pkgbuild         backup=() matches install lines; install sources exist;
                      sha256sums is not a placeholder.
     pkgbuild_parity  PKGBUILD vs PKGBUILD-git: depends/makedepends/optdepends/
-                     backup arrays must be byte-identical.
+                     backup arrays must be byte-identical, and both package()
+                     bodies must install the same set of system paths.
     hooks            pacman hook Exec arg is a subcommand
                      tools/pacman-hook-helper.sh documents.
     completions      every verb and long-flag in the argparse parser appears
@@ -52,6 +53,7 @@ Drift detection cases (verify these still fire after editing this script):
     - Teach a _coerce_* function a new accepted form without updating the comment.
     - Remove an entry from PKGBUILD backup=() that still has an install line.
     - Rename a subcommand in tools/pacman-hook-helper.sh case statement.
+    - Add an install line to PKGBUILD without mirroring it into PKGBUILD-git.
     - Delete a verb function from completions/_sysforge.
     - Bump pyproject.toml version without touching PKGBUILD.
     - Add a new argument to sysforge/cli.py without running `make man`.
@@ -866,6 +868,19 @@ def check_pkgbuild_parity(repo: Path) -> list[Finding]:
                                     "PKGBUILD vs PKGBUILD-git",
                                     f"{key} differs: PKGBUILD={stable_g.get(key)!r} "
                                     f"PKGBUILD-git={git_g.get(key)!r}"))
+
+    # Global-variable parity alone misses drift inside package(): a newly
+    # shipped hook/completion/unit added to one PKGBUILD's install graph and
+    # not the other installs cleanly and only fails much later, in the VM
+    # smoke test, as a bare artifact-count mismatch.
+    stable_t = _parse_pkgbuild_install_targets(stable.read_text())
+    git_t = _parse_pkgbuild_install_targets(git.read_text())
+    for missing in sorted(stable_t - git_t):
+        findings.append(Finding("pkgbuild_parity", "error", "PKGBUILD-git",
+                                f"install target missing (PKGBUILD installs it): {missing}"))
+    for missing in sorted(git_t - stable_t):
+        findings.append(Finding("pkgbuild_parity", "error", "PKGBUILD",
+                                f"install target missing (PKGBUILD-git installs it): {missing}"))
     return findings
 
 

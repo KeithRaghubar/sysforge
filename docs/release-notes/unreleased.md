@@ -289,3 +289,15 @@ https://keepachangelog.com/en/1.1.0/
   hard build failure rather than a silent reuse. `build` shared the defect and gains
   **`--rebuild`** (the per-target `-f`); `--force` there is unrelated and unchanged — it waives
   the repo-package opt-in gate and never reaches makepkg.
+
+---
+
+- **`3.0.0-B10` — the `-git` package never installed the `sysforge-artifacts.hook`.** Its
+  `package()` body installed only three of the four shipped pacman hooks; the stable `PKGBUILD`
+  installed all four. Anyone on the VCS package therefore silently lost the artifact-drift
+  PostTransaction hook, and the defect surfaced only in the VM smoke test as a bare
+  `4 pacman hooks installed (found 3)`. The missing install line is restored, and
+  `check_shipped`'s `pkgbuild_parity` group — which until now compared only the two files'
+  global arrays (`depends`, `backup`, …) and never looked inside `package()` — now diffs the
+  full install-target set of both bodies, so any future artifact added to one PKGBUILD and not
+  the other fails at `make check-shipped` instead of in a VM.
