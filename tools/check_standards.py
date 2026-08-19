@@ -1097,8 +1097,17 @@ def _parse_registry(repo: Path) -> list[dict]:
     src = repo / _DEPRECATIONS_SRC
     if not src.exists():
         return []
+    return _parse_registry_source(src.read_text(encoding="utf-8"))
+
+
+def _parse_registry_source(text: str) -> list[dict]:
+    """`_parse_registry` over a source *string*, so a past revision of the file
+    (via `git show <sha>:<path>`) parses with the same reader as the working
+    tree. Split out for :func:`_historical_registry`, which must answer what a
+    record said *after* the commit that deleted it.
+    """
     try:
-        tree = ast.parse(src.read_text(encoding="utf-8"))
+        tree = ast.parse(text)
     except SyntaxError:
         return []
     consts: dict[str, str] = {}
@@ -1265,6 +1274,8 @@ _SECTION_BUMP = {
     "Added": "minor",
     "Changed": "patch",      # a breaking Changed must say **Breaking:**
     "Deprecated": "minor",
+    # Removed is the default only; `_removed_block_bump` refines it per entry
+    # against the deprecation registry (a shim removal is not breaking).
     "Removed": "major",
     "Fixed": "patch",
     "Security": "patch",
@@ -1273,7 +1284,76 @@ _SECTION_BUMP = {
 _ACCUMULATOR = "docs/release-notes/unreleased.md"
 
 
-def derive_bump(text: str) -> tuple[str | None, str]:
+def _historical_registry(repo: Path) -> dict[str, str]:
+    """Map surface -> `function` for every surface the registry has *ever*
+    held, working-tree records included.
+
+    A removal deletes its record in the same commit that deletes the surface,
+    so by the time the release is cut the working-tree registry can no longer
+    say whether the thing named in `## Removed` was a `shim` (already failing —
+    deleting it breaks nothing) or a `compat` (still working — deleting it is
+    breaking). The last revision of `deprecations.py` that carried the record
+    answers that definitively, and `git show` plus the same AST reader recovers
+    it without a tombstone table to keep in sync.
+
+    Newest revision wins, so a record edited before removal is read as it last
+    stood. Returns only the working-tree records when git is unavailable or the
+    file has no history; every caller must treat a *missing* surface as
+    "unknown", never as "non-breaking".
+    """
+    out: dict[str, str] = {}
+    try:
+        log = subprocess.run(
+            ["git", "-C", str(repo), "log", "--format=%H", "--",
+             _DEPRECATIONS_SRC],
+            capture_output=True, text=True, timeout=30, check=False)
+        shas = log.stdout.split() if log.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError):
+        shas = []
+    # Oldest first, so a newer revision overwrites an older reading; the
+    # working tree is applied last and always wins.
+    for sha in reversed(shas):
+        try:
+            blob = subprocess.run(
+                ["git", "-C", str(repo), "show",
+                 f"{sha}:{_DEPRECATIONS_SRC}"],
+                capture_output=True, text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if blob.returncode != 0:
+            continue
+        for rec in _parse_registry_source(blob.stdout):
+            surface, function = rec.get("surface"), rec.get("function")
+            if surface and function:
+                out[surface] = function
+    for rec in _parse_registry(repo):
+        surface, function = rec.get("surface"), rec.get("function")
+        if surface and function:
+            out[surface] = function
+    return out
+
+
+def _removed_block_bump(block: str, history: dict[str, str]) -> tuple[str, str]:
+    """The bump a `## Removed` entry implies, plus the reason.
+
+    Default is major — removing something is breaking until proven otherwise,
+    and every failure mode here (no repo, git missing, an unrecognised surface,
+    a surface that predates the registry) lands on that default. Only a block
+    naming at least one known surface, all of whose records are `shim`,
+    weakens to minor: standards row 24 defines a shim as a surface that already
+    fails, kept solely to name its replacement, so deleting it changes an error
+    message's helpfulness rather than the contract.
+    """
+    named = [(surf, fn) for surf, fn in history.items() if surf in block]
+    if not named:
+        return "major", ""
+    compat = [surf for surf, fn in named if fn != "shim"]
+    if compat:
+        return "major", f"compat surface `{compat[0]}`"
+    return "minor", "shim surface `%s`" % named[0][0]
+
+
+def derive_bump(text: str, repo: Path | None = None) -> tuple[str | None, str]:
     """Required bump for an accumulator body, plus the evidence for it.
 
     Returns (bump, evidence); bump is None when the accumulator has no authored
@@ -1284,12 +1364,22 @@ def derive_bump(text: str) -> tuple[str | None, str]:
     entry that omits the marker reads as patch. release.sh prints this evidence
     so the inference is auditable.
 
+    `## Removed` is the one section whose bump is not fixed by the heading
+    alone. Standards row 24 splits a removal two ways — deleting a `compat`
+    surface breaks a configuration that currently works (major), while deleting
+    a `shim` deletes something that already failed (minor) — so when `repo` is
+    given, each Removed entry is resolved against the deprecation registry's
+    history (:func:`_historical_registry`) and only an all-shim entry weakens to
+    minor. Without `repo`, or for anything the registry cannot identify, Removed
+    stays major: the derivation never guesses in the weakening direction.
+
     The marker is searched for across the entry's whole block, not just its
     bullet line: an entry opens with a bold `**`<ID>` — title.**` lead, so
     `**Breaking:**` starts the body and lands on a continuation line whenever
     the title fills the first one.
     """
     body = _HTML_COMMENT_RE.sub("", text)
+    history = _historical_registry(repo) if repo is not None else {}
     best: str | None = None
     evidence = "no authored entries"
     section: str | None = None
@@ -1306,6 +1396,12 @@ def derive_bump(text: str) -> tuple[str | None, str]:
     for lineno, sect, block in blocks:
         if "**Breaking:**" in "\n".join(block):
             candidate, why = "major", f"**Breaking:** marker, line {lineno}"
+        elif sect == "Removed":
+            candidate, why_surface = _removed_block_bump(
+                "\n".join(block), history)
+            why = f"## Removed, line {lineno}"
+            if why_surface:
+                why = f"## Removed ({why_surface}), line {lineno}"
         elif sect is not None and sect in _SECTION_BUMP:
             candidate = _SECTION_BUMP[sect]
             why = f"## {sect}, line {lineno}"
@@ -1445,7 +1541,7 @@ def main(argv: list[str] | None = None) -> int:
         if not acc.exists():
             print(f"ERROR: {_ACCUMULATOR} is missing", file=sys.stderr)
             return 2
-        bump, evidence = derive_bump(acc.read_text(encoding="utf-8"))
+        bump, evidence = derive_bump(acc.read_text(encoding="utf-8"), repo)
         if bump is None:
             print(f"ERROR: {_ACCUMULATOR} has no authored entries",
                   file=sys.stderr)

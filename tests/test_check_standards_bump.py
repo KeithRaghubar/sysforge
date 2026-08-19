@@ -245,3 +245,165 @@ def test_bump_vocabulary_has_one_home():
         sys.path.pop(0)
     assert cs.BUMP_ORDER is _semver_vocab.BUMP_ORDER
     assert g.BUMP_ORDER is _semver_vocab.BUMP_ORDER
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-STD3 — a `## Removed` entry is major *unless* the registry says shim
+# ---------------------------------------------------------------------------
+
+_REGISTRY_HEAD = '''\
+from dataclasses import dataclass
+
+CONFIG_KEY = "config_key"
+CLI_FLAG = "cli_flag"
+COMPAT = "compat"
+SHIM = "shim"
+
+
+@dataclass(frozen=True)
+class Deprecation:
+    surface: str
+    kind: str
+    function: str
+    deprecated_in: str
+    removed_in: str
+    replacement: str
+    anchor: str | None = None
+
+
+_REGISTRY = (
+'''
+
+_SHIM_REC = '''\
+    Deprecation(
+        surface="doctor.flat_flags",
+        kind=CLI_FLAG,
+        function=SHIM,
+        deprecated_in="3.0.0",
+        removed_in="3.1.0",
+        replacement="doctor system",
+        anchor="sysforge/doctor.py::doctor_migration_hint",
+    ),
+'''
+
+_COMPAT_REC = '''\
+    Deprecation(
+        surface="profiles.build_mode=patched_pkgbuild",
+        kind=CONFIG_KEY,
+        function=COMPAT,
+        deprecated_in="2.0.0",
+        removed_in="4.0.0",
+        replacement="source_built",
+    ),
+'''
+
+
+def _mk_repo(tmp_path, committed_records, worktree_records, git=True):
+    """A throwaway repo whose deprecations.py was committed with one set of
+    records and now carries another — the shape a removal commit produces."""
+    import subprocess
+    src = tmp_path / "sysforge" / "primitives"
+    src.mkdir(parents=True)
+    f = src / "deprecations.py"
+    f.write_text(_REGISTRY_HEAD + "".join(committed_records) + ")\n",
+                 encoding="utf-8")
+    if git:
+        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               "PATH": __import__("os").environ.get("PATH", "")}
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, env=env)
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"],
+                       check=True, env=env)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "seed"],
+                       check=True, env=env)
+    f.write_text(_REGISTRY_HEAD + "".join(worktree_records) + ")\n",
+                 encoding="utf-8")
+    return tmp_path
+
+
+def _removed(body):
+    return f"# sysforge (unreleased)\n\n## Removed\n\n- {body}\n"
+
+
+def test_shim_removal_derives_minor(tmp_path):
+    """The record is deleted by the commit that does the removal, so only git
+    history can still say it was a shim — and a shim already failed, so its
+    deletion is not breaking."""
+    repo = _mk_repo(tmp_path, [_SHIM_REC], [])
+    bump, evidence = cs.derive_bump(
+        _removed("`doctor.flat_flags` is gone (3.0.0-STD3)."), repo)
+    assert bump == "minor"
+    assert "shim" in evidence
+
+
+def test_compat_removal_still_derives_major(tmp_path):
+    """A compat surface still works, so removing it breaks a live config."""
+    repo = _mk_repo(tmp_path, [_COMPAT_REC], [])
+    bump, evidence = cs.derive_bump(
+        _removed("`profiles.build_mode=patched_pkgbuild` is gone (9.9.9-STD1)."),
+        repo)
+    assert bump == "major"
+    assert "compat" in evidence
+
+
+def test_mixed_removal_section_takes_the_stronger_bump(tmp_path):
+    """One compat entry in the section is enough to force major."""
+    repo = _mk_repo(tmp_path, [_SHIM_REC, _COMPAT_REC], [])
+    text = (_removed("`doctor.flat_flags` is gone (3.0.0-STD3).")
+            + "- `profiles.build_mode=patched_pkgbuild` is gone (9.9.9-STD1).\n")
+    assert cs.derive_bump(text, repo)[0] == "major"
+
+
+def test_one_entry_naming_both_kinds_is_major(tmp_path):
+    """A single entry that removes a shim *and* a compat surface is breaking."""
+    repo = _mk_repo(tmp_path, [_SHIM_REC, _COMPAT_REC], [])
+    assert cs.derive_bump(_removed(
+        "`doctor.flat_flags` and `profiles.build_mode=patched_pkgbuild` go "
+        "(9.9.9-STD1)."), repo)[0] == "major"
+
+
+def test_unrecognised_surface_falls_back_to_major(tmp_path):
+    """Prose the registry cannot identify must never weaken the bump — the
+    derivation only ever guesses in the strengthening direction."""
+    repo = _mk_repo(tmp_path, [_SHIM_REC], [])
+    assert cs.derive_bump(_removed("some undocumented thing (9.9.9-B1)."),
+                          repo)[0] == "major"
+
+
+def test_non_repo_falls_back_to_major(tmp_path):
+    """No git history to consult (a tarball, a `--repo` pointing outside a
+    checkout) and a record already deleted from the working tree: nothing can
+    classify the surface, so the safe default holds."""
+    repo = _mk_repo(tmp_path, [_SHIM_REC], [], git=False)
+    assert cs.derive_bump(_removed("`doctor.flat_flags` is gone."), repo)[0] \
+        == "major"
+
+
+def test_working_tree_record_classifies_without_git(tmp_path):
+    """History is only needed once the record is deleted. While the record is
+    still in the working tree, git never has to be consulted."""
+    repo = _mk_repo(tmp_path, [], [_SHIM_REC], git=False)
+    assert cs.derive_bump(_removed("`doctor.flat_flags` is gone."), repo)[0] \
+        == "minor"
+
+
+def test_missing_registry_falls_back_to_major(tmp_path):
+    """No registry at all — nothing can be classified, so major."""
+    assert cs.derive_bump(_removed("`doctor.flat_flags` is gone."),
+                          tmp_path)[0] == "major"
+
+
+def test_working_tree_record_wins_over_history(tmp_path):
+    """A record edited before removal is read as it last stood, not as first
+    committed — newest revision wins, working tree last."""
+    flipped = _SHIM_REC.replace("function=SHIM", "function=COMPAT") \
+                       .replace('        anchor="sysforge/doctor.py::doctor_migration_hint",\n', "")
+    repo = _mk_repo(tmp_path, [_SHIM_REC], [flipped])
+    assert cs.derive_bump(_removed("`doctor.flat_flags` is gone."),
+                          repo)[0] == "major"
+
+
+def test_no_repo_argument_keeps_removed_at_major(tmp_path):
+    """The default call path is unchanged: without a repo there is nothing to
+    consult, so Removed stays major."""
+    assert cs.derive_bump(_removed("`doctor.flat_flags` is gone."))[0] == "major"

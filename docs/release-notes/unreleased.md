@@ -146,6 +146,18 @@ than a side effect of `repo_mode`, and the toolchain/flag drift rebuilds shipped
   gets argparse's own unrecognized-argument error rather than a signpost. The structural
   test that a flat axis flag no longer parses stays, so the removal itself remains pinned.
 
+  Cutting the release surfaced a contradiction between the two standards that govern it, so
+  `3.0.0-STD3` also files the fix. Row 24 mandates that a removal be named by a `## Removed`
+  entry; row 3 read *any* `## Removed` section as unconditionally breaking. A shim removal
+  satisfies the first and is refused by the second — the release-target gate demanded 3.1.0
+  delete the shim, then the bump gate demanded 4.0.0 for having deleted it. `derive_bump` now
+  resolves each `## Removed` entry against the registry and weakens to minor only when every
+  surface the entry names is a `shim`; the record is gone from the working tree by then, so
+  `_historical_registry` recovers it from the last revision of `deprecations.py` that carried
+  it, via `git show` and the same AST reader the working-tree check uses. No repo, no git, an
+  unrecognised surface, or one predating the registry all land on major — the derivation only
+  ever guesses in the strengthening direction.
+
 ## Fixed
 
 - **`2.6.1-B11` — `format_assignment` could emit env-file syntax `env_chain` cannot read
