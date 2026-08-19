@@ -156,6 +156,7 @@ _sysforge_build() {
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
     '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
     '--force[build from source this run only; no packages.toml write]' \
+    '--rebuild[force makepkg -f even if already built]' \
     '--pgo[instrumentation PGO, LLVM only]:mode:(record use)' \
     '--state-dir[override state directory]:directory:_files -/' \
     '*: :_sysforge_pkg_or_file' \

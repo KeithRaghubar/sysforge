@@ -271,3 +271,21 @@ https://keepachangelog.com/en/1.1.0/
   gained the matching defense: a table raises a `RuntimeError` naming the `[[kconfig]]` form and
   listing any non-`CONFIG_*` keys the header swallowed, and a non-table entry is rejected by index
   — no more `AttributeError` from deep in the stage.
+
+---
+
+- **`3.0.0-B9` — drift-promoted rebuilds never passed `-f`, so makepkg skipped every one of
+  them.** `--rebuild-on-toolchain-drift` / `--rebuild-on-flag-drift` promoted drifted packages
+  from `UP_TO_DATE` to `NEEDS_REBUILD` and stopped there — no force signal rode along. Toolchain
+  and flag drift are the one rebuild class that happens at an *unchanged* `pkgver`, so the
+  matching artifact was still in `PKGDEST`, makepkg exited 13, and the `AlreadyBuilt` handler
+  reinstalled the stale artifact — the one carrying the very flags the drift detector objected
+  to. The run reported success; the headline drift feature was a complete no-op (observed: 62
+  packages promoted, 52 reused, zero fresh builds). Both `BuildTarget` and `update`'s result type
+  now carry a per-target `force_rebuild` that the shared build loop spends as `-f` on **that
+  target alone** — batch-wide cleanbuild policy is unchanged, and the `AlreadyBuilt → reuse`
+  route stays intact for the resume case (a run interrupted between build and install must not
+  rebuild what it already has). On a forced target `AlreadyBuilt` is unreachable, so it is now a
+  hard build failure rather than a silent reuse. `build` shared the defect and gains
+  **`--rebuild`** (the per-target `-f`); `--force` there is unrelated and unchanged — it waives
+  the repo-package opt-in gate and never reaches makepkg.

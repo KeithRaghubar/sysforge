@@ -350,6 +350,12 @@ class BuildVerb(Verb):
                 )
                 continue
 
+            # 3.0.0-B9: --rebuild is a per-target makepkg -f. Without it a
+            # rebuild at an unchanged pkgver is skipped by makepkg (exit 13)
+            # and the stale artifact reinstalled. (--force is a different
+            # thing entirely — the repo-package opt-in waiver above.)
+            target.force_rebuild = getattr(args, "rebuild", False)
+
             targets.append(target)
 
         if not targets:

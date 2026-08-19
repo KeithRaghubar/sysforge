@@ -1019,6 +1019,8 @@ def _cmd_update_body(args) -> int:
                     unbuildable += 1
                     continue
                 r.action = "NEEDS_REBUILD"
+                # B9: unchanged pkgver -> makepkg needs -f or it skips this.
+                r.force_rebuild = True
                 promoted += 1
         if promoted:
             _log.ui(
@@ -1042,6 +1044,8 @@ def _cmd_update_body(args) -> int:
                     unbuildable += 1
                     continue
                 r.action = "NEEDS_REBUILD"
+                # B9: unchanged pkgver -> makepkg needs -f or it skips this.
+                r.force_rebuild = True
                 promoted += 1
         if promoted:
             _log.ui(

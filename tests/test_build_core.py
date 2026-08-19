@@ -1324,3 +1324,120 @@ def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
         run_capture=seen,
     )
     assert seen == [("foo", "abc123", True)]
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-B9 — per-target force rebuild (-f)
+# ---------------------------------------------------------------------------
+
+def _run_one(target, artifact=None, run_side_effect=None, snapshot=None):
+    """Drive build_and_install over a single target, returning the recorded
+    BuildOptions plus the outcome."""
+    seen = {}
+
+    def fake_run(pkgbuild_path, options=None):
+        seen["options"] = options
+        if run_side_effect is not None:
+            run_side_effect()
+        elif artifact is not None:
+            _touch_future(artifact)
+
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=snapshot if snapshot is not None else frozenset(
+            {artifact} if artifact else ()),
+        install_capture=lambda paths, **_kw: True,
+    )):
+        outcome = build_core.build_and_install(
+            [target], config={}, sync_source=False,
+        )
+    return seen.get("options"), outcome
+
+
+def test_force_rebuild_target_appends_f_to_its_own_flags(tmp_path):
+    """A drift-promoted (or `build --rebuild`) target must reach makepkg with
+    -f, or makepkg skips it outright at an unchanged pkgver (B9)."""
+    target = _make_target(tmp_path)
+    target.force_rebuild = True
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    opts, outcome = _run_one(target, artifact)
+    assert "-f" in opts.extra_flags
+    assert "-C" in opts.extra_flags       # batch cleanbuild policy preserved
+    assert outcome.built_pkgs == ["foo"]
+
+
+def test_force_rebuild_is_per_target_not_batch_wide(tmp_path):
+    """Only the promoted target gets -f; an ordinary sibling in the same batch
+    keeps the batch flags untouched."""
+    forced = _make_target(tmp_path, pkgbase="forced")
+    forced.force_rebuild = True
+    plain = _make_target(tmp_path, pkgbase="plain")
+    seen = {}
+
+    def fake_run(pkgbuild_path, options=None):
+        seen[Path(pkgbuild_path).parent.name] = list(options.extra_flags)
+
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=frozenset(),
+        install_capture=lambda paths, **_kw: True,
+    )):
+        build_core.build_and_install(
+            [forced, plain], config={}, sync_source=False,
+        )
+    assert "-f" in seen["forced"]
+    assert "-f" not in seen["plain"]
+
+
+def test_force_rebuild_does_not_duplicate_an_explicit_f(tmp_path):
+    target = _make_target(tmp_path)
+    target.force_rebuild = True
+    seen = {}
+
+    def fake_run(pkgbuild_path, options=None):
+        seen["flags"] = list(options.extra_flags)
+
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=frozenset(),
+        install_capture=lambda paths, **_kw: True,
+    )):
+        build_core.build_and_install(
+            [target], config={}, sync_source=False, extra_flags=["-f"],
+        )
+    assert seen["flags"].count("-f") == 1
+
+
+def test_already_built_on_forced_target_is_a_hard_failure(tmp_path):
+    """With -f passed, makepkg cannot legitimately report exit 13 — reusing the
+    stale artifact is what B9 was. Fail loudly instead."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+    target = _make_target(tmp_path, pkgbase="foo")
+    target.force_rebuild = True
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    artifact.touch()
+
+    def boom():
+        raise AlreadyBuilt(target.pkgbuild_path)
+
+    with patch("sysforge.build_core._record_build_failure"):
+        _opts, outcome = _run_one(target, run_side_effect=boom)
+    assert outcome.failed_pkgs == ["foo"]
+    assert outcome.built_pkgs == []
+
+
+def test_already_built_without_force_still_reuses_artifact(tmp_path):
+    """The resume case is load-bearing: an unforced target that makepkg skips
+    still installs the existing artifact."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+    target = _make_target(tmp_path, pkgbase="foo")
+    target.pkgbuild_ver = "1-1"
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    artifact.touch()
+
+    def boom():
+        raise AlreadyBuilt(target.pkgbuild_path)
+
+    _opts, outcome = _run_one(target, run_side_effect=boom)
+    assert outcome.built_pkgs == ["foo"]
+    assert outcome.failed_pkgs == []

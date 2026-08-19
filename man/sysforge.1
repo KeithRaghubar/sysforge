@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-08\-12"
+.TH "sysforge" "1" "2026\-08\-19"
 .PP
 .PP
 .SH NAME
@@ -294,6 +294,11 @@ Skip the PKGBUILD review gate (full source\-tree diff prompt for packages whose 
 \fB\-\-force\fR
 .RS 4
 Unconditionally build all arguments from source for this run only, including repo packages not yet opted in.\& Never prompts for or modifies packages.\&toml opt\-in keys.\&
+.PP
+.RE
+\fB\-\-rebuild\fR
+.RS 4
+Force makepkg to rebuild even when a matching package already exists in PKGDEST (passes \-f).\& Use after a toolchain or build\-flag change, where the version is unchanged so makepkg would otherwise skip the build and reinstall the stale artifact.\& Note \-\-force is unrelated: it only waives the repo\-package opt\-in gate.\&
 .PP
 .RE
 \fB\-\-pgo\fR \fIPGO_MODE\fR

@@ -50,7 +50,10 @@ When any pattern matches and the process exits non-zero, `invoke_makepkg` raises
 Interpretation is centralized (2.5.1-F2): every catch site routes its decision
 through `primitives/already_built.resolve_already_built` — a decide-only policy
 seam with two postures. `"reuse"` (build_core's batch loop, the toolchain
-passes) treats the existing PKGDEST artifact as the product and proceeds;
+passes) treats the existing PKGDEST artifact as the product and proceeds — but
+the batch loop reaches the seam only for *unforced* targets, since a target
+built with `-f` (drift promotion, `build --rebuild`) cannot legitimately report
+exit 13 and fails hard instead (3.0.0-B9);
 `"review-gated"` (kernel stage) preserves the B5 semantics — the skipped build
 also skipped the promised in-prepare() kconfig review, so interactive runs get
 an install-as-built / rebuild-with-`-f` / abort prompt while unattended runs

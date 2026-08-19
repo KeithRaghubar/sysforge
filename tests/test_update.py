@@ -874,6 +874,40 @@ def test_rebuild_on_toolchain_drift_promotes_fingerprint_drift(update_scenario,
     assert "htop" in str(pkgbuild_path)
 
 
+def test_toolchain_drift_promotion_forces_the_rebuild(update_scenario,
+                                                     monkeypatch):
+    """3.0.0-B9: a drift-promoted rebuild happens at an unchanged pkgver, so
+    without -f makepkg exits 13 and the stale artifact gets reinstalled."""
+    installed, foreign = _seed_toolchain_fp(
+        update_scenario, monkeypatch, active_fp="fp-new", rec_fp="fp-old")
+    builds = update_scenario.run(
+        _make_args(rebuild_on_toolchain_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign)
+    assert "-f" in builds[0][1]["options"].extra_flags
+
+
+def test_flag_drift_promotion_forces_the_rebuild(update_scenario):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert "-f" in builds[0][1]["options"].extra_flags
+
+
+def test_ordinary_version_rebuild_is_not_forced(update_scenario):
+    """Only drift promotion forces: a genuine pkgver bump has no stale
+    artifact to trip over, and -f would defeat the resume case."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.record("htop", "3.3.0", "1")
+    builds = update_scenario.run(
+        _make_args(no_toolchain_preflight=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    assert builds, "expected a version-driven rebuild"
+    assert "-f" not in builds[0][1]["options"].extra_flags
+
+
 def test_explain_drift_lists_flag_drift_and_exits(update_scenario, capsys):
     installed, foreign = _seed_flag_drift(update_scenario)
     builds = update_scenario.run(

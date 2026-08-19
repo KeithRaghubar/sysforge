@@ -87,6 +87,11 @@ class BuildTarget:
     source: str | None = None
     pkgbuild_ver: str | None = None
     installed_ver: str | None = None
+    # 3.0.0-B9: pass makepkg ``-f`` for *this* target alone. Set by update's
+    # drift promotion and by ``build --rebuild`` — both rebuild at an unchanged
+    # pkgver, where the matching artifact is still in PKGDEST and makepkg would
+    # otherwise exit 13 and skip the build. Batch-wide flags stay batch-wide.
+    force_rebuild: bool = False
 
 
 @dataclass
@@ -835,6 +840,15 @@ def build_and_install(
             from sysforge.primitives.net_policy import get_policy, warn_ungated_sources
             if get_policy().frozen:
                 warn_ungated_sources(target.pkgbuild_path.parent)
+            # Per-target force (B9): the batch's cleanbuild policy is a batch
+            # decision, but ``-f`` is a property of the individual target, so
+            # layer it on rather than folding it into batch_flags.
+            forced = bool(getattr(target, "force_rebuild", False))
+            target_flags = (
+                batch_flags + ["-f"]
+                if forced and "-f" not in batch_flags
+                else batch_flags
+            )
             with timer.phase(f"build: {target.pkgbase}"):
                 try:
                     build_run(target.pkgbuild_path, options=BuildOptions(
@@ -852,7 +866,7 @@ def build_and_install(
                         ),
                         update=sync_source,
                         state_dir=state_dir,
-                        extra_flags=batch_flags,
+                        extra_flags=target_flags,
                         strip_flags=strip_flags,
                         interactive=interactive,
                         force_batch=not interactive,
@@ -872,6 +886,20 @@ def build_and_install(
                     _log.warn(str(e))
                     outcome.pgo_skipped_pkgs.append(target.pkgbase)
                 except AlreadyBuilt:
+                    if forced:
+                        # -f was on the command line, so makepkg cannot
+                        # legitimately have skipped the build. Reusing the
+                        # stale artifact here is exactly the silent no-op B9
+                        # was; fail loudly so it can't regress unnoticed.
+                        msg = (
+                            "makepkg reported already built despite -f "
+                            "(forced rebuild) — refusing to reuse the stale "
+                            "artifact"
+                        )
+                        _log.error(f"{target.pkgbase}: {msg}")
+                        outcome.failed_pkgs.append(target.pkgbase)
+                        _record_build_failure(state_dir, target, msg)
+                        continue
                     # 2.5.1-F2: policy-routed. "reuse" is trivially REUSE today;
                     # the seam call is the one home any future policy lands in.
                     resolve_already_built("reuse", interactive=interactive)

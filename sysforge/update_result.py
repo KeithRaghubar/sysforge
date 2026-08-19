@@ -27,3 +27,8 @@ class _UpdateResult:
     pkgbuild_path: Path | None
     has_build_record: bool = True
     source: str | None = None
+    # 3.0.0-B9: set when the rebuild was promoted by drift detection rather
+    # than a version bump. Consumed by ``build_core``'s loop as a per-target
+    # makepkg ``-f`` — a drift rebuild runs at an unchanged pkgver, so the
+    # matching artifact is still in PKGDEST and makepkg would skip the build.
+    force_rebuild: bool = False

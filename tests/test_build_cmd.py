@@ -24,7 +24,8 @@ from sysforge.verbs import PreCheckResult
 
 
 def _run_build(monkeypatch, tmp_path, pkgname, *, is_repo, force=True,
-               interactive=False, config=None, opt_in_yes=False):
+               interactive=False, config=None, opt_in_yes=False,
+               rebuild=False):
     """Run BuildVerb.execute for one package with the heavy collaborators
     stubbed. Returns (targets_passed_to_build_and_install, exec_result)."""
     captured: dict = {"targets": []}
@@ -54,7 +55,7 @@ def _run_build(monkeypatch, tmp_path, pkgname, *, is_repo, force=True,
         no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
         ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
         cache_report=False, abi_check=False, no_review=True, timings=False,
-        force=force,
+        force=force, rebuild=rebuild,
     )
     result = BuildVerb().execute(args, PreCheckResult(ctx={"config": config or {}}))
     return captured["targets"], result
@@ -384,3 +385,23 @@ def test_pre_check_no_pgo_never_gates(monkeypatch):
     )
     pre = BuildVerb().pre_check(_pgo_args(None))
     assert pre.blocker is None
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-B9 — build --rebuild
+# ---------------------------------------------------------------------------
+
+def test_build_rebuild_flags_the_target_for_force(monkeypatch, tmp_path):
+    """--rebuild rides on the target as force_rebuild, which build_core spends
+    as a per-target makepkg -f."""
+    targets, _ = _run_build(monkeypatch, tmp_path, "htop", is_repo=False,
+                            force=False, rebuild=True)
+    assert targets[0].force_rebuild is True
+
+
+def test_build_without_rebuild_leaves_target_unforced(monkeypatch, tmp_path):
+    """--force is the repo opt-in waiver, not a force-rebuild: on its own it
+    must not reach makepkg as -f."""
+    targets, _ = _run_build(monkeypatch, tmp_path, "htop", is_repo=False,
+                            force=True)
+    assert targets[0].force_rebuild is False

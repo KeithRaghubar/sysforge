@@ -89,6 +89,7 @@ To stop maintaining one:
 
 ```bash
 sysforge build PKG [-si]        # build (and install) with the resolved profile
+sysforge build PKG --rebuild    # rebuild even if the same version is already built
 sysforge update                 # rebuild outdated managed packages
 sysforge fetch PKG              # download a PKGBUILD without building
 sysforge resolve PKG            # show which profile applies to PKG, and why

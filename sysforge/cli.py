@@ -356,6 +356,12 @@ def _add_build_parser(sub):
         help="Unconditionally build all arguments from source for this run "
              "only, including repo packages not yet opted in. Never prompts "
              "for or modifies packages.toml opt-in keys.")
+    p.add_argument("--rebuild", action="store_true", dest="rebuild",
+        help="Force makepkg to rebuild even when a matching package already "
+             "exists in PKGDEST (passes -f). Use after a toolchain or build-flag "
+             "change, where the version is unchanged so makepkg would otherwise "
+             "skip the build and reinstall the stale artifact. Note --force is "
+             "unrelated: it only waives the repo-package opt-in gate.")
     p.add_argument("--pgo", choices=("record", "use"), dest="pgo_mode",
         help="Mesa instrumentation PGO (LLVM toolchain only). "
              "--pgo=record builds+installs an instrumented mesa that writes "
