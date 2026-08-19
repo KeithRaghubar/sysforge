@@ -639,11 +639,11 @@ def _add_doctor_parser(sub):
         help="Diagnose system health (`doctor system`) or package health "
              "(`doctor pkg`). Bare `doctor` runs the full system sweep.")
     # Bare `sysforge doctor` is `doctor system` — the everyday full sweep. The
-    # flat axis flags are NOT registered here: they were removed in 3.0.0 and
-    # `doctor_migration_hint` intercepts them with their replacement before
-    # argparse can report a bare "unrecognized arguments". Only `--quiet`
-    # survives at this level, since it modifies the sweep rather than selecting
-    # one. `packages=[]` keeps the shared target helpers happy at system scope.
+    # flat axis flags are NOT registered here: they were removed in 3.0.0, and
+    # 3.1.0 retired the migration hint that used to translate them, so argparse
+    # now reports them as unrecognized. Only `--quiet` survives at this level,
+    # since it modifies the sweep rather than selecting one. `packages=[]`
+    # keeps the shared target helpers happy at system scope.
     p.add_argument("--quiet", "-q", action="store_true",
         help="Suppress clean lines; print only findings.")
     p.set_defaults(verb_cls=DoctorSystemVerb, packages=[], doctor_cmd="system")
@@ -1524,15 +1524,6 @@ def _main():
             _hoist_global_flags(_hoist_verbosity_flags(sys.argv[1:]))
         )
     )
-    # 3.0.0: the flat `doctor` flags were removed. Intercept them here so the
-    # user gets their replacement instead of argparse's bare "unrecognized
-    # arguments" (2.6.1-F1). Delete alongside _DOCTOR_MIGRATION in 3.1.0.
-    from sysforge.doctor import doctor_migration_hint
-    _hint = doctor_migration_hint(sys.argv[1:])
-    if _hint:
-        log.error("[SYSFORGE]", _hint)
-        sys.exit(2)
-
     parser = _build_parser()
     args = parser.parse_args()
     log.set_verbosity(_resolve_verbosity(args))

@@ -50,36 +50,36 @@ def test_kinds_and_functions_are_in_vocabulary():
 
 
 def test_get_returns_record_and_none():
-    assert dep.get("doctor.flat_flags").replacement == \
-        "`sysforge doctor system` / `sysforge doctor pkg`"
+    assert dep.get("profiles.build_mode=patched_pkgbuild").replacement == \
+        'build_mode = "source_built"' 
     assert dep.get("no.such.surface") is None
 
 
 def test_warn_used_message_names_removal_and_replacement(monkeypatch):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append((tag, msg)))
-    dep.warn_used("doctor.flat_flags")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
     assert len(seen) == 1
     tag, msg = seen[0]
     assert tag == "[DEPRECATED]"
-    assert "doctor.flat_flags" in msg
-    assert "3.1.0" in msg
-    assert "sysforge doctor system" in msg
+    assert "profiles.build_mode=patched_pkgbuild" in msg
+    assert "4.0.0" in msg
+    assert "source_built" in msg
 
 
 def test_warn_used_fires_once_per_run(monkeypatch):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    dep.warn_used("doctor.flat_flags")
-    dep.warn_used("doctor.flat_flags")
-    dep.warn_used("doctor.flat_flags")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
     assert len(seen) == 1, "dedup must collapse repeat reads within one run"
 
 
 def test_warn_used_dedups_per_surface_not_globally(monkeypatch):
-    """Dedup keys on surface, not on a single global once-only flag. Only
-    doctor.flat_flags ships as of 3.0.0, so a second record is injected here
-    purely to exercise the dedup granularity — it is not a real surface."""
+    """Dedup keys on surface, not on a single global once-only flag. Only the
+    profiles build_mode alias ships as of 3.1.0, so a second record is injected
+    here purely to exercise the dedup granularity — it is not a real surface."""
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
     fake = dep.Deprecation(
@@ -92,7 +92,7 @@ def test_warn_used_dedups_per_surface_not_globally(monkeypatch):
         anchor="tests/test_deprecations.py::test_warn_used_dedups_per_surface_not_globally",
     )
     monkeypatch.setitem(dep._BY_SURFACE, fake.surface, fake)
-    dep.warn_used("doctor.flat_flags")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
     dep.warn_used(fake.surface)
     assert len(seen) == 2
 
@@ -101,7 +101,7 @@ def test_warn_used_unknown_surface_fails_soft(monkeypatch):
     warns, debugs = [], []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: warns.append(msg))
     monkeypatch.setattr(dep.log, "debug", lambda tag, msg: debugs.append(msg))
-    dep.warn_used("doctor.flat_flagz")     # typo, deliberately — must not raise
+    dep.warn_used("profiles.build_mode=patched_pkgbuildz")     # typo, deliberately — must not raise
     assert warns == [], "an unregistered surface must not warn"
     assert len(debugs) == 1
 
@@ -109,9 +109,9 @@ def test_warn_used_unknown_surface_fails_soft(monkeypatch):
 def test_reset_warned_restores_state(monkeypatch):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    dep.warn_used("doctor.flat_flags")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
     dep._reset_warned()
-    dep.warn_used("doctor.flat_flags")
+    dep.warn_used("profiles.build_mode=patched_pkgbuild")
     assert len(seen) == 2
 
 

@@ -70,15 +70,6 @@ class Deprecation:
 # guessed.
 _REGISTRY: tuple[Deprecation, ...] = (
     Deprecation(
-        surface="doctor.flat_flags",
-        kind=CLI_FLAG,
-        function=SHIM,
-        deprecated_in="3.0.0",
-        removed_in="3.1.0",
-        replacement="`sysforge doctor system` / `sysforge doctor pkg`",
-        anchor="sysforge/doctor.py::doctor_migration_hint",
-    ),
-    Deprecation(
         surface="profiles.build_mode=patched_pkgbuild",
         kind=CONFIG_KEY,
         function=COMPAT,

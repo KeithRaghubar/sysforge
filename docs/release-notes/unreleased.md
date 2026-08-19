@@ -133,6 +133,19 @@ than a side effect of `repo_mode`, and the toolchain/flag drift rebuilds shipped
   without invoking the pipeline. The three prose mirrors of Phase 4 inside the script — the header
   phase map and both plan previews, fresh and `--resume` — were updated in step.
 
+## Removed
+
+- **`3.0.0-STD3` — `doctor.flat_flags`: the flat `doctor` migration hint is retired on
+  schedule.** 3.0.0 removed the flat `doctor` axis flags (`doctor --boot`, `--rust`,
+  `--all`, …) in favour of the `doctor system` / `doctor pkg` split, and kept a shim —
+  `_DOCTOR_MIGRATION` plus a pre-argparse hook in `_main` — that intercepted each removed
+  flag and printed its replacement instead of argparse's bare "unrecognized arguments".
+  That shim was registered in the deprecation registry with `removed_in = "3.1.0"`, and
+  this is that release: the table, the hook and the registry record are gone. The flags
+  were already errors, so nothing that worked before stops working; a stale invocation now
+  gets argparse's own unrecognized-argument error rather than a signpost. The structural
+  test that a flat axis flag no longer parses stays, so the removal itself remains pinned.
+
 ## Fixed
 
 - **`2.6.1-B11` — `format_assignment` could emit env-file syntax `env_chain` cannot read

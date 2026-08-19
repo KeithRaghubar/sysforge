@@ -2022,70 +2022,8 @@ def test_require_completed_walk_passes_after_run():
 
 
 # ---------------------------------------------------------------------------
-# 2.6.1-F1 — migration hints for the removed flat `doctor` flags
+# 2.6.1-F1 — the flat `doctor` flags (removed in 3.0.0; hint retired in 3.1.0)
 # ---------------------------------------------------------------------------
-
-def test_migration_hint_for_removed_axis_flag():
-    hint = doctor.doctor_migration_hint(["doctor", "--boot"])
-    assert hint is not None
-    assert "sysforge doctor system --boot" in hint
-
-
-def test_migration_hint_for_all_names_both_commands():
-    hint = doctor.doctor_migration_hint(["doctor", "--all"])
-    assert hint is not None
-    assert "sysforge doctor system" in hint
-    assert "sysforge doctor pkg --all" in hint
-
-
-def test_migration_hint_for_graphics_names_both_scopes():
-    hint = doctor.doctor_migration_hint(["doctor", "--graphics"])
-    assert hint is not None
-    assert "doctor system --graphics" in hint
-    assert "doctor pkg --graphics" in hint
-
-
-def test_migration_hint_for_rust_names_both_scopes():
-    """The original complaint's flag must point at the package scope, since
-    that is where a rust-toolchain.toml pin is actually checked."""
-    hint = doctor.doctor_migration_hint(["doctor", "--rust"])
-    assert hint is not None
-    assert "doctor pkg PKG --rust" in hint
-
-
-def test_no_hint_for_valid_new_invocations():
-    assert doctor.doctor_migration_hint(["doctor", "system", "--boot"]) is None
-    assert doctor.doctor_migration_hint(["doctor", "pkg", "mesa"]) is None
-    assert doctor.doctor_migration_hint(["doctor", "pkg", "--all"]) is None
-    assert doctor.doctor_migration_hint(["doctor"]) is None
-
-
-def test_no_hint_for_other_verbs():
-    """A flag name shared with another verb must not be hijacked."""
-    assert doctor.doctor_migration_hint(["update", "--all"]) is None
-    assert doctor.doctor_migration_hint([]) is None
-
-
-def test_migration_table_covers_every_removed_flag():
-    """Structural guard: a flag removed from the flat surface without a
-    migration row must fail here, not surprise a user (2.6.1-F1)."""
-    removed = {
-        "--graphics", "--gfxperf", "--hardware", "--distro", "--toolchain",
-        "--rust", "--cache", "--pacman", "--state", "--boot", "--restart",
-        "--storage", "--services", "--audio", "--network", "--integrity",
-        "--all", "--repo",
-    }
-    assert removed <= set(doctor._DOCTOR_MIGRATION)
-
-
-def test_migration_table_covers_every_system_axis():
-    """Derived from the axis registry rather than a hand-list, so a NEW axis
-    added before 3.1.0 without a migration row also fails."""
-    for axis in doctor._SYSTEM_AXIS_ORDER:
-        if axis == "abi":
-            continue  # never had a flat flag — it is new in 3.0.0
-        assert f"--{axis}" in doctor._DOCTOR_MIGRATION, axis
-
 
 def test_flat_axis_flags_are_gone_from_the_parser():
     """`doctor --boot` must no longer parse — the hint replaces it."""

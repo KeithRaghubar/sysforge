@@ -1214,55 +1214,6 @@ def _resolve_axis_names(args) -> list[str]:
             if n not in _OPT_IN_AXES and n != "abi"]
 
 
-# Old flat `doctor` flags → their 3.0.0 replacement. **Delete this table in
-# 3.1.0** (2.6.1-F1). Every flag removed from the flat surface MUST have a row;
-# the structural test in tests/test_doctor.py enforces that, so a flag dropped
-# later without a row fails rather than surprising a user.
-_DOCTOR_MIGRATION: dict[str, str] = {
-    "--graphics": ("it split by scope:\n"
-                   "    sysforge doctor system --graphics   # system probes\n"
-                   "    sysforge doctor pkg --graphics      # graphics-stack targets"),
-    "--all": ("it is now two commands:\n"
-              "    sysforge doctor system\n"
-              "    sysforge doctor pkg --all"),
-    "--repo": "sysforge doctor pkg --repo",
-    "--rust": ("it split by scope:\n"
-               "    sysforge doctor system --rust    # effective toolchain\n"
-               "    sysforge doctor pkg PKG --rust   # rust-toolchain.toml pin"),
-    "--integrity": ("it split by scope:\n"
-                    "    sysforge doctor system --integrity     # whole system\n"
-                    "    sysforge doctor pkg PKG --integrity    # scoped"),
-    **{f"--{axis}": f"sysforge doctor system --{axis}"
-       for axis in ("gfxperf", "hardware", "distro", "toolchain", "cache",
-                    "pacman", "state", "boot", "restart", "storage",
-                    "services", "audio", "network")},
-}
-
-
-def doctor_migration_hint(argv: list[str]) -> str | None:
-    """Translation hint for a pre-3.0.0 flat ``doctor`` invocation, or None.
-
-    Only fires when ``doctor`` is followed by a removed flag rather than a
-    subcommand, so a valid ``doctor system …`` / ``doctor pkg …`` never
-    matches. Printed before argparse errors, because argparse's own
-    "unrecognized arguments" says nothing about where the flag went
-    (2.6.1-F1).
-    """
-    if not argv or argv[0] != "doctor":
-        return None
-    rest = argv[1:]
-    if rest and rest[0] in ("system", "pkg"):
-        return None
-    for token in rest:
-        if token in _DOCTOR_MIGRATION:
-            repl = _DOCTOR_MIGRATION[token]
-            # Single-command rows read as "use: <cmd>"; multi-command rows
-            # carry their own connective ("it split by scope: …").
-            lead = "" if repl.startswith("it ") else "use "
-            return f"{token} was removed in 3.0.0 — {lead}{repl}"
-    return None
-
-
 def _resolve_pkg_axis_names(args) -> list[str]:
     """Which axes run at package scope, in canonical order.
 
