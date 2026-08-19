@@ -69,3 +69,33 @@ def _parse_built_pkg_filename(pkgname: str, filename: str) -> tuple[str, str, st
     if not ver_part or not pkgrel:
         return None
     return (epoch, ver_part, pkgrel)
+
+
+def select_built_version(pkgname: str, paths) -> tuple[str, str, str] | None:
+    """Pick ``(epoch, pkgver, pkgrel)`` for ``pkgname`` from built artifacts.
+
+    ``paths`` is an iterable of candidate ``.pkg.tar*`` paths. Only those whose
+    filename parses as ``pkgname`` are considered, and the **most recently
+    modified** one wins — never merely the first the caller happened to yield.
+
+    PKGDEST is commonly a shared, long-lived package archive holding every
+    historical build of every package (``/home/packages``-style), so a glob
+    over it returns many versions of ``pkgname`` in arbitrary order. Taking the
+    first match there records a years-old version as "last built", which makes
+    the next vercmp report the PKGBUILD has moved and re-triggers the build
+    forever. mtime answers the question actually being asked: which artifact
+    did the build that just finished produce (3.1.0-B1).
+    """
+    newest, newest_mtime = None, None
+    for p in paths:
+        path = Path(p)
+        parsed = _parse_built_pkg_filename(pkgname, path.name)
+        if parsed is None:
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest_mtime is None or mtime > newest_mtime:
+            newest, newest_mtime = parsed, mtime
+    return newest

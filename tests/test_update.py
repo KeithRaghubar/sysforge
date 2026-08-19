@@ -2394,3 +2394,44 @@ def test_update_restart_notice_never_raises(monkeypatch):
     lines = []
     update._emit_restart_notice(emit=lines.append)
     assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# Drift advisory wording (3.1.0-B2)
+# ---------------------------------------------------------------------------
+
+def _ui_lines(monkeypatch):
+    """Collect _log.ui() output — the advisory is UI, not stdout."""
+    from sysforge import log as _log_mod
+    seen: list[str] = []
+    monkeypatch.setattr(_log_mod, "ui", lambda tag, msg: seen.append(str(msg)))
+    return seen
+
+
+def test_flag_drift_advisory_omits_hint_when_rebuild_enabled(
+        update_scenario, monkeypatch):
+    """Telling the user to pass --rebuild-on-flag-drift in the same run that
+    already rebuilt on it is what made same-version rebuilds read as spurious
+    reinstalls (3.1.0-B2)."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    seen = _ui_lines(monkeypatch)
+    update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    out = "\n".join(seen)
+    assert "flag drift:" in out
+    assert "Pass --rebuild-on-flag-drift" not in out
+    assert "rebuilding (--rebuild-on-flag-drift)" in out
+
+
+def test_flag_drift_advisory_keeps_hint_when_rebuild_disabled(
+        update_scenario, monkeypatch):
+    installed, foreign = _seed_flag_drift(update_scenario)
+    seen = _ui_lines(monkeypatch)
+    update_scenario.run(
+        _make_args(no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    out = "\n".join(seen)
+    assert "Pass --rebuild-on-flag-drift to rebuild" in out

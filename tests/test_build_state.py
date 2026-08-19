@@ -854,3 +854,45 @@ def test_build_seconds_round_trips_through_disk(tmp_path):
     bs.save()
     reloaded = BuildState(tmp_path)
     assert reloaded.get("foo")["build_seconds"] == "100,110"
+
+
+# ---------------------------------------------------------------------------
+# select_built_version — newest artifact wins (3.1.0-B1)
+# ---------------------------------------------------------------------------
+
+def _stamp(path: Path, name: str, mtime: float) -> Path:
+    p = path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("pkg")
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_select_built_version_picks_newest_not_first(tmp_path):
+    """A shared PKGDEST accumulates every historical build of a package.
+
+    Recording must reflect the build that just ran, not whichever filename
+    the directory glob happened to yield first (3.1.0-B1).
+    """
+    from sysforge.primitives.makepkg_artifacts import select_built_version
+
+    old = _stamp(tmp_path, "xevd-0.5.0-1-x86_64.pkg.tar", 1_000_000)
+    new = _stamp(tmp_path, "xevd-0.7.0-1-x86_64.pkg.tar", 2_000_000)
+    # Deliberately pass oldest-first: the first match must not win.
+    assert select_built_version("xevd", [old, new]) == ("0", "0.7.0", "1")
+    assert select_built_version("xevd", [new, old]) == ("0", "0.7.0", "1")
+
+
+def test_select_built_version_ignores_other_packages(tmp_path):
+    from sysforge.primitives.makepkg_artifacts import select_built_version
+
+    mine = _stamp(tmp_path, "linux-6.10-1-x86_64.pkg.tar", 1_000_000)
+    other = _stamp(tmp_path, "linux-custom-6.12-1-x86_64.pkg.tar", 9_000_000)
+    assert select_built_version("linux", [mine, other]) == ("0", "6.10", "1")
+
+
+def test_select_built_version_none_when_no_match(tmp_path):
+    from sysforge.primitives.makepkg_artifacts import select_built_version
+
+    other = _stamp(tmp_path, "htop-3.4.1-1-x86_64.pkg.tar", 1_000_000)
+    assert select_built_version("xevd", [other]) is None

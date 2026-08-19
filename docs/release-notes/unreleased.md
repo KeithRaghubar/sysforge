@@ -21,3 +21,11 @@ accumulator. Run the release-notes skill first to reconcile/lint the entries and
 finalize the one-line summary below (drop this comment). Keep a Changelog:
 https://keepachangelog.com/en/1.1.0/
 -->
+
+## Fixed
+
+- **`3.1.0-B1` — Record the version the build actually produced, not the oldest artifact in PKGDEST.** Build-state recording reverse-engineers `pkgver`/`pkgrel`/`epoch` from built `.pkg.tar.*` filenames, but took the *first* match a directory glob yielded. When `PKGDEST` is a shared, long-lived package archive holding every historical build (the common `/home/packages` layout), that first match is an arbitrary — in practice the oldest — version, so `build_state.toml` recorded a years-stale `pkgver` as "last built". The next run's `vercmp` then saw the on-disk PKGBUILD as newer, reported "upstream PKGBUILD has moved", and rebuilt the package again, indefinitely. Artifact selection now goes through `select_built_version()`, which considers only filenames parsing as the target pkgname and picks the most recently modified — the one the build that just finished produced. A local state file showed 69 affected packages.
+
+---
+
+- **`3.1.0-B2` — Stop advertising a drift-rebuild flag in the same run that already acted on it.** The toolchain- and flag-drift advisories printed "Pass `--rebuild-on-toolchain-drift`/`--rebuild-on-flag-drift` to rebuild" unconditionally whenever drift was detected, including when that rebuild was already enabled via the flag, the per-axis `[update]` key, or the `rebuild_on_drift` umbrella. A run would emit the "pass this flag" hint immediately above "promoted 26 UP_TO_DATE package(s) to NEEDS_REBUILD", making legitimate same-version rebuilds read as spurious reinstalls. The drift axes are now resolved before the advisories, which report `rebuilding (--rebuild-on-flag-drift)` when the rebuild is already in effect and keep the opt-in hint only when it is not.

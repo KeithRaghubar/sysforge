@@ -67,6 +67,7 @@ from sysforge.primitives.failure import handle_failure
 from sysforge.primitives.makepkg_artifacts import (
     _find_built_packages,
     _parse_built_pkg_filename,
+    select_built_version,
 )
 from sysforge.primitives.makepkg_conf import emit_makepkg_conf
 from sysforge.primitives.makepkg_env import resolve_env_vars
@@ -1060,14 +1061,15 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         # shell parameter-expansion forms (e.g. ``${_ver/[a-z]/.${_ver//[0-9.]/}}``)
         # untouched, so packages using them would otherwise record a
         # literal ``$...`` string as pkgver and always mismatch vercmp.
+        # PKGDEST is often a shared archive holding every historical build, so
+        # the newest matching artifact — not the first one the glob yields —
+        # is the one this build just produced (3.1.0-B1).
+        artifacts = _find_artifacts(pkgbuild_path.resolve().parent)
         filename_versions: dict[str, tuple[str, str, str]] = {}
-        for p in _find_artifacts(pkgbuild_path.resolve().parent):
-            for name in pkgnames:
-                if name in filename_versions:
-                    continue
-                parsed = _parse_built_pkg_filename(name, p.name)
-                if parsed is not None:
-                    filename_versions[name] = parsed
+        for name in pkgnames:
+            parsed = select_built_version(name, artifacts)
+            if parsed is not None:
+                filename_versions[name] = parsed
 
         # The clone HEAD of the build that just succeeded becomes the
         # review baseline: the PKGBUILD review gate (pkgbuild_review.py)

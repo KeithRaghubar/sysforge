@@ -840,6 +840,12 @@ def _cmd_update_body(args) -> int:
 
     _ui_progress.phase("checking toolchain and flag drift")
     timer.start("drift detection")
+    # --rebuild-on-drift (or [update] rebuild_on_drift) is the umbrella that
+    # opts into both drift axes; CLI flags still win over config. Resolved
+    # before the drift advisories below so each can tell the user whether a
+    # rebuild is already going to happen (3.1.0-B2).
+    _rebuild_all_drift, _rebuild_tc_drift, _rebuild_fl_drift = _resolve_drift_axes(args)
+
     # ── Phase 4.25: Toolchain-variant drift ───────────────────────────────
     # Compare each result's recorded toolchain_variant (from build_state)
     # against the active toolchain. Drift means "the installed binary was
@@ -890,11 +896,18 @@ def _cmd_update_body(args) -> int:
     if drifted:
         sample = ", ".join(f"{pb} ({rv})" for pb, rv, _ in drifted[:3])
         more = f" (+{len(drifted) - 3} more)" if len(drifted) > 3 else ""
+        # Only advertise the opt-in flag when it is not already in effect —
+        # telling the user to pass a flag whose rebuild is about to run in the
+        # same output is what made same-version rebuilds read as spurious
+        # reinstalls (3.1.0-B2).
+        _hint = ("rebuilding (--rebuild-on-toolchain-drift)"
+                 if _rebuild_tc_drift else
+                 "Pass --rebuild-on-toolchain-drift to rebuild, or "
+                 "--explain-drift to list.")
         _log.ui(
             f"toolchain drift: {len(drifted)} package(s) built under a "
             f"different toolchain than active ({active_variant}): {sample}{more}. "
-            "Pass --rebuild-on-toolchain-drift to rebuild, or "
-            "--explain-drift to list."
+            f"{_hint}"
         )
 
     # ── Phase 4.3: Flag drift ─────────────────────────────────────────────
@@ -967,10 +980,15 @@ def _cmd_update_body(args) -> int:
     if flag_drifted:
         sample = ", ".join(pb for pb, _ in flag_drifted[:3])
         more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
+        # See the toolchain-drift advisory above: suppress the opt-in hint when
+        # the rebuild is already enabled (3.1.0-B2).
+        _hint = ("rebuilding (--rebuild-on-flag-drift)"
+                 if _rebuild_fl_drift else
+                 "Pass --rebuild-on-flag-drift to rebuild, or "
+                 "--explain-drift to list.")
         _log.ui(
             f"flag drift: {len(flag_drifted)} package(s) resolve to different "
-            f"flags than when built: {sample}{more}. "
-            "Pass --rebuild-on-flag-drift to rebuild, or --explain-drift to list."
+            f"flags than when built: {sample}{more}. {_hint}"
         )
 
     if getattr(args, "explain_drift", False):
@@ -1004,10 +1022,6 @@ def _cmd_update_body(args) -> int:
     if getattr(args, "dry_run", False):
         _emit_timings(timer, args)
         return 0
-
-    # --rebuild-on-drift (or [update] rebuild_on_drift) is the umbrella that
-    # opts into both drift axes; CLI flags still win over config.
-    _rebuild_all_drift, _rebuild_tc_drift, _rebuild_fl_drift = _resolve_drift_axes(args)
 
     if _rebuild_tc_drift and drifted:
         drifted_bases = {pb for pb, _, _ in drifted}
