@@ -18,7 +18,7 @@ you're trying to do. For the complete reference — every verb, subcommand and f
 `sysforge --help` (or `sysforge help <command>`) and the [man page](man/sysforge.1);
 [DESIGN.md](DESIGN.md) documents the semantics behind them.
 
-<sub><!--version-->v3.0.0<!--/version--></sub>
+<sub><!--version-->v3.1.0<!--/version--></sub>
 
 ---
 
