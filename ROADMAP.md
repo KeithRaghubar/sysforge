@@ -96,6 +96,7 @@ canonical ordering.
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
+| `3.1.0-F5` | the first run toolchain / run kernel on an install changes the system with no nudge to read the config that drives it | med | small | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
@@ -327,6 +328,36 @@ canonical ordering.
 
 ---
 
+- **`3.1.0-F5` — the first `run toolchain` / `run kernel` on an install changes the system with no
+  nudge to read the config that drives it.** These are the two stages whose behaviour is decided
+  almost entirely by their TOML rather than by the flags the user typed — `etc/sysforge/toolchain.toml`
+  picks the compiler and the PGO/BOLT passes, `etc/sysforge/kernel.toml` picks the kconfig fragments
+  and initramfs handling — so a user who ran `setup` and then types `sysforge run kernel` gets a
+  kernel built from defaults they have never opened. The existing first-install advisory does not
+  cover this: `primitives/init_notice.py` keys on a marker the PKGBUILD `post_install` scriptlet
+  drops and names only the `reconfigure`/`hardware` bootstrap stages (`_REQUIRED_STAGES`), retiring
+  itself the moment both are `done` — i.e. it clears *before* anyone reaches toolchain or kernel.
+  Emit a one-time advisory when the stage has never completed on this install, naming the config
+  file, the two or three settings most likely to surprise, and how to review them. No new state is
+  needed: `PipelineState.stage_status()` (`pipeline/state.py:237`) already returns `"pending"` for a
+  stage never seen, and both entry points (`run_stage_standalone`, `pipeline/runner.py:161`, and
+  `run_pipeline`, `:217`) hold the state object before the stage executes. Two decisions to settle
+  first: whether "first run" means never-*completed* (a failed first attempt re-advises — preferred)
+  or never-*attempted*, and whether this rides `init_notice.py`'s module (one home for first-run
+  advisories) or stays at the pipeline seam where the state already is. Keep it strictly advisory —
+  print, never prompt, never block, never raise, matching `init_notice.py`'s stated contract; a
+  prompt here would inherit every unattended-consent problem `3.0.0-F3` and `3.1.0-F4` are about.
+  Relates to `3.1.0-F4`, which is the stronger version of this idea — a default-on gate that renders
+  the resolved plan and asks once. If F4 lands, this is superseded, because a rendered plan *is* the
+  config made visible; it is filed separately because F4 is a `major` bump blocked on the runtime
+  TOML-writer seam, and this is a patch-bump advisory that can land immediately.
+  *Priority: med · Effort: small · Bump: patch* — a gap that is currently active on a real system
+  (nothing points a fresh install at `kernel.toml` before it builds a kernel); one advisory helper
+  plus a call at the stage seam, no new state, no change to what either stage does.
+  **Standards home on adoption:** none new — row 25 (logging levels) governs the level, and
+  `init_notice.py` is the existing home for first-run advisory text if the helper lands there.
+
+---
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
   which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`
   keys only on `args.clear` (single pkgbase → `pkg:<name>`), so a `--clear-all` invocation — which is
