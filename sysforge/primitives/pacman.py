@@ -36,6 +36,8 @@ Public API:
     get_foreign_packages()          → dict[str, str]
     get_pacman_sync_version(pkgname) → str | None
     checkupdates_map(timeout=60.0)  → dict[str, str] | None
+    get_repo_candidate_version(pkgname) → str | None
+    reset_repo_candidate_cache()    → None
     get_local_db_entry(pkgname)     → Path | None
     get_package_files(pkgname)      → list[str]
     owners_of_paths(paths)          → dict[str, str]
@@ -935,6 +937,73 @@ def checkupdates_map(timeout: float = 60.0) -> dict[str, str] | None:
 # ---------------------------------------------------------------------------
 
 _LOCAL_DB_ROOT = Path("/var/lib/pacman/local")
+
+
+# ---------------------------------------------------------------------------
+# Repo candidate version — sync DB cross-checked against a refreshed side copy
+# ---------------------------------------------------------------------------
+
+# Process-lifetime memo of one ``checkupdates`` run. ``_MISS`` distinguishes
+# "not probed yet" from "probed, tool unavailable" (which caches ``None``).
+_MISS = object()
+_checkupdates_memo: object = _MISS
+
+
+def reset_repo_candidate_cache() -> None:
+    """Drop the memoized ``checkupdates`` result (tests; long-lived processes)."""
+    global _checkupdates_memo
+    _checkupdates_memo = _MISS
+
+
+def _memoized_checkupdates() -> dict[str, str] | None:
+    global _checkupdates_memo
+    if _checkupdates_memo is _MISS:
+        _checkupdates_memo = checkupdates_map()
+    return _checkupdates_memo  # type: ignore[return-value]
+
+
+def get_repo_candidate_version(pkgname: str) -> str | None:
+    """Return the newest repo version of ``pkgname``, tolerating a stale sync DB.
+
+    ``get_pacman_sync_version`` reads ``/var/lib/pacman/sync/*.db`` and never
+    touches the network, so on a rolling repo it reports whatever the last
+    ``pacman -Sy`` left on disk — a day-old DB pins a day-old release (3.1.0-B3).
+    ``checkupdates`` refreshes a *side copy* of the sync DBs (no sudo, no
+    partial-upgrade risk), so it sees the true candidate; this takes whichever
+    of the two is newer by ``vercmp``.
+
+    ``checkupdates`` only lists *installed* packages with a pending upgrade, so
+    it is a strict enrichment: absent entry, unavailable tool, or an older value
+    all fall back to the sync DB. Returns ``None`` only when the sync DB has no
+    candidate at all (the package is not in any repo). The ``checkupdates`` run
+    is memoized for the process — one probe, however many packages are pinned.
+    """
+    from sysforge.primitives.version import vercmp  # avoid import cycle at module load
+
+    sync_version = get_pacman_sync_version(pkgname)
+    if sync_version is None:
+        # Not in any sync DB — checkupdates cannot rescue that, and a caller
+        # distinguishing "no candidate" must keep seeing None.
+        return None
+
+    updates = _memoized_checkupdates()
+    if not updates:
+        return sync_version
+    candidate = updates.get(pkgname)
+    if candidate is None:
+        return sync_version
+    try:
+        newer = vercmp(candidate, sync_version) > 0
+    except (OSError, ValueError) as e:
+        _log.warn(f"{pkgname}: vercmp failed ({e}) — using sync-DB version")
+        return sync_version
+    if newer:
+        _log.debug(
+            f"{pkgname}: sync DB has {sync_version}, checkupdates has "
+            f"{candidate} — sync DB is stale, using {candidate}"
+        )
+        return candidate
+    return sync_version
 
 
 def get_local_db_entry(pkgname: str, root: Path | None = None) -> Path | None:

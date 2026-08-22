@@ -84,7 +84,7 @@ from sysforge.primitives.git_ops import (
 from sysforge.primitives.net_policy import (
     NetworkFrozen,
 )
-from sysforge.primitives.pacman import get_pacman_sync_version, get_srcdest
+from sysforge.primitives.pacman import get_repo_candidate_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
 
@@ -439,6 +439,10 @@ class SourceSyncScheduler:
         success/no-op. No sync-DB candidate → warn and stay on main (never an
         error: the package may live only in a custom repo).
 
+        The candidate comes from ``get_repo_candidate_version``, not the raw
+        sync DB: a sync DB that has not been refreshed since the last repo push
+        would otherwise pin an already-superseded release (3.1.0-B3).
+
         ``sync_db_name`` is the stock upstream base to query pacman with; for a
         coexist ``-sysforge`` rename the checkout ``pkgbase`` is the renamed
         value (``mesa-sysforge``) but pacman only knows the stock name
@@ -448,7 +452,7 @@ class SourceSyncScheduler:
         if self.repo_track != "stable":
             return None
         db_name = sync_db_name or pkgbase
-        version = get_pacman_sync_version(db_name)
+        version = get_repo_candidate_version(db_name)
         if version is None:
             _log.warn(
                 f"{db_name}: no sync-DB candidate — leaving checkout on main "

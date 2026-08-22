@@ -117,7 +117,7 @@ def pkgctl_switch_version(dest: Path, version: str, *, timeout: int | None = 60)
 
     ``pkgctl repo switch <version>`` owns the pacman-version → git-tag
     translation (epoch and pkgrel included), so callers pass
-    ``pacman.get_pacman_sync_version()`` output verbatim. Leaves the checkout
+    ``pacman.get_repo_candidate_version()`` output verbatim. Leaves the checkout
     on a detached HEAD at the tag. Raises RuntimeError on failure.
     """
     timeout = timeout or None

@@ -1026,3 +1026,59 @@ def test_local_pacman_db_is_isolated_from_the_host():
     from sysforge.primitives import pacman
     assert pacman.get_all_package_depends() == {}
     assert pacman.get_local_db_entry("bash") is None
+
+
+# ---------------------------------------------------------------------------
+# get_repo_candidate_version (3.1.0-B3)
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives import pacman as _pacman_mod
+
+
+@pytest.fixture(autouse=True)
+def _clear_candidate_cache():
+    _pacman_mod.reset_repo_candidate_cache()
+    yield
+    _pacman_mod.reset_repo_candidate_cache()
+
+
+class TestGetRepoCandidateVersion:
+
+    def _patch(self, monkeypatch, sync, updates):
+        monkeypatch.setattr(_pacman_mod, "get_pacman_sync_version", lambda n: sync)
+        monkeypatch.setattr(_pacman_mod, "checkupdates_map", lambda **kw: updates)
+
+    def test_stale_sync_db_yields_checkupdates_candidate(self, monkeypatch):
+        # Local core.db is a day old and still says 7.1.8; checkupdates refreshed
+        # a side-copy DB and sees 7.1.9. The newer one must win.
+        self._patch(monkeypatch, "7.1.8.arch1-3", {"linux": "7.1.9.arch1-2"})
+        assert _pacman_mod.get_repo_candidate_version("linux") == "7.1.9.arch1-2"
+
+    def test_fresh_sync_db_wins_over_stale_checkupdates(self, monkeypatch):
+        self._patch(monkeypatch, "7.1.9.arch1-2", {"linux": "7.1.8.arch1-3"})
+        assert _pacman_mod.get_repo_candidate_version("linux") == "7.1.9.arch1-2"
+
+    def test_package_absent_from_checkupdates_falls_back_to_sync(self, monkeypatch):
+        self._patch(monkeypatch, "3.3.0-1", {"firefox": "131.0-1"})
+        assert _pacman_mod.get_repo_candidate_version("htop") == "3.3.0-1"
+
+    def test_checkupdates_unavailable_falls_back_to_sync(self, monkeypatch):
+        self._patch(monkeypatch, "7.1.8.arch1-3", None)
+        assert _pacman_mod.get_repo_candidate_version("linux") == "7.1.8.arch1-3"
+
+    def test_no_sync_candidate_returns_none(self, monkeypatch):
+        self._patch(monkeypatch, None, {"linux": "7.1.9.arch1-2"})
+        assert _pacman_mod.get_repo_candidate_version("linux") is None
+
+    def test_checkupdates_runs_once_per_process(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(_pacman_mod, "get_pacman_sync_version", lambda n: "1-1")
+
+        def _cu(**kw):
+            calls.append(1)
+            return {}
+
+        monkeypatch.setattr(_pacman_mod, "checkupdates_map", _cu)
+        _pacman_mod.get_repo_candidate_version("a")
+        _pacman_mod.get_repo_candidate_version("b")
+        assert len(calls) == 1

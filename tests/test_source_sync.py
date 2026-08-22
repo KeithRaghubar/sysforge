@@ -225,7 +225,7 @@ def test_repo_source_diverged_clean_tree_resets_to_upstream(tmp_path):
     with patch("sysforge.primitives.source_sync._head_commit", return_value="oldlocal"), \
          patch("sysforge.primitives.source_sync.git_fetch_and_compare", return_value=outcome), \
          patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value=None), \
          patch("sysforge.primitives.source_sync._reset_hard_fetch_head",
                return_value="newupstream") as reset:
@@ -379,7 +379,7 @@ def test_repo_source_routes_through_pkgctl(tmp_path):
     with patch("sysforge.primitives.source_sync.pkgctl_checkout",
                side_effect=fake_pkgctl) as pkgctl, \
          patch("sysforge.primitives.source_sync.aur_clone") as aur_clone_mock, \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value=None), \
          patch("sysforge.primitives.source_sync._head_commit",
                return_value="abcd1234"):
@@ -413,7 +413,7 @@ def test_repo_clone_pins_to_sync_db_version(tmp_path):
                side_effect=_fake_pkgctl_clone), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
         res = sched.request(SyncRequest(
@@ -422,6 +422,66 @@ def test_repo_clone_pins_to_sync_db_version(tmp_path):
 
     assert res.status == "cloned"
     assert switched["ver"] == "7.0.14.arch1-1"
+
+
+def test_repo_pin_prefers_checkupdates_over_stale_sync_db(tmp_path):
+    """3.1.0-B3: a sync DB left stale by an old ``pacman -Sy`` must not pin the
+    checkout to a superseded release. Patched at the pacman layer so the whole
+    pin path — not just the scheduler seam — is exercised."""
+    from sysforge.primitives import pacman as pacman_mod
+
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "linux"
+    switched = {}
+
+    pacman_mod.reset_repo_candidate_cache()
+    try:
+        with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+                   side_effect=_fake_pkgctl_clone), \
+             patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+                   side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+             patch("sysforge.primitives.pacman.get_pacman_sync_version",
+                   return_value="7.1.8.arch1-3"), \
+             patch("sysforge.primitives.pacman.checkupdates_map",
+                   return_value={"linux": "7.1.9.arch1-2"}), \
+             patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
+            sched.request(SyncRequest(
+                pkgbase="linux", pkgbuild_dir=dest, source="repo",
+            ))
+    finally:
+        pacman_mod.reset_repo_candidate_cache()
+
+    assert switched["ver"] == "7.1.9.arch1-2"
+
+
+def test_repo_pin_uses_sync_db_name_for_renamed_checkout(tmp_path):
+    """3.1.0-B3: the checkupdates cross-check keys on the stock sync-DB name,
+    not the renamed pkgbase — a coexist ``-sysforge`` kernel still resolves."""
+    from sysforge.primitives import pacman as pacman_mod
+
+    sched = _scheduler(tmp_path, repo_track="stable")
+    dest = tmp_path / "linux-sysforge"
+    switched = {}
+
+    pacman_mod.reset_repo_candidate_cache()
+    try:
+        with patch("sysforge.primitives.source_sync.pkgctl_checkout",
+                   side_effect=_fake_pkgctl_clone), \
+             patch("sysforge.primitives.source_sync.pkgctl_switch_version",
+                   side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
+             patch("sysforge.primitives.pacman.get_pacman_sync_version",
+                   return_value="7.1.8.arch1-3"), \
+             patch("sysforge.primitives.pacman.checkupdates_map",
+                   return_value={"linux": "7.1.9.arch1-2"}), \
+             patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
+            sched.request(SyncRequest(
+                pkgbase="linux-sysforge", pkgbuild_dir=dest, source="repo",
+                sync_db_name="linux",
+            ))
+    finally:
+        pacman_mod.reset_repo_candidate_cache()
+
+    assert switched["ver"] == "7.1.9.arch1-2"
 
 
 def test_repo_clone_skips_pin_when_tracking_main(tmp_path):
@@ -433,7 +493,7 @@ def test_repo_clone_skips_pin_when_tracking_main(tmp_path):
     with patch("sysforge.primitives.source_sync.pkgctl_checkout",
                side_effect=_fake_pkgctl_clone), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version") as sync_ver, \
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version") as sync_ver, \
          patch("sysforge.primitives.source_sync._head_commit", return_value="mainhead"):
         res = sched.request(SyncRequest(
             pkgbase="linux", pkgbuild_dir=dest, source="repo",
@@ -453,7 +513,7 @@ def test_repo_clone_no_sync_candidate_warns_and_stays_on_main(tmp_path):
     with patch("sysforge.primitives.source_sync.pkgctl_checkout",
                side_effect=_fake_pkgctl_clone), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value=None), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="mainhead"):
         res = sched.request(SyncRequest(
@@ -478,7 +538,7 @@ def test_repo_pin_uses_sync_db_name_for_renamed_tree(tmp_path):
                side_effect=_fake_pkgctl_clone), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="1:24.1.5-1") as sync_ver, \
          patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
         res = sched.request(SyncRequest(
@@ -500,7 +560,7 @@ def test_repo_clone_pin_failure_is_failed(tmp_path):
                side_effect=_fake_pkgctl_clone), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=RuntimeError("pkgctl repo switch failed: no such tag")), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="x"):
         res = sched.request(SyncRequest(
@@ -527,7 +587,7 @@ def test_repo_fetch_pin_failure_reports_heads(tmp_path):
          patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=RuntimeError("pkgctl repo switch failed: no such tag")), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
         res = sched.request(SyncRequest(
@@ -552,7 +612,7 @@ def test_repo_fetch_repins_when_head_off_tag(tmp_path):
          patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="new"):
         res = sched.request(SyncRequest(
@@ -576,7 +636,7 @@ def test_repo_fetch_dirty_tree_diverges_without_pin(tmp_path):
          patch("sysforge.primitives.source_sync._uncommitted_dirty_paths",
                return_value=["PKGBUILD"]), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="old"):
         res = sched.request(SyncRequest(
@@ -602,7 +662,7 @@ def test_repo_fetch_pinned_detached_head_uses_tags_fetch(tmp_path):
          patch("sysforge.primitives.source_sync.git_is_dirty", return_value=False), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.0.14.arch1-1"), \
          patch("sysforge.primitives.source_sync._head_commit", return_value="tagged"):
         res = sched.request(SyncRequest(
@@ -661,7 +721,7 @@ def test_repo_fetch_pinned_detached_head_clean_tree_repins(tmp_path):
                return_value=None), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version",
                side_effect=lambda d, ver, timeout=None: switched.update(ver=ver)), \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.1.2.arch3-1"):
         res = sched.request(SyncRequest(
             pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
@@ -686,7 +746,7 @@ def test_repo_fetch_pinned_detached_head_real_edit_stays_diverged(tmp_path):
          patch("sysforge.primitives.source_sync._fetch_repo_tags",
                return_value=None), \
          patch("sysforge.primitives.source_sync.pkgctl_switch_version") as switch, \
-         patch("sysforge.primitives.source_sync.get_pacman_sync_version",
+         patch("sysforge.primitives.source_sync.get_repo_candidate_version",
                return_value="7.1.2.arch3-1"):
         res = sched.request(SyncRequest(
             pkgbase="linux", pkgbuild_dir=pkg, source="repo", force_fetch=True,
