@@ -94,6 +94,7 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
+| `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
@@ -136,6 +137,32 @@ canonical ordering.
   *Priority: low · Effort: medium · Bump: patch* — no behaviour change unless a fragment actually
   requests `CONFIG_RUST`; it converts a post-build silent drop into a pre-build refusal.
   **Standards home on adoption:** none new — this extends the existing toolchain-preflight seam.
+
+---
+
+- **`3.1.0-F1` — a clean diagnostics axis reports nothing, so it reads as a broken axis.**
+  `sysforge doctor system --graphics` on a healthy NVIDIA/Wayland workstation prints one `[INFO]`
+  line (`session_type`) and `1 finding(s), 0 error(s)` — indistinguishable from an axis whose
+  probes all bailed out. That is not a graphics bug: every probe in
+  `primitives/graphics_probe.py` returns `None` on success (`_check_nvidia_module_loaded`,
+  `_check_multilib_enabled`, `_check_mesa_llvm_symbols`, …), and `_check_session_type` is the lone
+  always-INFO probe, so the visible output is an accident of which check happens to be
+  unconditional rather than a report. The shape is framework-wide — `diag.Axis`
+  (`primitives/diagnostics.py:181`) is a bare callable returning findings, with no notion of which
+  checks ran, which were vendor-gated out (`gpu_vendors` empty ⇒ silently skipped), and which
+  passed; `render_axis` can therefore only print `clean_msg`. So the user cannot distinguish
+  *checked and healthy* from *skipped because the probe found no `lspci`/`lsmod`/`pacman.conf`* —
+  and the vendor-gated skips are the ones most likely to hide a real detection failure upstream of
+  the check. Fix at the framework seam, not per-probe: let a probe report a `ran`/`skipped(reason)`
+  outcome alongside its optional finding, have `Axis` accumulate the roster, and render it under
+  `-v` (per the §Logging rubric — the roster is narration, the findings are the answer), leaving
+  default output unchanged. Doing it in `graphics_probe.py` alone would fork the axis contract that
+  `toolchain`, `hardware`, `cache`, `rust` and `gfxperf` all share.
+  *Priority: med · Effort: medium · Bump: minor* — observability gap that is currently active on a
+  real system; touches the shared `diagnostics` contract and every probe module's return type, but
+  adds no new checks and changes no default-verbosity output.
+  **Standards home on adoption:** none new — row 25 (logging levels) already governs where the
+  roster prints.
 
 ---
 
