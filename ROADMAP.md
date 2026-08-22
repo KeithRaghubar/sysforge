@@ -92,9 +92,12 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
+| `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
+| `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
+| `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
@@ -166,6 +169,33 @@ canonical ordering.
 
 ---
 
+- **`3.1.0-F2` — no supported way to feed last run's failures back into a retry.**
+  `sysforge state failed` already knows the exact set a user wants to retry with different flags
+  (`state_cmd.py:608`, `StateFailedVerb`), and both `build` and `update` take multiple positional
+  package names — but the two cannot be composed, because `state failed` renders only a padded
+  human table (PKGBASE / FAILED_AT / SIGNATURE / ERROR) through the pager. There is no
+  machine-readable output mode anywhere in the CLI: no `--format`, `--json`, `--porcelain`, or
+  `--plain` on any verb. The retry loop after a partial `update` — three `cosmic-*` packages fail
+  on `makepkg` exit 4, and the user wants exactly those three rebuilt with `--makepkg=-f
+  --interactive` — therefore has no supported spelling. The workarounds are both bad: scraping the
+  table with `awk` couples a shell one-liner to column padding, and reading `build_state.toml`
+  directly (`[packages.<pkgbase>]` entries carrying `failed_at`) couples it to a schema
+  `primitives/build_state.py` documents as internal. Add a bare-names mode to `state failed` —
+  pkgbases only, one per line, no header, no pager, implying `--no-pager` — so
+  `sysforge build $(sysforge state failed --quiet)` is the supported spelling. Scope it to this
+  verb rather than opening a CLI-wide `--format` axis: `state failed` is the one place whose output
+  is *already* a set of package names, and a general machine-output standard is a much larger
+  decision than this gap needs. The flag name matters — the global `--quiet` (verbosity 0) already
+  exists, so reuse it only if the verb-local meaning composes with it, otherwise pick a distinct
+  name rather than overloading it.
+  *Priority: med · Effort: small · Bump: minor* — a gap that is currently active on a real system
+  (three failures recorded right now with no supported retry path); new flag plus a render branch,
+  no change to build_state or to the existing table.
+  **Standards home on adoption:** none new — but if this ever grows into a CLI-wide machine-output
+  mode, that *would* need a row; keep this one verb-local so it does not pre-empt that decision.
+
+---
+
 - **`3.0.0-F3` — `update`'s PKGBUILD review gate is silent in exactly the unattended case.** The
   review gate (`primitives/pkgbuild_review.py`) is the codebase's existing supply-chain control: it
   diffs the full source tree from the recorded `reviewed_commit` to HEAD — catching changes hiding
@@ -191,6 +221,79 @@ canonical ordering.
   on code already on disk.
   **Standards home on adoption:** none new — extends the existing review-gate seam.
 
+---
+
+- **`3.1.0-F3` — no way to declare an AUR-free posture; `update` reaches for the AUR unconditionally.**
+  The per-package machinery for a repo-and-local-only user is already complete and deliberate:
+  `source` is a first-class classification (`"repo" | "aur" | "git" | "local"`) settable in
+  `packages.toml`, persisted in `build_state.toml` rather than re-derived each run
+  (`primitives/build_state.py:184`), and honoured by the scheduler — `source_sync.py:279`
+  short-circuits `"local"` to `STATUS_SKIPPED_LOCAL` because a hand-maintained PKGBUILD has no
+  remote to sync against. `repo_mode = "build_from_source"` covers repo packages, and one
+  `sysforge build <pkg>` is enough to put anything under `update`'s maintenance without it. What is
+  missing is the *posture*: nothing lets a user say "never touch the AUR" once. The `[security]`
+  section offers only `freeze_sources`, a blanket network freeze that also denies repo checkouts and
+  source fetches — the wrong instrument; `[aur]` (`sysforge.toml:48`) tunes politeness
+  (`min_fetch_interval_ms`, `rate_limit_abort_s`) but never abstention; and `--offline` gets there
+  only by disabling every version check too. Worse, `update.py:646` calls `fetch_aur_name_cache()`
+  on every non-`--offline` run *before* inspecting what is actually managed, so a user with zero
+  AUR packages still generates AUR RPC traffic on every update. The policy half has a seam that
+  already anticipates this: `net_policy.py:46-48` splits `KIND_AUR_CLONE` from
+  `KIND_REPO_CHECKOUT` precisely because "a future policy may permit one while denying the other" —
+  an AUR-free posture is that policy, not a new mechanism. The eager name-cache warm is the harder
+  half, since it sits upstream of `NetPolicy.check()` entirely; gate it on whether anything managed
+  actually carries `source = "aur"` (build_state already knows) rather than routing it through the
+  policy. Filing this commits sysforge to the AUR-free user as a supported persona, which is the
+  real decision here — the code is largely already behaving as if it were.
+  *Priority: med · Effort: medium · Bump: minor* — additive posture plus one gating condition; no
+  existing default changes and no package's routing behaviour moves.
+  **Standards home on adoption:** none new — the egress-kind vocabulary in `net_policy.py` is the
+  existing home, and this extends it rather than adopting an external spec.
+
+---
+
+- **`3.1.0-F4` — a first run should confirm before it changes anything, and `setup` should offer to persist that posture.**
+  A new user's first `sysforge update` can rebuild and reinstall an arbitrary number of packages
+  with no upfront confirmation. Nothing in the CLI gates it: `--dry-run` shows the plan but is a
+  separate invocation the user has to know to run first, and the `[build] review` gate
+  (`packages.toml:90`, default `true`) is a *per-package* prompt that fires only when a package's
+  source tree changed since the last accepted build — it is a supply-chain diff review, not a
+  "here is the whole batch, proceed?" gate, and it says nothing about the packages whose sources
+  are unchanged but which will still be rebuilt and reinstalled. Note also that `--interactive`
+  is already spoken for and means two *different* things: on `build` it strips `--noconfirm` and
+  hands stdout/stderr to makepkg's terminal (`cli.py:312`), on `update` it pauses on build
+  failures for manual correction (`cli.py:441`). Neither is a confirmation gate, and a third
+  meaning must not be hung on that flag name.
+  Add a real gate — default on — that prints the resolved plan (what will be rebuilt, what will be
+  installed, what the batched `pacman -Syu` will touch) and prompts once before any mutation, with
+  the existing `--dry-run` output as its body since that computation already exists. Pair it with
+  flipping `[security] freeze_sources` from `false` (`sysforge.toml:243`) to `true`, so the
+  out-of-the-box posture is "ask before changing, and do not fetch unmediated sources" and the
+  permissive behaviour is what a user opts into (`--no-frozen`, and a `--yes`/`--noconfirm`-style
+  bypass for the gate).
+  The second half is the escape hatch that makes the posture liveable: `setup` (and the
+  `reconfigure` stage) should *ask* whether to persist the answers globally and write them to the
+  live `sysforge.toml`, so an experienced user turns both off once instead of passing flags
+  forever. Two constraints make that non-trivial and are why it belongs here rather than as a bare
+  "add a prompt" item. **(a) There is no runtime TOML writer.** tomlkit is a dev-only dependency
+  pulled into an ephemeral overlay by `tools/sync_config.py`; the only runtime precedent is
+  `config.set_default_toolchain` / `_rewrite_profiles_default_toolchain`
+  (`primitives/config.py:752-814`), an anchored line rewrite that exists specifically to avoid
+  tomlkit at runtime. A second such key wants that generalised into one seam, not copy-pasted —
+  the same "one home" argument as `2.6.1-F21`. **(b) The deprecation registry does not model a
+  changed default.** `primitives/deprecations.py` has kinds for removed *surfaces* (`config_key`,
+  `state_token`); a default whose *value* changed while the key remains valid has no kind, so
+  either the registry grows one or the `freeze_sources` flip is carried by a release-note
+  `## Changed` entry plus the prompt alone. Decide that before implementing, not during. `setup`
+  currently takes only `--pacman-conf` and does no prompting at all, so the prompt seam is new
+  even though `primitives/prompt.py` supplies the primitives (`prompt_choice`, `is_interactive`).
+  Relates to `3.0.0-F3`, which fixes the *review* gate's silence under automation — the same
+  "unattended runs must not silently consent" principle, one layer down.
+  *Priority: high · Effort: medium · Bump: major* — a default-on confirmation gate and a flipped
+  `freeze_sources` both change behaviour for every existing install on upgrade; the `setup` prompt
+  is the migration path, not a separate convenience, which is why the parts ship together.
+  **Standards home on adoption:** none new — but the runtime config-write seam from (a) is a
+  candidate "one home" row if a third key ever needs it.
 ---
 
 - **`3.0.0-F5` — itemize the flag-triggered `pacman -Syu` in the result summary.** Phase 6.5 has two
