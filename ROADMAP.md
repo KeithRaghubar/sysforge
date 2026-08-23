@@ -95,6 +95,8 @@ canonical ordering.
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
+| `3.1.0-B4` | a timed-out sudo prompt at install time is reported as a kernel-stage failure | med | small | patch |
+| `3.1.0-B5` | the kernel stage has no sudo keepalive, so its final install prompt goes stale | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F5` | the first run toolchain / run kernel on an install changes the system with no nudge to read the config that drives it | med | small | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
@@ -533,3 +535,58 @@ canonical ordering.
   exactly the double-processing the `owner_stage` skip exists to prevent. Test both origins (repo
   entry → advisory from sync DB; AUR entry → advisory from RPC, unchanged).
   *Priority: med · Effort: small · Bump: patch* — advisory-only; no build or install behaviour changes.
+
+---
+
+- **`3.1.0-B4` — a timed-out sudo prompt at install time is reported as a kernel-stage failure.**
+  `pipeline/stages/kernel.py:2274` opens `sentinel_scope` around the install → mkinitcpio →
+  bootloader mutation window, and the first statement inside it is `install_built_packages`
+  (`primitives/makepkg_wrapper.py:351`), which runs `sudo pacman -U` with inherited stdio. When the
+  operator leaves a multi-hour build unattended, sudo's `passwd_timeout` fires and **sudo exits
+  non-zero without ever executing pacman** — nothing was installed, no file on the system was
+  touched. `makepkg_wrapper.py:374` cannot tell that apart from a genuine pacman failure and raises
+  `RuntimeError`, which propagates out of the scope; by contract (`stage_sentinel.py:371`) any
+  exception leaves the sentinel in place, so the next invocation is blocked by
+  `check_and_recover_stale_sentinel` demanding the recorded `recovery_cmd`
+  (`_kernel_recovery_command()`, the mkinitcpio line). The operator must therefore run a pointless
+  mkinitcpio purely to clear a sentinel guarding a mutation that never began, just to get back to
+  the final install. The sentinel is behaving correctly — it simply cannot distinguish "the
+  mutation window was entered and abandoned mid-way" (kernel installed, initramfs missing →
+  unbootable, the case it exists for) from "authentication never succeeded, so the window was never
+  really entered". Fix by acquiring credentials *before* entering the scope: probe with the
+  allowlisted `sudo -v` auth probe (explicitly out of scope for the privilege seam per
+  `primitives/privilege.py`'s docstring), and on failure abort cleanly with a message naming what
+  happened and the plain re-run (`sysforge run kernel`) — no sentinel written, no recovery ritual.
+  A successful probe caches the timestamp, so the `pacman -U` inside the scope does not re-prompt.
+  Keep the classification narrow: only a pre-install auth failure is a clean abort; a `pacman -U`
+  that actually ran and failed must keep leaving the sentinel. Pairs with `3.1.0-B5`, which stops
+  the prompt from timing out in the first place; this entry is the safety net for when it still
+  does. Test both branches (auth probe fails → no sentinel, distinct message; probe succeeds and
+  pacman fails → sentinel retained, existing B7 stale-package guidance intact).
+  *Priority: med · Effort: small · Bump: patch* — one stage, no change to the mutation window
+  itself or to the sentinel contract.
+  **Standards home on adoption:** none new — row 18 (privilege seam) already carves out auth
+  probes; this adds a call site, not a mechanism.
+
+---
+
+- **`3.1.0-B5` — the kernel stage has no sudo keepalive, so its final install prompt goes stale.**
+  `pipeline/stages/toolchain.py:1170` runs `_sudo_keepalive_daemon` — a background thread
+  refreshing `sudo -v` every `_SUDO_KEEPALIVE_INTERVAL` — precisely so the install at the end of a
+  2+ hour PGO sequence does not re-prompt an operator who has walked away. The kernel stage builds
+  for just as long and installs the same way (`install_built_packages` calling sudo directly from
+  the sysforge process, so the same timestamp entry applies), but has no equivalent: credentials
+  authenticated at stage entry have long expired by the time the build finishes, so the run stops
+  on a password prompt that then times out. `primitives/makepkg_invoke.py:690` shows how routinely
+  this bites — it carries a whole interactive "Built packages found — build likely succeeded but
+  install failed (sudo timeout?) … [s]udo re-auth and install" recovery path, which the kernel
+  stage's split build/install shape bypasses entirely. Fix by giving the kernel build the same
+  keepalive coverage, but lift the daemon out of `toolchain.py` into a shared primitive (one home)
+  rather than copying it — a second copy is exactly the drift the one-home invariants exist to
+  prevent, and a third caller (`build_core`'s long batch builds) is plausible later. The daemon
+  must remain best-effort and non-fatal: a failed refresh warns, as it does today, and the stage
+  still reaches `3.1.0-B4`'s clean abort if the prompt is ultimately unanswered.
+  *Priority: med · Effort: small · Bump: patch* — behaviour-preserving extraction plus one new
+  caller; no change to what is built or installed.
+  **Standards home on adoption:** none new — `sudo -v` is an auth probe, already outside the
+  privilege seam (row 18); the new module is the seam for *credential lifetime*, not escalation.
