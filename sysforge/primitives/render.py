@@ -61,6 +61,15 @@ def em_dash() -> str:
     return log.downgrade_glyphs("—")
 
 
+def middot() -> str:
+    """``·``, or ``-`` where the Unicode gate degrades glyphs.
+
+    The separator for compact count footers (``12 checked · 3 available``).
+    Same rationale as :func:`arrow`: never hardcode the glyph at a call site.
+    """
+    return log.downgrade_glyphs("·")
+
+
 def ellipsis_glyph() -> str:
     """``…``, or ``...`` where the Unicode gate degrades glyphs.
 

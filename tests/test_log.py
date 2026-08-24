@@ -44,6 +44,7 @@ def _log_reset():
             log._pkg_log_fh.close()
         log._pkg_log_fh = None
     log.set_verbosity(saved)
+    log._DRY_RUN = False
 
 
 # ---------------------------------------------------------------------------
@@ -803,3 +804,51 @@ def test_quiet_at_default_restores_verbosity(quiet_at_default):
     saved = log.get_verbosity()
     quiet_at_default(lambda: None)
     assert log.get_verbosity() == saved
+
+
+# ---------------------------------------------------------------------------
+# set_dry_run_mode (3.1.0-B6)
+# ---------------------------------------------------------------------------
+
+def test_set_dry_run_mode_redirects_to_stdout(capsys):
+    """Dry-run output is the answer, so it belongs on stdout, not stderr."""
+    log.set_verbosity(0)
+    log.set_dry_run_mode()
+    log.ui("[TEST]", "would remove /tmp/x")
+    cap = capsys.readouterr()
+    assert "would remove /tmp/x" in cap.out
+    assert "would remove /tmp/x" not in cap.err
+
+
+def test_set_dry_run_mode_preserves_verbosity():
+    """Dry-run must not force max verbosity over the user's -v choice."""
+    log.set_verbosity(1)
+    log.set_dry_run_mode()
+    assert log.get_verbosity() == 1
+
+
+def test_set_dry_run_mode_preserves_default_verbosity():
+    """The shipped default survives dry-run: no unconditional relevel to 3."""
+    log.set_verbosity(0)
+    log.set_dry_run_mode()
+    assert log.get_verbosity() == 0
+
+
+def test_set_dry_run_mode_suppresses_debug_at_default(capsys):
+    """The 1700-line firehose: DEBUG stays gated behind -vvv under --dry-run."""
+    log.set_verbosity(0)
+    log.set_dry_run_mode()
+    log.debug("[TEST]", "resolved profile dump")
+    log.info("[TEST]", "narration")
+    cap = capsys.readouterr()
+    assert "[DEBUG]" not in cap.out + cap.err
+    assert "[INFO]" not in cap.out + cap.err
+
+
+def test_set_dry_run_mode_honours_quiet(capsys):
+    """--quiet --dry-run is quiet."""
+    log.set_verbosity(0)
+    log.set_dry_run_mode()
+    log.warn("[TEST]", "narration")
+    cap = capsys.readouterr()
+    assert "[WARN]" not in cap.out + cap.err

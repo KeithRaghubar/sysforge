@@ -295,7 +295,9 @@ def _check_pkgname_repo_collision(pkgname, options):
         "repo — building it will overwrite the official package on install."
     )
     if getattr(options, "dry_run", False):
-        _log.warn(f"{msg} (dry-run: not prompting)")
+        # Dry-run verdict, not narration: the real run prompts/aborts here,
+        # so this line IS the answer at the shipped default (3.1.0-B6).
+        _log.ui(f"{msg} (dry-run: not prompting)")
         return
     _log.warn(msg)
     unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
@@ -1367,7 +1369,7 @@ def _gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
                 "--allow-no-fallback / set require_fallback_kernel = false."
             )
             if dry_run:
-                _log.warn(f"{msg} (dry-run: would abort)")
+                _log.ui(f"{msg} (dry-run: would abort)")
             else:
                 raise RuntimeError(f"[KERNEL] {msg}")
 
@@ -1376,7 +1378,7 @@ def _gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
         space = kernel_safety.check_boot_mount_space(min_mb=min_free)
         if space is not None:
             if dry_run:
-                _log.warn(f"[dry-run] {space.message}")
+                _log.ui(f"[dry-run] {space.message}")
             else:
                 raise RuntimeError(f"[KERNEL] {space.message} {space.remediation}")
 

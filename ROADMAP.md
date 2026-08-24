@@ -102,6 +102,7 @@ canonical ordering.
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
+| `3.1.0-B7` | --dry-run forces the progress bar into plain mode, printing one line per package | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
@@ -590,3 +591,24 @@ canonical ordering.
   caller; no change to what is built or installed.
   **Standards home on adoption:** none new — `sudo -v` is an auth probe, already outside the
   privilege seam (row 18); the new module is the seam for *credential lifetime*, not escalation.
+
+- **`3.1.0-B7` — `--dry-run` forces the progress bar into plain mode, printing one line per package.**
+  `ui/progress.py:_detect_mode` returns `"plain"` whenever `log._DRY_RUN` is set, alongside the
+  genuine non-interactive cases (`not sys.stderr.isatty()`, `TERM` empty/`dumb`, `CI`, colour
+  disabled). Plain mode emits a discrete line per step instead of one rewriting line, so a dry-run
+  over a 110-package source sync prints ~300 progress lines on an ordinary TTY — on the live
+  workstation that is the entire remaining bulk of `sysforge --quiet update --dry-run`, whose
+  non-progress output is nine lines. The gate looks like a deliberate pairing with the other half
+  of `set_dry_run_mode`, which redirects log output to **stdout**: avoiding ANSI cursor control
+  interleaved with the report is a real concern. It does not apply here — progress writes to
+  **stderr** (`_detect_mode` tests `sys.stderr.isatty()`, and the TTY renderer targets the same
+  stream), so the cursor manipulation and the redirected report are on separate descriptors and
+  cannot interleave. The remaining rungs already cover every case where plain mode is genuinely
+  required, including the piped-to-a-file shape a scripted dry-run actually takes. Fix by dropping
+  the `_DRY_RUN` rung so a dry-run renders progress exactly as the real run it is previewing; keep
+  the other four. Related to `3.1.0-B6`, which removed the same function's verbosity forcing — this
+  is the last behaviour still keyed off `_DRY_RUN` beyond the stdout redirect it exists for.
+  *Priority: low · Effort: small · Bump: patch* — one condition removed; no change to what a
+  dry-run reports, only to how its progress is drawn on a TTY.
+  **Standards home on adoption:** none new — row 25 (log-level rubric) already owns default-verbosity
+  output; the progress channel is outside it and gains no new conformance surface.

@@ -234,3 +234,110 @@ def _print_result_summary(
                 ver = upstream_ver or ""
             emit(f"    {pkgbase}   {ver}   {_stage_verb(owner_stage)}")
     emit("")
+
+
+# ---------------------------------------------------------------------------
+# `update --versions` report (3.1.0-F6)
+#
+# A read-only view onto the version-check walk the orchestrator has already
+# run: no build loop, no pipeline stage. Deliberately lists only *actionable*
+# rows — anything with a newer (or, for a downgrade, differing) version — and
+# collapses everything up to date into the footer count, because the wall of
+# 100+ unchanged packages is precisely what makes the full walk unreadable.
+# ---------------------------------------------------------------------------
+
+# Actions that represent a real version the user could move to. A failed check
+# (PULL_FAILED, RATE_LIMITED, PURGE_REFUSED, DEVEL_EVAL_FAILED, …) is *not*
+# an available version and must never occupy a row — reporting "unknown" as
+# "available" is worse than staying silent.
+_VERSIONS_ACTIONABLE = {
+    "NEEDS_REBUILD": "",
+    "NEEDS_PACMAN_UPGRADE": "pacman",
+    "DOWNGRADE": "downgrade",
+}
+
+_VERSIONS_HEADERS = ("PACKAGE", "INSTALLED", "AVAILABLE")
+
+
+def render_versions_report(
+    results: "list[_UpdateResult]",
+    stage_owned_updates: "list[tuple[str, str | None, str | None, str]]",
+    *,
+    devel_resolved: bool = False,
+    emit: "Callable[[str], None]" = print,
+) -> None:
+    """Render the ``--versions`` table line-by-line through ``emit``.
+
+    Pure presentation, mirroring :func:`_print_result_summary`: ``update.py``
+    passes ``log.ui`` so the block lands in the unified run-log the same way
+    every other pre-flight block does.
+
+    ``stage_owned_updates`` carries the toolchain/kernel packages the walk
+    skips; they are always shown here (that is the flag's reason to exist),
+    annotated with the stage that owns them.
+
+    ``devel_resolved`` reports whether ``--devel`` ran. Without it a VCS
+    package has no resolved upstream version, so its AVAILABLE cell stays a
+    placeholder rather than a fabricated value.
+    """
+    rows: list[tuple[str, str, str, str]] = []
+
+    for r in results:
+        note = _VERSIONS_ACTIONABLE.get(r.action)
+        if note is None:
+            continue
+        rows.append((r.pkgbase, r.installed_ver or render.em_dash(),
+                     r.pkgbuild_ver or render.em_dash(), note))
+
+    # Unresolved VCS packages deliberately get NO row. Without --devel there is
+    # no upstream version to report, and an "unknown" row is not actionable —
+    # on a devel-heavy system they would outnumber the real answers 80:1 and
+    # recreate the wall of noise this report exists to replace. They are
+    # surfaced as a footer hint instead.
+    unresolved_devel = [
+        r for r in results
+        if r.action == "DEVEL" and not r.pkgbuild_ver
+    ]
+
+    for pkgbase, installed_ver, upstream_ver, owner_stage in stage_owned_updates:
+        rows.append((pkgbase, installed_ver or render.em_dash(),
+                     upstream_ver or render.em_dash(), owner_stage))
+
+    checked = len(results)
+    up_to_date = sum(1 for r in results if r.action == "UP_TO_DATE")
+    available = len(rows)
+
+    def _devel_hint() -> None:
+        if unresolved_devel and not devel_resolved:
+            emit(f"  ({len(unresolved_devel)} devel package(s) unresolved — "
+                 "pass --devel to resolve upstream versions)")
+
+    sep = f" {render.middot()} "
+    footer = (f"  {checked} checked{sep}{available} available"
+              f"{sep}{up_to_date} up to date")
+
+    emit("")
+    if not rows:
+        emit("  Nothing to update.")
+        emit("")
+        emit(footer)
+        _devel_hint()
+        emit("")
+        return
+
+    rows.sort(key=lambda row: row[0])
+    w_pkg = max(len(_VERSIONS_HEADERS[0]), max(len(r[0]) for r in rows))
+    w_inst = max(len(_VERSIONS_HEADERS[1]), max(len(r[1]) for r in rows))
+    w_avail = max(len(_VERSIONS_HEADERS[2]), max(len(r[2]) for r in rows))
+
+    emit((f"  {_VERSIONS_HEADERS[0]:<{w_pkg}}  {_VERSIONS_HEADERS[1]:<{w_inst}}  "
+          f"{_VERSIONS_HEADERS[2]:<{w_avail}}").rstrip())
+    for pkgbase, installed_ver, upstream_ver, note in rows:
+        suffix = f"  [{note}]" if note else ""
+        emit(f"  {pkgbase:<{w_pkg}}  {installed_ver:<{w_inst}}  "
+             f"{upstream_ver:<{w_avail}}{suffix}".rstrip())
+
+    emit("")
+    emit(footer)
+    _devel_hint()
+    emit("")

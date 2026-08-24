@@ -211,7 +211,7 @@ _sysforge_update() {
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
         --review --no-review --sysupgrade --no-sysupgrade \
         --no-toolchain-preflight --include-stage-owned \
-        --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \
+        --versions --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \
         -m --makepkg --state-dir --profile-conf --cache-report \
         --no-pkg-log --persist-log --log-dir"
     if [[ $cur == -* ]]; then

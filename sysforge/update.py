@@ -117,7 +117,12 @@ from sysforge.primitives.toolchain_preflight import (
 from sysforge.ui import progress as _ui_progress  # noqa: E402
 from sysforge.update_assemble import _assemble_package_set
 from sysforge.update_result import _UpdateResult
-from sysforge.update_summary import ResultSummary, _print_result_summary, _print_summary
+from sysforge.update_summary import (
+    ResultSummary,
+    _print_result_summary,
+    _print_summary,
+    render_versions_report,
+)
 from sysforge.update_sync import _sync_sources
 from sysforge.update_version import _check_one_pkgbase
 
@@ -836,7 +841,10 @@ def _cmd_update_body(args) -> int:
     timer.stop()
 
     # ── Phase 4: Summary + dry-run gate ───────────────────────────────────
-    _print_summary(results, args)
+    # --versions renders its own focused table below and would otherwise print
+    # two overlapping reports for one walk (3.1.0-F6).
+    if not getattr(args, "versions", False):
+        _print_summary(results, args)
 
     _ui_progress.phase("checking toolchain and flag drift")
     timer.start("drift detection")
@@ -990,6 +998,30 @@ def _cmd_update_body(args) -> int:
             f"flag drift: {len(flag_drifted)} package(s) resolve to different "
             f"flags than when built: {sample}{more}. {_hint}"
         )
+
+    if getattr(args, "versions", False):
+        # 3.1.0-F6 — read-only report at the same seam as --explain-drift: the
+        # walk has already produced `results`, so this costs nothing extra.
+        # Stage-owned packages come from the advisory path (not
+        # --include-stage-owned) because only that path carries the owning
+        # stage, which is what makes a toolchain/kernel row actionable.
+        versions_stage_owned = _detect_stage_owned_updates(
+            stage_owned_packages,
+            all_installed=all_installed,
+            sync_failures=sync_failures,
+            rpc_version_by_base=rpc_version_by_base,
+            pacman_updates_map=pacman_updates_map,
+            skip_sync_check=skip_sync_check,
+            offline=offline,
+        )
+        render_versions_report(
+            results,
+            versions_stage_owned,
+            devel_resolved=bool(getattr(args, "devel", False)),
+            emit=_log.ui,
+        )
+        _emit_timings(timer, args)
+        return 0
 
     if getattr(args, "explain_drift", False):
         if not drifted:

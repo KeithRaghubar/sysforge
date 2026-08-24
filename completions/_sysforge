@@ -192,6 +192,7 @@ _sysforge_update() {
     '(--sysupgrade)--no-sysupgrade[skip the trailing pacman -Syu]' \
     '--no-toolchain-preflight[skip the toolchain pre-flight]' \
     '--include-stage-owned[include stage-owned packages]' \
+    '--versions[list available package versions, then exit]' \
     '--explain-drift[list drifted packages, then exit]' \
     '--rebuild-on-toolchain-drift[rebuild on toolchain drift]' \
     '--rebuild-on-flag-drift[rebuild on flag drift]' \

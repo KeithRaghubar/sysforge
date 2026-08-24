@@ -2984,10 +2984,12 @@ def _gate1_preflight(
 
     def _abort_or_warn(finding) -> None:
         if dry_run:
-            _log.warn(f"[dry-run] Gate 1 [{finding.severity.upper()}] "
-                      f"{finding.check_id}: {finding.message}")
+            # Dry-run verdict, not narration: the real run raises here, so
+            # these lines ARE the answer at the shipped default (3.1.0-B6).
+            _log.ui(f"[dry-run] Gate 1 [{finding.severity.upper()}] "
+                    f"{finding.check_id}: {finding.message}")
             if finding.remediation:
-                _log.warn(f"  → {finding.remediation}")
+                _log.ui(f"  → {finding.remediation}")
         else:
             raise RuntimeError(
                 f"[TOOLCHAIN] Gate 1 ({finding.check_id}): {finding.message} "

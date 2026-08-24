@@ -482,7 +482,20 @@ def _add_update_parser(sub):
         help="Include packages owned by a pipeline stage (e.g. the kernel "
              "stage's `linux-sysforge`). Skipped by default; the owning stage "
              "(`sysforge run kernel`) is the canonical update path.")
-    p.add_argument("--explain-drift", action="store_true", dest="explain_drift",
+    # --versions and --explain-drift are both list-and-exit reports; the
+    # group makes argparse reject the combination instead of update.py
+    # silently picking a winner at its early-exit seam.
+    _report = p.add_mutually_exclusive_group()
+    _report.add_argument("--versions", action="store_true", dest="versions",
+        help="List packages with a newer version available and exit. Read-only: "
+             "no source sync beyond the version check, no rebuild, no stage. "
+             "Unlike a normal run this always includes stage-owned "
+             "(toolchain/kernel) packages, annotated with the stage that owns "
+             "them — it is the quick answer to 'is there a new toolchain or "
+             "kernel?' without entering `run toolchain` / `run kernel`. "
+             "Up-to-date packages collapse into a count. VCS packages report "
+             "no available version unless --devel is also passed.")
+    _report.add_argument("--explain-drift", action="store_true", dest="explain_drift",
         help="List drifted packages and exit, across both axes: toolchain "
              "drift (recorded toolchain_variant differs from the active "
              "gcc / stock_llvm / pgo_llvm) and flag drift (profiled packages "
@@ -1464,7 +1477,7 @@ def _gate_sentinel_check(args) -> bool:
 
     Install-bearing commands (``build``/``update``/``run``/``setup``)
     gate on a stale sentinel, except when the invocation is
-    explicitly read-only (``--dry-run``). The inner verb-runner sentinel
+    explicitly read-only (``--dry-run`` / ``--versions``). The inner verb-runner sentinel
     scope already opts out under ``--dry-run`` (see ``UpdateVerb.pre_check``);
     keeping the outer CLI gate in lockstep avoids blocking ``sysforge update
     --dry-run`` on a sentinel from an earlier mutating run the user is still
@@ -1472,6 +1485,10 @@ def _gate_sentinel_check(args) -> bool:
     """
     cmd = getattr(args, "command", None)
     if cmd not in _INSTALL_BEARING_COMMANDS:
+        return False
+    if getattr(args, "versions", False):
+        # `update --versions` is a read-only report that exits before the build
+        # loop (3.1.0-F6) — same rationale as --dry-run above.
         return False
     return not getattr(args, "dry_run", False)
 

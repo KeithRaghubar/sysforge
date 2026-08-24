@@ -97,9 +97,19 @@ def set_verbosity(level: int) -> None:
 
 
 def set_dry_run_mode() -> None:
-    """Force max verbosity and redirect all output to stdout for dry-run mode."""
-    global _VERBOSITY, _DRY_RUN
-    _VERBOSITY = 3
+    """Redirect all output to stdout for dry-run mode.
+
+    Verbosity is deliberately *not* touched. A dry-run preview is the answer
+    the user asked for, so it goes through ``ui()`` and is visible at the
+    shipped default; ``info()``/``warn()``/``debug()`` stay narration gated
+    behind ``-vv``/``-v``/``-vvv`` exactly as in a real run (log-level rubric,
+    docs/design/12-logging.md; standards row 25).
+
+    This used to force ``_VERBOSITY = 3``, which predates the ``ui()`` level —
+    back then max verbosity was the only way a dry-run printed anything, and it
+    silently overrode both ``-v`` and ``--quiet`` (3.1.0-B6).
+    """
+    global _DRY_RUN
     _DRY_RUN = True
 
 

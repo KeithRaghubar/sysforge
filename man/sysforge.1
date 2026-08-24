@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-08\-19"
+.TH "sysforge" "1" "2026\-08\-24"
 .PP
 .PP
 .SH NAME
@@ -439,6 +439,11 @@ Skip the toolchain pre\-flight (rust/cmake/meson availability + lib32 cross targ
 \fB\-\-include\-stage\-owned\fR
 .RS 4
 Include packages owned by a pipeline stage (e.\&g.\& the kernel stage'\&s `linux\-sysforge`).\& Skipped by default; the owning stage (`sysforge run kernel`) is the canonical update path.\&
+.PP
+.RE
+\fB\-\-versions\fR
+.RS 4
+List packages with a newer version available and exit.\& Read\-only: no source sync beyond the version check, no rebuild, no stage.\& Unlike a normal run this always includes stage\-owned (toolchain/kernel) packages, annotated with the stage that owns them — it is the quick answer to '\&is there a new toolchain or kernel?\&'\& without entering `run toolchain` / `run kernel`.\& Up\-to\-date packages collapse into a count.\& VCS packages report no available version unless \-\-devel is also passed.\&
 .PP
 .RE
 \fB\-\-explain\-drift\fR
