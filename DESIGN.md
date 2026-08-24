@@ -543,6 +543,10 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[mesa]` | `gallium` | — | Optional explicit gallium-driver override list (non-empty pins the axis, still baseline-enforced; absent → autodetect). Tokens must be valid meson gallium drivers |
 | `[mesa]` | `vulkan` | — | Optional explicit vulkan-driver override list (same semantics) |
 | `[security]` | `freeze_sources` | `false` | Master switch for the source freeze: when `true`, all new source egress (AUR clones, `pkgctl repo clone` checkouts of official-repo packages, source-sync fetches, both `vcs_pkgver` seams) is refused for the run — existing checkouts still build. Resolved by `net_policy.resolve_net_policy` via the shared `config.resolve_flag_default(args, "frozen", cfg, "freeze_sources")` seam, with precedence `--no-frozen` > `--frozen` > `[security] freeze_sources` > `false` (`--no-frozen` is an explicit-off wrapper on top of the shared seam, which has no "explicit false" concept). `--thaw PKG[,PKG...]` is a per-run *lift*, never a switch — it narrows an already-active freeze rather than enabling one. A refused package surfaces as the `STATUS_FROZEN` scheduler blocker (see §Primitives Layer → `source_sync.py`) |
+| `[security]` | `sandbox_builds` | `false` | Master switch for the **build sandbox**: when `true`, every package build runs inside a clean container (devtools' `makechrootpkg`) instead of as the invoking user, so a PKGBUILD's `prepare()`/`build()`/`package()` cannot read `~/.ssh`, GPG material or browser profiles. The orthogonal half of `freeze_sources` — that gates code *ingress*, this gates blast *radius*. Resolved once at CLI entry by `build_sandbox.resolve_sandbox`, consulted at the makepkg invocation seam via `build_sandbox.get_policy()`, and overridable per profile with `sandbox_builds` in `profiles.toml` (`build_sandbox.for_profile`, two-way). Requires `devtools` and an existing `<sandbox_chroot_dir>/root`; a build that cannot be isolated raises `SandboxUnavailable` rather than silently running on the host. `run toolchain` / `run kernel` are exempt (`build_sandbox.suppressed`) — both build against, and install into, the host they are upgrading (see §Makepkg Wrapper → Build sandbox) |
+| `[security]` | `sandbox_chroot_dir` | `~/chroot` | Where the clean chroot lives; `<dir>/root` must already exist (`mkarchroot <dir>/root base-devel`). Tilde-expanded |
+| `[security]` | `sandbox_clean` | `true` | Sync a pristine copy of the chroot before each build (`makechrootpkg -c`). `false` reuses the working copy — faster, but a previous build's leftovers stay visible to the next one |
+| `[security]` | `sandbox_update` | `true` | Update the working copy before building (`makechrootpkg -u`), so a build never links against a stale chroot |
 
 ### Toolchain drift detection (`toolchain.toml`)
 
@@ -2870,6 +2874,31 @@ SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explic
 
 Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge pipeline`.
 
+### Build sandbox
+
+Off by default (`[security] sandbox_builds`). When on, the makepkg invocation is **replaced** — not wrapped — by a `makechrootpkg` one, so `prepare()`/`build()`/`package()` execute inside a clean `systemd-nspawn` container as an unprivileged `builduser` with only the PKGBUILD directory bind-mounted. The environment isolation above keeps the *shell* from steering a build; this keeps the *build* from reaching the user's home. `[security] freeze_sources` gates code ingress, this gates blast radius, and the two compose.
+
+`primitives/build_sandbox.py` is the one home: `resolve_sandbox(cfg)` at CLI entry, `for_profile(policy, resolved_profile)` for the per-profile override, `get_policy()` at the invocation seam, `suppressed(active)` for the stage exemption. The policy is a consulted module global for the same reason `net_policy`'s is — the seam sits six call sites deep behind the retry and recovery loops, and a threaded parameter defaults permissive at every site that forgets it.
+
+Why the argv *shape* branches rather than composing another `build_throttle.wrapper_argv` prefix entry:
+
+- `makechrootpkg` operates on the **current directory** and hardcodes `source PKGBUILD` for its pkgbase probe, so it cannot honour `-p <name>`. `preflight` refuses a non-`PKGBUILD` filename rather than build one file and report another.
+- It re-execs itself under `sudo` (devtools' `check_root`) with its own env-preserve list. SysForge must **not** prefix `sudo` — that would strip `PKGDEST`/`SRCDEST`/`LOGDEST`/`MAKEFLAGS` and silently relocate every artifact. This is the one documented exemption from the `privileged_argv` seam (§Privilege Seam): the escalation is the tool's own, and wrapping it breaks it. `dest_env_from_conf` exports those four from the *emitted* conf so the sandbox path leaves artifacts exactly where the host path does and `_find_built_packages` keeps working unchanged.
+- `MAKEPKG_CONF` does not cross the container boundary, and neither do the env-delivered `CC`/`CXX` that `CONF_KEY_MAP["toolchain"]` deliberately keeps *out* of the conf file. `chroot_conf_text` therefore derives a container-side conf from the emitted one — dest keys repointed at `/build`, `/pkgdest`, `/srcdest`, `/logdest`, and the env-only keys re-added as `export` lines (the conf is sourced by bash, the one channel that survives `sudo -iu builduser`). Only the profile-resolved injections are re-exported; the inherited shell environment is not a build input and does not cross. The scratch conf lives in a dotted temp dir *inside* the PKGBUILD directory — the one thing already bind-mounted — and is removed in a `finally`, on the failure path too.
+- The throttle prefix applies **outside** the container (nice/ionice propagate to children), but `[build] mem_limit`'s `RLIMIT_AS` clamp does not: the preexec would cap `makechrootpkg`, whose real work happens in a container in its own cgroup. `mem_cap_applies` returns `False` and the cap is dropped with a `[WARN]` rather than silently misapplied.
+- Dependencies built earlier in the same run are installed on the **host**, which the container cannot see. `register_artifacts` / `install_args` (a session registry, written by the `build_core` build loop and the AUR dep loop) feed them back in as `makechrootpkg -I`, so an AUR dep chain still resolves.
+
+**Dependency scope — the standing limitation.** `arch-nspawn` gives the container its *own* `/etc/pacman.conf`, so `--syncdeps` resolves from the stock repos and never from the host's installed set. Two consequences, both currently accepted rather than solved:
+
+- A locally-built dependency is invisible unless it is injected. The session registry covers packages built *in the same run* (so an `update` across a stack resolves), but not a package built in an earlier run and only present as an installed host package — `3.1.0-F9` closes that by seeding the injection set from `build_state.toml`.
+- Versions can diverge from the host: a source-built package ahead of the repos (a self-built toolchain, a `-git` checkout) is replaced in the container by the repo version, so the build may link against something the host does not run. Only a local repo the container's `pacman.conf` names fixes this class — `3.1.0-F10`.
+
+What is *not* lost is the optimization of the host's own packages: a dependent build consumes a dependency's headers and link stubs, while the optimization lives in that dependency's installed binary, which the built package still runs against on the host. The sandbox is therefore scoped, by design, at untrusted AUR leaf packages whose dependencies come from repos — the population the threat model is about — and is default-off for everything else.
+
+Preflight refuses rather than downgrades — missing `devtools`, a missing `<chroot>/root`, or a non-`PKGBUILD` filename all raise `SandboxUnavailable` with the command that fixes it. A security opt-in that silently falls back to the host hands the user exactly the exposure they opted out of.
+
+`run toolchain` and `run kernel` are exempt via `build_sandbox.suppressed(...)` at the single `_run_build` call site in `makepkg_wrapper.run`, keyed on `owner_stage`: both build against, and install into, the host they are upgrading — a staged LLVM built in a container links against that container's libraries, and a kernel built there cannot see the host's DKMS modules or run its boot audit.
+
 ### Failure handling
 
 Each scenario has a configurable behaviour in `[failure_handling]`:
@@ -3897,6 +3926,15 @@ escalation case:
   non-root* user (e.g. building a package as an unprivileged build user from
   a root-invoked entry point). This is the inverse of escalation and also
   stays as a raw call.
+- **Self-escalating tool** — a tool that escalates *itself* and must be
+  invoked unescalated. `makechrootpkg` (the build sandbox, §Makepkg Wrapper)
+  re-execs under `sudo` via devtools' `check_root` with its own
+  env-preserve list; prefixing our own `sudo` would strip
+  `PKGDEST`/`SRCDEST`/`LOGDEST`/`MAKEFLAGS` and silently relocate every
+  built artifact. It is invoked as a bare argv and so never reaches the
+  checker, which only sees literal `"sudo"` heads — the exemption is
+  documented here rather than allowlisted because there is nothing to
+  allowlist.
 
 The `check_standards` `privilege_seam` group (`tools/check_standards.py`)
 enforces the boundary: it walks every `sysforge/*.py` file (except

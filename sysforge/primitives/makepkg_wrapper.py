@@ -70,6 +70,7 @@ from sysforge.primitives.makepkg_artifacts import (
     select_built_version,
 )
 from sysforge.primitives.makepkg_conf import emit_makepkg_conf
+from sysforge.primitives import build_sandbox
 from sysforge.primitives.makepkg_env import resolve_env_vars
 from sysforge.primitives.makepkg_flags import (
     INSTALL_FLAGS,
@@ -1397,7 +1398,15 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         import time as _time
         _build_start = _time.time()
-        rename = _run_build(
+        # Stage exemption from the build sandbox (3.1.0-F7). The toolchain and
+        # kernel stages build *against*, and install *into*, the host they are
+        # upgrading: a staged LLVM built in a container links against that
+        # container's libraries, and a kernel built there cannot see the host's
+        # DKMS modules or run its boot audit. One seam for both, keyed on the
+        # same owner_stage the rest of the stage-ownership policy reads.
+        _stage_owned = kernel_build or options.owner_stage in ("kernel", "toolchain")
+        with build_sandbox.suppressed(_stage_owned):
+            rename = _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
                 active_consumes=active_consumes,
                 extracted_profile=(

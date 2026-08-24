@@ -2,7 +2,7 @@
 # profiles.toml — compiler flag profiles, package matching rules, and
 # flag-resolution reference data (conflict groups + consumes inference)
 #
-# Everything down to line 211 ("END OF HEADER") is documentation;
+# Everything down to line 220 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # SysForge resolves a profile for each package by evaluating [[rules]] in
@@ -150,6 +150,15 @@
 #     verbatim, hardening included. Per-token opt-out is finer: name the
 #     conflicting flag (e.g. "-fno-stack-protector") in the profile's flags.
 #   preserve_system_tokens = false
+#
+#   sandbox_builds — run this profile's builds inside a clean container
+#     (devtools' makechrootpkg) instead of as the invoking user. Overrides
+#     [security] sandbox_builds in sysforge.toml, both ways: opt a profile
+#     used for untrusted AUR packages in while the global default stays off,
+#     or opt a profile whose packages you audit yourself out of the cost.
+#     Requires devtools and an existing chroot root — see [security] in
+#     sysforge.toml. Never applied to `run toolchain` / `run kernel`.
+#   sandbox_builds = true
 #
 #   batch — abort on failure without prompting (default: false)
 #   batch          = true

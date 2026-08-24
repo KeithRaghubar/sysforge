@@ -38,6 +38,7 @@ from functools import cmp_to_key
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import build_sandbox
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.timing import PhaseRecord, PhaseTimer
 from sysforge.primitives.version import vercmp
@@ -882,6 +883,13 @@ def build_and_install(
                     outcome.built_pkg_files.extend(new_pkgs)
                     built_files_by_pkgbase[target.pkgbase] = new_pkgs
                     outcome.built_pkgs.append(target.pkgbase)
+                    # Under the build sandbox the host install of an
+                    # intra-batch dep is invisible to the next container, so
+                    # its artifacts have to be handed back in as ``-I``.
+                    # Registered unconditionally: the registry is inert while
+                    # the sandbox is off, and a conditional here would be a
+                    # second place the policy has to be read correctly.
+                    build_sandbox.register_artifacts(new_pkgs)
                 except PGOBuildSkipped as e:
                     _log.warn(str(e))
                     outcome.pgo_skipped_pkgs.append(target.pkgbase)
@@ -914,6 +922,7 @@ def build_and_install(
                         outcome.built_pkg_files.extend(existing)
                         built_files_by_pkgbase[target.pkgbase] = list(existing)
                         outcome.built_pkgs.append(target.pkgbase)
+                        build_sandbox.register_artifacts(existing)
                     else:
                         msg = (
                             f"makepkg reported already built but no matching "

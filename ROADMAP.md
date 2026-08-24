@@ -102,8 +102,8 @@ canonical ordering.
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
+| `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
-| `3.1.0-F7` | every build runs unsandboxed on the host, so a poisoned PKGBUILD reads the invoking user's home | med | large | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
 | `3.1.0-B7` | --dry-run forces the progress bar into plain mode, printing one line per package | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
@@ -113,6 +113,7 @@ canonical ordering.
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `3.0.0-F5` | itemize the flag-triggered pacman -Syu in the result summary | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
+| `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -364,52 +365,6 @@ canonical ordering.
   `init_notice.py` is the existing home for first-run advisory text if the helper lands there.
 
 ---
-- **`3.1.0-F7` — every build runs unsandboxed on the host, so a poisoned PKGBUILD reads the invoking user's home.**
-  `invoke_makepkg` assembles `cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags`
-  (`primitives/makepkg_invoke.py:201`) and `prefix` is only `build_throttle.wrapper_argv`
-  (`build_throttle.py:279`) — a `systemd-run`/nice cgroup wrapper. Nothing in the tree calls
-  `makechrootpkg`: the `arch-chroot` uses in `pipeline/stages/configure.py` and `reconfigure.py`
-  chroot *into the target root* during a fresh install, and the clean-chroot validation in
-  `docs/RELEASE-CHECKLIST.md` covers sysforge's own PKGBUILDs at release time. Neither isolates a
-  user's build. So `prepare()`/`build()` of any AUR PKGBUILD execute as the invoking user with
-  `~/.ssh`, GPG material, and browser profiles readable — which is the actual execution vector of
-  the AUR supply-chain campaigns, where the payload runs at build time and never has to land in a
-  package at all. The `[security]` section (`sysforge.toml:243`) offers only `freeze_sources`, which
-  gates *network egress*; there is no lever for *blast radius*, and the env scrub at
-  `makepkg_invoke.py:125-158` is reproducibility hygiene (keeping the inherited shell toolchain from
-  overriding the resolved profile), not a boundary. One seam already anticipates the feature:
-  `makepkg_invoke.py:346-348` detects `AlreadyBuilt` by output string as well as exit code 13
-  explicitly "for chroot wrappers that may rewrite the exit code" (`DESIGN.md:2867`) — the
-  classification layer is chroot-ready, the invocation layer never followed.
-  The retrofit is not a new `prefix` entry, which is why this is `large`: `makechrootpkg` takes
-  `-r <chrootdir>` and operates on the *current directory*, so it cannot accept `-p <pkgbuild_name>`
-  and the whole argv shape has to branch rather than compose. Four collaborators move with it —
-  `makepkg_artifacts._find_built_packages` (`:19`) and `makepkg_env._effective_build_dir` (`:152`)
-  assume host `BUILDDIR`/`PKGDEST` semantics, where `makechrootpkg` copies artifacts back to the
-  invocation directory; the throttle wrapper has to apply *outside* the chroot rather than inside;
-  `resource_guard.make_child_preexec` (`:53`) would cap the wrapper's `RLIMIT_AS`, not the build's;
-  and `privilege.privileged_argv` (`privilege.py:33`) changes shape because `makechrootpkg` needs
-  root for itself rather than only at the `pacman -U` seam. Land it as an opt-in profile/`[security]`
-  key, defaulting off, so the host path stays the tested default while an AUR-heavy user can buy
-  isolation per profile.
-  **Rejected alternative — systemd sandboxing on the existing scope.** The cheap-looking shortcut is
-  to add `ProtectHome=` / `PrivateTmp=` / `NoNewPrivileges=` to the transient unit `wrapper_argv`
-  already opens. It does not work, for the reason that function documents at
-  `build_throttle.py:290-300`: `--scope` runs the command in the caller's context so the controlling
-  TTY survives for prompts, systemd therefore never execs it, and it rejects exec properties
-  ("Unknown assignment") — which is why `Nice=`/`IOSchedulingClass=` are already front-end commands
-  rather than `-p` properties. Sandboxing directives are exec properties too, so they are rejected
-  identically, and `--service` would buy them at the cost of the TTY. Recorded here so it is not
-  re-proposed as a substitute for the chroot.
-  *Priority: med · Effort: large · Bump: minor* — additive opt-in key, no default changes; a gap
-  that is currently active on a real system (every AUR build on this host runs with full home
-  access), but the mechanism is four collaborators wide and the host path must keep working
-  untouched.
-  **Standards home on adoption:** none new — `[security]` in `sysforge.toml` is the existing home
-  for the opt-in key, and `DESIGN.md`'s makepkg-invocation section is where the two argv shapes get
-  documented as one contract.
-
----
 - **`3.1.0-F8` — missing `validpgpkeys` are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp.**
   `import_pgp_keys` (`primitives/build_prep.py:148-197`) runs a three-step strategy — bundled
   `keys/pgp/*.asc`, then a keyring check, then `gpg --recv-keys` for whatever is still missing —
@@ -438,6 +393,81 @@ canonical ordering.
   **Standards home on adoption:** the egress-kind vocabulary in `net_policy.py` is the existing home
   and this extends it, as `3.1.0-F3` also does; the consent prompt follows the established
   `primitives/prompt.py` TTY-only shape, so a non-TTY run must fail closed rather than auto-import.
+
+---
+- **`3.1.0-F9` — a sandboxed build cannot see dependencies you built in an earlier run.**
+  Follow-up to the shipped build sandbox (`[security] sandbox_builds`). `arch-nspawn` gives the
+  container its own `/etc/pacman.conf`, so `makechrootpkg --syncdeps` resolves build deps from the
+  stock repos and never from the host's installed set. `build_sandbox.register_artifacts` /
+  `install_args` cover packages built **in the same run** — the `build_core` build loop and the
+  `aur_resolve` dep loop both register — so `update` across a stack resolves; a one-off
+  `sysforge build cosmic-comp-git` whose `cosmic-protocols-git` was built last week gets
+  `target not found` instead, because that dep exists only as an installed host package. The whole
+  self-built stack is therefore out of the sandbox's reach today, which is why the feature is
+  documented as targeting untrusted AUR leaf packages whose deps come from repos.
+  The store to seed from already exists and already carries the right shape: `build_state.toml` is
+  keyed by **pkgname** (not pkgbase — so split packages are pre-expanded, which is what `-I` needs,
+  since it takes package *files*) and records `pkgver`/`pkgrel`/`epoch`/`build_mode`, exactly the
+  tuple `makepkg_artifacts._parse_built_pkg_filename` reconstructs from an artifact filename.
+  Four sub-decisions, three of them settled:
+  **Scope.** Injecting every `build_mode != "pacman"` package is unusable — ~150 files copied into
+  the working copy and installed in one `pacman -U` per build on a stack machine. Scope to the
+  target's dep closure ∩ source-built: start from `collect_builddeps` (already `prepare_deps`'
+  input) and walk transitively via `pacman -Qi` on each installed dep, since the host is the
+  authority on what a source-built package itself depends on and `build_state` records no deps.
+  **Version.** Select the artifact matching `pacman.get_installed_version(pkgname)`, never the
+  newest in `PKGDEST` — that directory is a long-lived archive of every historical build
+  (`3.1.0-B1`), and injecting the newest would hand the container a version the host does not run,
+  recreating the skew this is meant to remove. `build_core._find_existing_artifacts` is the matcher
+  already (strict glob, then filename-parse + `vercmp` fallback for VCS packages whose `pkgver()`
+  bumps at build time); it wants **lifting into `makepkg_artifacts`** with an exact-version mode
+  rather than copying, since `primitives/` cannot import from `build_core`.
+  **Missing artifact.** A source-built dep whose artifact was pruned from `PKGDEST` has no file to
+  inject: warn loudly, naming the package and the repo version that will be substituted, and
+  continue. Deliberately *not* the sandbox's own refuse-rather-than-downgrade rule — that rule
+  guards a security boundary, whereas this is a build-fidelity mismatch, and a hard stop over a
+  pruned archive would be friction without a matching risk.
+  **Seam.** `build_sandbox.install_args()` grows a resolver taking the target's PKGBUILD path and
+  unioning the session registry with the state-derived set, the registry winning: the run's own
+  freshly-built artifacts are newer than anything the store points at.
+  Does **not** fix version skew against repo packages — a source-built package ahead of `extra` is
+  still replaced in the container by the repo version unless it happens to be in the injection set.
+  That class is `3.1.0-F10`, whose `repo-add` step reuses this item's artifact-selection logic.
+  *Priority: med · Effort: medium · Bump: minor* — additive, behind an already-default-off feature,
+  and it converts the sandbox from "AUR leaves only" to "usable on your own stack"; effort is one
+  lifted helper, one dep-closure walk and one resolver, plus split-package / VCS-version /
+  missing-artifact tests.
+  **Standards home on adoption:** none new — `build_state.toml` is the existing steady-state
+  tracking authority (§update) and this reads it; the artifact matcher moves to the existing
+  `makepkg_artifacts` home rather than growing a second one.
+
+---
+- **`3.1.0-F10` — a sandboxed build links against repo versions, not the versions the host runs.**
+  The other half of the sandbox's dependency-scope limit, and the one `3.1.0-F9` explicitly does not
+  reach. Even with locally-built artifacts injected, everything *not* injected is resolved from the
+  stock repos inside the container — so on a host whose LLVM is built from source ahead of `extra`,
+  a sandboxed build compiles and links against the repo LLVM and the resulting package may not match
+  what the host actually runs. This is not a lost optimization (a dependency's optimization lives in
+  its own installed binary, which the built package still runs against); it is a **version-agreement**
+  failure, and the failure mode is a broken package rather than a slower one.
+  The standard fix is a local pacman repo: `repo-add` every artifact sysforge builds into a repo
+  directory, and name that repo in the `pacman.conf` the chroot is created with (`mkarchroot -C`),
+  so the container's dependency resolution sees the host's own builds by name and version. Nothing
+  in the tree maintains such a repo today — `resolve_repo_mode`'s `build_from_source` is about where
+  *PKGBUILDs* come from, not about publishing artifacts — so this is a genuinely new surface: a repo
+  directory under the state dir or `PKGDEST`, a `repo-add` call at the same seam that records a
+  successful build, a chroot `pacman.conf` template, and a decision about pruning (a `repo-add`-ed
+  archive grows without bound).
+  Weigh against the alternative of simply leaving the sandbox scoped at AUR leaves: the local repo
+  is the difference between a per-profile opt-in and a mechanism that could reasonably default on,
+  so file it, but resolve `3.1.0-F9` first — F9 is cheap, closes the more common failure, and its
+  artifact-selection logic is what a `repo-add` pass would call.
+  *Priority: low · Effort: large · Bump: minor* — the sandbox is usable without it and default-off,
+  so this buys reach rather than fixing an active break; effort is a new artifact-publishing surface
+  plus chroot provisioning and a retention policy, none of which exists today.
+  **Standards home on adoption:** deferred to implementation — a local repo would be the first
+  artifact-*publishing* surface in the tree, so if it lands it needs its own row covering repo
+  layout and the `repo-add`/signature story, rather than extending an existing one.
 
 ---
 - **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
@@ -716,7 +746,8 @@ canonical ordering.
   Resolve by deciding the scope boundary first, then promote the surviving half to an `F` (or move
   this to `docs/ROADMAP-ABANDONED.md` with the rationale). Do not implement straight off this entry.
   Related: `3.0.0-F1` is the existing precedent for the kernel stage preflighting a `CONFIG_*`
-  requirement rather than silently proceeding, and `3.1.0-F7` is the other security-scope entry.
+  requirement rather than silently proceeding; the build sandbox (shipped) is the precedent for an
+  opt-in `[security]` key that is refused rather than silently downgraded when unavailable.
   *Priority: med · Effort: medium · Bump: minor* — worth deciding rather than leaving implicit, and
   the likely landing is an additive opt-in fragment; effort is the decision plus the DKMS-detection
   guard, not the config tokens themselves.

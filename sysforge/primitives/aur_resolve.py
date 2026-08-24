@@ -20,6 +20,7 @@ Public API:
 from __future__ import annotations
 
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -426,8 +427,20 @@ def build_resolved_deps(
                 pkg_log=False,
                 interactive=interactive,
             )
+            _dep_start = time.time()
             makepkg_run(dep.pkgbuild_path, options=opts)
             built.append(dep.name)
+            # Under the build sandbox a dep installed on the host is invisible
+            # to the next container; register its artifacts so the seam can
+            # hand them back in as ``-I``. Inert while the sandbox is off.
+            from sysforge.primitives.build_sandbox import register_artifacts
+            from sysforge.primitives.makepkg_artifacts import _find_built_packages
+            from sysforge.primitives.pacman import get_pkgdest
+            _dep_dest = get_pkgdest() or dep.pkgbuild_path.parent
+            register_artifacts(
+                p for p in _find_built_packages(_dep_dest)
+                if p.stat().st_mtime >= _dep_start
+            )
 
     _log.ui(f"All {len(built)} dependency(ies) built and installed")
     return built

@@ -1549,7 +1549,17 @@ def _main():
     # every egress seam sees the same policy no matter how deep it sits.
     from sysforge.primitives.config import load_sysforge_toml
     from sysforge.primitives.net_policy import resolve_net_policy, set_policy
-    set_policy(resolve_net_policy(args, load_sysforge_toml().get("security", {})))
+    _security_cfg = load_sysforge_toml().get("security", {})
+    set_policy(resolve_net_policy(args, _security_cfg))
+    # Build sandbox (3.1.0-F7): the other half of [security] — freeze_sources
+    # gates code *ingress*, this gates blast *radius*. Installed here for the
+    # same reason: one resolution, consulted at the invocation seam, so a build
+    # path that does not know the gate exists still gets it.
+    from sysforge.primitives.build_sandbox import (
+        resolve_sandbox,
+        set_policy as set_sandbox_policy,
+    )
+    set_sandbox_policy(resolve_sandbox(_security_cfg))
     from sysforge.primitives.build_throttle import set_run_override
     set_run_override(_resolve_throttle_override(args))
     if getattr(args, "dry_run", False):

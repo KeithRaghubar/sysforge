@@ -51,6 +51,15 @@ escalation case:
   non-root* user (e.g. building a package as an unprivileged build user from
   a root-invoked entry point). This is the inverse of escalation and also
   stays as a raw call.
+- **Self-escalating tool** — a tool that escalates *itself* and must be
+  invoked unescalated. `makechrootpkg` (the build sandbox, §Makepkg Wrapper)
+  re-execs under `sudo` via devtools' `check_root` with its own
+  env-preserve list; prefixing our own `sudo` would strip
+  `PKGDEST`/`SRCDEST`/`LOGDEST`/`MAKEFLAGS` and silently relocate every
+  built artifact. It is invoked as a bare argv and so never reaches the
+  checker, which only sees literal `"sudo"` heads — the exemption is
+  documented here rather than allowlisted because there is nothing to
+  allowlist.
 
 The `check_standards` `privilege_seam` group (`tools/check_standards.py`)
 enforces the boundary: it walks every `sysforge/*.py` file (except

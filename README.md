@@ -150,6 +150,48 @@ official-repo (`pkgctl`) checkouts, source-sync fetches, and VCS version probes;
 checkouts still build. `--thaw` and
 `--no-frozen` are both run-scoped lifts only — nothing persists.
 
+**Sandboxing builds**
+
+A PKGBUILD's `prepare()`/`build()`/`package()` are arbitrary code, and by default they run as
+you — with read access to `~/.ssh`, your GPG material and your browser profiles. Turn on the
+build sandbox to run them inside a clean container instead:
+
+```bash
+sudo pacman -S devtools                        # one-time
+mkarchroot ~/chroot/root base-devel            # one-time
+```
+
+```toml
+# /etc/sysforge/sysforge.toml (or ~/.config/sysforge/sysforge.toml)
+[security]
+sandbox_builds = true
+sandbox_chroot_dir = "~/chroot"
+```
+
+Builds then run through `makechrootpkg`; artifacts still land in your usual `PKGDEST`.
+Freezing gates what code comes *in*, sandboxing gates what a build can *reach* — they are
+independent and can be used together. A single profile can override the switch either way
+with `sandbox_builds` in `profiles.toml`. Builds that cannot be isolated stop with an error
+rather than quietly running unsandboxed, and `run toolchain` / `run kernel` are never
+sandboxed — both build against the host they are upgrading.
+
+**Know the trade-off before turning it on.** The container has its own `pacman.conf` and
+resolves build dependencies from the **stock repos**, not from what you have installed. That
+means:
+
+- **Locally-built dependencies are invisible to it.** Packages built earlier *in the same run*
+  are injected automatically, so an `update` across a whole stack works; a one-off
+  `sysforge build <pkg>` whose deps you built last week will fail to resolve them.
+- **Versions can diverge from your host.** If you build a package from source ahead of the
+  repos (a source-built toolchain, a `-git` checkout), the container builds against the repo
+  version instead, and the result may not match what your host actually runs.
+
+What is *not* lost is the benefit of your optimized packages themselves: those live in the
+installed binaries on your host, and a dependent built in the container still runs against
+them. Sandboxing is therefore a good fit for **untrusted AUR leaf packages whose dependencies
+all come from repos** — which is the threat it exists for — and a poor fit for a self-built
+stack. Leave it off (the default) or scope it to a profile that matches those packages.
+
 That is the everyday surface. For the rest — PGO/`--pgo`, `--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics — see `sysforge --help`, the [man page](man/sysforge.1), and

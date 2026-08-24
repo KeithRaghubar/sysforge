@@ -241,3 +241,31 @@ roots = [
 # and the run exits non-zero without aborting the other packages.
 # Lift per-run with --no-frozen, or per-package with --thaw PKG.
 freeze_sources = false
+
+# Build sandbox: run every PKGBUILD's prepare()/build()/package() inside a
+# clean container (devtools' makechrootpkg) instead of as the invoking user.
+# freeze_sources gates what code comes *in*; this gates what a build can
+# *reach* — with it off, a poisoned PKGBUILD reads ~/.ssh, GPG material and
+# browser profiles at build time, which is how the AUR supply-chain campaigns
+# actually work.
+#
+# Scope: the container resolves build deps from the stock repos, not from
+# what you have installed. Packages built earlier in the SAME run are injected
+# automatically; a dep built in an earlier run, or a source-built package ahead
+# of the repos, is not — the container uses the repo version instead. Best
+# suited to untrusted AUR leaf packages whose deps all come from repos.
+# Requires devtools and a clean chroot root: mkarchroot ~/chroot/root base-devel
+# Default off — the host path is the tested default. When on, a build that
+# cannot be isolated fails rather than quietly running unsandboxed.
+# Overridable per profile with `sandbox_builds` in profiles.toml.
+# Not applied to `run toolchain` / `run kernel`: both build against, and
+# install into, the host they are upgrading.
+sandbox_builds = false
+# Where the clean chroot lives; <dir>/root must already exist.
+sandbox_chroot_dir = "~/chroot"
+# Sync a pristine copy of the chroot before each build (-c). Off reuses the
+# working copy: faster, but a previous build's leftovers stay visible.
+sandbox_clean = true
+# Update the working copy before building (-u), so a build never links against
+# a stale chroot.
+sandbox_update = true

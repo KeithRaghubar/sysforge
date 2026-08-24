@@ -64,6 +64,7 @@ SYSFORGE_KEYS = {
     "nice",
     "pgo_store",
     "preserve_system_tokens",
+    "sandbox_builds",
     "toolchain",
 }
 

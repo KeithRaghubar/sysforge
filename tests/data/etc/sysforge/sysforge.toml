@@ -139,3 +139,17 @@ roots = [
 # and the run exits non-zero without aborting the other packages.
 # Lift per-run with --no-frozen, or per-package with --thaw PKG.
 freeze_sources = false
+
+# Build sandbox: run every PKGBUILD's prepare()/build()/package() inside a
+# clean container (devtools' makechrootpkg) instead of as the invoking user.
+# Scope: the container resolves build deps from the stock repos, not from
+# what you have installed. Packages built earlier in the SAME run are injected
+# automatically; a dep built in an earlier run, or a source-built package ahead
+# of the repos, is not — the container uses the repo version instead. Best
+# suited to untrusted AUR leaf packages whose deps all come from repos.
+# Requires devtools and a clean chroot root: mkarchroot ~/chroot/root base-devel
+# Default off — the host path is the tested default.
+sandbox_builds = false
+sandbox_chroot_dir = "~/chroot"
+sandbox_clean = true
+sandbox_update = true

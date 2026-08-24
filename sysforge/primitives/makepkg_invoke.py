@@ -26,10 +26,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import build_sandbox
 from sysforge.primitives.build_throttle import (
     resolve_child_mem_cap,
     resolve_throttle,
@@ -106,6 +108,13 @@ class AlreadyBuilt(Exception):
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
+    """Run makepkg for *pkgbuild_path* and classify its outcome.
+
+    Consults ``build_sandbox.get_policy()`` for whether the build is isolated;
+    a stage that must build against the host suppresses it with
+    ``build_sandbox.suppressed()`` rather than passing a flag down through the
+    retry and recovery loops.
+    """
     pkgbuild_path = Path(pkgbuild_path).resolve()
     build_dir = pkgbuild_path.parent
 
@@ -198,7 +207,63 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     child_mem_cap = resolve_child_mem_cap(throttle)
     if child_mem_cap is not None:
         _makepkg_log.info(f"Capping build memory (RLIMIT_AS): {child_mem_cap} bytes")
-    cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags
+    # Build sandbox ([security] sandbox_builds, 3.1.0-F7). Opt-in and
+    # default-off: when on, the whole makepkg invocation is replaced by a
+    # makechrootpkg one so prepare()/build()/package() execute inside a clean
+    # container instead of against the invoking user's home. The argv *shape*
+    # branches rather than composing (makechrootpkg works on the current
+    # directory and carries its own makepkg args after ``--``), so this is a
+    # fork of the command, not another prefix entry — see build_sandbox.
+    sandbox = build_sandbox.for_profile(build_sandbox.get_policy(), resolved_profile)
+    sandbox_cleanup = None
+    if sandbox.enabled:
+        # Raises SandboxUnavailable rather than falling back to a host build:
+        # a security opt-in that silently degrades is worse than one that stops.
+        build_sandbox.preflight(sandbox, pkgbuild_path)
+        # Inside the PKGBUILD dir: that is what makechrootpkg bind-mounts, so
+        # the conf is reachable from both sides without a second mount.
+        conf_dir = Path(tempfile.mkdtemp(
+            prefix=build_sandbox.CHROOT_CONF_DIR_PREFIX, dir=build_dir))
+        # Readable by the container's builduser, which is not this uid.
+        conf_dir.chmod(0o755)
+        chroot_conf = conf_dir / build_sandbox.CHROOT_CONF_NAME
+        # Only the profile-resolved injections are re-exported — never the
+        # whole inherited environment, which is the user's shell, not a build
+        # input, and has no business crossing into the container.
+        chroot_conf.write_text(
+            build_sandbox.chroot_conf_text(conf_path, exports=extra_env))
+        chroot_conf.chmod(0o644)
+
+        def sandbox_cleanup(_dir=conf_dir):
+            shutil.rmtree(_dir, ignore_errors=True)
+
+        # makechrootpkg escalates itself (devtools' check_root re-exec) and
+        # preserves exactly these across that sudo; they are what puts the
+        # artifacts back where the host path leaves them.
+        env = build_sandbox.chroot_env(env)
+        env.update(build_sandbox.dest_env_from_conf(conf_path))
+        install_pkgs = build_sandbox.install_args()
+        cmd = prefix + build_sandbox.build_argv(
+            sandbox, flags,
+            conf_dir_name=conf_dir.name, install_pkgs=install_pkgs,
+        )
+        _makepkg_log.info(f"Sandboxed build: {sandbox.describe()}")
+        if install_pkgs:
+            _makepkg_log.info(
+                "Seeding the container with "
+                f"{len(install_pkgs)} artifact(s) built this run: "
+                + ", ".join(p.name for p in install_pkgs)
+            )
+        if child_mem_cap is not None and not build_sandbox.mem_cap_applies(sandbox):
+            # The preexec would cap makechrootpkg, whose real work happens in a
+            # container several exec layers down and in its own cgroup.
+            _makepkg_log.warn(
+                "[build] mem_limit does not apply to sandboxed builds "
+                "(RLIMIT_AS would cap the chroot wrapper, not the build)"
+            )
+            child_mem_cap = None
+    else:
+        cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags
 
     _makepkg_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
@@ -209,11 +274,17 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # prettification, captured_output for auto_repair) for prompt visibility.
     # Exit-code signals (13 → AlreadyBuilt, 8 → install failure) still fire.
     if interactive:
-        proc = subprocess.Popen(
-            cmd, cwd=build_dir, env=env,
-            preexec_fn=make_child_preexec(child_mem_cap),
-        )
-        returncode = proc.wait()
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=build_dir, env=env,
+                preexec_fn=make_child_preexec(child_mem_cap),
+            )
+            returncode = proc.wait()
+        finally:
+            # The container-side conf is only needed while makepkg runs; the
+            # classification below reads captured output and side-car logs.
+            if sandbox_cleanup is not None:
+                sandbox_cleanup()
         if returncode != 0:
             if returncode == 13:
                 raise AlreadyBuilt(pkgbuild_path)
@@ -315,15 +386,19 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # to the region above the bar and never collapses output onto the bar row —
     # the bar stays permanently visible during the build.
     from sysforge.ui import progress
-    returncode = run_with_pty(
-        cmd, cwd=build_dir, env=env,
-        line_callback=_on_line,
-        forward_bytes=forward_bytes,
-        preexec_fn=make_child_preexec(child_mem_cap),
-        idle_callback=_on_idle,
-        idle_timeout_s=MAKEPKG_HEARTBEAT_S,
-        reserve_bottom_rows=progress.reserved_rows(),
-    )
+    try:
+        returncode = run_with_pty(
+            cmd, cwd=build_dir, env=env,
+            line_callback=_on_line,
+            forward_bytes=forward_bytes,
+            preexec_fn=make_child_preexec(child_mem_cap),
+            idle_callback=_on_idle,
+            idle_timeout_s=MAKEPKG_HEARTBEAT_S,
+            reserve_bottom_rows=progress.reserved_rows(),
+        )
+    finally:
+        if sandbox_cleanup is not None:
+            sandbox_cleanup()
 
     if returncode != 0:
         # Persist the tail of real makepkg/ninja output to the per-package log.
