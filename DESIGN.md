@@ -1677,6 +1677,7 @@ Pure constants module — the canonical directory of every config file sysforge 
 TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — extracts the `[append_conflict_groups]` table from `profiles.toml`
+- `load_preserved_system_tokens(paths=None)` — extracts the `[preserved_system_tokens]` table from `profiles.toml` (conf key → tokens of the system value that survive a wholesale profile override; same `extends_system` merge model)
 - `load_consumes_inference(paths=None)` — extracts the `[consumes_inference]` table from `profiles.toml`
 - `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages are routed through `get_scheduler().request(SyncRequest(...))` so the clone is deduplicated with any concurrent update/fetch request and shares the same rate-limit budget. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
@@ -1779,6 +1780,7 @@ is one package's transition (`old` `None` = added, `new` `None` = removed).
 
 Profile resolution and rule matching. Public API:
 - `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
+- `merge_preserved_tokens(profile_val, system_val, preserve_tokens, conflict_groups=None)` — pure token merge with **profile-wins** precedence (the mirror of `_merge_append_value`, which is child-wins): re-adds the declared `[preserved_system_tokens]` flags from the system conf value that a wholesale profile override of that key dropped. A token is skipped when the profile already has it, names a conflicting token in the same `[append_conflict_groups]` group, or names one in the same prefix family; a pure shell reference (`CXXFLAGS = "$CFLAGS"`) is returned untouched, since it inherits by expansion. Returns `(merged_value, restored_tokens)`; narration belongs to the caller (`makepkg_conf`).
 - `match_rules` — evaluates all match fields against a parsed PKGBUILD. `pkgnames` rules match against both `pkgname` and `pkgbase` — split packages (e.g. kernels) set `pkgbase` to the canonical name and `pkgname` to an array of unexpanded sub-package names; matching on `pkgbase` ensures rules like `pkgnames = ["linux-custom"]` work correctly.
 - `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
@@ -2670,6 +2672,47 @@ stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"
 ```
 
 User-defined groups in `~/.config/sysforge/profiles.toml` (under `[append_conflict_groups]`) follow the same `extends_system` merge model. Explicit conflict groups take precedence over prefix matching.
+
+#### Preserved system tokens (hardening)
+
+Profile keys overwrite their system counterparts **per key, not per token** — so a profile that
+rewrites `CFLAGS` around `-march`/`-O` would otherwise drop the rest of `/etc/makepkg.conf`'s
+`CFLAGS`, including the distro's compiler hardening baseline (`-Wp,-D_FORTIFY_SOURCE=3`,
+`-fstack-protector-strong`, `-Werror=format-security`, `-fexceptions`, …). The `LDFLAGS` half of
+that set (`-z,relro,-z,now`) was already carried by the shipped profiles; the compiler half was not.
+
+`[preserved_system_tokens]` in `/etc/sysforge/profiles.toml` declares, per conf key, which tokens of
+the *system* value survive an override:
+
+```toml
+[preserved_system_tokens]
+CFLAGS   = ["-fexceptions", "-Wp,-D_FORTIFY_SOURCE=3", "-Wformat",
+            "-Werror=format-security", "-fstack-protector-strong",
+            "-fstack-clash-protection", "-fcf-protection"]
+CXXFLAGS = [...]
+```
+
+`emit_makepkg_conf` applies the set right after the system conf is parsed — before the linker, LTO,
+lib32 and musl-static guards, so their scrubs see the final token set — via
+`profile.merge_preserved_tokens`, with **profile-wins** precedence:
+
+| Profile value declares… | Result |
+|---|---|
+| the token already | left alone (never duplicated) |
+| a token in the same conflict group (`-fno-stack-protector`) | not re-added — an explicit per-token opt-out |
+| a token in the same prefix family (`-Wp,-D_FORTIFY_SOURCE=2`) | the profile's value wins |
+| nothing related | the system token is appended |
+
+Only tokens the system conf actually sets are ever restored — the table never invents a flag, so a
+distro whose conf omits a token stays as it is (§Distro portability). A pure shell reference
+(`CXXFLAGS = "$CFLAGS"`) is left untouched and inherits by expansion. Kernel builds never reach the
+pass: `KERNEL_CLEAN_KEYS` keeps flag keys out of `profile_overrides` entirely, so the system values
+pass through verbatim. A profile opts out of the whole pass with `preserve_system_tokens = false`
+(a `SYSFORGE_KEYS` member — never written to a conf).
+
+User `[preserved_system_tokens]` in `~/.config/sysforge/profiles.toml` follows the same
+`extends_system` merge model as conflict groups.
+
 
 ### Rule match field semantics
 
@@ -3628,7 +3671,7 @@ Standards defined outside sysforge, which the project conforms to.
 | 8 | RFC 3339 / ISO 8601 (UTC) | Timestamps in state files | followed | central `_now_iso()` helpers; `tests/test_standards_compliance.py` |
 | 9 | UTF-8 | Text file encoding | enforced | explicit `encoding="utf-8"`; `check_standards` `encoding` group (ruff `PLW1514 --preview` is the one-shot fixer) |
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
-| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions; **also** the on-disk shape (`.hook` sections/keys) of *user-authored* pacman hooks that the artifact inventory discovers, adopts, and deploys — sysforge inventories these, not only ships its own | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups; `primitives/artifacts.py` (`CLASS_HOOK` discovery/deploy); `check_shipped` `config_comments` group extends this to the shipped configs' *prose*: no comment may name a `*.toml` or a `[section]` that does not exist, and a key whose validator accepts multiple surface forms must show every form (`_GRAMMAR_DOCS`, a hand-maintained table — widening a `_coerce_*` grammar updates it in the same commit, since no static signal distinguishes an accepted-form branch from any other conditional) |
+| 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions; **also** the on-disk shape (`.hook` sections/keys) of *user-authored* pacman hooks that the artifact inventory discovers, adopts, and deploys — sysforge inventories these, not only ships its own | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups; `primitives/artifacts.py` (`CLASS_HOOK` discovery/deploy); `primitives/makepkg_conf.py` + `[preserved_system_tokens]` keep the distro's compiler hardening baseline (`FORTIFY_SOURCE`, stack protector, `format-security`) across a wholesale profile flag override, tested in `tests/test_hardening_preservation.py`; `check_shipped` `config_comments` group extends this to the shipped configs' *prose*: no comment may name a `*.toml` or a `[section]` that does not exist, and a key whose validator accepts multiple surface forms must show every form (`_GRAMMAR_DOCS`, a hand-maintained table — widening a `_coerce_*` grammar updates it in the same commit, since no static signal distinguishes an accepted-form branch from any other conditional) |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
 | 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary; `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |

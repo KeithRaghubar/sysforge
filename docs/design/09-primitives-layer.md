@@ -57,6 +57,7 @@ Pure constants module — the canonical directory of every config file sysforge 
 TOML config loading and path resolution. Public API:
 - `load_config(config_paths=None)` — loads `profiles.toml`, merges user onto system via `extends_system`, validates rule priorities
 - `load_conflict_groups(paths=None)` — extracts the `[append_conflict_groups]` table from `profiles.toml`
+- `load_preserved_system_tokens(paths=None)` — extracts the `[preserved_system_tokens]` table from `profiles.toml` (conf key → tokens of the system value that survive a wholesale profile override; same `extends_system` merge model)
 - `load_consumes_inference(paths=None)` — extracts the `[consumes_inference]` table from `profiles.toml`
 - `find_pkgbuild(pkg, config=None)` — resolves a bare package name, directory path, or PKGBUILD path to an absolute PKGBUILD path. Search order: (1) direct path or directory (resolves `dir/PKGBUILD`), (2) `<cwd>/<name>/PKGBUILD`, (3) `<config [paths] pkgbuild_src_dir>/<name>/PKGBUILD`, (4) auto-clone if not found locally — repo packages via `pkgctl repo clone --protocol=https`, AUR packages are routed through `get_scheduler().request(SyncRequest(...))` so the clone is deduplicated with any concurrent update/fetch request and shares the same rate-limit budget. Used by `sysforge build`, `sysforge resolve`, and the packages stage.
 
@@ -159,6 +160,7 @@ is one package's transition (`old` `None` = added, `new` `None` = removed).
 
 Profile resolution and rule matching. Public API:
 - `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
+- `merge_preserved_tokens(profile_val, system_val, preserve_tokens, conflict_groups=None)` — pure token merge with **profile-wins** precedence (the mirror of `_merge_append_value`, which is child-wins): re-adds the declared `[preserved_system_tokens]` flags from the system conf value that a wholesale profile override of that key dropped. A token is skipped when the profile already has it, names a conflicting token in the same `[append_conflict_groups]` group, or names one in the same prefix family; a pure shell reference (`CXXFLAGS = "$CFLAGS"`) is returned untouched, since it inherits by expansion. Returns `(merged_value, restored_tokens)`; narration belongs to the caller (`makepkg_conf`).
 - `match_rules` — evaluates all match fields against a parsed PKGBUILD. `pkgnames` rules match against both `pkgname` and `pkgbase` — split packages (e.g. kernels) set `pkgbase` to the canonical name and `pkgname` to an array of unexpanded sub-package names; matching on `pkgbase` ensures rules like `pkgnames = ["linux-custom"]` work correctly.
 - `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules

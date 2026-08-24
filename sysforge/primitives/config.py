@@ -12,6 +12,7 @@ sysforge.toml global settings. Owns the user/system merge logic.
 Public API:
     load_config(config_paths=None)         -> dict
     load_conflict_groups(paths=None)       -> dict
+    load_preserved_system_tokens(paths=None) -> dict
     load_consumes_inference(paths=None)    -> dict
     load_sysforge_toml()                   -> dict
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
@@ -489,6 +490,48 @@ def _validate_rule_priorities(rules, source):
                 f"[CONFIG] {source} rule [{i}] has invalid priority {p!r} "
                 f"(must be 0-99)"
             )
+
+
+def load_preserved_system_tokens(paths=None):
+    """
+    Load [preserved_system_tokens] from profiles.toml (user, then system).
+    Returns dict: { conf_key: [token, ...] }
+
+    Declares which tokens of a system-conf value survive a wholesale profile
+    override of that key (Arch's compiler hardening baseline, by default) —
+    consumed by ``profile.merge_preserved_tokens`` at the conf-emission seam.
+    Follows the same extends_system merge model as load_conflict_groups.
+    """
+
+    def _load(path):
+        with Path(path).open("rb") as f:
+            return tomllib.load(f)
+
+    cfg_paths = paths if paths is not None else CONFIG_PATHS
+    user_path = cfg_paths[0] if len(cfg_paths) > 0 else None
+    system_path = cfg_paths[1] if len(cfg_paths) > 1 else None
+
+    user_data = _load(user_path) if user_path and user_path.exists() else None
+    system_data = _load(system_path) if system_path and system_path.exists() else None
+
+    if user_data is None and system_data is None:
+        return {}
+
+    system_tokens = (
+        system_data.get("preserved_system_tokens", {}) if system_data else {}
+    )
+
+    if user_data is None:
+        return system_tokens
+
+    user_tokens = user_data.get("preserved_system_tokens", {})
+
+    if user_data.get("extends_system", False):
+        merged = dict(system_tokens)
+        merged.update(user_tokens)
+        return merged
+
+    return user_tokens
 
 
 def load_conflict_groups(conflict_group_paths=None):

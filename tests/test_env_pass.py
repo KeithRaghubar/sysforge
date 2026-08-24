@@ -164,7 +164,8 @@ def test_rust_keys_not_written_when_rust_absent():
 
 def test_makepkg_keys_written():
     profile = {"CFLAGS": "-O2 -march=native", "LDFLAGS": "-Wl,--as-needed"}
-    with emit_makepkg_conf(profile, ["makepkg"]) as conf_path:
+    with emit_makepkg_conf(profile, ["makepkg"],
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert conf["CFLAGS"] == "-O2 -march=native"
     assert conf["LDFLAGS"] == "-Wl,--as-needed"
@@ -185,7 +186,8 @@ def test_fallback_mode_writes_all_non_env_non_sysforge():
 
 def test_conf_line_format():
     profile = {"CFLAGS": "-O2 -pipe"}
-    with emit_makepkg_conf(profile, ["makepkg"]) as conf_path:
+    with emit_makepkg_conf(profile, ["makepkg"],
+                           preserved_system_tokens={}) as conf_path:
         raw = Path(conf_path).read_text()
     assert 'CFLAGS="-O2 -pipe"' in raw
 
@@ -256,7 +258,8 @@ def test_cargo_package_full_routing():
     consumes = ["makepkg", "rust", "env"]
 
     env_result, _ = captured(resolve_env_vars, profile, consumes)
-    with emit_makepkg_conf(profile, consumes) as conf_path:
+    with emit_makepkg_conf(profile, consumes,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
 
     assert conf["CFLAGS"] == "-O3 -march=native"
@@ -279,7 +282,8 @@ def test_compiler_flags_extra_appended_to_profile_flags():
     """compiler_flags_extra is appended to existing profile CFLAGS/CXXFLAGS/LDFLAGS."""
     profile = {"CFLAGS": "-O3", "CXXFLAGS": "-O3", "LDFLAGS": "-fuse-ld=lld"}
     extra = "-fprofile-generate=/tmp/pgo"
-    with emit_makepkg_conf(profile, None, compiler_flags_extra=extra) as conf_path:
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=extra,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert "-O3 -fprofile-generate=/tmp/pgo" in conf["CFLAGS"]
     assert "-O3 -fprofile-generate=/tmp/pgo" in conf["CXXFLAGS"]
@@ -323,7 +327,8 @@ def test_compiler_flags_extra_no_base_creates_entry():
 def test_compiler_flags_extra_none_leaves_flags_unchanged():
     """compiler_flags_extra=None (default) does not modify any flags."""
     profile = {"CFLAGS": "-O3"}
-    with emit_makepkg_conf(profile, None, compiler_flags_extra=None) as conf_path:
+    with emit_makepkg_conf(profile, None, compiler_flags_extra=None,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert conf["CFLAGS"] == "-O3"
 

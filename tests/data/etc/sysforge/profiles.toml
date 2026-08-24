@@ -5,6 +5,7 @@
 # Tables in this file:
 #   [paths] [defaults] [profiles.*] [[rules]]   — profile selection
 #   [append_conflict_groups]                    — mutually exclusive flag sets
+#   [preserved_system_tokens]                   — system tokens kept across an override
 #   [consumes_inference]                        — makedepends → conf type map
 #
 # REFERENCE — all valid keys and accepted values
@@ -274,6 +275,50 @@ lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
 
 # Stack protection — mutually exclusive
 stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
+
+# =============================================================================
+# Preserved system tokens — hardening flags that survive a profile override
+#
+# Profile keys overwrite their system counterparts wholesale, per key, not per
+# token. A profile that rewrites CFLAGS around -march/-O therefore drops the
+# rest of /etc/makepkg.conf's CFLAGS — including the compiler hardening tokens
+# the distro sets (FORTIFY_SOURCE, the stack protector, format-string
+# rejection). Tokens listed here are re-added from the system value after the
+# override, with the profile winning every conflict:
+#
+#   - already in the profile value        -> left alone
+#   - profile names a conflicting token   -> not re-added (explicit opt-out,
+#     via [append_conflict_groups]: "-fno-stack-protector" keeps the stack
+#     protector out)
+#   - profile names the same flag family  -> profile's value wins
+#     ("-Wp,-D_FORTIFY_SOURCE=2" is not overwritten by the system's "=3")
+#
+# Only tokens the system conf actually sets are ever restored; nothing here
+# invents a flag. A profile opts out of the whole pass with
+# `preserve_system_tokens = false`. Kernel builds never reach this pass — their
+# flag keys pass through from the system conf verbatim.
+# =============================================================================
+
+[preserved_system_tokens]
+
+CFLAGS   = [
+  "-fexceptions",
+  "-Wp,-D_FORTIFY_SOURCE=3",
+  "-Wformat",
+  "-Werror=format-security",
+  "-fstack-protector-strong",
+  "-fstack-clash-protection",
+  "-fcf-protection",
+]
+CXXFLAGS = [
+  "-fexceptions",
+  "-Wp,-D_FORTIFY_SOURCE=3",
+  "-Wformat",
+  "-Werror=format-security",
+  "-fstack-protector-strong",
+  "-fstack-clash-protection",
+  "-fcf-protection",
+]
 
 # =============================================================================
 # Consumes inference — makedepends → conf type routing

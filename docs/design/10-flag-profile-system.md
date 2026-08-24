@@ -139,6 +139,47 @@ stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"
 
 User-defined groups in `~/.config/sysforge/profiles.toml` (under `[append_conflict_groups]`) follow the same `extends_system` merge model. Explicit conflict groups take precedence over prefix matching.
 
+#### Preserved system tokens (hardening)
+
+Profile keys overwrite their system counterparts **per key, not per token** — so a profile that
+rewrites `CFLAGS` around `-march`/`-O` would otherwise drop the rest of `/etc/makepkg.conf`'s
+`CFLAGS`, including the distro's compiler hardening baseline (`-Wp,-D_FORTIFY_SOURCE=3`,
+`-fstack-protector-strong`, `-Werror=format-security`, `-fexceptions`, …). The `LDFLAGS` half of
+that set (`-z,relro,-z,now`) was already carried by the shipped profiles; the compiler half was not.
+
+`[preserved_system_tokens]` in `/etc/sysforge/profiles.toml` declares, per conf key, which tokens of
+the *system* value survive an override:
+
+```toml
+[preserved_system_tokens]
+CFLAGS   = ["-fexceptions", "-Wp,-D_FORTIFY_SOURCE=3", "-Wformat",
+            "-Werror=format-security", "-fstack-protector-strong",
+            "-fstack-clash-protection", "-fcf-protection"]
+CXXFLAGS = [...]
+```
+
+`emit_makepkg_conf` applies the set right after the system conf is parsed — before the linker, LTO,
+lib32 and musl-static guards, so their scrubs see the final token set — via
+`profile.merge_preserved_tokens`, with **profile-wins** precedence:
+
+| Profile value declares… | Result |
+|---|---|
+| the token already | left alone (never duplicated) |
+| a token in the same conflict group (`-fno-stack-protector`) | not re-added — an explicit per-token opt-out |
+| a token in the same prefix family (`-Wp,-D_FORTIFY_SOURCE=2`) | the profile's value wins |
+| nothing related | the system token is appended |
+
+Only tokens the system conf actually sets are ever restored — the table never invents a flag, so a
+distro whose conf omits a token stays as it is (§Distro portability). A pure shell reference
+(`CXXFLAGS = "$CFLAGS"`) is left untouched and inherits by expansion. Kernel builds never reach the
+pass: `KERNEL_CLEAN_KEYS` keeps flag keys out of `profile_overrides` entirely, so the system values
+pass through verbatim. A profile opts out of the whole pass with `preserve_system_tokens = false`
+(a `SYSFORGE_KEYS` member — never written to a conf).
+
+User `[preserved_system_tokens]` in `~/.config/sysforge/profiles.toml` follows the same
+`extends_system` merge model as conflict groups.
+
+
 ### Rule match field semantics
 
 All match fields optional. Omitting a field passes unconditionally.

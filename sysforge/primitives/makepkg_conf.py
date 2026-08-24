@@ -27,7 +27,11 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.build_throttle import apply_jobs_to_makeflags
-from sysforge.primitives.config import parse_system_makepkg_conf
+from sysforge.primitives.config import (
+    load_conflict_groups,
+    load_preserved_system_tokens,
+    parse_system_makepkg_conf,
+)
 from sysforge.primitives.pkgbuild_meta import options_list_disabled
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_rustflags,
@@ -41,7 +45,12 @@ from sysforge.primitives.makepkg_flags import (
     _strip_pgo_flags,
     resolve_effective_linker,
 )
-from sysforge.primitives.profile import CONF_KEY_MAP, KERNEL_CLEAN_KEYS, SYSFORGE_KEYS
+from sysforge.primitives.profile import (
+    CONF_KEY_MAP,
+    KERNEL_CLEAN_KEYS,
+    SYSFORGE_KEYS,
+    merge_preserved_tokens,
+)
 
 _conf_log = log.get_logger("CONF")
 
@@ -60,7 +69,9 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       is_musl_static: bool = False,
                       pkgbuild_options: list | None = None,
                       toolchain_variant: str | None = None,
-                      jobs: int | None = None):
+                      jobs: int | None = None,
+                      preserved_system_tokens: dict | None = None,
+                      conflict_groups: dict | None = None):
     """
     Write a complete, self-contained temp makepkg.conf by merging:
       1. All keys from /etc/makepkg.conf (system baseline)
@@ -71,6 +82,20 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     PKGDEST, PACKAGER, etc.) are written verbatim from the system conf.
     Profile keys overwrite their system counterparts; profile keys absent
     from the system conf are appended at the end.
+
+    Hardening preservation: the per-key override above is wholesale, which
+    would drop Arch's compiler hardening baseline (-Wp,-D_FORTIFY_SOURCE=3,
+    -fstack-protector-strong, -Werror=format-security, …) from every profile
+    that rewrites CFLAGS around -march/-O. Tokens declared in
+    [preserved_system_tokens] (profiles.toml) are therefore re-added from the
+    system value after the override, profile-wins — see
+    ``profile.merge_preserved_tokens``. A profile opts out per token by naming
+    a conflicting one (``-fno-stack-protector``), or wholesale with
+    ``preserve_system_tokens = false``.
+
+    preserved_system_tokens / conflict_groups: injection points for the two
+    profiles.toml tables the preservation pass reads; loaded from config when
+    None. Pass ``{}`` to disable preservation entirely.
 
     "env" type keys and sysforge-internal keys are never written to the conf.
 
@@ -157,6 +182,37 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
 
     # Load system conf baseline
     system_assignments = parse_system_makepkg_conf(system_conf_path)
+
+    # Hardening preservation: a profile that rewrites CFLAGS wholesale drops the
+    # distro's compiler hardening tokens. Re-add the declared preserve set from
+    # the system value, profile-wins — before the linker/LTO/lib32/musl guards
+    # below, so their scrubs see the final token set. Kernel builds are already
+    # excluded (KERNEL_CLEAN_KEYS never enter profile_overrides).
+    if resolved_profile.get("preserve_system_tokens", True):
+        if preserved_system_tokens is None:
+            preserved_system_tokens = load_preserved_system_tokens()
+        if conflict_groups is None:
+            conflict_groups = load_conflict_groups()
+        for key, tokens in (preserved_system_tokens or {}).items():
+            if key not in profile_overrides or key not in system_assignments:
+                continue
+            raw = system_assignments[key].strip()
+            system_val = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+            merged, restored = merge_preserved_tokens(
+                profile_overrides[key], system_val, tokens,
+                conflict_groups=conflict_groups,
+            )
+            if restored:
+                _conf_log.info(
+                    f"Preserved system hardening token(s) in {key}: "
+                    f"{' '.join(restored)}"
+                )
+                profile_overrides[key] = merged
+    else:
+        _conf_log.info(
+            "Profile sets preserve_system_tokens = false — system hardening "
+            "tokens are not re-added to overridden flag keys"
+        )
 
     # Build-throttle job cap: force the -j token in MAKEFLAGS. The effective
     # base is the profile MAKEFLAGS if set, else the system conf value (unquoted),

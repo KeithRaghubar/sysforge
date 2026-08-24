@@ -16,6 +16,8 @@ Public API:
                     extracted_profile=None)                  -> dict
     merge_extends(profile_name, profiles,
                   visited=None, conflict_groups=None)        -> dict
+    merge_preserved_tokens(profile_val, system_val, preserve_tokens,
+                           conflict_groups=None)             -> (str, list)
     resolve_groups(pkgmeta, matched_rules, defaults)         -> list[str]
     resolve_consumes(resolved_profile, pkgmeta,
                      inference_map)                          -> frozenset[str]
@@ -61,6 +63,7 @@ SYSFORGE_KEYS = {
     "makepkg_flags",
     "nice",
     "pgo_store",
+    "preserve_system_tokens",
     "toolchain",
 }
 
@@ -267,6 +270,86 @@ def _merge_append_value(parent_val, child_append_val, conflict_groups):
         result.append(child_token)
 
     return " ".join(result)
+
+
+def merge_preserved_tokens(profile_val, system_val, preserve_tokens,
+                           conflict_groups=None):
+    """
+    Re-add system-conf tokens that a wholesale profile override dropped.
+
+    ``emit_makepkg_conf`` merges the system conf per *key*, not per token, so a
+    profile that sets ``CFLAGS`` in full replaces Arch's hardening baseline
+    (``-Wp,-D_FORTIFY_SOURCE=3``, ``-fstack-protector-strong``,
+    ``-Werror=format-security``, …) with whatever the profile happened to write
+    around ``-march``/``-O``.  This restores the declared preserve set from the
+    system value, with **profile-wins** precedence — the mirror of
+    ``_merge_append_value``, which is child-wins:
+
+      - already present in the profile value -> nothing to do
+      - profile declares a token in the same conflict group
+        (e.g. ``-fno-stack-protector`` vs ``-fstack-protector-strong``) -> the
+        profile opted out explicitly; leave it out
+      - profile declares a token in the same prefix family
+        (e.g. ``-Wp,-D_FORTIFY_SOURCE=2`` vs ``=3``) -> the profile's value wins
+      - otherwise -> append the system token
+
+    ``preserve_tokens`` declares *which* system tokens are eligible; a system
+    token qualifies when it is listed verbatim, shares a conflict group with a
+    listed token, or shares a prefix family with one.  Only tokens the system
+    conf actually sets are ever restored — this never invents flags.
+
+    Pure — the caller (``makepkg_conf``) owns the narration. Returns
+    ``(merged_value, restored_tokens)``.  ``profile_val`` is returned
+    unchanged when it is empty, when it is a pure shell reference to another key
+    (``CXXFLAGS = "$CFLAGS"`` inherits the restored tokens by expansion), or when
+    nothing qualifies.
+    """
+    if not preserve_tokens or not profile_val or not system_val:
+        return profile_val, []
+
+    profile_tokens = profile_val.split()
+    # A pure shell reference ("$CFLAGS") inherits by expansion; injecting the
+    # tokens here would duplicate them in the expanded value.
+    if len(profile_tokens) == 1 and profile_tokens[0].startswith("$"):
+        return profile_val, []
+
+    flag_to_group: dict[str, list[str]] = {}
+    for members in (conflict_groups or {}).values():
+        for member in members:
+            flag_to_group[member] = members
+
+    eligible_groups = {
+        id(flag_to_group[t]): flag_to_group[t] for t in preserve_tokens if t in flag_to_group
+    }
+    eligible_prefixes = {
+        _extract_prefix(t) for t in preserve_tokens if _extract_prefix(t) is not None
+    }
+    eligible_exact = set(preserve_tokens)
+
+    def _qualifies(token):
+        if token in eligible_exact:
+            return True
+        if any(token in members for members in eligible_groups.values()):
+            return True
+        prefix = _extract_prefix(token)
+        return prefix is not None and prefix in eligible_prefixes
+
+    result = list(profile_tokens)
+    restored = []
+
+    for token in system_val.split():
+        if token in result or not _qualifies(token):
+            continue
+        group = flag_to_group.get(token)
+        if group is not None and any(t in group for t in result):
+            continue
+        prefix = _extract_prefix(token)
+        if prefix is not None and any(_extract_prefix(t) == prefix for t in result):
+            continue
+        result.append(token)
+        restored.append(token)
+
+    return " ".join(result), restored
 
 
 # ---------------------------------------------------------------------------

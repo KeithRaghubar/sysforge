@@ -115,9 +115,20 @@ def test_emit_includes_system_keys(sys_conf_path):
     assert "PKGEXT" in conf
 
 def test_emit_profile_overrides_system_cflags(sys_conf_path):
-    """Profile CFLAGS replaces system CFLAGS."""
+    """Profile CFLAGS replaces the system optimisation flags.
+
+    The override is wholesale for everything except the declared
+    [preserved_system_tokens] hardening set, which is re-added afterwards
+    (3.1.0-B8) — see test_hardening_preservation.py.
+    """
     profile = {"CFLAGS": "-O3 -march=native"}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["CFLAGS"].startswith("-O3 -march=native")
+    assert "-mtune=generic" not in conf["CFLAGS"]
+
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert conf["CFLAGS"] == "-O3 -march=native"
 
@@ -200,7 +211,7 @@ def test_emit_consumes_filters_rust_keys(sys_conf_path):
     profile = {"CFLAGS": "-O3", "RUSTFLAGS": "-C opt-level=3"}
     with emit_makepkg_conf(
         profile, active_consumes=["makepkg"],
-        system_conf_path=sys_conf_path
+        system_conf_path=sys_conf_path, preserved_system_tokens={}
     ) as conf_path:
         conf = read_conf(conf_path)
     assert "CFLAGS" in conf
@@ -243,7 +254,8 @@ def test_emit_kernel_build_false_still_applies_profile_flags(sys_conf_path):
     """kernel_build=False (default): profile CFLAGS still override system."""
     profile = {"CFLAGS": "-O3 -march=native"}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
-                           kernel_build=False) as conf_path:
+                           kernel_build=False,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert conf.get("CFLAGS") == "-O3 -march=native"
 
@@ -369,7 +381,8 @@ def test_emit_gcc_rewrites_thin_lto_from_system_conf(tmp_path):
 def test_emit_gcc_rewrites_thin_lto_in_cflags(sys_conf_path):
     """-flto=thin embedded in CFLAGS is rewritten to -flto when CC=gcc."""
     profile = {"CC": "gcc", "CFLAGS": "-O3 -flto=thin -pipe"}
-    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf_path:
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           preserved_system_tokens={}) as conf_path:
         conf = read_conf(conf_path)
     assert conf["CFLAGS"] == "-O3 -flto -pipe"
 

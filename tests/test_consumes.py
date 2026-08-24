@@ -205,7 +205,8 @@ def test_emit_conf_temp_file_cleaned_up():
 def test_emit_conf_values_quoted():
     """Values must be written as KEY="value" (double-quoted)."""
     active = frozenset({"makepkg"})
-    with emit_makepkg_conf({"CFLAGS": "-O2 -pipe"}, active) as path:
+    with emit_makepkg_conf({"CFLAGS": "-O2 -pipe"}, active,
+                           preserved_system_tokens={}) as path:
         raw = Path(path).read_text()
     assert 'CFLAGS="-O2 -pipe"' in raw
 
