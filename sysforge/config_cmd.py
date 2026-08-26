@@ -28,6 +28,7 @@ Public API:
 from __future__ import annotations
 
 import difflib
+import re
 import shutil
 from pathlib import Path
 
@@ -66,8 +67,34 @@ def _candidates(config_dir: Path) -> list[tuple[Path, Path]]:
     return sorted(pairs, key=lambda p: p[0].name)
 
 
+_HEADER_RE = re.compile(r"^[-+](\s*\[\[?[^\[\]]+\]\]?\s*)$")
+
+
+def _moved_sections(diff: str) -> list[str]:
+    """Section headers the diff shows as both removed and added (3.1.0-B9).
+
+    ``difflib`` has no move detection, so a section that merely sits at a
+    different offset in the two files is rendered as a deletion in one hunk and
+    an addition in another, often hundreds of lines apart. Read top-down that
+    looks like the section is absent from the shipped file — and hand-merging
+    against that reading deletes a live section for real. A header appearing on
+    both a ``-`` and a ``+`` line is present in both files; report it so the
+    operator knows it was relocated, not dropped.
+    """
+    removed: set[str] = set()
+    add: set[str] = set()
+    for line in diff.splitlines():
+        if m := _HEADER_RE.match(line):
+            (removed if line[0] == "-" else add).add(m.group(1).strip())
+    return sorted(removed & add)
+
+
 def _diff_text(target: Path, new_path: Path) -> str:
-    """Unified diff of the live target vs the companion (pure, no subprocess)."""
+    """Unified diff of the live target vs the companion (pure, no subprocess).
+
+    A relocated-section banner is prepended when the diff contains any (see
+    :func:`_moved_sections`), so a move can't be misread as a deletion.
+    """
     if target.exists():
         a = target.read_text(encoding="utf-8").splitlines(keepends=True)
         a_label = str(target)
@@ -75,9 +102,18 @@ def _diff_text(target: Path, new_path: Path) -> str:
         a = []
         a_label = f"{target} (absent)"
     b = new_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    return "".join(
+    diff = "".join(
         difflib.unified_diff(a, b, fromfile=a_label, tofile=str(new_path))
     )
+    if moved := _moved_sections(diff):
+        banner = (
+            "# NOTE: these sections are present in BOTH files, only at different\n"
+            "# offsets — the -/+ pairs below are moves, not deletions:\n"
+            + "".join(f"#   {h}\n" for h in moved)
+            + "#\n"
+        )
+        return banner + diff
+    return diff
 
 
 def _confirm(msg: str) -> bool:

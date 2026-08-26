@@ -149,6 +149,33 @@ def _first_section_index(body) -> int:
     return len(body)
 
 
+def _splice_after(dst, anchor: str | None, run: list) -> None:
+    """Insert a trivia+item ``run`` into ``dst.body`` just after ``anchor``.
+
+    ``anchor`` is a top-level key name already in ``dst``; ``None`` (or a name
+    that has since vanished) appends at EOF. Insertion lands immediately after
+    the anchor's own entry — i.e. *before* any standalone comment run that
+    tomlkit holds for the following table, so those comments stay attached to
+    the table they document. Blank-line padding is added only where the
+    neighbouring entry isn't already whitespace, keeping the write idempotent.
+    """
+    idx = len(dst.body)
+    if anchor is not None:
+        for i, (key, _) in enumerate(dst.body):
+            if key is not None and key.key == anchor:
+                idx = i + 1
+                break
+
+    block = list(run)
+    if idx > 0 and not isinstance(dst.body[idx - 1][1], Whitespace):
+        block = [(None, Whitespace("\n"))] + block
+    if (idx < len(dst.body)
+            and not isinstance(dst.body[idx][1], Whitespace)
+            and not isinstance(block[-1][1], Whitespace)):
+        block = block + [(None, Whitespace("\n"))]
+    dst.body[idx:idx] = block
+
+
 def merge_container(src, dst, prefix: str = "") -> list[str]:
     """Add-only merge of src into dst (both tomlkit Containers).
 
@@ -156,14 +183,27 @@ def merge_container(src, dst, prefix: str = "") -> list[str]:
     never overwritten; tables present in both are recursed into. Bare keys are
     spliced *before* the first table (TOML requires bare keys to precede table
     headers, else they would be absorbed into the preceding table on reparse);
-    new tables are appended at the end. Leading comment/whitespace runs travel
+    a new table is spliced **after its shipped-order predecessor** in dst, so the
+    live file keeps shipped section order. Leading comment/whitespace runs travel
     with the item they precede.
+
+    Order matters even though TOML itself ignores it (3.1.0-B9): appending new
+    tables at EOF silently reorders the live file relative to shipped, and the
+    ``.sfnew`` adoption step is a line-based diff. A relocated section renders
+    there as a deletion in one hunk and an addition far away in another, reading
+    as "this section is missing from the shipped file" and inviting the operator
+    to hand-merge a section that was never actually gone.
     """
     added: list[str] = []
     dst_keys = {key.key for key, _ in dst.body if key is not None}
     pending: list = []      # contiguous (None, Comment/Whitespace) run
     bare_block: list = []   # trivia+item runs to splice before first table
-    sect_block: list = []   # trivia+item runs to append at end
+    # (anchor-name, trivia+item run) pairs; anchor is the nearest *preceding*
+    # shipped section that dst actually has, so a live file whose sections were
+    # already reordered still gets a real neighbour to splice against. None
+    # means "no such predecessor" → append at EOF.
+    sect_runs: list[tuple[str | None, list]] = []
+    anchor: str | None = None
 
     for key, item in src.body:
         if key is None:
@@ -172,13 +212,23 @@ def merge_container(src, dst, prefix: str = "") -> list[str]:
         name = key.key
         if name not in dst_keys:
             run = list(pending) + [(key, item)]
-            (sect_block if _is_section(item) else bare_block).extend(run)
+            if _is_section(item):
+                sect_runs.append((anchor, run))
+                # A just-inserted table anchors whatever shipped section follows
+                # it, keeping a run of consecutive new tables in shipped order.
+                dst_keys.add(name)
+                anchor = name
+            else:
+                bare_block.extend(run)
             added.append(prefix + name)
-        elif isinstance(item, Table) and not isinstance(item, AoT):
-            dst_item = dst[name]
-            if isinstance(dst_item, Table):
-                added += merge_container(item.value, dst_item.value,
-                                         prefix + name + ".")
+        else:
+            if _is_section(item):
+                anchor = name
+            if isinstance(item, Table) and not isinstance(item, AoT):
+                dst_item = dst[name]
+                if isinstance(dst_item, Table):
+                    added += merge_container(item.value, dst_item.value,
+                                             prefix + name + ".")
         # ``pending`` is the comment/whitespace run that preceded this key. For a
         # *new* key it was consumed above (its leading comments travel with it).
         # For an *existing* key/table it is intentionally not spliced in-place —
@@ -195,10 +245,8 @@ def merge_container(src, dst, prefix: str = "") -> list[str]:
         if idx < len(dst.body) and not isinstance(dst.body[idx][1], Whitespace):
             block = block + [(None, Whitespace("\n"))]
         dst.body[idx:idx] = block
-    if sect_block:
-        if dst.body and not isinstance(dst.body[-1][1], Whitespace):
-            sect_block = [(None, Whitespace("\n"))] + sect_block
-        dst.body.extend(sect_block)
+    for anchor_name, run in sect_runs:
+        _splice_after(dst, anchor_name, run)
     return added
 
 

@@ -301,3 +301,68 @@ def test_default_target_uses_config_dir_directly(monkeypatch):
     assert sync_config._default_target() == Path("/tmp/sf-cfg")
     monkeypatch.delenv("SYSFORGE_CONFIG_DIR", raising=False)
     assert sync_config._default_target() == Path("/etc/sysforge")
+
+
+# ---------------------------------------------------------------------------
+# Shipped section order (3.1.0-B9)
+# ---------------------------------------------------------------------------
+
+def _headers(text: str) -> list[str]:
+    return [ln.strip() for ln in text.splitlines() if ln.strip().startswith("[")]
+
+
+def test_injected_table_lands_in_shipped_position_not_at_eof(tmp_path):
+    """A new table is spliced after its shipped-order predecessor.
+
+    Appending at EOF leaves the live file in a different section order than
+    shipped. TOML ignores order, so the config still resolves — but every later
+    ``.sfnew`` diff then renders the relocated section as a delete-plus-add far
+    apart, which reads as "this section is missing" and invites the operator to
+    hand-merge it away for real.
+    """
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text(
+        "[alpha]\na = 1\n\n[beta]\nb = 2\n\n[gamma]\ng = 3\n", encoding="utf-8")
+    target.write_text("[alpha]\na = 1\n\n[gamma]\ng = 3\n", encoding="utf-8")
+
+    status, added, _ = sync_file(shipped, target, dry_run=False)
+
+    assert status == "updated"
+    assert added == ["beta"]
+    assert _headers(target.read_text(encoding="utf-8")) == ["[alpha]", "[beta]", "[gamma]"]
+
+
+def test_injected_trailing_table_still_appends(tmp_path):
+    """A table with no shipped successor in live keeps the EOF placement."""
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text("[alpha]\na = 1\n\n[omega]\no = 9\n", encoding="utf-8")
+    target.write_text("[alpha]\na = 1\n", encoding="utf-8")
+
+    sync_file(shipped, target, dry_run=False)
+
+    assert _headers(target.read_text(encoding="utf-8")) == ["[alpha]", "[omega]"]
+
+
+def test_injected_table_order_survives_live_reordering(tmp_path):
+    """Live may already be reordered; the new table anchors to a real neighbour.
+
+    The predecessor search must fall back through the shipped order until it
+    finds a section live actually has, rather than assuming shipped positions
+    map onto live ones.
+    """
+    shipped = tmp_path / "ship.toml"
+    target = tmp_path / "live.toml"
+    shipped.write_text(
+        "[alpha]\na = 1\n\n[beta]\nb = 2\n\n[gamma]\ng = 3\n\n[delta]\nd = 4\n",
+        encoding="utf-8")
+    # live keeps gamma before alpha — an older append-at-EOF sync's legacy.
+    target.write_text("[gamma]\ng = 3\n\n[alpha]\na = 1\n", encoding="utf-8")
+
+    sync_file(shipped, target, dry_run=False)
+
+    out = _headers(target.read_text(encoding="utf-8"))
+    # beta anchors after alpha (its nearest shipped predecessor present in live)
+    assert out.index("[beta]") == out.index("[alpha]") + 1
+    assert "[delta]" in out

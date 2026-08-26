@@ -204,3 +204,45 @@ def test_merge_tool_none_when_nothing_resolves(monkeypatch):
     monkeypatch.setattr(editor.shutil, "which", lambda name: None)
     argv, source = editor.resolve_merge_tool()
     assert argv == [] and source == "none"
+
+
+# ---------------------------------------------------------------------------
+# Relocated-section banner (3.1.0-B9)
+# ---------------------------------------------------------------------------
+
+def test_diff_banners_sections_that_only_moved(tmp_path):
+    """A section present in both files at different offsets is flagged as moved.
+
+    difflib has no move detection, so the relocated section renders as a
+    deletion far from its matching addition — the reading that led an operator
+    to hand-merge a live section away as "missing".
+    """
+    live = tmp_path / "profiles.toml"
+    companion = tmp_path / "profiles.toml.sfnew"
+    live.write_text("[gamma]\ng = 3\n\n[alpha]\na = 1\n", encoding="utf-8")
+    companion.write_text("[alpha]\na = 1\n\n[gamma]\ng = 3\n", encoding="utf-8")
+
+    out = config_cmd._diff_text(live, companion)
+
+    assert "present in BOTH files" in out
+    # difflib anchors on one of the two sections and renders the other as the
+    # -/+ pair; either choice is a move, and exactly one is reported.
+    assert ("#   [alpha]" in out) ^ ("#   [gamma]" in out)
+
+
+def test_diff_has_no_banner_for_a_real_addition(tmp_path):
+    """A section genuinely absent from live is not reported as a move."""
+    live = tmp_path / "profiles.toml"
+    companion = tmp_path / "profiles.toml.sfnew"
+    live.write_text("[alpha]\na = 1\n", encoding="utf-8")
+    companion.write_text("[alpha]\na = 1\n\n[beta]\nb = 2\n", encoding="utf-8")
+
+    out = config_cmd._diff_text(live, companion)
+
+    assert "present in BOTH files" not in out
+    assert "+[beta]" in out
+
+
+def test_moved_sections_ignores_non_header_lines():
+    diff = "-a = 1\n+a = 2\n-[keep]\n+[keep]\n+# [commented]\n"
+    assert config_cmd._moved_sections(diff) == ["[keep]"]
