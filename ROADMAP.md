@@ -100,6 +100,7 @@ canonical ordering.
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F5` | the first run toolchain / run kernel on an install changes the system with no nudge to read the config that drives it | med | small | patch |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
+| `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
@@ -721,6 +722,46 @@ canonical ordering.
   dry-run reports, only to how its progress is drawn on a TTY.
   **Standards home on adoption:** none new — row 25 (log-level rubric) already owns default-verbosity
   output; the progress channel is outside it and gains no new conformance surface.
+
+- **`3.1.0-B12` — `update --include-stage-owned` co-schedules a toolchain rebuild with the packages
+  it compiles, and stamps them all with the pre-rebuild fingerprint.**
+  Stage-owned packages are filtered out of the walk by default (`update_assemble.py:120-124`), so
+  the toolchain is normally rebuilt only by `sysforge run toolchain`. `--include-stage-owned` — and
+  naming a toolchain package explicitly (`update_assemble.py:148`) — lifts that filter, putting
+  `llvm`/`clang` into the same Phase 5 batch as everything they compile. Two things then go wrong
+  in one process, no concurrency involved:
+  **(a) the batch order is arbitrary with respect to the rebuild.** `build_core`'s intra-batch topo
+  sort (`build_core.py:511-544`) keys on declared `depends`/`makedepends`/`checkdepends` edges
+  resolved against in-batch providers. A package is *built by* clang but almost never *depends on*
+  it — the compiler arrives via `CC`/`CXX` and `makepkg.conf`, not `depends=()`. On the live
+  workstation only 11 of 86 non-toolchain source-built packages declare any edge on a toolchain
+  package (all on `clang`, all COSMIC crates), so the other 75 keep insertion order relative to
+  `llvm`: some build against the old compiler, some against the new, within one batch. The sort is
+  working correctly — it has no edge to sort on.
+  **(b) the fingerprint is snapshotted across the step that invalidates it.**
+  `active_fingerprint` is computed once at `update.py:675`; `get_toolchain_fingerprint`
+  (`pipeline/state.py:388-397`) takes the `cc` path from the toolchain stage result and fingerprints
+  the binary **on disk at that moment** (`clang_identity` = path + size + mtime + version). Phase 5
+  then installs a new clang, and every package built afterwards is stamped with the stale value at
+  `update.py:1258`. The next run compares against a freshly-read fingerprint, finds a mismatch, and
+  reports the whole set as toolchain-drifted — offering to rebuild packages that were just built
+  correctly. `--rebuild-on-drift` makes that a loop.
+  Not currently reachable in practice (the flag has never been used here), and the test surface
+  stops at the assembly boundary: all three `include_stage_owned` tests
+  (`tests/test_update.py:530, 2110, 2218`) assert only that the package enters the walk, nothing
+  downstream of it. Reachable the moment the flag is used, which the `3.1.0-B11` re-hardening
+  rebuild would have done.
+  Fix direction is a scheduling decision, not a patch — resolve before implementing. The cheap,
+  honest option is to refuse the co-schedule: detect a stage-owned toolchain package in `to_build`
+  and either split it into its own pass (re-reading the fingerprint after it installs, so the
+  remainder is stamped correctly) or decline the batch and point at `sysforge run toolchain`. A
+  declared-edge fix is not available — the missing edges are absent by design. Whatever is chosen
+  must extend the test surface past the gate.
+  *Priority: med · Effort: medium · Bump: patch* — a scheduling rule plus fingerprint re-read; no
+  change to what is built under the default (stage-owned-filtered) path.
+  **Standards home on adoption:** none new — the toolchain-identity contract already lives with
+  `get_toolchain_fingerprint` as its single canonical computation site; this constrains *when* it is
+  read, not what it means.
 
 ### Open questions
 
