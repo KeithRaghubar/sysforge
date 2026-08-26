@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 """Tests for describe_editor_chain / resolve_editor agreement."""
+import subprocess
 from unittest.mock import patch
 
 from sysforge.primitives.editor import describe_editor_chain, resolve_editor
@@ -110,3 +111,40 @@ def test_detected_rung_lists_all_candidates_in_detail(monkeypatch):
     assert rungs[winner].source == "detected"
     assert rungs[winner].value == "nano"       # first found wins, order vim,nano,vi
     assert "nano, vi" in rungs[4].detail
+
+
+def test_run_tty_argv_releases_progress_region_around_child(monkeypatch):
+    """A TUI editor must run inside ``progress.suspended()``.
+
+    ``update``'s build loop holds a ``"building"`` tracker, so the recovery
+    menu's ``[e]`` opens the editor while the bar still owns the bottom row
+    via its DECSTBM region. The editor sizes itself to the full terminal and
+    paints its status line onto the reserved row, leaving the bottom line
+    corrupted on exit — the same failure the pager hit in B5, and this is the
+    one home every editor launch goes through (3.1.0-B10).
+    """
+    import contextlib
+
+    from sysforge.primitives import editor as editor_mod
+    from sysforge.ui import progress
+
+    events: list[str] = []
+
+    @contextlib.contextmanager
+    def _spy_suspended():
+        events.append("suspend-enter")
+        try:
+            yield
+        finally:
+            events.append("suspend-exit")
+
+    def _fake_run(argv, **kwargs):
+        events.append("child")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(progress, "suspended", _spy_suspended)
+    monkeypatch.setattr(editor_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(editor_mod.os, "open", lambda *a: (_ for _ in ()).throw(OSError))
+
+    assert editor_mod.run_tty_argv(["nvim", "PKGBUILD"]) == 0
+    assert events == ["suspend-enter", "child", "suspend-exit"]

@@ -36,8 +36,21 @@ def run_tty_argv(argv: list[str]) -> int:
     without ever drawing. Works for both single-file editors (``$EDITOR file``)
     and two-file diff/merge tools (``vimdiff a b``).
 
+    The child also runs inside :func:`sysforge.ui.progress.suspended`. A verb
+    may hold an active progress bar when it reaches an edit prompt — the
+    recovery menu in ``makepkg_invoke`` opens ``[e]`` from inside `update`'s
+    ``"building"`` tracker — and the bar reserves the bottom row with a DECSTBM
+    region. A full-screen editor handed the raw tty sizes itself to the whole
+    terminal and paints its own status line onto that reserved row, so the two
+    fight over it and the bottom line is left corrupted on exit (3.1.0-B10).
+    Releasing the region for the child's lifetime is the same contract
+    ``maybe_pager`` already relies on (B5); doing it here covers every editor
+    launch at once. No-op outside TTY mode.
+
     Returns the child's exit code, or -1 if the binary couldn't be found.
     """
+    from sysforge.ui import progress
+
     tty_fd: int | None = None
     try:
         tty_fd = os.open("/dev/tty", os.O_RDWR)
@@ -45,10 +58,12 @@ def run_tty_argv(argv: list[str]) -> int:
         tty_fd = None
 
     try:
-        if tty_fd is not None:
-            result = subprocess.run(argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
-        else:
-            result = subprocess.run(argv)
+        with progress.suspended():
+            if tty_fd is not None:
+                result = subprocess.run(
+                    argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
+            else:
+                result = subprocess.run(argv)
         return result.returncode
     except FileNotFoundError:
         return -1
