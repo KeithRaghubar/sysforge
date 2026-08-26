@@ -68,7 +68,9 @@ from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
     load_consumes_inference,
+    load_preserved_system_tokens,
     load_sysforge_toml,
+    parse_system_makepkg_conf,
     resolve_flag_default,
 )
 from sysforge.primitives.flag_drift import (
@@ -930,6 +932,8 @@ def _cmd_update_body(args) -> int:
     flag_drifted: list[tuple[str, list[str]]] = []  # (pkgbase, diff lines)
     _flag_seen: set[str] = set()
     _flag_cgroups = None
+    _flag_ptokens = None
+    _flag_sysconf = None
     for r in results:
         if r.pkgbase in _flag_seen:
             continue
@@ -942,8 +946,17 @@ def _cmd_update_body(args) -> int:
         if not entry or entry.get("build_mode") != BUILD_MODE_SOURCE:
             continue
         if _flag_cgroups is None:
+            # Hoisted: the drift comparison is against the *effective* flags
+            # (3.1.0-B11), so it reads the preserve table and the system conf —
+            # once per run, not once per package.
             _flag_cgroups = load_conflict_groups()
-        fd = resolve_flag_drift(entry, config, _flag_cgroups)
+            _flag_ptokens = load_preserved_system_tokens()
+            _flag_sysconf = parse_system_makepkg_conf()
+        fd = resolve_flag_drift(
+            entry, config, _flag_cgroups,
+            system_assignments=_flag_sysconf,
+            preserved_system_tokens=_flag_ptokens,
+        )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
                 f"flag drift: {r.pkgbase} — failed to parse PKGBUILD: {fd.error}"
@@ -975,7 +988,13 @@ def _cmd_update_body(args) -> int:
             continue
         if _flag_cgroups is None:
             _flag_cgroups = load_conflict_groups()
-        fd = resolve_flag_drift(entry, config, _flag_cgroups)
+            _flag_ptokens = load_preserved_system_tokens()
+            _flag_sysconf = parse_system_makepkg_conf()
+        fd = resolve_flag_drift(
+            entry, config, _flag_cgroups,
+            system_assignments=_flag_sysconf,
+            preserved_system_tokens=_flag_ptokens,
+        )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
                 f"flag drift: {pkgbase} — failed to parse PKGBUILD: {fd.error}"

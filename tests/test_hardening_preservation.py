@@ -2,17 +2,23 @@
 test_hardening_preservation.py — Arch's compiler hardening baseline survives a
 wholesale profile CFLAGS override (3.1.0-B8).
 
-Two layers: the pure token merge (profile.merge_preserved_tokens, profile-wins
+Three layers: the pure token merge (profile.merge_preserved_tokens, profile-wins
 precedence) and the conf-emission seam that applies it (emit_makepkg_conf,
-reading [preserved_system_tokens] from profiles.toml).
+reading [preserved_system_tokens] from profiles.toml), plus the shared
+`apply_preserved_system_tokens` pass both that seam and the recorded
+flags_string run so they cannot diverge (3.1.0-B11).
 """
 from pathlib import Path
 
 import pytest
 
 from sysforge.primitives.config import load_preserved_system_tokens
+from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
-from sysforge.primitives.profile import merge_preserved_tokens
+from sysforge.primitives.profile import (
+    apply_preserved_system_tokens,
+    merge_preserved_tokens,
+)
 
 _FIXTURE_CONF = Path(__file__).parent / "data" / "etc" / "sysforge" / "system_makepkg.conf"
 
@@ -189,3 +195,48 @@ def test_kernel_build_leaves_flag_keys_to_the_system_conf(sys_conf_path):
         vals = read_conf(conf)
     assert "-march=native" not in vals["CFLAGS"]
     assert "-fstack-protector-strong" in vals["CFLAGS"]
+
+
+# ---------------------------------------------------------------------------
+# Shared-helper parity (3.1.0-B11): the conf seam and the recorded flags string
+# run the *same* preservation pass, so they cannot diverge.
+# ---------------------------------------------------------------------------
+
+def test_emitted_conf_and_effective_flags_agree(sys_conf_path):
+    profile = {"CFLAGS": "-march=native -O2 -pipe"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf:
+        emitted = read_conf(conf)["CFLAGS"]
+    effective = serialize_effective_flags(profile, system_conf_path=sys_conf_path)
+    assert f"CFLAGS={emitted}" in effective.splitlines()
+
+
+def test_apply_preserved_system_tokens_reports_only_changed_keys():
+    values = {"CFLAGS": "-O2", "LDFLAGS": "-Wl,-O1", "CC": "clang"}
+    merged, restored = apply_preserved_system_tokens(
+        values, {"CFLAGS": f'"{SYSTEM_CFLAGS}"', "LDFLAGS": '"-Wl,-O1"'},
+        {"CFLAGS": HARDENING, "LDFLAGS": ["-Wl,-O1"]},
+        conflict_groups=CONFLICT_GROUPS,
+    )
+    assert set(restored) == {"CFLAGS"}
+    assert merged["LDFLAGS"] == "-Wl,-O1"
+    assert merged["CC"] == "clang"
+    assert "-fstack-protector-strong" in merged["CFLAGS"]
+
+
+def test_apply_preserved_system_tokens_honours_the_enabled_switch():
+    values = {"CFLAGS": "-O2"}
+    merged, restored = apply_preserved_system_tokens(
+        values, {"CFLAGS": f'"{SYSTEM_CFLAGS}"'}, {"CFLAGS": HARDENING},
+        conflict_groups=CONFLICT_GROUPS, enabled=False,
+    )
+    assert merged == values
+    assert restored == {}
+
+
+def test_apply_preserved_system_tokens_passes_through_non_string_values():
+    values = {"CFLAGS": ["-O2"]}
+    merged, restored = apply_preserved_system_tokens(
+        values, {"CFLAGS": f'"{SYSTEM_CFLAGS}"'}, {"CFLAGS": HARDENING},
+    )
+    assert merged == values
+    assert restored == {}

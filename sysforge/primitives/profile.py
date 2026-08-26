@@ -18,6 +18,11 @@ Public API:
                   visited=None, conflict_groups=None)        -> dict
     merge_preserved_tokens(profile_val, system_val, preserve_tokens,
                            conflict_groups=None)             -> (str, list)
+    unquote_conf_value(raw)                                  -> str
+    apply_preserved_system_tokens(values, system_assignments,
+                                  preserved_system_tokens,
+                                  conflict_groups=None,
+                                  enabled=True)              -> (dict, dict)
     resolve_groups(pkgmeta, matched_rules, defaults)         -> list[str]
     resolve_consumes(resolved_profile, pkgmeta,
                      inference_map)                          -> frozenset[str]
@@ -351,6 +356,63 @@ def merge_preserved_tokens(profile_val, system_val, preserve_tokens,
         restored.append(token)
 
     return " ".join(result), restored
+
+
+def unquote_conf_value(raw):
+    """Strip one layer of matching double quotes from a makepkg.conf value.
+
+    ``parse_system_makepkg_conf`` keeps values verbatim (quotes included) so
+    they can be written back unchanged; token-level work needs the bare string.
+    """
+    raw = (raw or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        return raw[1:-1]
+    return raw
+
+
+def apply_preserved_system_tokens(values, system_assignments,
+                                  preserved_system_tokens,
+                                  conflict_groups=None, enabled=True):
+    """Apply the [preserved_system_tokens] pass across a whole key->value map.
+
+    The single home for the hardening-preservation pass (3.1.0-B11). Two call
+    sites must agree exactly on the *effective* flags a build gets, or flag
+    drift mis-fires:
+
+      - ``makepkg_conf.emit_makepkg_conf`` — what the build actually compiles with
+      - ``makepkg_conf.serialize_effective_flags`` — what ``build_state.toml``
+        records and ``flag_drift`` re-resolves
+
+    Running the merge in either place independently is what let B11 through:
+    the restoration lived only at the conf seam, so ``flags_string`` recorded
+    the pre-merge profile on both sides of the diff and no package ever drifted
+    when the preserve set changed.
+
+    ``values`` is a key -> value mapping (profile overrides, or a resolved
+    profile); non-string values are passed through untouched. ``enabled`` is the
+    profile's ``preserve_system_tokens`` switch. Pure — the caller owns the
+    narration. Returns ``(merged_values, restored_by_key)``, the latter mapping
+    only the keys that actually gained tokens.
+    """
+    merged = dict(values)
+    if not enabled or not preserved_system_tokens or not system_assignments:
+        return merged, {}
+
+    restored_by_key: dict[str, list[str]] = {}
+    for key, tokens in preserved_system_tokens.items():
+        if key not in merged or key not in system_assignments:
+            continue
+        if not isinstance(merged[key], str):
+            continue
+        new_val, restored = merge_preserved_tokens(
+            merged[key], unquote_conf_value(system_assignments[key]), tokens,
+            conflict_groups=conflict_groups,
+        )
+        if restored:
+            merged[key] = new_val
+            restored_by_key[key] = restored
+    return merged, restored_by_key
+
 
 
 # ---------------------------------------------------------------------------

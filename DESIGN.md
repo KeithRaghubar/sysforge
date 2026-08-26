@@ -1785,11 +1785,13 @@ is one package's transition (`old` `None` = added, `new` `None` = removed).
 Profile resolution and rule matching. Public API:
 - `merge_extends` — resolves the full `extends` chain into a flat profile dict, applying `[profiles.x.append]` token-level merges with conflict groups
 - `merge_preserved_tokens(profile_val, system_val, preserve_tokens, conflict_groups=None)` — pure token merge with **profile-wins** precedence (the mirror of `_merge_append_value`, which is child-wins): re-adds the declared `[preserved_system_tokens]` flags from the system conf value that a wholesale profile override of that key dropped. A token is skipped when the profile already has it, names a conflicting token in the same `[append_conflict_groups]` group, or names one in the same prefix family; a pure shell reference (`CXXFLAGS = "$CFLAGS"`) is returned untouched, since it inherits by expansion. Returns `(merged_value, restored_tokens)`; narration belongs to the caller (`makepkg_conf`).
+- `unquote_conf_value(raw)` — strips one layer of matching double quotes from a `parse_system_makepkg_conf` value (which keeps values verbatim so they can be written back unchanged); the single home for that unwrap, used by the preservation pass and the `MAKEFLAGS` job cap.
+- `apply_preserved_system_tokens(values, system_assignments, preserved_system_tokens, conflict_groups=None, enabled=True)` — the whole-map `[preserved_system_tokens]` pass over `merge_preserved_tokens`, and **the single implementation of that pass**. Non-string values pass through untouched; `enabled` is the profile's `preserve_system_tokens` switch. Returns `(merged_values, restored_by_key)`, the latter carrying only keys that actually gained tokens, so the caller narrates exactly what changed. Two seams call it and must agree exactly — `makepkg_conf.emit_makepkg_conf` (what the build compiles with) and `makepkg_conf.serialize_effective_flags` (what `build_state.toml` records and `flag_drift` re-resolves); running the merge independently in either is what let 3.1.0-B11 through. §Flag & Profile System.
 - `match_rules` — evaluates all match fields against a parsed PKGBUILD. `pkgnames` rules match against both `pkgname` and `pkgbase` — split packages (e.g. kernels) set `pkgbase` to the canonical name and `pkgname` to an array of unexpanded sub-package names; matching on `pkgbase` ensures rules like `pkgnames = ["linux-custom"]` work correctly.
 - `resolve_profile` — selects the winning rule by priority; optionally injects `pkgbuild_extracted` as the chain root
 - `resolve_groups` — accumulates package groups from PKGBUILD, defaults, and all matched rules
 - `resolve_consumes` — determines which conf types the build needs
-- `serialize_flags(profile)` — serializes a resolved profile to a newline-separated `KEY=value` string for storage in `build_state.toml`
+- `serialize_flags(profile)` — serializes a resolved profile to a newline-separated `KEY=value` string. The raw-profile serializer; the string actually stored in `build_state.toml` comes from `makepkg_conf.serialize_effective_flags`, which runs the preservation pass first (3.1.0-B11)
 - `get_build_mode(profile)` — extracts the `build_mode` string from a resolved profile
 
 Public constants: `CONF_KEY_MAP` (maps conf delivery channel → set of profile keys), `SYSFORGE_KEYS` (internal keys never written to any conf file), `KERNEL_CLEAN_KEYS` (flag keys stripped from makepkg.conf for kernel builds).
@@ -2078,6 +2080,8 @@ The `AlreadyBuilt` *policy* (what a catch site does next) lives in
 `already_built.py` (`resolve_already_built`, postures `reuse`/`review-gated`)
 — decide-only, no tag of its own (logs under the caller's tag); the exception
 itself stays in `makepkg_invoke.py`.
+
+**Effective flags (`serialize_effective_flags`):** the flags a build *effectively* gets — the resolved profile after the `[preserved_system_tokens]` pass this module applies while assembling the conf. This is the string `makepkg_wrapper._record_build_state` writes as `flags_string` and the string `flag_drift.resolve_flag_drift` re-resolves, so the record site and the drift site cannot diverge. Kernel builds and `preserve_system_tokens = false` short-circuit to plain `serialize_flags`, matching what the conf seam does for them. Because the result now depends on `/etc/makepkg.conf`, a distro update that changes the hardening baseline is correctly reported as flag drift. Pure and non-logging; `preserved_system_tokens={}` disables the pass (the unit-test surface). §Flag & Profile System.
 
 **System conf merge:** `emit_makepkg_conf` reads `/etc/makepkg.conf` as a baseline and writes a complete self-contained temp conf — system keys pass through verbatim, profile keys override their counterparts inline, new profile keys are appended. No `. /etc/makepkg.conf` sourcing at runtime.
 
@@ -2716,6 +2720,25 @@ pass through verbatim. A profile opts out of the whole pass with `preserve_syste
 
 User `[preserved_system_tokens]` in `~/.config/sysforge/profiles.toml` follows the same
 `extends_system` merge model as conflict groups.
+
+The pass has **one implementation**, `profile.apply_preserved_system_tokens`, applied at two seams
+that must agree exactly:
+
+| Seam | Caller | What it produces |
+|---|---|---|
+| conf emission | `makepkg_conf.emit_makepkg_conf` | the flags the build actually compiles with |
+| flag recording | `makepkg_conf.serialize_effective_flags` | the `flags_string` in `build_state.toml`, and the string `flag_drift` re-resolves |
+
+Before 3.1.0-B11 only the first seam ran the pass, so `flags_string` recorded the *pre-merge*
+resolved profile on both sides of the drift diff — the restoration was structurally invisible to
+flag drift, and a change to `[preserved_system_tokens]`, to `[append_conflict_groups]`, or to the
+system conf's own hardening baseline could alter every future build without a single package being
+reported as drifted. Recording the effective flags also means the recorded string now depends on
+`/etc/makepkg.conf`, which is outside sysforge's config: a distro update that changes the hardening
+baseline is correctly reported as drift. Both seams take the same `kernel_build` verdict
+(`build_mode == "kernel" or owner_stage == "kernel"` — `owner_stage` is persisted in `build_state`
+precisely so the record-time verdict is replayable), so a stage-owned kernel build never drifts
+against itself.
 
 
 ### Rule match field semantics
@@ -3585,7 +3608,7 @@ Escape hatches:
 
 *Version drift.* After the `source_sync` scheduler refreshes each PKGBUILD dir (one batched AUR RPC call followed by per-package clone or shallow fetch as needed), it compares the new `pkgver`/`pkgrel`/`epoch` against the installed version via `vercmp`. Packages where the PKGBUILD is newer are rebuilt with the current profile. VCS packages (`-git`/`-svn`/`-hg`/`-bzr`) are reported as `DEVEL` and skipped by default; with `--devel`, each VCS package's `pkgver()` is resolved up-front via `vcs_pkgver.evaluate_vcs_pkgver` (one `makepkg --nobuild` pass per VCS pkgbase) and the resulting version is vercmp'd against installed — only genuinely-stale packages are rebuilt; up-to-date packages are reported as `UP_TO_DATE` and skipped. Resolution failures (broken `pkgver()`, transient network) report `DEVEL_EVAL_FAILED` and are also skipped. One or more package names may be given as positional arguments to restrict the run to a subset of sysforge-managed packages; unrecognised names are warned and skipped.
 
-*Flag drift.* Same package version but a different resolved compiler configuration — e.g. profile changed, new flag added, or build mode switched. At build time the resolved flags string is recorded per package in `build_state.toml`; Phase 4.3 re-resolves the current profile for each source-built package and diffs the result against the stored string (via `primitives/flag_drift.resolve_flag_drift`). Flag drift is **reported by default** and is network-free (`--offline --dry-run` gives a read-only report); `--rebuild-on-flag-drift` rebuilds the drifted packages, and `--rebuild-on-drift` is the umbrella over both the flag and toolchain-variant axes. See §`update.py` → *Phase 4.3 — Flag drift*.
+*Flag drift.* Same package version but a different resolved compiler configuration — e.g. profile changed, new flag added, or build mode switched. At build time the resolved flags string is recorded per package in `build_state.toml`; Phase 4.3 re-resolves the current profile for each source-built package and diffs the result against the stored string (via `primitives/flag_drift.resolve_flag_drift`). Both the recorded and the re-resolved string are the **effective** flags — the resolved profile after the `[preserved_system_tokens]` pass, produced on both sides by `makepkg_conf.serialize_effective_flags` (3.1.0-B11). Consequently the axis also covers changes to `[preserved_system_tokens]`, `[append_conflict_groups]`, and `/etc/makepkg.conf`'s own hardening baseline, none of which were visible to it before. Flag drift is **reported by default** and is network-free (`--offline --dry-run` gives a read-only report); `--rebuild-on-flag-drift` rebuilds the drifted packages, and `--rebuild-on-drift` is the umbrella over both the flag and toolchain-variant axes. See §`update.py` → *Phase 4.3 — Flag drift*.
 
 **Config defaults.** All three drift-rebuild flags (`--rebuild-on-drift`, `--rebuild-on-toolchain-drift`, `--rebuild-on-flag-drift`) fall back to a sysforge.toml `[update]` default (`rebuild_on_drift`, `rebuild_on_toolchain_drift`, `rebuild_on_flag_drift` respectively) via `_resolve_drift_axes`, which resolves each axis through `config.resolve_flag_default`. The CLI flag always wins when explicitly passed; the config value only supplies the default when it isn't.
 

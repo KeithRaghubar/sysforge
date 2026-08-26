@@ -69,7 +69,7 @@ from sysforge.primitives.makepkg_artifacts import (
     _parse_built_pkg_filename,
     select_built_version,
 )
-from sysforge.primitives.makepkg_conf import emit_makepkg_conf
+from sysforge.primitives.makepkg_conf import emit_makepkg_conf, serialize_effective_flags
 from sysforge.primitives import build_sandbox
 from sysforge.primitives.makepkg_env import resolve_env_vars
 from sysforge.primitives.makepkg_flags import (
@@ -149,7 +149,6 @@ from sysforge.primitives.profile import (
     resolve_consumes,
     resolve_groups,
     resolve_profile,
-    serialize_flags,
     variant_env_overlay,
 )
 
@@ -1018,7 +1017,8 @@ class BuildOptions:
 
 
 def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
-                        rename, record_build_mode, build_elapsed):
+                        rename, record_build_mode, build_elapsed,
+                        kernel_build=False):
     """Record build metadata for `sysforge update` (non-fatal).
 
     The single per-build record site: called once after a successful build.
@@ -1036,7 +1036,14 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         if isinstance(pkgnames, str):
             pkgnames = [pkgnames]
         pkgbase = globals_.get("pkgbase") or (pkgnames[0] if pkgnames else "unknown")
-        fs = serialize_flags(resolved_profile) if resolved_profile is not None else None
+        # The *effective* flags, not the raw resolved profile: the
+        # [preserved_system_tokens] pass runs at the conf seam, so recording the
+        # pre-merge string here hid every change to it from flag drift
+        # (3.1.0-B11). Shared with flag_drift via serialize_effective_flags.
+        fs = (
+            serialize_effective_flags(resolved_profile, kernel_build=kernel_build)
+            if resolved_profile is not None else None
+        )
 
         # An optimization rename (-sysforge) changes what landed on disk: the
         # built artifacts and installed packages carry the suffix, so that is
@@ -1491,6 +1498,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         _record_build_state(
             pkgbuild_path, pkgmeta, resolved_profile, options,
             rename, record_build_mode, build_elapsed,
+            kernel_build=kernel_build,
         )
 
     finally:

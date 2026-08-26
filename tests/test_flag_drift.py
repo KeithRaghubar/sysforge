@@ -7,7 +7,9 @@ PKGBUILD parsing + profile resolution; only the deliberately-unparseable case
 fakes parse_pkgbuild. serialize_flags (profile.py) is covered here too — it
 produces the flags_string this module diffs against.
 """
+from pathlib import Path
 
+from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.profile import SYSFORGE_KEYS, serialize_flags
 from sysforge.primitives.flag_drift import (
     STATUS_BUILDFLAGS_IGNORED,
@@ -29,6 +31,20 @@ _MINIMAL_CONFIG = {
     "conflict_groups": {},
 }
 _BARE_FLAGS = serialize_flags({"CFLAGS": "-O2"})
+
+
+def _drift(entry, config=None, conflict_groups=None, **kw):
+    """resolve_flag_drift with the [preserved_system_tokens] pass off.
+
+    These cases exercise resolution + diffing, not the hardening merge; the
+    effective-flags pass has its own tests below and in
+    test_hardening_preservation.py.
+    """
+    kw.setdefault("preserved_system_tokens", {})
+    return resolve_flag_drift(
+        entry, _MINIMAL_CONFIG if config is None else config,
+        {} if conflict_groups is None else conflict_groups, **kw,
+    )
 
 
 def _pkgbuild(tmp_path, name="htop"):
@@ -109,7 +125,7 @@ def test_diff_flags_reports_change_add_remove():
 
 def test_not_profiled_short_circuits(tmp_path):
     entry = {"build_mode": "pacman", "pkgbuild_dir": str(tmp_path / "htop")}
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_NOT_PROFILED
     assert not r.drifted
 
@@ -121,7 +137,7 @@ def test_no_pkgbuild(tmp_path):
         "pkgbuild_dir": str(tmp_path / "ghost"),
         "flags_string": _BARE_FLAGS,
     }
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_NO_PKGBUILD
     assert r.pkgbuild_path == tmp_path / "ghost" / "PKGBUILD"
 
@@ -129,7 +145,7 @@ def test_no_pkgbuild(tmp_path):
 def test_no_flags(tmp_path):
     d = _pkgbuild(tmp_path, "htop")
     entry = {"build_mode": "source_built", "pkgbuild_dir": str(d)}  # no flags_string
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_NO_FLAGS
 
 
@@ -140,7 +156,7 @@ def test_in_sync(tmp_path):
         "pkgbuild_dir": str(d),
         "flags_string": _BARE_FLAGS,  # exactly what `bare` resolves to
     }
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_IN_SYNC
     assert r.diffs == []
 
@@ -152,7 +168,7 @@ def test_drifted(tmp_path):
         "pkgbuild_dir": str(d),
         "flags_string": "CFLAGS=-this-is-stale",  # != resolved `bare`
     }
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_DRIFTED
     assert r.drifted
     assert r.diffs  # at least one per-key diff line
@@ -174,7 +190,7 @@ def test_buildflags_disabled_suppresses_drift(tmp_path):
         "pkgbuild_dir": str(d),
         "flags_string": "CFLAGS=-this-is-stale",  # would drift, but ignored
     }
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_BUILDFLAGS_IGNORED
     assert not r.drifted
     assert r.diffs == []
@@ -192,7 +208,7 @@ def test_parse_error_is_reported_not_raised(tmp_path, monkeypatch):
         "pkgbuild_dir": str(d),
         "flags_string": _BARE_FLAGS,
     }
-    r = resolve_flag_drift(entry, _MINIMAL_CONFIG, {})
+    r = _drift(entry)
     assert r.status == STATUS_PARSE_ERROR
     assert "malformed" in (r.error or "")
 
@@ -217,3 +233,116 @@ def test_diff_flags_arrow_is_unicode_by_default(monkeypatch):
 
     monkeypatch.setattr(log, "use_unicode", lambda: True)
     assert diff_flags("CFLAGS=-O2", "CFLAGS=-O3") == ["  CFLAGS: '-O2' → '-O3'"]
+
+
+# ---------------------------------------------------------------------------
+# Effective flags — the [preserved_system_tokens] pass is part of the diff
+# (3.1.0-B11). Recording the raw resolved profile on both sides made every
+# change to that pass invisible to drift detection.
+# ---------------------------------------------------------------------------
+
+_SYS_CONF = Path(__file__).parent / "data" / "etc" / "sysforge" / "system_makepkg.conf"
+_PTOKENS = {"CFLAGS": ["-fstack-protector-strong", "-Wp,-D_FORTIFY_SOURCE=3"]}
+
+
+def test_current_flags_include_restored_system_tokens(tmp_path):
+    """A package recorded before the preserve set existed must read as drifted."""
+    d = _pkgbuild(tmp_path, "htop")
+    entry = {
+        "build_mode": "source_built",
+        "pkgbuild_dir": str(d),
+        "flags_string": _BARE_FLAGS,  # pre-B8: the raw resolved profile
+    }
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
+    )
+    assert r.status == STATUS_DRIFTED
+    assert "-fstack-protector-strong" in r.current_flags
+    assert "-Wp,-D_FORTIFY_SOURCE=3" in r.current_flags
+
+
+def test_effective_flags_round_trip_is_in_sync(tmp_path):
+    """The string the record site writes is the string the drift site expects."""
+    d = _pkgbuild(tmp_path, "htop")
+    stored = serialize_effective_flags(
+        {"CFLAGS": "-O2"},
+        system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
+        conflict_groups={},
+    )
+    entry = {"build_mode": "source_built", "pkgbuild_dir": str(d), "flags_string": stored}
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
+    )
+    assert r.status == STATUS_IN_SYNC, r.diffs
+
+
+def test_widening_the_preserve_set_is_drift(tmp_path):
+    """The bug in one sentence: changing [preserved_system_tokens] must drift."""
+    d = _pkgbuild(tmp_path, "htop")
+    stored = serialize_effective_flags(
+        {"CFLAGS": "-O2"}, system_conf_path=_SYS_CONF,
+        preserved_system_tokens={"CFLAGS": ["-fstack-protector-strong"]},
+        conflict_groups={},
+    )
+    entry = {"build_mode": "source_built", "pkgbuild_dir": str(d), "flags_string": stored}
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
+    )
+    assert r.status == STATUS_DRIFTED
+    assert any("FORTIFY_SOURCE" in line for line in r.diffs)
+
+
+def test_system_conf_hardening_change_is_drift(tmp_path):
+    """The recorded flags now track /etc/makepkg.conf, so a distro change drifts."""
+    d = _pkgbuild(tmp_path, "htop")
+    stored = serialize_effective_flags(
+        {"CFLAGS": "-O2"}, system_conf_path=_SYS_CONF,
+        preserved_system_tokens=_PTOKENS, conflict_groups={},
+    )
+    weakened = tmp_path / "makepkg.conf"
+    weakened.write_text(
+        _SYS_CONF.read_text().replace("-Wp,-D_FORTIFY_SOURCE=3", "-Wp,-D_FORTIFY_SOURCE=2")
+    )
+    entry = {"build_mode": "source_built", "pkgbuild_dir": str(d), "flags_string": stored}
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=weakened, preserved_system_tokens=_PTOKENS,
+    )
+    assert r.status == STATUS_DRIFTED
+
+
+def test_kernel_build_skips_the_preservation_pass():
+    """Kernel builds keep the system conf's flag keys, so nothing is restored."""
+    profile = {"CFLAGS": "-O2"}
+    assert serialize_effective_flags(
+        profile, kernel_build=True, system_conf_path=_SYS_CONF,
+        preserved_system_tokens=_PTOKENS, conflict_groups={},
+    ) == serialize_flags(profile)
+
+
+def test_profile_optout_skips_the_preservation_pass():
+    profile = {"CFLAGS": "-O2", "preserve_system_tokens": False}
+    assert serialize_effective_flags(
+        profile, system_conf_path=_SYS_CONF,
+        preserved_system_tokens=_PTOKENS, conflict_groups={},
+    ) == serialize_flags(profile)
+
+
+def test_stage_owned_kernel_entry_does_not_drift_against_itself(tmp_path):
+    """owner_stage parity: the record site's kernel verdict is replayable."""
+    d = _pkgbuild(tmp_path, "linux-custom")
+    stored = serialize_effective_flags({"CFLAGS": "-O2"}, kernel_build=True)
+    entry = {
+        "build_mode": "source_built",
+        "pkgbuild_dir": str(d),
+        "flags_string": stored,
+        "owner_stage": "kernel",
+    }
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
+    )
+    assert r.status == STATUS_IN_SYNC, r.diffs

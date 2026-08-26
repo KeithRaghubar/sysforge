@@ -19,7 +19,9 @@ the caller decides how to surface each outcome (``update`` under ``[UPDATE]``).
 
 Public API:
     diff_flags(stored, current) -> list[str]
-    resolve_flag_drift(entry, config, conflict_groups) -> FlagDriftResult
+    resolve_flag_drift(entry, config, conflict_groups, system_conf_path=None,
+                       system_assignments=None,
+                       preserved_system_tokens=None) -> FlagDriftResult
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge.primitives.build_state import BUILD_MODE_SOURCE
+from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.pkgbuild_meta import option_disabled, parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import (
@@ -34,7 +37,6 @@ from sysforge.primitives.profile import (
     get_build_mode,
     match_rules,
     resolve_profile,
-    serialize_flags,
 )
 from sysforge.primitives.render import arrow
 
@@ -93,7 +95,9 @@ def diff_flags(stored: str, current: str) -> list[str]:
     return diffs
 
 
-def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftResult:
+def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
+                       system_conf_path=None, system_assignments=None,
+                       preserved_system_tokens=None) -> FlagDriftResult:
     """Compare one recorded build's stored flags against a fresh resolution.
 
     ``entry`` is a ``build_state.toml`` record for a pkgbase; it must carry
@@ -102,6 +106,15 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftR
     serialized flags against the stored string. Patched-PKGBUILD and kernel
     builds carry their flags embedded in the PKGBUILD, so the embedded profile is
     extracted before resolution (matching the build-time path).
+
+    The comparison is against the *effective* flags — the resolved profile after
+    ``makepkg_conf.serialize_effective_flags`` applies the
+    ``[preserved_system_tokens]`` pass, exactly as the conf-emission seam does
+    at build time (3.1.0-B11). ``system_conf_path`` / ``system_assignments`` /
+    ``preserved_system_tokens`` are injection points for that pass, loaded from
+    the system conf and profiles.toml when None; callers looping over many
+    packages should hoist them. Pass ``preserved_system_tokens={}`` to compare
+    raw resolved profiles.
 
     Never raises on a bad PKGBUILD: a parse failure is reported as
     ``STATUS_PARSE_ERROR`` with the message in ``error`` so callers can decide how
@@ -144,7 +157,17 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups) -> FlagDriftR
         pkgmeta, matched, config, conflict_groups,
         extracted_profile=extracted_profile,
     )
-    current_flags = serialize_flags(resolved)
+    # The kernel verdict must match makepkg_wrapper's at record time
+    # (`build_mode == "kernel" or owner_stage == "kernel"`), or a stage-owned
+    # kernel build would drift against itself; owner_stage is persisted in
+    # build_state for exactly this kind of replay.
+    kernel_build = build_mode == "kernel" or entry.get("owner_stage") == "kernel"
+    current_flags = serialize_effective_flags(
+        resolved, kernel_build=kernel_build,
+        system_conf_path=system_conf_path, system_assignments=system_assignments,
+        preserved_system_tokens=preserved_system_tokens,
+        conflict_groups=conflict_groups,
+    )
 
     diffs = diff_flags(stored_flags, current_flags)
     return FlagDriftResult(

@@ -49,10 +49,56 @@ from sysforge.primitives.profile import (
     CONF_KEY_MAP,
     KERNEL_CLEAN_KEYS,
     SYSFORGE_KEYS,
-    merge_preserved_tokens,
+    apply_preserved_system_tokens,
+    serialize_flags,
+    unquote_conf_value,
 )
 
 _conf_log = log.get_logger("CONF")
+
+
+def serialize_effective_flags(resolved_profile, *, kernel_build: bool = False,
+                              system_conf_path=None, system_assignments=None,
+                              preserved_system_tokens=None, conflict_groups=None) -> str:
+    """Serialize the flags a build *effectively* gets, for drift detection.
+
+    ``profile.serialize_flags`` serializes the resolved profile as-is, which is
+    what a build gets only up to the [preserved_system_tokens] pass this module
+    applies while assembling the conf. Recording the pre-merge string on both
+    sides of the flag-drift diff made that pass invisible to drift detection —
+    a change to the preserve set, to [append_conflict_groups], or to the system
+    conf's own hardening baseline could alter every future build without a
+    single package being reported as drifted (3.1.0-B11).
+
+    This is the string ``build_state.toml`` records (``makepkg_wrapper``) and
+    the string ``flag_drift`` re-resolves, so the two cannot diverge. Both pass
+    the same ``kernel_build`` verdict: kernel builds keep the system conf's
+    flag keys verbatim (``KERNEL_CLEAN_KEYS`` never reach ``profile_overrides``),
+    so no restoration happens for them either.
+
+    Note this makes the recorded flags depend on ``/etc/makepkg.conf``, which is
+    outside sysforge's config: a distro update that changes the hardening
+    baseline is now correctly reported as flag drift.
+
+    Pure and non-logging; ``preserved_system_tokens={}`` disables the pass.
+    """
+    if kernel_build:
+        return serialize_flags(resolved_profile)
+    if not resolved_profile.get("preserve_system_tokens", True):
+        return serialize_flags(resolved_profile)
+    if preserved_system_tokens is None:
+        preserved_system_tokens = load_preserved_system_tokens()
+    if not preserved_system_tokens:
+        return serialize_flags(resolved_profile)
+    if system_assignments is None:
+        system_assignments = parse_system_makepkg_conf(system_conf_path)
+    if conflict_groups is None:
+        conflict_groups = load_conflict_groups()
+    merged, _ = apply_preserved_system_tokens(
+        resolved_profile, system_assignments, preserved_system_tokens,
+        conflict_groups=conflict_groups,
+    )
+    return serialize_flags(merged)
 
 
 @contextlib.contextmanager
@@ -193,21 +239,15 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
             preserved_system_tokens = load_preserved_system_tokens()
         if conflict_groups is None:
             conflict_groups = load_conflict_groups()
-        for key, tokens in (preserved_system_tokens or {}).items():
-            if key not in profile_overrides or key not in system_assignments:
-                continue
-            raw = system_assignments[key].strip()
-            system_val = raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
-            merged, restored = merge_preserved_tokens(
-                profile_overrides[key], system_val, tokens,
-                conflict_groups=conflict_groups,
+        profile_overrides, _restored_by_key = apply_preserved_system_tokens(
+            profile_overrides, system_assignments, preserved_system_tokens,
+            conflict_groups=conflict_groups,
+        )
+        for key, restored in _restored_by_key.items():
+            _conf_log.info(
+                f"Preserved system hardening token(s) in {key}: "
+                f"{' '.join(restored)}"
             )
-            if restored:
-                _conf_log.info(
-                    f"Preserved system hardening token(s) in {key}: "
-                    f"{' '.join(restored)}"
-                )
-                profile_overrides[key] = merged
     else:
         _conf_log.info(
             "Profile sets preserve_system_tokens = false — system hardening "
@@ -222,8 +262,7 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     if jobs is not None:
         base_makeflags = profile_overrides.get("MAKEFLAGS")
         if base_makeflags is None and "MAKEFLAGS" in system_assignments:
-            _raw = system_assignments["MAKEFLAGS"].strip()
-            base_makeflags = _raw[1:-1] if (len(_raw) >= 2 and _raw[0] == _raw[-1] == '"') else _raw
+            base_makeflags = unquote_conf_value(system_assignments["MAKEFLAGS"])
         base_makeflags = base_makeflags or ""
         profile_overrides["MAKEFLAGS"] = apply_jobs_to_makeflags(base_makeflags, jobs)
         _conf_log.info(f"Build-throttle: capped MAKEFLAGS jobs to -j{jobs}")

@@ -179,6 +179,25 @@ pass through verbatim. A profile opts out of the whole pass with `preserve_syste
 User `[preserved_system_tokens]` in `~/.config/sysforge/profiles.toml` follows the same
 `extends_system` merge model as conflict groups.
 
+The pass has **one implementation**, `profile.apply_preserved_system_tokens`, applied at two seams
+that must agree exactly:
+
+| Seam | Caller | What it produces |
+|---|---|---|
+| conf emission | `makepkg_conf.emit_makepkg_conf` | the flags the build actually compiles with |
+| flag recording | `makepkg_conf.serialize_effective_flags` | the `flags_string` in `build_state.toml`, and the string `flag_drift` re-resolves |
+
+Before 3.1.0-B11 only the first seam ran the pass, so `flags_string` recorded the *pre-merge*
+resolved profile on both sides of the drift diff — the restoration was structurally invisible to
+flag drift, and a change to `[preserved_system_tokens]`, to `[append_conflict_groups]`, or to the
+system conf's own hardening baseline could alter every future build without a single package being
+reported as drifted. Recording the effective flags also means the recorded string now depends on
+`/etc/makepkg.conf`, which is outside sysforge's config: a distro update that changes the hardening
+baseline is correctly reported as drift. Both seams take the same `kernel_build` verdict
+(`build_mode == "kernel" or owner_stage == "kernel"` — `owner_stage` is persisted in `build_state`
+precisely so the record-time verdict is replayable), so a stage-owned kernel build never drifts
+against itself.
+
 
 ### Rule match field semantics
 
