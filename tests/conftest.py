@@ -110,6 +110,32 @@ def _isolate_local_pacman_db(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(_pacman, "_LOCAL_DB_ROOT", empty_db)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(monkeypatch, tmp_path_factory):
+    """
+    Point ``SYSFORGE_STATE_DIR`` at a throwaway tree for *every* test.
+
+    The opt-in ``state_dir`` fixture below isolates the state dir only for tests
+    that ask for one. Anything else inherits the developer's ambient
+    ``SYSFORGE_STATE_DIR`` (this workstation exports ``~/sf-state`` from
+    ``.zshrc``) and writes to the real ``build_state.toml``. A test does not have
+    to be *about* build state to do it: patching ``_run_build`` still lets
+    ``makepkg_wrapper.run`` fall through to ``_record_build_state``, which is how
+    ``test_run_profile_override_kernel_derives_kernel_build`` stamped a
+    ``linux-unruled`` entry — pkgbuild_dir pointing into ``/tmp/pytest-of-*`` and
+    ``owner_stage = "kernel"`` — into a live state file, where it read as a real
+    drifted kernel package and could not be demoted (stage-owned entries are
+    exempt from external-install reconciliation).
+
+    Isolation by default, not by opt-in: writing to a user's home is not
+    something a test should have to remember to prevent. Mirrors
+    ``_isolate_local_pacman_db``. The ``state_dir`` fixture still wins for tests
+    that request it — it sets the same variable afterwards and returns the Path.
+    """
+    monkeypatch.setenv("SYSFORGE_STATE_DIR",
+                       str(tmp_path_factory.mktemp("sf-state-isolated")))
+
+
 # ---------------------------------------------------------------------------
 # Centralized external-isolation fixtures (Phase 0 — behavior-first testing).
 #
