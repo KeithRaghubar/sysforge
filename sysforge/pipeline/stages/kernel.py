@@ -77,7 +77,13 @@ from pathlib import Path
 from sysforge import log
 _log = log.get_logger("KERNEL")
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives import device_probe, kbuild_map, kernel_fdo, kernel_safety
+from sysforge.primitives import (
+    device_probe,
+    kbuild_map,
+    kernel_fdo,
+    kernel_safety,
+    sudo_session,
+)
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.config import load_sysforge_toml, resolve_repo_track
 from sysforge.primitives.paths import KERNEL_PATH
@@ -2165,7 +2171,19 @@ class KernelStage(Stage):
             if options.dry_run
             else build_lock(state_dir / "kernel-build.lock", label="kernel", noun="build")
         )
-        with _lock:
+        # B5: the kernel build runs as long as the toolchain's PGO sequence and
+        # installs the same way (install_built_packages → sudo pacman -U from
+        # this process), so credentials authenticated here would be long expired
+        # by the time the install runs and the prompt would go stale. Warm them
+        # once while the operator is still present, then keep them warm for the
+        # whole build → audit → install window. Authenticating *before* starting
+        # the daemon is load-bearing: the refresh inherits stdio, so with no
+        # cached timestamp it would prompt from a background thread.
+        if not options.dry_run:
+            sudo_session.authenticate()
+        _sudo = sudo_session.keepalive(tag="KERNEL", enabled=not options.dry_run)
+
+        with _lock, _sudo:
             # Build WITHOUT installing, then audit the resolved .config, then
             # install — so a boot-critical kconfig drop (Gate 2) aborts before
             # any mutation and the running kernel stays bootable. The build
@@ -2266,6 +2284,24 @@ class KernelStage(Stage):
                 # summary. Best-effort: never raises, never blocks the install.
                 self._kconfig_diff = _record_and_diff_kconfig(
                     state_dir, pkgname, pkgbuild.parent
+                )
+
+            # B4: acquire credentials *before* the sentinel scope. A sudo
+            # prompt that times out makes sudo exit non-zero without ever
+            # execing pacman — nothing installed, no file touched — but inside
+            # the scope that surfaces as a RuntimeError, and by contract any
+            # exception leaves the sentinel in place. The operator would then
+            # have to run a pointless mkinitcpio to clear a sentinel guarding a
+            # mutation that never began. Probing out here keeps the
+            # classification narrow: only a *pre-install* auth failure is a
+            # clean abort; a pacman -U that actually ran and failed still leaves
+            # the sentinel behind, as it must.
+            if not options.dry_run and not sudo_session.authenticate():
+                raise RuntimeError(
+                    "[KERNEL] sudo authentication failed or timed out before "
+                    "the install step — nothing was installed and the system is "
+                    "unchanged. Re-run when you can answer the prompt: "
+                    "sysforge run kernel"
                 )
 
             # Install + boot wiring are the mutation window — wrap them in the

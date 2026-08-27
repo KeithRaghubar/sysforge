@@ -133,8 +133,9 @@ def _out():
     return sys.stdout if _DRY_RUN else sys.stderr
 
 
-def use_color() -> bool:
-    """Return True iff the active output stream should receive ANSI colour.
+def use_color(stream=None) -> bool:
+    """Return True iff *stream* (default: the active output stream) should
+    receive ANSI colour.
 
     Precedence (single source of truth for the whole codebase):
       * colour mode ``"never"`` → False; ``"always"`` → True. An explicit mode
@@ -146,6 +147,11 @@ def use_color() -> bool:
 
     Checked per-call so redirecting output mid-run is respected and test captures
     (pytest's capsys) stay plain.
+
+    *stream* exists for the one caller that does not write to the log's active
+    stream: the progress renderer targets stderr unconditionally, while ``_out()``
+    swings to stdout under ``--dry-run``. Passing the stream explicitly keeps the
+    mode/env precedence above in its single home rather than re-deriving it there.
     """
     if _COLOR_MODE == "never":
         return False
@@ -155,7 +161,8 @@ def use_color() -> bool:
         return False
     if os.environ.get("FORCE_COLOR"):
         return True
-    stream = _out()
+    if stream is None:
+        stream = _out()
     isatty = getattr(stream, "isatty", None)
     return bool(isatty and isatty())
 

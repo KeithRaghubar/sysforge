@@ -83,3 +83,49 @@ mechanism without a matching need. The seam is deliberately the single
 insertion point for escalation — if a polkit-based mechanism became
 warranted later (e.g. a GUI front-end), `privileged_argv`/`run_privileged`
 are where that swap would happen, without touching call sites.
+
+### Credential lifetime — `primitives/sudo_session.py`
+
+Escalation and credential *lifetime* are orthogonal concerns and have separate
+homes. `privilege.py` answers "how does this argv run as root"; it explicitly
+puts auth probes out of scope. `primitives/sudo_session.py` answers the two
+questions left over — "how long does an already-granted credential stay valid"
+and "is it valid right now" — and is the sole home for both. Everything it does
+is expressed through `sudo -v`, which escalates nothing and is structurally
+allowlisted by the `privilege_seam` checker anywhere in the tree.
+
+Two entry points:
+
+- `authenticate()` — run the `sudo -v` probe with inherited stdio and return
+  whether credentials are usable. A no-op returning `True` when already root.
+  The return value is the point: a prompt left unanswered until `passwd_timeout`
+  fires makes sudo exit non-zero **without ever exec'ing the target command**, so
+  a caller can distinguish "not authorized, nothing happened" from "ran and
+  failed".
+- `keepalive(tag=…, enabled=…)` — a context manager running a daemon thread that
+  refreshes credentials every `SUDO_KEEPALIVE_INTERVAL` seconds (60, well under
+  the sudoers default `timestamp_timeout` of 5 minutes) for the duration of the
+  block, and always stops and joins it on exit including on exception.
+  `enabled=False` makes the whole thing a no-op so a dry-run keeps one code path
+  at the call site.
+
+Why it exists: a stage that builds for hours and then installs with
+`sudo pacman -U` from the same process authenticates at stage entry and finds its
+timestamp long expired by install time, so an unattended run stops on a prompt
+that then goes stale. Both long-building stages now use it — the toolchain
+stage's four-pass PGO sequence (tag `PGO`) and the kernel stage's
+build → audit → install window (tag `KERNEL`). The daemon began life private to
+the toolchain stage; a second copy in the kernel stage is exactly the drift the
+one-home invariants exist to prevent.
+
+**Callers must `authenticate()` before entering `keepalive()`.** The refresh
+inherits stdio, so with no cached timestamp it would prompt from a background
+thread, interleaving with build output. Authenticating first also puts the one
+unavoidable prompt at stage entry, while the operator is still present.
+
+The kernel stage additionally probes *before* entering `sentinel_scope`. By the
+sentinel contract any exception inside the scope leaves the record in place, so
+an auth failure raised inside it would demand a recovery `mkinitcpio` for a
+mutation that never began. The classification stays narrow: only a pre-install
+auth failure is a clean abort; a `pacman -U` that actually ran and failed still
+leaves the sentinel behind, which is the case it exists for.

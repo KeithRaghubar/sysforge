@@ -82,19 +82,28 @@ _atexit_installed: bool = False
 
 
 def _detect_mode() -> str:
+    # 3.1.0-B7: dry-run is deliberately NOT a rung here. The other half of
+    # set_dry_run_mode() redirects log output to stdout, and pairing that with
+    # plain progress looks like it avoids ANSI cursor control interleaving with
+    # the report — but progress writes to *stderr* (the TTY renderer and the
+    # isatty check below both target it), so the two are on separate descriptors
+    # and cannot interleave. Forcing plain mode instead turned a dry run over a
+    # large source sync into hundreds of discrete lines; the remaining rungs
+    # already cover every case where plain output is genuinely required,
+    # including the piped-to-a-file shape a scripted dry run actually takes.
     if not sys.stderr.isatty():
-        return "plain"
-    if getattr(log, "_DRY_RUN", False):
         return "plain"
     if os.environ.get("TERM", "") in ("", "dumb"):
         return "plain"
     if os.environ.get("CI"):
         return "plain"
     # Defer the colour decision to the single authority: NO_COLOR, FORCE_COLOR
-    # and --color=never/auto all resolve there. stderr is already known to be a
-    # TTY here, so use_color()'s TTY rung is satisfied and this reduces to the
-    # mode/env gate.
-    if not log.use_color():
+    # and --color=never/auto all resolve there. Ask it about *stderr* explicitly
+    # rather than about log's active stream: under --dry-run that stream is
+    # stdout, and a redirected stdout would otherwise drag progress back into
+    # plain mode through the colour rung — the same dry-run coupling B7 removed
+    # above, arriving one rung later.
+    if not log.use_color(sys.stderr):
         return "plain"
     return "tty"
 

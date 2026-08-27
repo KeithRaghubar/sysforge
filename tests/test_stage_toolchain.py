@@ -45,8 +45,6 @@ from sysforge.pipeline.stages.toolchain import (
     _system_llvm_is_instrumented,
     _profile_runtime_ldflag,
     _validate_pgo_environment,
-    _sudo_keepalive_daemon,
-    _SUDO_KEEPALIVE_INTERVAL,
     _PGO_PROFDATA_MIN_BYTES,
     _gate_soname_consumers,
     _rebuild_soname_consumers,
@@ -2487,50 +2485,6 @@ def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
         flag = _profile_runtime_ldflag()
 
     assert flag is None
-
-
-# ---------------------------------------------------------------------------
-# _sudo_keepalive_daemon
-# ---------------------------------------------------------------------------
-
-def test_sudo_keepalive_daemon_calls_sudo_v():
-    """Daemon calls 'sudo -v' at least once before stop_event fires."""
-    stop_event = threading.Event()
-    sudo_calls = []
-
-    def fake_run(cmd, **kwargs):
-        sudo_calls.append(cmd)
-        result = MagicMock()
-        result.returncode = 0
-        return result
-
-    with patch("sysforge.pipeline.stages.toolchain._SUDO_KEEPALIVE_INTERVAL", 0), \
-         patch("subprocess.run", side_effect=fake_run):
-        t = threading.Thread(target=_sudo_keepalive_daemon, args=(stop_event,), daemon=True)
-        t.start()
-        t.join(timeout=1)
-        stop_event.set()
-        t.join(timeout=1)
-
-    assert any(cmd == ["sudo", "-v"] for cmd in sudo_calls)
-
-
-def test_sudo_keepalive_daemon_stops_immediately():
-    """If stop_event is pre-set, daemon exits without calling sudo."""
-    stop_event = threading.Event()
-    stop_event.set()
-
-    with patch("subprocess.run") as mock_run:
-        t = threading.Thread(target=_sudo_keepalive_daemon, args=(stop_event,), daemon=True)
-        t.start()
-        t.join(timeout=2)
-
-    mock_run.assert_not_called()
-
-
-def test_sudo_keepalive_interval_under_sudoers_default():
-    """Keepalive interval must be under 5 minutes (minimum reasonable sudoers timeout)."""
-    assert _SUDO_KEEPALIVE_INTERVAL < 5 * 60
 
 
 # ---------------------------------------------------------------------------

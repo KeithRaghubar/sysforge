@@ -23,7 +23,6 @@ def vercmp(ver_a: str, ver_b: str) -> int:
     Returns -1 (a < b), 0 (equal), or 1 (a > b).
     Raises RuntimeError if vercmp is not found or returns unexpected output.
     """
-    _log.info(f"vercmp {ver_a!r} {ver_b!r}")
     try:
         result = subprocess.run(
             ["vercmp", ver_a, ver_b],
@@ -39,11 +38,12 @@ def vercmp(ver_a: str, ver_b: str) -> int:
     except ValueError:
         raise RuntimeError(f"vercmp returned unexpected output: {stdout!r}") from None
 
-    if n < 0:
-        return -1
-    if n > 0:
-        return 1
-    return 0
+    verdict = -1 if n < 0 else (1 if n > 0 else 0)
+    # Log the operands *with* the result. Logging them before the comparison
+    # (as this did) leaves a log line that states a question and never answers
+    # it — useless when reading sysforge-update.log after the fact.
+    _log.info(f"vercmp {ver_a!r} {ver_b!r} -> {verdict}")
+    return verdict
 
 
 def format_version(globals_: dict) -> str:

@@ -95,8 +95,6 @@ canonical ordering.
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
 | `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
-| `3.1.0-B4` | a timed-out sudo prompt at install time is reported as a kernel-stage failure | med | small | patch |
-| `3.1.0-B5` | the kernel stage has no sudo keepalive, so its final install prompt goes stale | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F5` | the first run toolchain / run kernel on an install changes the system with no nudge to read the config that drives it | med | small | patch |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
@@ -106,10 +104,8 @@ canonical ordering.
 | `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
-| `3.1.0-B7` | --dry-run forces the progress bar into plain mode, printing one line per package | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
-| `2.6.1-F29` | colour-code the update version-check verdicts | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `3.0.0-F5` | itemize the flag-triggered pacman -Syu in the result summary | low | medium | patch |
@@ -511,7 +507,6 @@ canonical ordering.
 
 ---
 
-
 - **`2.6.1-F27` — Install stage target-root change summary.** Builds on `2.6.1-F24`; **built last,
   and deferrable.** The install stage pacstraps into a target root via `archinstall --silent`, so
   it has no before-state and every row is an addition (`— → ver`) — a manifest plus a total size.
@@ -554,37 +549,6 @@ canonical ordering.
   the manpage move in the same change. *Priority: low · Effort: small · Bump: patch* — additive
   flag on an existing verb, no new seam and no change to the per-file adopt contract.
   **Standards home on adoption:** none new.
-
----
-
-- **`2.6.1-F29` — colour-code the `update` version-check verdicts.** A `sysforge update --devel`
-  run over a large `-git` set produces one summary line per package, and nothing distinguishes the
-  handful that are actually eligible to rebuild from the wall that are not — the reader parses
-  `NEEDS_REBUILD`/`UP_TO_DATE`/`DOWNGRADE` as text. Colour the action tag in
-  `update_summary._print_summary`: green for `NEEDS_REBUILD`/`NEEDS_PACMAN_UPGRADE`, yellow for
-  `UP_TO_DATE`/`DEVEL`, red for `DOWNGRADE` and the failure actions (`DEVEL_EVAL_FAILED`,
-  `PULL_FAILED`, `RATE_LIMITED`, `PURGE_REFUSED`, `SKIPPED_NO_CHECKUPDATES`). The colour map is a
-  second dict keyed by the same action strings as `_ACTION_FORMATS`, applied through
-  `render.tag_header` (an optional `color=` argument) so the `[TAG]` gutter keeps its one home and
-  no site hand-writes an escape — §Logging/Colour's `log.use_color()` gate then applies for free.
-  **The gutter is the only correct surface, and the reason is load-bearing.** The obvious target —
-  the `[VERSION]` INFO line at `primitives/version.py:26` — cannot take colour: `log.info` builds
-  its file-log text as `plain = f"[SYSFORGE][INFO]{tag} {message}"` from the caller's own message,
-  and only `_format_line` (level + tag decoration) consults `use_color()`. Colour embedded in a log
-  *message* is therefore ungated and lands verbatim in `sysforge-update.log`, which is why every
-  existing `log.green`/`red`/`dim` call site sits on a `ui()`/`print()` path and none on
-  `info()`/`warn()`. `_print_summary` uses bare `print()` and never reaches a file, so it is
-  colour-safe by construction. Two adjacent fixes belong in the same change: (1) that same
-  `version.py` INFO line logs the two operands *before* comparing and names no package, so it is
-  near-useless in a log — give it its result (`vercmp 'a' 'b' -> 1`); (2) the invariant this item
-  discovered is unwritten — `docs/design/12-logging.md`'s Colour section says `log.py` is the single
-  colour authority but not that **message bodies passed to `error`/`warn`/`info`/`debug` must stay
-  uncoloured, because the file-log path bypasses the gate**. State it there. Tests: a colour-forced
-  summary asserting the per-action SGR, and `NO_COLOR` yielding the current plain output byte for
-  byte. *Priority: low · Effort: small · Bump: patch* — presentation only, one dict and one
-  optional argument; no change to the action taxonomy or to what `update` decides.
-  **Standards home on adoption:** none new — row 5 (`NO_COLOR`/`FORCE_COLOR`) already governs the
-  gate this rides on.
 
 ### Bugs
 
@@ -648,80 +612,6 @@ canonical ordering.
   *Priority: med · Effort: small · Bump: patch* — advisory-only; no build or install behaviour changes.
 
 ---
-
-- **`3.1.0-B4` — a timed-out sudo prompt at install time is reported as a kernel-stage failure.**
-  `pipeline/stages/kernel.py:2274` opens `sentinel_scope` around the install → mkinitcpio →
-  bootloader mutation window, and the first statement inside it is `install_built_packages`
-  (`primitives/makepkg_wrapper.py:351`), which runs `sudo pacman -U` with inherited stdio. When the
-  operator leaves a multi-hour build unattended, sudo's `passwd_timeout` fires and **sudo exits
-  non-zero without ever executing pacman** — nothing was installed, no file on the system was
-  touched. `makepkg_wrapper.py:374` cannot tell that apart from a genuine pacman failure and raises
-  `RuntimeError`, which propagates out of the scope; by contract (`stage_sentinel.py:371`) any
-  exception leaves the sentinel in place, so the next invocation is blocked by
-  `check_and_recover_stale_sentinel` demanding the recorded `recovery_cmd`
-  (`_kernel_recovery_command()`, the mkinitcpio line). The operator must therefore run a pointless
-  mkinitcpio purely to clear a sentinel guarding a mutation that never began, just to get back to
-  the final install. The sentinel is behaving correctly — it simply cannot distinguish "the
-  mutation window was entered and abandoned mid-way" (kernel installed, initramfs missing →
-  unbootable, the case it exists for) from "authentication never succeeded, so the window was never
-  really entered". Fix by acquiring credentials *before* entering the scope: probe with the
-  allowlisted `sudo -v` auth probe (explicitly out of scope for the privilege seam per
-  `primitives/privilege.py`'s docstring), and on failure abort cleanly with a message naming what
-  happened and the plain re-run (`sysforge run kernel`) — no sentinel written, no recovery ritual.
-  A successful probe caches the timestamp, so the `pacman -U` inside the scope does not re-prompt.
-  Keep the classification narrow: only a pre-install auth failure is a clean abort; a `pacman -U`
-  that actually ran and failed must keep leaving the sentinel. Pairs with `3.1.0-B5`, which stops
-  the prompt from timing out in the first place; this entry is the safety net for when it still
-  does. Test both branches (auth probe fails → no sentinel, distinct message; probe succeeds and
-  pacman fails → sentinel retained, existing B7 stale-package guidance intact).
-  *Priority: med · Effort: small · Bump: patch* — one stage, no change to the mutation window
-  itself or to the sentinel contract.
-  **Standards home on adoption:** none new — row 18 (privilege seam) already carves out auth
-  probes; this adds a call site, not a mechanism.
-
----
-
-- **`3.1.0-B5` — the kernel stage has no sudo keepalive, so its final install prompt goes stale.**
-  `pipeline/stages/toolchain.py:1170` runs `_sudo_keepalive_daemon` — a background thread
-  refreshing `sudo -v` every `_SUDO_KEEPALIVE_INTERVAL` — precisely so the install at the end of a
-  2+ hour PGO sequence does not re-prompt an operator who has walked away. The kernel stage builds
-  for just as long and installs the same way (`install_built_packages` calling sudo directly from
-  the sysforge process, so the same timestamp entry applies), but has no equivalent: credentials
-  authenticated at stage entry have long expired by the time the build finishes, so the run stops
-  on a password prompt that then times out. `primitives/makepkg_invoke.py:690` shows how routinely
-  this bites — it carries a whole interactive "Built packages found — build likely succeeded but
-  install failed (sudo timeout?) … [s]udo re-auth and install" recovery path, which the kernel
-  stage's split build/install shape bypasses entirely. Fix by giving the kernel build the same
-  keepalive coverage, but lift the daemon out of `toolchain.py` into a shared primitive (one home)
-  rather than copying it — a second copy is exactly the drift the one-home invariants exist to
-  prevent, and a third caller (`build_core`'s long batch builds) is plausible later. The daemon
-  must remain best-effort and non-fatal: a failed refresh warns, as it does today, and the stage
-  still reaches `3.1.0-B4`'s clean abort if the prompt is ultimately unanswered.
-  *Priority: med · Effort: small · Bump: patch* — behaviour-preserving extraction plus one new
-  caller; no change to what is built or installed.
-  **Standards home on adoption:** none new — `sudo -v` is an auth probe, already outside the
-  privilege seam (row 18); the new module is the seam for *credential lifetime*, not escalation.
-
-- **`3.1.0-B7` — `--dry-run` forces the progress bar into plain mode, printing one line per package.**
-  `ui/progress.py:_detect_mode` returns `"plain"` whenever `log._DRY_RUN` is set, alongside the
-  genuine non-interactive cases (`not sys.stderr.isatty()`, `TERM` empty/`dumb`, `CI`, colour
-  disabled). Plain mode emits a discrete line per step instead of one rewriting line, so a dry-run
-  over a 110-package source sync prints ~300 progress lines on an ordinary TTY — on the live
-  workstation that is the entire remaining bulk of `sysforge --quiet update --dry-run`, whose
-  non-progress output is nine lines. The gate looks like a deliberate pairing with the other half
-  of `set_dry_run_mode`, which redirects log output to **stdout**: avoiding ANSI cursor control
-  interleaved with the report is a real concern. It does not apply here — progress writes to
-  **stderr** (`_detect_mode` tests `sys.stderr.isatty()`, and the TTY renderer targets the same
-  stream), so the cursor manipulation and the redirected report are on separate descriptors and
-  cannot interleave. The remaining rungs already cover every case where plain mode is genuinely
-  required, including the piped-to-a-file shape a scripted dry-run actually takes. Fix by dropping
-  the `_DRY_RUN` rung so a dry-run renders progress exactly as the real run it is previewing; keep
-  the other four. Related to `3.1.0-B6`, which removed the same function's verbosity forcing — this
-  is the last behaviour still keyed off `_DRY_RUN` beyond the stdout redirect it exists for.
-  *Priority: low · Effort: small · Bump: patch* — one condition removed; no change to what a
-  dry-run reports, only to how its progress is drawn on a TTY.
-  **Standards home on adoption:** none new — row 25 (log-level rubric) already owns default-verbosity
-  output; the progress channel is outside it and gains no new conformance surface.
 
 - **`3.1.0-B12` — `update --include-stage-owned` co-schedules a toolchain rebuild with the packages
   it compiles, and stamps them all with the pre-rebuild fingerprint.**

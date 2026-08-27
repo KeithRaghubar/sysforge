@@ -48,6 +48,32 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
                           "{pkgbase}: checkupdates unavailable, install pacman-contrib{star}"),
 }
 
+# 2.6.1-F29: verdict colour, keyed by the same action strings as
+# _ACTION_FORMATS so the two cannot drift apart on a new action. Green =
+# eligible to act on, yellow = deliberately skipped and fine, red = a
+# downgrade or a check that failed. Applied through render.tag_header(color=),
+# which gates on log.use_color(); an action absent here prints plain.
+#
+# The [TAG] gutter is the only correct surface for this. The adjacent
+# [VERSION] INFO line cannot take colour: log.info() builds its file-log text
+# from the caller's own message and only decorates level+tag for the terminal,
+# so an escape sequence in a message body is ungated and lands verbatim in
+# sysforge-update.log. _print_summary uses bare print() and never reaches a
+# file, so it is colour-safe by construction.
+_ACTION_COLORS: dict[str, str] = {
+    "NEEDS_REBUILD":            "green",
+    "NEEDS_PACMAN_UPGRADE":     "green",
+    "UP_TO_DATE":               "yellow",
+    "DEVEL":                    "yellow",
+    "FROZEN":                   "yellow",
+    "DOWNGRADE":                "red",
+    "DEVEL_EVAL_FAILED":        "red",
+    "PULL_FAILED":              "red",
+    "RATE_LIMITED":             "red",
+    "PURGE_REFUSED":            "red",
+    "SKIPPED_NO_CHECKUPDATES":  "red",
+}
+
 # Actions that are always printed per-package regardless of verbosity.
 # Everything else only appears under -v / verbose mode.
 _ALWAYS_VERBOSE_ACTIONS = frozenset({
@@ -95,7 +121,7 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
             pkgbuild_ver=r.pkgbuild_ver,
             star=star,
         )
-        print(f"{render.tag_header(tag)}{line}")
+        print(f"{render.tag_header(tag, color=_ACTION_COLORS.get(r.action))}{line}")
 
     if not verbose and any(r.action not in _ALWAYS_VERBOSE_ACTIONS for r in results):
         print("  (run with -v to list each skipped/up-to-date package)")

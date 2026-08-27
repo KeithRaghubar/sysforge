@@ -116,10 +116,34 @@ def version_pair(
     return log.downgrade_glyphs(f"{left} → {right}")
 
 
-def tag_header(tag: str) -> str:
+# Colour names accepted by :func:`tag_header`, mapped to the log-layer helpers
+# that gate on log.use_color(). Named rather than passed as callables so a caller
+# declares intent ("this verdict is bad") without reaching for an escape code.
+_TAG_COLORS = {
+    "green": log.green,
+    "yellow": log.yellow,
+    "red": log.red,
+}
+
+
+def tag_header(tag: str, *, color: str | None = None) -> str:
     """Return the ``  [TAG]`` prefix padded to the shared gutter width.
 
     Always leaves at least one trailing space so an over-long tag still
     separates from its message rather than butting against it.
+
+    *color* (``"green"`` / ``"yellow"`` / ``"red"``) tints the bracketed tag —
+    the gutter stays the one home for the ``[TAG]`` shape, so no caller writes an
+    escape sequence itself and ``log.use_color()`` gates it for free. Only the
+    bracketed token is wrapped; the padding is emitted outside the SGR run so
+    column alignment is computed on visible width, not byte length. An unknown
+    name degrades to plain rather than raising.
+
+    **Only safe on a print()/ui() surface.** Colour embedded in a message body
+    passed to ``log.info``/``warn``/``error`` bypasses the colour gate and lands
+    verbatim in the file log — see docs/design/12-logging.md § Colour.
     """
-    return f"  [{tag}]" + " " * max(1, _GUTTER - len(tag) - 2)
+    pad = " " * max(1, _GUTTER - len(tag) - 2)
+    painter = _TAG_COLORS.get(color) if color else None
+    body = f"[{tag}]" if painter is None else painter(f"[{tag}]")
+    return f"  {body}{pad}"

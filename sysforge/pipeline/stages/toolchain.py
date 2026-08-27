@@ -93,8 +93,8 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
             preserved with a version sidecar (clang.profdata.version) for
             reuse by sysforge update.
 
-  A sudo keepalive thread refreshes credentials every _SUDO_KEEPALIVE_INTERVAL
-  seconds throughout all four passes.
+  A sudo keepalive thread (primitives/sudo_session.keepalive) refreshes
+  credentials every SUDO_KEEPALIVE_INTERVAL seconds throughout all four passes.
 
 Compiler propagation:
   On completion writes cc/cxx/ld to pipeline_state.toml [stages.toolchain.result]
@@ -114,7 +114,12 @@ from sysforge import log
 _log = log.get_logger("TOOLCHAIN")
 from sysforge.build_core import make_build_options
 from sysforge.pipeline.stages.base import Stage
-from sysforge.primitives import build_fingerprint, fs_provision, toolchain_safety
+from sysforge.primitives import (
+    build_fingerprint,
+    fs_provision,
+    sudo_session,
+    toolchain_safety,
+)
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.config import (
     REPO_MODE_PACMAN,
@@ -303,12 +308,6 @@ _PGO_ALLOWED_MAKEPKG_FLAGS = {"-f", "--force"}
 
 # Interval (seconds) between intermediate profraw merges during Pass 3.
 _PGO_MERGE_INTERVAL = 15
-
-# How often (seconds) to refresh sudo credentials during the PGO build sequence.
-# The 4-pass build can run for 2+ hours unattended. The keepalive calls sudo
-# from the sysforge process, and _pgo_install also calls sudo from the same
-# process, so they share the same timestamp entry regardless of timestamp_type.
-_SUDO_KEEPALIVE_INTERVAL = 60
 
 # Adaptive batch sizing for llvm-profdata merge. Each invocation starts at
 # _PROFRAW_MERGE_BATCH_MAX files; on failure the batch is halved and retried
@@ -1165,24 +1164,6 @@ def _do_profraw_merge(pgo_store: Path, label: str) -> tuple[int, int]:
         i += batch_size
 
     return deleted, n_batches
-
-
-def _sudo_keepalive_daemon(stop_event: threading.Event) -> None:
-    """
-    Background thread: refresh sudo credentials every _SUDO_KEEPALIVE_INTERVAL
-    seconds throughout the 4-pass PGO build sequence.
-
-    The 4-pass build can run unattended for 2+ hours. _pgo_install() calls
-    sudo directly from the sysforge process, so its timestamp entry is the
-    same one the keepalive refreshes — credential caching works correctly
-    regardless of the sudoers timestamp_type setting.
-    """
-    while not stop_event.wait(_SUDO_KEEPALIVE_INTERVAL):
-        result = subprocess.run(["sudo", "-v"])
-        if result.returncode != 0:
-            _log.warn(
-                      "[PGO] sudo keepalive failed — install step may prompt "
-                      "for a password")
 
 
 def _collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
@@ -2388,16 +2369,11 @@ def _build_llvm_pgo_inner(
     # directly from sysforge, so the keepalive's `sudo -v` refreshes the correct
     # timestamp entry (same parent PID) for all passes.
     if not options.dry_run:
-        subprocess.run(["sudo", "-v"])
-    sudo_stop = threading.Event()
-    sudo_keepalive = threading.Thread(
-        target=_sudo_keepalive_daemon,
-        args=(sudo_stop,),
-        daemon=True,
-        name="sysforge-sudo-keepalive",
+        sudo_session.authenticate()
+    sudo_stack = contextlib.ExitStack()
+    sudo_stack.enter_context(
+        sudo_session.keepalive(tag="PGO", enabled=not options.dry_run)
     )
-    if not options.dry_run:
-        sudo_keepalive.start()
 
     try:
         residual_linker_flags: str | None = None
@@ -2874,9 +2850,7 @@ def _build_llvm_pgo_inner(
             _log.info("[PGO] 4/4 build complete — pending audit + install")
 
     finally:
-        sudo_stop.set()
-        if not options.dry_run:
-            sudo_keepalive.join()
+        sudo_stack.close()
 
     # Sidecar is written after Pass 3 (above), not here — see comment there.
     # Staging is intentionally NOT removed here: the caller's Gate-3

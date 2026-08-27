@@ -107,3 +107,48 @@ def test_format_version_empty_epoch_treated_as_zero():
 def test_format_version_default_pkgrel():
     g = {"pkgver": "1.0"}
     assert format_version(g) == "1.0-1"
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F29 (adjacent fix) — the log line must carry its verdict
+# ---------------------------------------------------------------------------
+
+def test_vercmp_logs_operands_with_the_result():
+    """Logging the operands *before* comparing left a line that asked a question
+    and never answered it — useless when reading the run log after the fact."""
+    lines = []
+    with patch("subprocess.run", return_value=_mock_run("1\n")), \
+         patch("sysforge.log.info", side_effect=lambda tag, msg: lines.append((tag, msg))):
+        assert vercmp("3.4.1-1", "3.3.0-1") == 1
+
+    assert lines == [("[VERSION]", "vercmp '3.4.1-1' '3.3.0-1' -> 1")]
+
+
+def test_vercmp_log_line_carries_no_colour():
+    """Message bodies on info() bypass the colour gate and land verbatim in the
+    file log (docs/design/12-logging.md § Colour) — this one stays plain."""
+    from sysforge import log
+
+    lines = []
+    saved = log._COLOR_MODE
+    try:
+        log.set_color_mode("always")
+        with patch("subprocess.run", return_value=_mock_run("-1\n")), \
+             patch("sysforge.log.info",
+                   side_effect=lambda tag, msg: lines.append(msg)):
+            assert vercmp("1.0-1", "2.0-1") == -1
+    finally:
+        log.set_color_mode(saved)
+
+    assert "\033[" not in lines[0]
+
+
+def test_vercmp_does_not_log_when_the_binary_is_missing():
+    """A RuntimeError path has nothing to report a verdict for."""
+    lines = []
+    with patch("subprocess.run", side_effect=FileNotFoundError), \
+         patch("sysforge.log.info", side_effect=lambda tag, msg: lines.append(msg)), \
+         pytest.raises(RuntimeError, match="vercmp not found"):
+        vercmp("1.0-1", "2.0-1")
+
+    assert lines == []

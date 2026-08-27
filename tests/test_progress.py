@@ -60,8 +60,20 @@ def test_mode_plain_when_stderr_not_tty(monkeypatch):
     assert progress._mode == "plain"
 
 
-def test_mode_plain_when_dry_run(monkeypatch):
+def test_mode_tty_when_dry_run_on_a_tty(monkeypatch):
+    """3.1.0-B7: a dry run renders progress exactly as the real run it previews.
+    The log-to-stdout redirect it used to be paired with cannot interleave with
+    progress, which writes to stderr."""
     _fake_tty_stderr(monkeypatch)
+    monkeypatch.setattr(log, "_DRY_RUN", True)
+    progress.init()
+    assert progress._mode == "tty"
+
+
+def test_mode_plain_when_dry_run_off_tty(monkeypatch):
+    """The genuine non-interactive rungs still apply to a dry run — a scripted
+    dry run redirected to a file gets plain output from the isatty rung."""
+    _fake_plain_stderr(monkeypatch)
     monkeypatch.setattr(log, "_DRY_RUN", True)
     progress.init()
     assert progress._mode == "plain"

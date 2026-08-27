@@ -131,6 +131,14 @@ Mechanism lives in the cited §DESIGN section.
 - **Privilege escalation**: `primitives/privilege.py` (`privileged_argv`/
   `run_privileged`) — never hand-roll `["sudo", …]`; auth probes (`-v`/`-n true`)
   and drop-priv (`-u`) are the only exceptions. §22.
+- **Sudo credential *lifetime*** (orthogonal to escalation): `primitives/sudo_session.py`
+  — `authenticate()` (returns usability, so "not authorized, nothing ran" is
+  distinguishable from "ran and failed") + `keepalive(tag=…, enabled=…)` context
+  manager. Both long-building stages use it; never re-roll the daemon in a stage.
+  **Always `authenticate()` before entering `keepalive()`** — the refresh inherits
+  stdio and would otherwise prompt from a background thread. The kernel stage also
+  probes *before* `sentinel_scope` so a stale prompt can't strand a recovery
+  sentinel for a mutation that never began. §22.
 - **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at five
   seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, and both `vcs_pkgver.py`
   probes — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift

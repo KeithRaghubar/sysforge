@@ -9,6 +9,7 @@ packages selected by overrides). packages.toml entries are overrides only;
 override entries with no installed counterpart are inert and silently
 skipped (no NOT_INSTALLED action).
 """
+import re
 import itertools
 import sys
 from pathlib import Path
@@ -1856,6 +1857,109 @@ def test_print_summary_verbose_shows_all_lines(capsys):
     assert "[RATE_LIMITED]" in captured
     # No -v hint when already verbose
     assert "run with -v" not in captured
+
+
+def test_print_summary_colours_verdicts_by_action(capsys):
+    """2.6.1-F29: the action tag carries the verdict's colour so the handful of
+    packages actually eligible to rebuild stand out from the wall that are not."""
+    from sysforge import log
+    from sysforge.update import _print_summary
+
+    args = SimpleNamespace(verbose=1)
+    saved = log._COLOR_MODE
+    try:
+        log.set_color_mode("always")
+        _print_summary(_make_summary_results(), args)
+    finally:
+        log.set_color_mode(saved)
+    captured = capsys.readouterr().out
+
+    assert "\033[32m[NEEDS_REBUILD]\033[0m" in captured   # green: act on this
+    assert "\033[33m[UP_TO_DATE]\033[0m" in captured      # yellow: fine, skipped
+    assert "\033[33m[DEVEL]\033[0m" in captured
+    assert "\033[31m[RATE_LIMITED]\033[0m" in captured    # red: check failed
+
+
+def test_print_summary_colours_a_downgrade_red(capsys):
+    from sysforge import log
+    from sysforge.update import _print_summary, _UpdateResult
+
+    results = [
+        _UpdateResult("bat", ["bat"], "DOWNGRADE", "0.25.0-1", "0.24.0-1",
+                      Path("/tmp/bat/PKGBUILD")),
+    ]
+    args = SimpleNamespace(verbose=1)
+    saved = log._COLOR_MODE
+    try:
+        log.set_color_mode("always")
+        _print_summary(results, args)
+    finally:
+        log.set_color_mode(saved)
+
+    assert "\033[31m[DOWNGRADE]\033[0m" in capsys.readouterr().out
+
+
+def test_print_summary_plain_output_is_byte_for_byte_unchanged(capsys):
+    """NO_COLOR must yield exactly the pre-F29 output — colour is presentation
+    only and changes neither the action taxonomy nor the gutter alignment."""
+    from sysforge import log
+    from sysforge.update import _print_summary
+
+    args = SimpleNamespace(verbose=1)
+    saved = log._COLOR_MODE
+    try:
+        log.set_color_mode("never")
+        _print_summary(_make_summary_results(), args)
+    finally:
+        log.set_color_mode(saved)
+    captured = capsys.readouterr().out
+
+    assert "\033[" not in captured
+    assert "  [NEEDS_REBUILD]  htop: 3.3.0-1 \u2192 3.4.1-1" in captured
+    assert "  [UP_TO_DATE]     neovim: 0.9.5-1" in captured
+
+
+def test_print_summary_colour_preserves_gutter_alignment(capsys):
+    """The padding is emitted outside the SGR run, so columns line up on visible
+    width rather than byte length."""
+    from sysforge import log
+    from sysforge.update import _print_summary
+
+    args = SimpleNamespace(verbose=1)
+    for mode in ("never", "always"):
+        saved = log._COLOR_MODE
+        try:
+            log.set_color_mode(mode)
+            _print_summary(_make_summary_results(), args)
+        finally:
+            log.set_color_mode(saved)
+        out = capsys.readouterr().out
+        line = next(ln for ln in out.splitlines() if "htop" in ln)
+        # Strip any SGR runs, then the visible column must be identical.
+        visible = re.sub(r"\033\[[0-9;]*m", "", line)
+        assert visible.index("htop") == len("  [NEEDS_REBUILD]  ")
+
+
+def test_print_summary_unknown_action_colour_degrades_to_plain(capsys):
+    """An action absent from _ACTION_COLORS prints plain rather than raising."""
+    from sysforge import log
+    from sysforge.primitives import render
+
+    saved = log._COLOR_MODE
+    try:
+        log.set_color_mode("always")
+        assert "\033[" not in render.tag_header("MYSTERY", color=None)
+        assert "\033[" not in render.tag_header("MYSTERY", color="chartreuse")
+    finally:
+        log.set_color_mode(saved)
+
+
+def test_action_colours_cover_every_action_format():
+    """The two dicts are keyed by the same action strings; a new action that
+    lands in _ACTION_FORMATS without a colour is a drift this catches."""
+    from sysforge.update_summary import _ACTION_COLORS, _ACTION_FORMATS
+
+    assert set(_ACTION_COLORS) == set(_ACTION_FORMATS)
 
 
 def test_print_summary_frozen_always_shown_and_counted(capsys):

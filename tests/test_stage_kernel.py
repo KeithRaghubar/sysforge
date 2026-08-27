@@ -4,6 +4,7 @@ test_stage_kernel.py — unit tests for the kernel stage.
 Covers all pure-logic functions. Subprocess calls (lsmod, mkinitcpio,
 bootctl, makepkg) are mocked — nothing real runs.
 """
+import contextlib
 import types
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -82,6 +83,11 @@ def _neutralize_kernel_gates(monkeypatch):
                         lambda *a, **k: [])
     monkeypatch.setattr(device_probe, "enumerate_devices", lambda *a, **k: [])
     monkeypatch.setattr(_km, "install_built_packages", lambda *a, **k: [])
+    # B4/B5: the stage now warms sudo credentials at build entry and probes
+    # them again before the install sentinel. Both shell out to `sudo -v`;
+    # neutralize them so run()-flow tests stay hermetic. The dedicated B4 tests
+    # below re-patch authenticate to drive the failure branch.
+    monkeypatch.setattr(_km.sudo_session, "authenticate", lambda: True)
     # The pkgname repo-collision check and the configured-vs-installed toolchain
     # mismatch check both shell out to pacman; neutralize them so run()-flow
     # tests stay hermetic. Dedicated tests below exercise them directly.
@@ -1720,6 +1726,157 @@ def test_kernel_stage_writes_sentinel_during_install_and_clears_on_success(tmp_p
     assert seen_during_install["stage"] == "kernel"
     # Cleared on clean exit
     assert StageSentinel(state_dir).get_active() is None
+
+
+# ---------------------------------------------------------------------------
+# 3.1.0-B4 / 3.1.0-B5 — sudo credential lifetime around the install window
+# ---------------------------------------------------------------------------
+
+def test_kernel_stage_auth_failure_aborts_without_writing_a_sentinel(tmp_path):
+    """B4: a sudo prompt that times out means pacman never ran and nothing was
+    installed. That must abort cleanly *outside* the sentinel scope — otherwise
+    the operator has to run a pointless mkinitcpio to clear a sentinel guarding
+    a mutation that never began."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    install_mock = MagicMock(return_value=[])
+    # First call is the B5 entry warm-up (succeeds, so the build proceeds);
+    # the second is the B4 pre-install probe, which times out.
+    auth = MagicMock(side_effect=[True, False])
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km.sudo_session, "authenticate", auth), \
+         patch.object(_km, "install_built_packages", install_mock), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         pytest.raises(RuntimeError, match="sudo authentication failed or timed out"):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    assert StageSentinel(state_dir).get_active() is None, \
+        "a pre-install auth failure must leave no sentinel to recover from"
+    install_mock.assert_not_called()
+
+
+def test_kernel_stage_auth_failure_message_names_the_plain_rerun(tmp_path):
+    """The abort has to tell the operator the system is unchanged and how to
+    get back in — the whole point is that no recovery ritual is needed."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km.sudo_session, "authenticate",
+                      MagicMock(side_effect=[True, False])), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         pytest.raises(RuntimeError) as exc:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    msg = str(exc.value)
+    assert "nothing was installed" in msg
+    assert "sysforge run kernel" in msg
+
+
+def test_kernel_stage_install_failure_still_retains_the_sentinel(tmp_path):
+    """B4 must stay narrow: a pacman -U that actually ran and failed is the
+    case the sentinel exists for, and keeps leaving one behind."""
+    from sysforge.primitives.stage_sentinel import StageSentinel
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km.sudo_session, "authenticate", lambda: True), \
+         patch.object(_km, "install_built_packages",
+                      side_effect=RuntimeError("pacman -U failed (exit 1)")), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub, \
+         pytest.raises(RuntimeError, match="pacman -U failed"):
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    record = StageSentinel(state_dir).get_active()
+    assert record is not None
+    assert record["stage"] == "kernel"
+
+
+def test_kernel_stage_runs_a_sudo_keepalive_over_the_build(tmp_path):
+    """B5: the build → audit → install window is covered by the shared
+    keepalive, so the final install prompt cannot go stale."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    seen = {}
+
+    @contextlib.contextmanager
+    def fake_keepalive(*, tag, enabled=True):
+        seen["tag"] = tag
+        seen["enabled"] = enabled
+        seen["installed_inside"] = False
+        yield
+        seen["exited"] = True
+
+    def note_install(*_a, **_kw):
+        seen["installed_inside"] = True
+        return []
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km.sudo_session, "keepalive", fake_keepalive), \
+         patch.object(_km, "install_built_packages", side_effect=note_install), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=state_dir))
+
+    assert seen["tag"] == "KERNEL"
+    assert seen["enabled"] is True
+    assert seen["installed_inside"] is True, "install must run inside the keepalive"
+    assert seen.get("exited") is True
+
+
+def test_kernel_stage_dry_run_skips_sudo_entirely(tmp_path):
+    """A dry run mutates nothing, so it neither authenticates nor keeps alive."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+
+    auth = MagicMock(return_value=True)
+    enabled_seen = {}
+
+    @contextlib.contextmanager
+    def fake_keepalive(*, tag, enabled=True):
+        enabled_seen["enabled"] = enabled
+        yield
+
+    with patch.object(_km, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.makepkg_run"), \
+         patch.object(_km.sudo_session, "authenticate", auth), \
+         patch.object(_km.sudo_session, "keepalive", fake_keepalive), \
+         patch("sysforge.pipeline.stages.kernel.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state,
+                          make_options(state_dir=state_dir, dry_run=True))
+
+    auth.assert_not_called()
+    assert enabled_seen["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
