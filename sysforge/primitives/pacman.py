@@ -478,6 +478,10 @@ def filter_pkgs_to_installed(
 # an installed package's dependency unsatisfied:
 #   :: installing egl-wayland-git (1.1.21.r12.g5f743e6-1) breaks dependency
 #      'egl-wayland-git=1.1.21.r10.g9cb24d8' required by lib32-egl-wayland-git
+# pacman splits this refusal across BOTH streams: the generic "error: failed to
+# prepare transaction" header goes to stderr, while the ``::`` line above —
+# the only part naming the dependency and its holder — goes to stdout. Both
+# must be read; parsing either alone silently finds nothing.
 _BREAKS_DEP_RE = re.compile(
     r"breaks dependency '(?P<dep>[^']+)' required by (?P<holder>\S+)"
 )
@@ -492,18 +496,23 @@ def deps_broken_by_install(pkg_paths: list) -> dict:
     unprivileged (no ``sudo`` prompt) and side-effect free; it is the probe
     behind :func:`batch_install_pkgs`'s ``allow_break_deps``.
 
+    Both streams are captured and scanned together: pacman puts the ``::``
+    detail line on stdout and only the generic header on stderr, so a probe
+    reading one stream reports no breakage however badly the transaction is
+    refused (3.1.0-B16).
+
     Any unexpected failure returns ``{}`` — "no *known* breakage". The caller
     treats that as "do not relax dependency checking", so a probe that cannot
     speak never widens what the real transaction is allowed to do.
     """
     result = subprocess.run(
         ["pacman", "-U", "--print"] + [str(p) for p in pkg_paths],
-        stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
+        stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
     )
-    if result.returncode == 0 or not result.stderr:
+    if result.returncode == 0:
         return {}
     broken: dict = {}
-    for m in _BREAKS_DEP_RE.finditer(result.stderr):
+    for m in _BREAKS_DEP_RE.finditer((result.stdout or "") + (result.stderr or "")):
         broken.setdefault(m.group("holder"), set()).add(m.group("dep"))
     return broken
 

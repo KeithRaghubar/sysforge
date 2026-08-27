@@ -1090,8 +1090,13 @@ class TestGetRepoCandidateVersion:
 
 from sysforge.primitives.pacman import deps_broken_by_install
 
+# pacman splits this refusal across BOTH streams: the generic header goes to
+# stderr, the actionable detail naming the dep and its holder goes to stdout.
+# Parsing only one stream silently sees nothing (3.1.0-B16).
 _BREAKS_STDERR = (
     "error: failed to prepare transaction (could not satisfy dependencies)\n"
+)
+_BREAKS_STDOUT = (
     ":: installing egl-wayland-git (1.1.21.r12.g5f743e6-1) breaks dependency "
     "'egl-wayland-git=1.1.21.r10.g9cb24d8' required by lib32-egl-wayland-git\n"
 )
@@ -1107,8 +1112,12 @@ class TestDepsBrokenByInstall:
         return p
 
     @patch("sysforge.primitives.pacman.subprocess.run")
-    def test_parses_holder_and_dep_spec(self, mock_run, tmp_path):
-        mock_run.return_value = MagicMock(returncode=1, stderr=_BREAKS_STDERR)
+    def test_parses_holder_and_dep_spec_from_stdout(self, mock_run, tmp_path):
+        # The detail line lands on stdout, the header on stderr — the probe
+        # must read both or it sees an empty transaction refusal.
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout=_BREAKS_STDOUT, stderr=_BREAKS_STDERR,
+        )
         broken = deps_broken_by_install([self._make_pkg(tmp_path)])
         assert broken == {
             "lib32-egl-wayland-git": {"egl-wayland-git=1.1.21.r10.g9cb24d8"}
@@ -1116,12 +1125,12 @@ class TestDepsBrokenByInstall:
 
     @patch("sysforge.primitives.pacman.subprocess.run")
     def test_clean_dry_run_reports_nothing(self, mock_run, tmp_path):
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         assert deps_broken_by_install([self._make_pkg(tmp_path)]) == {}
 
     @patch("sysforge.primitives.pacman.subprocess.run")
     def test_probe_is_unprivileged_and_side_effect_free(self, mock_run, tmp_path):
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         deps_broken_by_install([self._make_pkg(tmp_path)])
         argv = mock_run.call_args_list[0].args[0]
         assert argv[0] == "pacman"          # no sudo: --print needs no root
@@ -1212,7 +1221,7 @@ class TestBatchInstallFailureIsDiagnosable:
     def test_noninteractive_relays_pacman_stderr(self, mock_run, _i, _s, tmp_path, capsys):
         mock_run.return_value = MagicMock(returncode=1, stderr=_BREAKS_STDERR)
         assert batch_install_pkgs([self._make_pkg(tmp_path)]) is False
-        assert "breaks dependency" in capsys.readouterr().err
+        assert "failed to prepare transaction" in capsys.readouterr().err
 
     @patch("sysforge.primitives.pacman.subprocess.run")
     def test_interactive_failure_points_at_the_terminal(
