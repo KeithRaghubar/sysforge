@@ -43,7 +43,11 @@ Mechanism lives in the cited §DESIGN section.
   `config.set_makepkg_conf_keys`. §primitives-layer.
 - **build ⊂ update, both via `build_core.build_and_install`** (`prepare_deps` + per-pkg loop +
   `install_built`); makepkg runs with `BATCH_STRIP_FLAGS`+`force_batch`, batch members topo-ordered
-  + JIT-installed. No second dep/build loop. Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
+  + JIT-installed. The JIT install passes `allow_break_deps` (pkgnames of batch members not yet
+  built, **including the current target** — it is the usual pin holder) so an exact-version
+  sibling pin (`lib32-*` VCS) can be broken; `pacman.batch_install_pkgs` re-verifies via
+  `deps_broken_by_install` and adds a **single** `--nodeps`, never `-dd`. No second dep/build
+  loop. Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
 - **PKGBUILD review gate**: `build_and_install(review=…)` → `pkgbuild_review.review_target` (build
   `prompt`, update `auto`); sticky `reviewed_commit`. New build_state fields go in
   `BuildState._serialize`'s key tuple. §primitives-layer.

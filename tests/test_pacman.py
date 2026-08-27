@@ -1082,3 +1082,144 @@ class TestGetRepoCandidateVersion:
         _pacman_mod.get_repo_candidate_version("a")
         _pacman_mod.get_repo_candidate_version("b")
         assert len(calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Intra-batch exact-pin breakage (3.1.0-B14)
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.pacman import deps_broken_by_install
+
+_BREAKS_STDERR = (
+    "error: failed to prepare transaction (could not satisfy dependencies)\n"
+    ":: installing egl-wayland-git (1.1.21.r12.g5f743e6-1) breaks dependency "
+    "'egl-wayland-git=1.1.21.r10.g9cb24d8' required by lib32-egl-wayland-git\n"
+)
+
+
+class TestDepsBrokenByInstall:
+    """A dry-run ``pacman -U --print`` is the unprivileged probe for
+    'this install would break an installed package's dependency'."""
+
+    def _make_pkg(self, tmp_path, name="egl-wayland-git"):
+        p = tmp_path / f"{name}-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        return p
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_parses_holder_and_dep_spec(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=1, stderr=_BREAKS_STDERR)
+        broken = deps_broken_by_install([self._make_pkg(tmp_path)])
+        assert broken == {
+            "lib32-egl-wayland-git": {"egl-wayland-git=1.1.21.r10.g9cb24d8"}
+        }
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_clean_dry_run_reports_nothing(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        assert deps_broken_by_install([self._make_pkg(tmp_path)]) == {}
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_probe_is_unprivileged_and_side_effect_free(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        deps_broken_by_install([self._make_pkg(tmp_path)])
+        argv = mock_run.call_args_list[0].args[0]
+        assert argv[0] == "pacman"          # no sudo: --print needs no root
+        assert "--print" in argv
+
+
+class TestBatchInstallBreaksIntraBatchPin:
+    """An installed batch member pinning a sibling by exact version deadlocks
+    the just-in-time install: the only package that would satisfy the new pin
+    is the artifact this run has not built yet. Breaking the stale pin with
+    ``--nodeps`` is correct *only* when its holder is itself a later member of
+    the same batch, about to be replaced in this very run (3.1.0-B14)."""
+
+    def _make_pkg(self, tmp_path, name="egl-wayland-git"):
+        p = tmp_path / f"{name}-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        return p
+
+    @patch("sysforge.primitives.pacman.deps_broken_by_install",
+           return_value={"lib32-egl-wayland-git":
+                         {"egl-wayland-git=1.1.21.r10.g9cb24d8"}})
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed", return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages", return_value={})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="egl-wayland-git")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_holder_in_allowlist_breaks_the_pin(
+        self, mock_run, _rec, _rd, _inst, _sup, _broken, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        assert batch_install_pkgs(
+            [self._make_pkg(tmp_path)],
+            allow_break_deps=frozenset({"lib32-egl-wayland-git"}),
+        ) is True
+        assert "--nodeps" in mock_run.call_args_list[0].args[0]
+
+    @patch("sysforge.primitives.pacman.deps_broken_by_install",
+           return_value={"some-unrelated-pkg": {"egl-wayland-git=1.0"}})
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed", return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages", return_value={})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="egl-wayland-git")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_holder_outside_allowlist_keeps_deps_enforced(
+        self, mock_run, _rec, _rd, _inst, _sup, _broken, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        batch_install_pkgs(
+            [self._make_pkg(tmp_path)],
+            allow_break_deps=frozenset({"lib32-egl-wayland-git"}),
+        )
+        assert "--nodeps" not in mock_run.call_args_list[0].args[0]
+
+    @patch("sysforge.primitives.pacman.deps_broken_by_install")
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed", return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages", return_value={})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file",
+           return_value="egl-wayland-git")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_empty_allowlist_never_probes(
+        self, mock_run, _rec, _rd, _inst, _sup, mock_broken, tmp_path
+    ):
+        # The default install path must not pay for a dry run it can't act on.
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        batch_install_pkgs([self._make_pkg(tmp_path)])
+        mock_broken.assert_not_called()
+        assert "--nodeps" not in mock_run.call_args_list[0].args[0]
+
+
+class TestBatchInstallFailureIsDiagnosable:
+    """A failed install must leave enough in the unified run-log to diagnose
+    it. Non-interactive runs relay pacman's captured stderr; interactive runs
+    inherit the streams (so the prompt works) and pacman's diagnostics reach
+    only the terminal — the log must say so rather than end at a bare
+    'install failed' (3.1.0-B14)."""
+
+    def _make_pkg(self, tmp_path):
+        p = tmp_path / "foo-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        return p
+
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed", return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages", return_value={})
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_noninteractive_relays_pacman_stderr(self, mock_run, _i, _s, tmp_path, capsys):
+        mock_run.return_value = MagicMock(returncode=1, stderr=_BREAKS_STDERR)
+        assert batch_install_pkgs([self._make_pkg(tmp_path)]) is False
+        assert "breaks dependency" in capsys.readouterr().err
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_interactive_failure_points_at_the_terminal(
+        self, mock_run, tmp_path, capsys
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr=None)
+        assert batch_install_pkgs(
+            [self._make_pkg(tmp_path)], interactive=True
+        ) is False
+        assert "terminal" in capsys.readouterr().err.lower()

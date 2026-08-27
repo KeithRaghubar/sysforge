@@ -367,6 +367,7 @@ def install_built(
     *,
     always_install: "frozenset[str] | set[str]" = frozenset(),
     interactive: bool = False,
+    allow_break_deps: "frozenset[str] | set[str]" = frozenset(),
 ) -> tuple[list[Path], bool]:
     """Dedupe, filter to the install keep-set, and bulk ``pacman -U``.
 
@@ -378,6 +379,10 @@ def install_built(
     pkgnames the user explicitly asked to build. Without the latter a fresh
     ``sysforge build <new-pkg>`` would build the artifact and then drop it
     (its pkgname isn't installed yet), so the package never gets installed.
+
+    ``allow_break_deps`` is forwarded verbatim to
+    :func:`~sysforge.primitives.pacman.batch_install_pkgs` — see its docstring
+    for the intra-batch exact-pin deadlock it licenses (3.1.0-B14).
     """
     seen: set = set()
     deduped: list[Path] = []
@@ -401,7 +406,10 @@ def install_built(
             for path, pn in dropped:
                 _log.info(f"  - {pn} ({path.name})")
 
-    if built_pkg_files and not batch_install_pkgs(built_pkg_files, interactive=interactive):
+    if built_pkg_files and not batch_install_pkgs(
+        built_pkg_files, interactive=interactive,
+        allow_break_deps=allow_break_deps,
+    ):
         _log.error("Batch package install failed")
         _log.error("packages were built but not installed")
         install_failed = True
@@ -786,7 +794,7 @@ def build_and_install(
     jit_files: list[Path] = []
 
     with _ui_progress.tracker(len(targets), "building") as _tick:
-        for target in targets:
+        for _idx, target in enumerate(targets):
             _tick(target.pkgbase)
             # ── Just-in-time install of intra-batch deps ──────────────────
             # Deferred bulk install would leave this target configuring
@@ -826,10 +834,25 @@ def build_and_install(
                         f"installing {len(pending_bases)} intra-batch dep(s) "
                         f"for {target.pkgbase}"
                     )
+                    # Intra-batch exact-pin deadlock (3.1.0-B14): a member
+                    # pinning a sibling by exact version (``foo=$pkgver``)
+                    # leaves pacman no valid transaction — it refuses to
+                    # upgrade the sibling while the *installed* dependent still
+                    # pins the old version, and the package that would satisfy
+                    # the new pin is the artifact this run has not built yet.
+                    # Members still ahead in the batch are about to be rebuilt
+                    # and reinstalled, so a pin they hold may be broken now;
+                    # everything already built (or outside the batch) still
+                    # enforces its deps. pacman.batch_install_pkgs verifies the
+                    # actual breakage is confined to this set before acting.
+                    later_pkgnames = frozenset(
+                        pn for t in targets[_idx:] for pn in (t.pkgnames or [])
+                    )
                     with timer.phase(f"install deps: {target.pkgbase}"):
                         installed_files, jit_failed = install_built(
                             pending, always_install=requested,
                             interactive=interactive,
+                            allow_break_deps=later_pkgnames,
                         )
                     _tick.resume()
                     jit_handled.update(pending)

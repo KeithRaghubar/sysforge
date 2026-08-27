@@ -19,7 +19,8 @@ Public API:
     snapshot_pkg_dir(directory)     → frozenset
     get_pacman_cache_dirs()         → list[Path]
     cached_pkg_files_for(names)     → dict[str, Path | None]
-    batch_install_pkgs(pkg_paths)   → bool
+    batch_install_pkgs(pkg_paths, allow_break_deps=…) → bool
+    deps_broken_by_install(pkg_paths) → dict[holder, set[dep-spec]]
     read_pkgname_from_file(path)    → str | None
     read_pkg_replaces_from_file(path) → set
     pkg_supersedes_installed(path, installed) → set
@@ -473,7 +474,46 @@ def filter_pkgs_to_installed(
     return keep, dropped
 
 
-def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
+# Matches pacman's transaction-preparation refusal when an upgrade would leave
+# an installed package's dependency unsatisfied:
+#   :: installing egl-wayland-git (1.1.21.r12.g5f743e6-1) breaks dependency
+#      'egl-wayland-git=1.1.21.r10.g9cb24d8' required by lib32-egl-wayland-git
+_BREAKS_DEP_RE = re.compile(
+    r"breaks dependency '(?P<dep>[^']+)' required by (?P<holder>\S+)"
+)
+
+
+def deps_broken_by_install(pkg_paths: list) -> dict:
+    """Dry-run the install; report whose dependencies it would break.
+
+    Returns ``{installed-pkgname: {dep-spec, ...}}`` — empty when the
+    transaction prepares cleanly. ``pacman -U --print`` resolves the full
+    transaction and then prints it instead of committing, so this is both
+    unprivileged (no ``sudo`` prompt) and side-effect free; it is the probe
+    behind :func:`batch_install_pkgs`'s ``allow_break_deps``.
+
+    Any unexpected failure returns ``{}`` — "no *known* breakage". The caller
+    treats that as "do not relax dependency checking", so a probe that cannot
+    speak never widens what the real transaction is allowed to do.
+    """
+    result = subprocess.run(
+        ["pacman", "-U", "--print"] + [str(p) for p in pkg_paths],
+        stderr=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
+    )
+    if result.returncode == 0 or not result.stderr:
+        return {}
+    broken: dict = {}
+    for m in _BREAKS_DEP_RE.finditer(result.stderr):
+        broken.setdefault(m.group("holder"), set()).add(m.group("dep"))
+    return broken
+
+
+def batch_install_pkgs(
+    pkg_paths: list,
+    *,
+    interactive: bool = False,
+    allow_break_deps: "frozenset[str] | set[str]" = frozenset(),
+) -> bool:
     """Install all built packages in one sudo pacman -U call. Returns True on success.
 
     With ``interactive=True`` the ``--noconfirm`` flag is dropped and the
@@ -494,6 +534,19 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
     (``ALPM_QUESTION_CONFLICT_PKG``) so that intended removal is auto-confirmed;
     absent that relationship the prompt keeps its safe default so an unexpected
     conflict still aborts the transaction.
+
+    ``allow_break_deps`` names installed packages whose dependencies this
+    install may break — the intra-batch exact-pin deadlock (3.1.0-B14). When a
+    batch member pins a sibling by exact version (``depends=("foo=$pkgver")``),
+    pacman refuses to upgrade the sibling alone, and the only package that
+    would satisfy the new pin is the artifact this run has not built yet: no
+    single transaction is valid. Passing the *later* batch members here lets
+    the install proceed with ``--nodeps``, because those holders are about to
+    be replaced in this very run. A single ``--nodeps`` (version checks only,
+    not ``-dd``) is deliberate: a genuinely absent dependency still aborts.
+    The relaxation is applied only when :func:`deps_broken_by_install` confirms
+    every affected holder is in the set — breakage anywhere else keeps
+    dependency enforcement fully on.
     """
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
@@ -520,6 +573,27 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
                 "package as a drop-in)"
             )
             argv.append("--ask=4")
+    if allow_break_deps:
+        broken = deps_broken_by_install(pkg_paths)
+        if broken and set(broken).issubset(set(allow_break_deps)):
+            _log.info(
+                "Relaxing dependency checks (--nodeps): this install breaks the "
+                "stale pin(s) "
+                + ", ".join(
+                    f"{dep!r} held by {holder}"
+                    for holder, deps in sorted(broken.items())
+                    for dep in sorted(deps)
+                )
+                + " — every holder is a later member of this batch, about to "
+                "be rebuilt and reinstalled in this run"
+            )
+            argv.append("--nodeps")
+        elif broken:
+            _log.warn(
+                "Install would break dependencies held outside this batch: "
+                + ", ".join(sorted(set(broken) - set(allow_break_deps)))
+                + " — leaving dependency checks enforced"
+            )
     argv += [str(p) for p in pkg_paths]
     # Interactive: inherit pacman's streams so the conflict prompt is visible
     # and stdin can answer it. Non-interactive: capture stderr to relay it.
@@ -529,6 +603,16 @@ def batch_install_pkgs(pkg_paths: list, *, interactive: bool = False) -> bool:
         if not interactive and result.stderr:
             for line in result.stderr.splitlines():
                 _log.error(line)
+        elif interactive:
+            # Interactive runs inherit pacman's streams so the conflict prompt
+            # works, which means its diagnostics went to the terminal and not
+            # into the unified run-log. Say so: a bare "install failed" in the
+            # log with no reason anywhere is what made the intra-batch pin
+            # deadlock hard to diagnose (3.1.0-B14).
+            _log.error(
+                f"pacman -U exited {result.returncode}; its output went to the "
+                "terminal (interactive run), not this log"
+            )
         return False
     # Record sysforge's own install targets so `sysforge update`'s reconcile can
     # tell them apart from an external `pacman -S` (which demotes a source-built

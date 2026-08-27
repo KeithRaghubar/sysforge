@@ -104,6 +104,7 @@ canonical ordering.
 | `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
+| `3.1.0-B15` | an AlreadyBuilt exit logs "Build failed" first, so a healthy package reads as the failure in a batch that failed elsewhere | low | small | patch |
 | `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
 | `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
@@ -652,6 +653,30 @@ canonical ordering.
   **Standards home on adoption:** none new — the toolchain-identity contract already lives with
   `get_toolchain_fingerprint` as its single canonical computation site; this constrains *when* it is
   read, not what it means.
+
+---
+
+- **`3.1.0-B15` — an `AlreadyBuilt` exit logs "Build failed" first, so a healthy package reads as
+  the failure in a batch that failed elsewhere.**
+  makepkg exits 13 when a matching artifact is already in `PKGDEST`. `build_core` classifies that
+  correctly — `build_core.py:942` logs `<pkgbase>: package already built — installing existing
+  artifact` and the run proceeds — but the wrapper's `finally` block has already fired:
+  `makepkg_wrapper.py:936-943` branches on a plain `success` boolean, and an `AlreadyBuilt` exit is
+  not `success`, so it warns `Build failed — leaving patched PKGBUILD in place` one line earlier.
+  The two lines are adjacent and contradict each other. Cost is diagnostic, not functional: in the
+  `3.1.0-B14` investigation the log read
+  ```
+  [WARN][BUILD] Build failed — leaving patched PKGBUILD in place: .../egl-wayland-git/PKGBUILD.sysforge
+  [INFO][BUILD] egl-wayland-git: package already built — installing existing artifact
+  ```
+  which points the reader at the wrong package — `egl-wayland-git` was fine; the failure was the
+  `pacman -U` two lines later. The patched-PKGBUILD retention is itself correct for this case (a
+  rebuild at the same pkgver still needs the file), so only the message is wrong, not the cleanup
+  policy. Fix direction: thread the `AlreadyBuilt` verdict into the `finally` branch so it logs
+  retention without the failure claim — the wrapper already distinguishes the exit upstream, it
+  just collapses to a boolean before this point.
+  *Priority: low · Effort: small · Bump: patch* — a log-message branch; retention behaviour and
+  every exit classification stay as they are.
 
 ### Open questions
 

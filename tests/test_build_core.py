@@ -1441,3 +1441,74 @@ def test_already_built_without_force_still_reuses_artifact(tmp_path):
     _opts, outcome = _run_one(target, run_side_effect=boom)
     assert outcome.built_pkgs == ["foo"]
     assert outcome.failed_pkgs == []
+
+
+# ---------------------------------------------------------------------------
+# Intra-batch exact-pin breakage (3.1.0-B14)
+# ---------------------------------------------------------------------------
+
+def test_jit_install_may_break_pins_held_by_later_batch_members(tmp_path):
+    """A batch member pinning a sibling by exact version (``foo=$pkgver``)
+    deadlocks the JIT install: pacman refuses to upgrade the sibling while the
+    installed dependent still pins the old version, and the only package that
+    would satisfy the new pin is the artifact not yet built. The JIT install
+    hands pacman the pkgnames of the *later* batch members so that stale pin
+    may be broken — they are about to be replaced in this same run."""
+    egl = _write_target(tmp_path, "egl-wayland-git", "pkgname=egl-wayland-git\n")
+    lib32 = _write_target(
+        tmp_path, "lib32-egl-wayland-git",
+        "pkgname=lib32-egl-wayland-git\n"
+        "pkgver=1.1.21.r12.g5f743e6\n"
+        'depends=("egl-wayland-git=${pkgver}")\n',
+    )
+
+    events = []
+    env = _ordered_build_env(events)
+    allowed = []
+
+    def recording_install(paths, **kw):
+        allowed.append(kw.get("allow_break_deps"))
+        events.append(("install", sorted(p.name for p in paths)))
+        return True
+
+    env[5] = patch("sysforge.build_core.batch_install_pkgs",
+                   side_effect=recording_install)
+    with _ctx(env):
+        outcome = build_core.build_and_install(
+            [lib32, egl], config={}, sync_source=False,
+        )
+
+    assert outcome.built_pkgs == ["egl-wayland-git", "lib32-egl-wayland-git"]
+    # Two installs: the JIT one for egl, then the final bulk one for lib32.
+    assert len(allowed) == 2
+    # The JIT install may break the stale pin held by the later member...
+    assert allowed[0] == frozenset({"lib32-egl-wayland-git"})
+    # ...but the final bulk install has no later member to license, so it
+    # keeps dependency enforcement fully on.
+    assert not allowed[1]
+
+
+def test_jit_allowlist_excludes_already_built_earlier_members(tmp_path):
+    """Only members not yet built license a broken pin — the target currently
+    being built included, since it is the usual pin holder. A member already
+    built and installed this run is no longer about to be replaced, so breaking
+    a pin it holds would leave the system inconsistent."""
+    a = _write_target(tmp_path, "aa-base", "pkgname=aa-base\n")
+    b = _write_target(tmp_path, "bb-mid",
+                      "pkgname=bb-mid\ndepends=('aa-base')\n")
+    c = _write_target(tmp_path, "cc-top",
+                      "pkgname=cc-top\ndepends=('bb-mid')\n")
+
+    allowed = []
+    env = _ordered_build_env([])
+    env[5] = patch(
+        "sysforge.build_core.batch_install_pkgs",
+        side_effect=lambda paths, **kw: allowed.append(kw.get("allow_break_deps"))
+        or True,
+    )
+    with _ctx(env):
+        build_core.build_and_install([c, b, a], config={}, sync_source=False)
+
+    # JIT before bb-mid: bb-mid (about to be built) and cc-top are still
+    # unbuilt; aa-base was just installed, so a pin it holds stays enforced.
+    assert allowed[0] == frozenset({"bb-mid", "cc-top"})
