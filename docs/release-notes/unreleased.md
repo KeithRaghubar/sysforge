@@ -1,26 +1,6 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. An entry leads with its
-roadmap ID, in the same shape ROADMAP.md entries use:
-
-    - **`1.2.0-F35` — <title sentence>.** <body>
-
-    ---
-
-    - **`1.2.0-F36` — …
-
-Entries are separated by a `---` rule and kept in ascending ID order within each
-section. Flag breaking changes with a **Breaking:** prefix opening the body, plus
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+An opt-in build sandbox that runs PKGBUILD code in a clean container instead of as you, an `update --versions` report that answers "is anything newer?" without entering a stage, and a broad accuracy pass over build state, flag-drift visibility, sudo credential lifetime and dry-run output.
 
 ## Added
 
@@ -28,7 +8,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
-- **`2.6.1-F29` — Colour-code the `update` version-check verdicts.** A `sysforge update --devel` run over a large `-git` set prints one summary line per package, and nothing distinguished the handful actually eligible to rebuild from the wall that were not — the reader parsed `NEEDS_REBUILD`/`UP_TO_DATE`/`DOWNGRADE` as text. The action tag now carries the verdict's colour: green for `NEEDS_REBUILD`/`NEEDS_PACMAN_UPGRADE`, yellow for the deliberate skips (`UP_TO_DATE`, `DEVEL`, `FROZEN`), red for `DOWNGRADE` and every failed check. The colour map is a second dict in `update_summary` keyed by the same action strings as `_ACTION_FORMATS` — a guard asserts the two key sets are equal, so a new action cannot land without one — and is applied through a new `color=` argument on `render.tag_header`, keeping the `[TAG]` gutter the one home for the shape and letting `log.use_color()` gate it for free; the padding is emitted outside the SGR run, so columns align on visible width. The gutter is the only correct surface here, and the reason is load-bearing: `log.info()` builds its file-log text from the caller's own message and only decorates level and tag for the terminal, so colour embedded in a *message body* is ungated and would land verbatim in `sysforge-update.log`. That invariant was unwritten and is now stated in `docs/design/12-logging.md` § Colour. Two adjacent fixes ride along: the `[VERSION]` `vercmp` line logged its two operands *before* comparing them, so the log stated a question and never answered it — it now reads `vercmp 'a' 'b' -> 1`.
+- **`2.6.1-F29` — Colour-code the `update` version-check verdicts.** A `sysforge update --devel` run over a large `-git` set prints one summary line per package, and nothing distinguished the handful actually eligible to rebuild from the wall that were not — the reader parsed `NEEDS_REBUILD`/`UP_TO_DATE`/`DOWNGRADE` as text. The action tag now carries the verdict's colour: green for `NEEDS_REBUILD`/`NEEDS_PACMAN_UPGRADE`, yellow for the deliberate skips (`UP_TO_DATE`, `DEVEL`, `FROZEN`), red for `DOWNGRADE` and every failed check. The colour map is a second dict in `update_summary` keyed by the same action strings as `_ACTION_FORMATS` — a guard asserts the two key sets are equal, so a new action cannot land without one — and is applied through a new `color=` argument on `render.tag_header`, keeping the `[TAG]` gutter the one home for the shape and letting `log.use_color()` gate it for free; the padding is emitted outside the SGR run, so columns align on visible width. The gutter is the only correct surface here, and the reason is load-bearing: `log.info()` builds its file-log text from the caller's own message and only decorates level and tag for the terminal, so colour embedded in a *message body* is ungated and would land verbatim in `sysforge-update.log`. That invariant was unwritten and is now stated in `docs/design/12-logging.md` § Colour. One adjacent fix rides along: the `[VERSION]` `vercmp` line logged its two operands *before* comparing them, so the log stated a question and never answered it — it now reads `vercmp 'a' 'b' -> 1`.
 
 ## Fixed
 
