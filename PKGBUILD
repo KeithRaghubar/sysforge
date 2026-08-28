@@ -1,7 +1,7 @@
 # Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge
-pkgver=3.1.0
+pkgver=3.2.0
 pkgrel=1
 pkgdesc="Arch Linux build and maintenance suite for system setup and package management with compiler-optimized builds"
 arch=('any')
