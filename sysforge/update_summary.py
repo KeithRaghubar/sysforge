@@ -15,6 +15,7 @@ surface.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from sysforge import log
 from sysforge.primitives import render
 from sysforge.update_result import _UpdateResult
 
@@ -160,6 +161,13 @@ class ResultSummary:
     # rather than off a classified pacman-class package list, so there are no
     # per-package lines to render — only the fact that the transaction ran.
     system_upgrade_ran: bool = False
+    # 3.0.0-F5: pkgname -> (old_ver, new_ver) read back off the local DB after
+    # the flag-triggered transaction. `(None, new)` is a fresh install,
+    # `(old, None)` a removal. Empty when the capture is off, the run was
+    # offline, or nothing changed — the opaque fallback line still covers that.
+    sysupgrade_changes: dict[str, tuple[str | None, str | None]] = field(
+        default_factory=dict
+    )
     skipped: int = 0
     # pkgbase -> (installed_ver, pkgbuild_ver)
     versions: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
@@ -182,6 +190,39 @@ def _fmt_pkg(summary: ResultSummary, pkgbase: str) -> str:
     return f"{pkgbase}: {render.version_pair(installed_ver, pkgbuild_ver, equal_marker=False)}"
 
 
+# 3.0.0-F5: a stock `-Syu` can be hundreds of packages, unlike the bounded
+# managed list, so the default view shows a head and points at -v for the rest.
+_SYSUPGRADE_DEFAULT_CAP = 10
+
+
+def _sysupgrade_lines(
+    changes: dict[str, tuple[str | None, str | None]],
+) -> list[str]:
+    """Render the captured system-upgrade diff, scaled by verbosity.
+
+    At the default verbosity the block is capped at
+    ``_SYSUPGRADE_DEFAULT_CAP`` entries with an elision line; `-v` and above
+    print it in full. The cap is read here rather than passed in because it is
+    purely presentational — the assembler's job ends at the version map.
+    """
+    lines: list[str] = []
+    for name, (old, new) in sorted(changes.items()):
+        if old is None:
+            lines.append(f"{name}: (new) {new}")
+        elif new is None:
+            lines.append(f"{name}: {old} (removed)")
+        else:
+            lines.append(
+                f"{name}: {render.version_pair(old, new, equal_marker=False)}"
+            )
+    if log.get_verbosity() >= 1 or len(lines) <= _SYSUPGRADE_DEFAULT_CAP:
+        return lines
+    hidden = len(lines) - _SYSUPGRADE_DEFAULT_CAP
+    return lines[:_SYSUPGRADE_DEFAULT_CAP] + [
+        f"... and {hidden} more (-v for the full list)"
+    ]
+
+
 def _print_result_summary(
     summary: ResultSummary,
     *,
@@ -202,7 +243,9 @@ def _print_result_summary(
            if summary.pgo_skipped_pkgs else "")
         + (f", {len(summary.pacman_upgrade_pkgs)} pacman-upgraded"
            if summary.pacman_upgrade_pkgs
-           else (", system upgraded" if summary.system_upgrade_ran else ""))
+           else (f", {len(summary.sysupgrade_changes)} system-upgraded"
+                 if summary.sysupgrade_changes
+                 else (", system upgraded" if summary.system_upgrade_ran else "")))
         + (" (pacman -Syu FAILED)" if summary.pacman_upgrade_failed else "")
         + "."
     )
@@ -227,11 +270,16 @@ def _print_result_summary(
                  if summary.pacman_upgrade_failed else "Pacman-Syu:")
         _section(label, [_fmt_pkg(summary, pb) for pb in summary.pacman_upgrade_pkgs])
     elif summary.system_upgrade_ran:
-        # 3.0.0-F4: flag/config-triggered `pacman -Syu` — pacman resolved the
-        # transaction, so the only fact this renderer owns is that it ran.
+        # 3.0.0-F4/F5: flag/config-triggered `pacman -Syu`. pacman resolved the
+        # transaction, so there is no classified package list — but the local-DB
+        # read-back (F5) recovers what it actually did. Without that capture the
+        # only fact this renderer owns is that the transaction ran.
         label = ("Pacman-Syu (transaction FAILED):"
                  if summary.pacman_upgrade_failed else "Pacman-Syu:")
-        _section(label, ["system upgrade (pacman resolved the transaction)"])
+        if summary.sysupgrade_changes:
+            _section(label, _sysupgrade_lines(summary.sysupgrade_changes))
+        else:
+            _section(label, ["system upgrade (pacman resolved the transaction)"])
 
     if summary.failed_pkgs:
         _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])

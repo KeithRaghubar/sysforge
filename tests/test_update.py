@@ -2539,3 +2539,77 @@ def test_flag_drift_advisory_keeps_hint_when_rebuild_disabled(
     )
     out = "\n".join(seen)
     assert "Pass --rebuild-on-flag-drift to rebuild" in out
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F5: version-change report for the flag-triggered pacman -Syu
+# ---------------------------------------------------------------------------
+
+def _snapshot_around_syu(scenario, monkeypatch, before, after):
+    """Stub the local-DB read so it flips once the -Syu transaction has run."""
+    def _fake():
+        return dict(after) if _syu_fired(scenario) else dict(before)
+    monkeypatch.setattr("sysforge.update.get_all_installed_packages", _fake)
+
+
+def test_sysupgrade_report_itemizes_version_changes(
+    update_scenario, monkeypatch, capsys
+):
+    """The flag route now reports what pacman actually did, read back off the
+    local DB either side of the transaction."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    _snapshot_around_syu(
+        update_scenario, monkeypatch,
+        {"htop": "3.3.0-1", "mesa": "24.0-1"},
+        {"htop": "3.3.0-1", "mesa": "24.1-1"},
+    )
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    out = "".join(capsys.readouterr())
+    assert "mesa: 24.0-1" in out and "24.1-1" in out
+    assert "pacman resolved the transaction" not in out
+
+
+def test_sysupgrade_report_opts_out_with_flag(update_scenario, monkeypatch, capsys):
+    """--no-sysupgrade-report keeps the transaction and drops only the report,
+    falling back to the opaque single line."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    _snapshot_around_syu(
+        update_scenario, monkeypatch,
+        {"htop": "3.3.0-1", "mesa": "24.0-1"},
+        {"htop": "3.3.0-1", "mesa": "24.1-1"},
+    )
+    update_scenario.run(
+        _make_args(offline=False, sysupgrade=True, no_sysupgrade_report=True), **kw
+    )
+    assert _syu_fired(update_scenario)
+    out = "".join(capsys.readouterr())
+    assert "system upgrade (pacman resolved the transaction)" in out
+    assert "mesa: 24.0-1" not in out
+
+
+def test_sysupgrade_report_survives_a_probe_failure(
+    update_scenario, monkeypatch, capsys
+):
+    """The capture is reporting-only: a failing local-DB read must never turn a
+    successful upgrade into a failed run."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+
+    calls = {"n": 0}
+
+    def _boom():
+        # The version-check walk reads the install set first; only the report's
+        # own snapshots fail, so the run itself is unaffected.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"htop": "3.3.0-1"}
+        raise RuntimeError("local db unreadable")
+    monkeypatch.setattr("sysforge.update.get_all_installed_packages", _boom)
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert _syu_fired(update_scenario)
+    assert update_scenario.exit_code == 0
+    assert "system upgrade (pacman resolved the transaction)" in "".join(
+        capsys.readouterr()
+    )

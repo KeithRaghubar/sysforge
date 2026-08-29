@@ -186,3 +186,76 @@ def test_classified_list_wins_over_system_upgrade_flag(capsys, monkeypatch):
     assert "1 pacman-upgraded" in out
     assert "firefox" in out
     assert "pacman resolved the transaction" not in out
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F5: flag-triggered system upgrade — itemized version changes
+# ---------------------------------------------------------------------------
+
+def test_system_upgrade_itemizes_captured_version_changes(capsys, monkeypatch):
+    """When the capture read the transaction back, the block renders one
+    `pkg: old → new` line per change instead of the opaque fallback."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(system_upgrade_ran=True, sysupgrade_changes={
+        "mesa": ("24.0-1", "24.1-1"),
+        "firefox": ("130.0-1", "131.0-1"),
+    })
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "firefox: 130.0-1 → 131.0-1" in out
+    assert "mesa: 24.0-1 → 24.1-1" in out
+    assert "pacman resolved the transaction" not in out
+    assert "2 system-upgraded" in out
+
+
+def test_system_upgrade_marks_additions_and_removals(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(system_upgrade_ran=True, sysupgrade_changes={
+        "newdep": (None, "1.0-1"),
+        "dropped": ("2.0-1", None),
+    })
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "newdep: (new) 1.0-1" in out
+    assert "dropped: 2.0-1 (removed)" in out
+
+
+def test_system_upgrade_falls_back_when_capture_is_empty(capsys, monkeypatch):
+    """No captured changes — offline, disabled, or a failed transaction with
+    nothing to read back — keeps the honest single-line fallback."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(system_upgrade_ran=True, sysupgrade_changes={})
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "system upgrade (pacman resolved the transaction)" in out
+
+
+def test_system_upgrade_block_is_capped_at_default_verbosity(capsys, monkeypatch):
+    """A stock -Syu can be hundreds of packages, unlike the bounded managed
+    list, so the default view caps the block and points at -v."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("sysforge.log.get_verbosity", lambda: 0)
+    changes = {f"pkg{i:03d}": (f"{i}-1", f"{i}-2") for i in range(25)}
+    s = _empty(system_upgrade_ran=True, sysupgrade_changes=changes)
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "pkg000: 0-1 → 0-2" in out
+    assert "pkg024" not in out
+    assert "and 15 more" in out
+    assert "-v" in out
+
+
+def test_system_upgrade_block_is_full_at_verbose(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr("sysforge.log.get_verbosity", lambda: 1)
+    changes = {f"pkg{i:03d}": (f"{i}-1", f"{i}-2") for i in range(25)}
+    s = _empty(system_upgrade_ran=True, sysupgrade_changes=changes)
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "pkg024: 24-1 → 24-2" in out
+    assert "more" not in out

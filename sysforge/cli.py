@@ -475,6 +475,15 @@ def _add_update_parser(sub):
     sysupgrade_group.add_argument("--no-sysupgrade", action="store_true", dest="no_sysupgrade",
         help="Skip the trailing system upgrade even when "
              "[build] system_upgrade = true is set in packages.toml.")
+    p.add_argument("--no-sysupgrade-report", action="store_true",
+        dest="no_sysupgrade_report",
+        help="Skip the version-change report for the trailing system upgrade. "
+             "The report is on by default and applies only to the "
+             "--sysupgrade / [build] system_upgrade route (the classified "
+             "pacman-class list already itemizes itself); it snapshots the "
+             "local package DB either side of the transaction and prints one "
+             "`pkg: old -> new` line per change, capped at the default "
+             "verbosity and printed in full under -v.")
     p.add_argument("--no-toolchain-preflight", action="store_true", dest="no_toolchain_preflight",
         help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
              "lib32 cross targets) that normally runs before the build loop.")

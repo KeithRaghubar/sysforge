@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-08\-28"
+.TH "sysforge" "1" "2026\-08\-29"
 .PP
 .PP
 .SH NAME
@@ -429,6 +429,11 @@ Finish the run with a single `pacman \-Syu` system upgrade, after source\-built 
 \fB\-\-no\-sysupgrade\fR
 .RS 4
 Skip the trailing system upgrade even when [build] system_upgrade = true is set in packages.\&toml.\&
+.PP
+.RE
+\fB\-\-no\-sysupgrade\-report\fR
+.RS 4
+Skip the version\-change report for the trailing system upgrade.\& The report is on by default and applies only to the \-\-sysupgrade / [build] system_upgrade route (the classified pacman\-class list already itemizes itself); it snapshots the local package DB either side of the transaction and prints one `pkg: old \-> new` line per change, capped at the default verbosity and printed in full under \-v.\&
 .PP
 .RE
 \fB\-\-no\-toolchain\-preflight\fR

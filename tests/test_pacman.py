@@ -1232,3 +1232,29 @@ class TestBatchInstallFailureIsDiagnosable:
             [self._make_pkg(tmp_path)], interactive=True
         ) is False
         assert "terminal" in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F5: installed-state snapshot diff (system-upgrade reporting)
+# ---------------------------------------------------------------------------
+
+def test_diff_installed_reports_upgrades():
+    before = {"mesa": "24.0-1", "firefox": "130.0-1"}
+    after = {"mesa": "24.1-1", "firefox": "130.0-1"}
+    assert pacman.diff_installed(before, after) == {"mesa": ("24.0-1", "24.1-1")}
+
+
+def test_diff_installed_reports_downgrades_additions_and_removals():
+    before = {"foo": "2-1", "gone": "1-1"}
+    after = {"foo": "1-1", "new": "3-1"}
+    assert pacman.diff_installed(before, after) == {
+        "foo": ("2-1", "1-1"),
+        "gone": ("1-1", None),
+        "new": (None, "3-1"),
+    }
+
+
+def test_diff_installed_omits_unchanged_and_empty_diff():
+    snap = {"a": "1-1", "b": "2-1"}
+    assert pacman.diff_installed(snap, snap) == {}
+    assert pacman.diff_installed({}, {}) == {}

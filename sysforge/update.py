@@ -86,6 +86,7 @@ from sysforge.primitives.llvm_state import (
 from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.pacman import (
     checkupdates_map,
+    diff_installed,
     get_all_installed_packages,
     get_pkgdest,
 )
@@ -525,7 +526,7 @@ def _build_result_summary(
     *, results, built_pkgs, failed_pkgs, pacman_upgrade_pkgs,
     installed_deps, pgo_skipped_pkgs, cleansrc_failures,
     install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
-    system_upgrade_ran=False,
+    system_upgrade_ran=False, sysupgrade_changes=None,
 ) -> ResultSummary:
     """Assemble a ``ResultSummary`` from ``update``'s per-run state.
 
@@ -548,6 +549,7 @@ def _build_result_summary(
         versions=versions,
         stage_owned_updates=list(stage_owned_updates),
         system_upgrade_ran=system_upgrade_ran,
+        sysupgrade_changes=dict(sysupgrade_changes or {}),
     )
 
 
@@ -1293,6 +1295,7 @@ def _cmd_update_body(args) -> int:
     pacman_upgrade_pkgs = sorted(r.pkgbase for r in pending_pacman_upgrade)
     pacman_upgrade_failed = False
     system_upgrade_ran = False
+    sysupgrade_changes: dict[str, tuple[str | None, str | None]] = {}
     if (pacman_upgrade_pkgs or sysupgrade_pending) and not offline:
         noconfirm = getattr(args, "noconfirm", False)
         cmd = privileged_argv(["pacman", "-Syu"])
@@ -1309,9 +1312,34 @@ def _cmd_update_body(args) -> int:
             # widened walk and no checkupdates probe.
             system_upgrade_ran = True
             _log.info("Running pacman -Syu (system upgrade requested)")
+        # 3.0.0-F5: reporting-only local-DB snapshot for the flag route, which
+        # has no classified package list to render from. Diffed after the
+        # transaction so the summary reports what pacman actually did rather
+        # than what a second resolver predicted. Best-effort by construction —
+        # a failed probe must never fail an otherwise-successful upgrade.
+        capture_report = system_upgrade_ran and not getattr(
+            args, "no_sysupgrade_report", False
+        )
+        before_snapshot: dict[str, str] = {}
+        if capture_report:
+            try:
+                before_snapshot = get_all_installed_packages()
+            except Exception:  # noqa: BLE001 — reporting only, never fatal
+                _log.debug("system-upgrade report: pre-transaction snapshot failed")
+                capture_report = False
         import subprocess as _subprocess
         with timer.phase("pacman -Syu"):
             rc = _subprocess.run(cmd).returncode
+        if capture_report:
+            try:
+                sysupgrade_changes = diff_installed(
+                    before_snapshot, get_all_installed_packages()
+                )
+                _log.debug(
+                    f"system-upgrade report: {len(sysupgrade_changes)} package(s) changed"
+                )
+            except Exception:  # noqa: BLE001 — reporting only, never fatal
+                _log.debug("system-upgrade report: post-transaction snapshot failed")
         if rc != 0:
             _log.error(f"pacman -Syu exited {rc}")
             pacman_upgrade_failed = True
@@ -1354,6 +1382,7 @@ def _cmd_update_body(args) -> int:
         skipped=skipped,
         stage_owned_updates=stage_owned_updates,
         system_upgrade_ran=system_upgrade_ran,
+        sysupgrade_changes=sysupgrade_changes,
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.

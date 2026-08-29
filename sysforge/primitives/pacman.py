@@ -846,6 +846,34 @@ def get_all_installed_packages() -> dict[str, str]:
     return packages
 
 
+def diff_installed(
+    before: dict[str, str],
+    after: dict[str, str],
+) -> dict[str, tuple[str | None, str | None]]:
+    """Diff two :func:`get_all_installed_packages` snapshots (3.0.0-F5).
+
+    Returns ``{pkgname: (old_version, new_version)}`` for every package whose
+    installed state changed: an upgrade or downgrade carries both sides, a
+    newly-installed package carries ``(None, new)`` and a removed one
+    ``(old, None)``. Unchanged packages are omitted, so an empty dict means the
+    transaction touched nothing.
+
+    This is the reporting seam for the flag-triggered ``pacman -Syu``, which
+    hands the whole transaction to pacman and so has no classified package list
+    to render from. Reading the local DB back afterwards reports what pacman
+    actually did rather than what a second resolver predicted.
+    """
+    changed: dict[str, tuple[str | None, str | None]] = {}
+    for name, old in before.items():
+        new_ver = after.get(name)
+        if new_ver != old:
+            changed[name] = (old, new_ver)
+    for name, new_ver in after.items():
+        if name not in before:
+            changed[name] = (None, new_ver)
+    return changed
+
+
 def get_installed_facts(root=None) -> dict[str, tuple[str, int | None]]:
     """Return ``{pkgname: (version, installed_size)}`` for all installed packages.
 

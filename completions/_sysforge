@@ -190,6 +190,7 @@ _sysforge_update() {
     '(--review)--no-review[skip the PKGBUILD review gate]' \
     '(--no-sysupgrade)--sysupgrade[finish the run with one pacman -Syu]' \
     '(--sysupgrade)--no-sysupgrade[skip the trailing pacman -Syu]' \
+    '--no-sysupgrade-report[skip the pacman -Syu version report]' \
     '--no-toolchain-preflight[skip the toolchain pre-flight]' \
     '--include-stage-owned[include stage-owned packages]' \
     '--versions[list available package versions, then exit]' \
