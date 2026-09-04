@@ -509,6 +509,24 @@ def _detect_stage_owned_updates(
     for pkgbase, pkgnames in sorted(pkgbase_map.items()):
         entry = pkgbase_entry[pkgbase]
         owner = entry.get("owner_stage", "")
+        if entry.get("source") == "repo":
+            # 3.0.0-B1: stage-owned packages are excluded from the walk and so
+            # from _sync_sources, which leaves a `source = "repo"` checkout on
+            # the detached-HEAD pin `_pin_repo_checkout` left behind — it only
+            # advances inside the owning stage's own run. _check_one_pkgbase
+            # would compare the installed version against that pinned tree's
+            # pkgbuild_ver, which are the same value by construction, so the
+            # advisory this feature exists for never fired. Read the candidate
+            # from pacman's sync DB instead: it is the authority the pin itself
+            # targets, and it is offline-safe (local /var/lib/pacman/sync).
+            # The walk's exclusion and the pin's lifecycle stay untouched —
+            # syncing stage-owned sources from `update` is exactly the
+            # double-processing the owner_stage skip exists to prevent.
+            hit = _stage_owned_repo_advisory(pkgbase, pkgnames, all_installed)
+            if hit is not None:
+                installed_ver, candidate_ver = hit
+                advisories.append((pkgbase, installed_ver, candidate_ver, owner))
+            continue
         try:
             r = _check_one_pkgbase(
                 pkgbase, pkgnames, entry, sync_failures, all_installed,
@@ -520,6 +538,41 @@ def _detect_stage_owned_updates(
         if r is not None and r.action in ("NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE"):
             advisories.append((pkgbase, r.installed_ver, r.pkgbuild_ver, owner))
     return advisories
+
+
+def _stage_owned_repo_advisory(
+    pkgbase: str, pkgnames: list[str], all_installed: dict[str, str],
+) -> tuple[str, str] | None:
+    """Sync-DB candidate for a stage-owned ``source = "repo"`` pkgbase.
+
+    Returns ``(installed_ver, candidate_ver)`` when the sync DB carries a
+    version newer than what is installed, else ``None``. Best-effort: an
+    unresolvable name, a package the sync DB does not know, or a vercmp
+    failure omits the advisory rather than raising — this path is advisory
+    only and must never fail an update run (3.0.0-B1).
+    """
+    from sysforge.primitives.pacman import get_pacman_sync_version
+    from sysforge.primitives.version import vercmp
+
+    # A split package's members all track the pkgbase version; use the first
+    # name that is actually installed and known to the sync DB.
+    for name in sorted(pkgnames) or [pkgbase]:
+        installed_ver = all_installed.get(name)
+        if not installed_ver:
+            continue
+        try:
+            candidate_ver = get_pacman_sync_version(name)
+        except Exception:  # noqa: S112 — advisory only, skip on probe failure
+            continue
+        if not candidate_ver:
+            continue
+        try:
+            if vercmp(candidate_ver, installed_ver) > 0:
+                return installed_ver, candidate_ver
+        except RuntimeError:
+            continue
+        return None
+    return None
 
 
 def _build_result_summary(

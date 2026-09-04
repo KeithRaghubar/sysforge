@@ -34,6 +34,7 @@ from sysforge.pipeline.state import PipelineState, resolve_state_dir
 from sysforge.pipeline.stages import STAGES
 from sysforge.pipeline.stages.base import BootstrapRebootRequired
 from sysforge.primitives import change_report
+from sysforge.primitives.init_notice import maybe_emit_stage_config_notice
 from sysforge.primitives.cache_probe import (
     emit_session_report,
     emit_system_probes,
@@ -194,6 +195,10 @@ def run_stage_standalone(stage, config, options):
             _log.info(f"[dry-run] would run stage: {stage.name} — {stage.description}")
         else:
             _log.info(f"── Stage: {stage.name} ── {stage.description}")
+            # 3.1.0-F5: point a fresh install at the TOML that decides what
+            # `run toolchain` / `run kernel` actually build, before they build
+            # it. Advisory only — never prompts, blocks, or raises.
+            maybe_emit_stage_config_notice(stage.name, state)
             progress.phase(stage.name)
             _run_stage_with_change_report(stage, config, state, options)
             if not stage.stateless:
@@ -335,6 +340,10 @@ def run_pipeline(config, options, stages=None):
                 )
 
             _emit(stage_lines(global_idx, len(stages), stage.name, stage.description))
+
+            # 3.1.0-F5: same advisory on the full-pipeline path — the state
+            # object is already in hand here, before the stage executes.
+            maybe_emit_stage_config_notice(stage.name, state)
 
             state.mark_running(stage.name)
             state.save()

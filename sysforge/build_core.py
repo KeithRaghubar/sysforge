@@ -861,9 +861,8 @@ def build_and_install(
                         outcome.install_failed = True
             search_dir = pkgdest if pkgdest else target.pkgbuild_path.parent
             build_start = time.time()
-            from sysforge.primitives.net_policy import get_policy, warn_ungated_sources
-            if get_policy().frozen:
-                warn_ungated_sources(target.pkgbuild_path.parent)
+            # 3.0.0-B5: the ungated-source warning moved to
+            # makepkg_wrapper.run(), the seam toolchain/kernel builds cross too.
             # Per-target force (B9): the batch's cleanbuild policy is a batch
             # decision, but ``-f`` is a property of the individual target, so
             # layer it on rather than folding it into batch_flags.

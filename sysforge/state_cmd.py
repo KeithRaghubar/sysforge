@@ -616,7 +616,15 @@ class StateFailedVerb(Verb):
     requires_sentinel = False
 
     def journal_target(self, args) -> str | None:
-        return journal.pkg_target([args.clear]) if args.clear else None
+        # --clear names one pkgbase; --clear-all is subjectless but rewrites
+        # build_state.toml just as sentinel-gated, so it gets a `mode:` target
+        # rather than falling to None and journalling the verb name alone
+        # (2.5.1-F3, completing 2.4.0-F1's per-verb SYSFORGE_TARGET coverage).
+        if args.clear:
+            return journal.pkg_target([args.clear])
+        if getattr(args, "clear_all", False):
+            return journal.mode_target("failed-clear-all")
+        return None
 
     def pre_check(self, args) -> PreCheckResult:
         self.requires_sentinel = bool(

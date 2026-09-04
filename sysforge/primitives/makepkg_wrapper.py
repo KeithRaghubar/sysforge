@@ -719,6 +719,10 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     before_sc = probe_sccache()
 
     success = False
+    # 3.1.0-B15: an AlreadyBuilt exit is not `success` (no fresh build ran), but
+    # it is not a failure either. Tracked separately so the `finally` retention
+    # message below can say so instead of claiming "Build failed".
+    already_built = False
     try:
         extra_env = resolve_env_vars(resolved_profile, active_consumes)
         # CLI toolchain overrides must also land in the subprocess env directly.
@@ -919,6 +923,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # with "nothing to install". The patched sidecar is still on disk here
         # (a failed/refused build leaves it in place), so --packagelist against it
         # emits the renamed names. Same rename/extracted-profile guard as above.
+        already_built = True
         if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
         raise
@@ -931,12 +936,17 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             if success:
                 cleanup_patch_artifacts(pkgbuild_path.parent / "PKGBUILD")
             else:
-                warn_artifacts_left(bool(extracted_profile))
+                warn_artifacts_left(bool(extracted_profile), already_built)
         else:
             if success:
                 if pkgbuild_path.exists():
                     pkgbuild_path.unlink()
                     _build_log.info(f"Removed patched PKGBUILD: {pkgbuild_path}")
+            elif already_built:
+                _build_log.info(
+                    "Package already built — leaving patched PKGBUILD in place: "
+                    f"{pkgbuild_path}"
+                )
             else:
                 _build_log.warn(
                     f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}"
@@ -1173,6 +1183,18 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             )
     else:
         _build_log.info("--no-update: skipping source sync")
+
+    # 3.0.0-B5: name the source=() entries the freeze cannot mediate. This sits
+    # at ``run()`` — the one seam every build crosses — rather than at
+    # build_core's per-target loop, because toolchain and kernel builds reach
+    # makepkg without passing through build_core and were silently uncovered.
+    # Those are precisely the builds where an unmediated fetch matters most:
+    # they run longest, pull the most code, and are the ones left running
+    # unattended under --frozen. A second call site would drift the same way
+    # the frozen-exit check did before 3.0.0-F2 centralised it.
+    from sysforge.primitives.net_policy import get_policy, warn_ungated_sources
+    if get_policy().frozen:
+        warn_ungated_sources(pkgbuild_path.parent)
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)

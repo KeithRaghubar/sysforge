@@ -903,10 +903,20 @@ also show discovered candidates not yet adopted
 .RE
 .SS artifact review
 .PP
-\fBsysforge artifact review\fR
+\fBsysforge artifact review\fR [\fIOPTIONS\fR]
 .PP
 Interactively offer discovered candidates for adoption.\&
 .PP
+\fB\-\-all\fR
+.RS 4
+adopt every offerable candidate without prompting
+.PP
+.RE
+\fB\-\-include\-unknown\fR
+.RS 4
+with \-\-all, also adopt candidates of unknown ownership
+.PP
+.RE
 .SS artifact adopt
 .PP
 \fBsysforge artifact adopt\fR [\fIOPTIONS\fR] \fIPATH\fR

@@ -278,6 +278,9 @@ _sysforge_artifact() {
                 _filedir
             fi
             ;;
+        review)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--all --include-unknown" -- "$cur") )
+            ;;
         edit)
             ;;
         deploy)

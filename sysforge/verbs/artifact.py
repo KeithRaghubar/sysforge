@@ -80,6 +80,12 @@ class ArtifactReviewVerb(Verb):
 
     Read-only w.r.t. the live system: adoption is copy-only (no sentinel).
     Off-TTY it lists candidates and the adopt hint instead of prompting.
+
+    ``--all`` (2.6.1-F28) bulk-adopts the same ``iter_offerable`` result the
+    interactive loop walks. Reusing that one composition point is the point:
+    the exclusion rules (package-owned, sysforge-owned, already-managed,
+    declined-and-unchanged) stay in a single home and cannot drift between the
+    interactive and bulk paths.
     """
 
     name = "artifact-review"
@@ -104,6 +110,12 @@ class ArtifactReviewVerb(Verb):
         if not cands:
             _log.ui("No candidates to review.")
             return ExecResult(exit_code=0)
+
+        if getattr(args, "all", False):
+            return self._adopt_all(
+                registry, cands,
+                include_unknown=getattr(args, "include_unknown", False),
+            )
 
         if not prompt.is_interactive():
             _log.ui(f"Reviewable candidates ({len(cands)}):")
@@ -147,6 +159,45 @@ class ArtifactReviewVerb(Verb):
                 ignore.save(entries)
                 _log.ui(f"Ignoring {c.path} until its content changes")
             # skip: nothing — re-offered next run.
+        return ExecResult(exit_code=0)
+
+    def _adopt_all(self, registry, cands, *, include_unknown: bool) -> ExecResult:
+        """Bulk-adopt every offerable candidate (2.6.1-F28).
+
+        ``OWNER_UNKNOWN`` candidates are skipped unless ``include_unknown``:
+        ``owner == unknown`` means ``pacman.owners_of`` returned no verdict for
+        that path, so the file may in fact be package-owned. The interactive
+        path can surface ``[ownership unknown]`` and let a human decide; a blind
+        bulk adopt is exactly where that mislabel does damage.
+
+        Needs no prompt, so it also replaces the off-TTY list-and-hint branch.
+        A per-candidate failure logs and continues, mirroring the interactive
+        loop — one unreadable file must not abandon the rest of the batch.
+        """
+        adopted = 0
+        skipped_unknown = 0
+        failed = 0
+        for c in cands:
+            if c.owner == artifacts.OWNER_UNKNOWN and not include_unknown:
+                skipped_unknown += 1
+                continue
+            try:
+                art = artifacts.adopt(registry, c.path, cls=c.cls)
+            except artifacts.ArtifactError as exc:
+                _log.error(str(exc))
+                failed += 1
+                continue
+            adopted += 1
+            _log.ui(f"Adopted {art.name} ({art.cls})")
+        _log.ui("")
+        _log.ui(f"Adopted {adopted} artifact(s).")
+        if skipped_unknown:
+            _log.ui(
+                f"Skipped {skipped_unknown} candidate(s) with unknown ownership "
+                "— re-run with --include-unknown to adopt them."
+            )
+        if failed:
+            _log.ui(f"{failed} candidate(s) could not be adopted; see errors above.")
         return ExecResult(exit_code=0)
 
 

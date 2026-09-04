@@ -93,20 +93,13 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.0.0-B1` | stage-owned advisory is blind to pinned repo checkouts | med | small | patch |
-| `3.0.0-B3` | a killed bootstrap leaves the target with passwordless root | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
-| `3.1.0-F5` | the first run toolchain / run kernel on an install changes the system with no nudge to read the config that drives it | med | small | patch |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
-| `3.0.0-B5` | the ungated-source warning never fires on stage builds | low | small | patch |
-| `3.1.0-B15` | an AlreadyBuilt exit logs "Build failed" first, so a healthy package reads as the failure in a batch that failed elsewhere | low | small | patch |
-| `2.5.1-F3` | state failed --clear-all emits no SYSFORGE_TARGET | low | small | patch |
-| `2.6.1-F28` | artifact review --all: bulk-adopt every offerable candidate | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -299,38 +292,9 @@ canonical ordering.
   is the migration path, not a separate convenience, which is why the parts ship together.
   **Standards home on adoption:** none new — but the runtime config-write seam from (a) is a
   candidate "one home" row if a third key ever needs it.
----
-
-- **`3.1.0-F5` — the first `run toolchain` / `run kernel` on an install changes the system with no
-  nudge to read the config that drives it.** These are the two stages whose behaviour is decided
-  almost entirely by their TOML rather than by the flags the user typed — `etc/sysforge/toolchain.toml`
-  picks the compiler and the PGO/BOLT passes, `etc/sysforge/kernel.toml` picks the kconfig fragments
-  and initramfs handling — so a user who ran `setup` and then types `sysforge run kernel` gets a
-  kernel built from defaults they have never opened. The existing first-install advisory does not
-  cover this: `primitives/init_notice.py` keys on a marker the PKGBUILD `post_install` scriptlet
-  drops and names only the `reconfigure`/`hardware` bootstrap stages (`_REQUIRED_STAGES`), retiring
-  itself the moment both are `done` — i.e. it clears *before* anyone reaches toolchain or kernel.
-  Emit a one-time advisory when the stage has never completed on this install, naming the config
-  file, the two or three settings most likely to surprise, and how to review them. No new state is
-  needed: `PipelineState.stage_status()` (`pipeline/state.py:237`) already returns `"pending"` for a
-  stage never seen, and both entry points (`run_stage_standalone`, `pipeline/runner.py:161`, and
-  `run_pipeline`, `:217`) hold the state object before the stage executes. Two decisions to settle
-  first: whether "first run" means never-*completed* (a failed first attempt re-advises — preferred)
-  or never-*attempted*, and whether this rides `init_notice.py`'s module (one home for first-run
-  advisories) or stays at the pipeline seam where the state already is. Keep it strictly advisory —
-  print, never prompt, never block, never raise, matching `init_notice.py`'s stated contract; a
-  prompt here would inherit every unattended-consent problem `3.0.0-F3` and `3.1.0-F4` are about.
-  Relates to `3.1.0-F4`, which is the stronger version of this idea — a default-on gate that renders
-  the resolved plan and asks once. If F4 lands, this is superseded, because a rendered plan *is* the
-  config made visible; it is filed separately because F4 is a `major` bump blocked on the runtime
-  TOML-writer seam, and this is a patch-bump advisory that can land immediately.
-  *Priority: med · Effort: small · Bump: patch* — a gap that is currently active on a real system
-  (nothing points a fresh install at `kernel.toml` before it builds a kernel); one advisory helper
-  plus a call at the stage seam, no new state, no change to what either stage does.
-  **Standards home on adoption:** none new — row 25 (logging levels) governs the level, and
-  `init_notice.py` is the existing home for first-run advisory text if the helper lands there.
 
 ---
+
 - **`3.1.0-F8` — missing `validpgpkeys` are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp.**
   `import_pgp_keys` (`primitives/build_prep.py:148-197`) runs a three-step strategy — bundled
   `keys/pgp/*.asc`, then a keyring check, then `gpg --recv-keys` for whatever is still missing —
@@ -361,6 +325,7 @@ canonical ordering.
   `primitives/prompt.py` TTY-only shape, so a non-TTY run must fail closed rather than auto-import.
 
 ---
+
 - **`3.1.0-F9` — a sandboxed build cannot see dependencies you built in an earlier run.**
   Follow-up to the shipped build sandbox (`[security] sandbox_builds`). `arch-nspawn` gives the
   container its own `/etc/pacman.conf`, so `makechrootpkg --syncdeps` resolves build deps from the
@@ -408,6 +373,7 @@ canonical ordering.
   `makepkg_artifacts` home rather than growing a second one.
 
 ---
+
 - **`3.1.0-F10` — a sandboxed build links against repo versions, not the versions the host runs.**
   The other half of the sandbox's dependency-scope limit, and the one `3.1.0-F9` explicitly does not
   reach. Even with locally-built artifacts injected, everything *not* injected is resolved from the
@@ -434,18 +400,6 @@ canonical ordering.
   **Standards home on adoption:** deferred to implementation — a local repo would be the first
   artifact-*publishing* surface in the tree, so if it lands it needs its own row covering repo
   layout and the `repo-add`/signature story, rather than extending an existing one.
-
----
-- **`2.5.1-F3` — `state failed --clear-all` emits no `SYSFORGE_TARGET`.** Follow-up to `2.4.0-F1`,
-  which gave every sentinel-gated verb a `journal_target` override. `StateFailedVerb.journal_target`
-  keys only on `args.clear` (single pkgbase → `pkg:<name>`), so a `--clear-all` invocation — which is
-  equally sentinel-gated because it rewrites `build_state.toml` — falls to `None` and emits the verb
-  name alone. This is the one spot where 2.4.0-F1's "every mutating verb supplies a meaningful target"
-  goal isn't met. Emit a subjectless `mode:` target (e.g. `journal.mode_target("failed-clear-all")`)
-  on the clear-all path, and add the gcc/llvm-independent dual test (clear-all → `mode:...`, alongside
-  the existing single-clear and no-clear cases in `test_journal.py`). No new seam; the standards row 20
-  scope note already covers per-verb `SYSFORGE_TARGET`. *Priority: low · Effort: small · Bump: patch* — observability
-  completeness; additive, no correctness impact.
 
 ---
 
@@ -491,96 +445,7 @@ canonical ordering.
   *Priority: low · Effort: medium · Bump: patch* — the one piece carrying implementation
   uncertainty, isolated here so it cannot hold up the rest.
 
----
-
-- **`2.6.1-F28` — `artifact review --all`: bulk-adopt every offerable candidate.** Adoption is
-  one-file-at-a-time: `artifacts.adopt` takes a single `src`, and `ArtifactReviewVerb.execute`
-  reaches it only through a per-candidate `prompt_choice` loop. Pointing sysforge at a directory
-  that is already a curated set — `~/.local/bin` on a workstation that has accumulated dozens of
-  hand-written scripts — therefore costs one keystroke per file, with no way to say "all of these,
-  I wrote them". Add `--all` to `artifact review`: iterate the same `iter_offerable(registry,
-  ignore)` result and call `adopt` on each, printing the adopted name/class per line and a final
-  count. Reusing that one composition point is the whole point — the exclusion rules (package-owned,
-  sysforge-owned, already-managed, declined-and-unchanged) stay in a single home and cannot drift
-  between the interactive and bulk paths. Three specifics the implementation must honour: (1)
-  `--all` **skips `OWNER_UNKNOWN` candidates** unless `--include-unknown` is also passed —
-  `owner == unknown` means `pacman.owners_of` returned no verdict for that path, so the file may in
-  fact be package-owned and a blind bulk adopt is exactly where that mislabel does damage; the
-  interactive path can surface `[ownership unknown]` and let a human decide, the bulk path cannot.
-  (2) It **respects the `IgnoreList`**, same as the interactive loop — a recorded decline is a
-  decision, and `--all` is a convenience over the offer set, not an override of it. (3) It runs
-  off-TTY, replacing today's list-and-hint branch when the flag is given, since it needs no prompt.
-  Per-candidate `ArtifactError` logs and continues, mirroring the existing loop. Low risk by
-  construction: adoption is copy-only (`requires_sentinel = False`), touches no live file, and is
-  undone by `artifact remove --purge`. Tests: bulk adopt across mixed classes/roots; unknown-owner
-  skipped by default and adopted with `--include-unknown`; ignored candidate not adopted; off-TTY
-  bulk path; a mid-run adopt failure not aborting the rest. Completions (`_sysforge` + bash) and
-  the manpage move in the same change. *Priority: low · Effort: small · Bump: patch* — additive
-  flag on an existing verb, no new seam and no change to the per-file adopt contract.
-  **Standards home on adoption:** none new.
-
 ### Bugs
-
-- **`3.0.0-B5` — the ungated-source warning never fires on stage builds.**
-  `warn_ungated_sources` (`primitives/net_policy.py`) is wired only at `build_core.py:836`, so a
-  frozen run warns about `source=()` entries the freeze cannot mediate for ordinary packages but
-  says nothing for toolchain and kernel builds, which reach `makepkg_wrapper` without passing
-  through `build_core`. Those are precisely the builds where an unmediated `source=()` fetch
-  matters most — they run longest, pull the most code, and are the ones a user is most likely to
-  leave running unattended under `--frozen` believing the freeze covers them. The gap is silent:
-  the freeze itself still holds at all five gated seams, so nothing fails; the user simply is not
-  told what remains uncovered. Fix by hoisting the call to a seam both paths cross, rather than
-  duplicating it at each stage — a second call site would drift the same way the frozen-exit check
-  did before `3.0.0-F2` centralised it.
-  *Priority: low · Effort: small · Bump: patch* — advisory only, no enforcement change.
-  **Standards home on adoption:** none new.
-
----
-
-- **`3.0.0-B3` — a killed bootstrap leaves the target with passwordless root.**
-  `pipeline/stages/configure.py:370-373` writes `/etc/sudoers.d/99-sysforge-bootstrap-build`
-  granting the build user `NOPASSWD: ALL`, because `makepkg -s` must sync makedeps
-  non-interactively while building sysforge itself inside the target. The `finally` at `:423`
-  removes it, which covers exceptions and non-zero exits — but not `SIGKILL`, an OOM kill, or
-  power loss mid-build. Those leave a freshly installed system carrying an unconditional
-  passwordless-root rule for its primary user, in a file the user has no reason to look for.
-  Low likelihood, maximum blast radius, and the failure is silent: the install otherwise looks
-  incomplete rather than insecure. Two independent fixes, both cheap and worth taking together —
-  scope the rule to what it actually needs (`NOPASSWD: /usr/bin/pacman`) so even a leaked drop
-  is not root-equivalent, and sweep for stale `99-sysforge-bootstrap-*` drops at bootstrap entry
-  so a `--resume` after a kill cleans up its predecessor. A `pre_check` refusal is the wrong
-  shape here: the sweep must run on the path that would otherwise re-create the file.
-  *Priority: med · Effort: small · Bump: patch* — narrow trigger, but the residue is a
-  privilege-escalation primitive and the fix touches one stage.
-  **Standards home on adoption:** none new — the privilege seam (`primitives/privilege.py`)
-  does not cover sudoers *provisioning*, only invocation.
-
----
-
-- **`3.0.0-B1` — stage-owned advisory is blind to pinned repo checkouts.**
-  `update._detect_stage_owned_updates` exists to tell the user when a package it skipped
-  (`owner_stage` set) has upstream movement waiting on `run toolchain` / `run kernel`. It resolves
-  the candidate version through `_check_one_pkgbase`, which for a `repo_class = "source"` entry
-  compares the installed version against `pkgbuild_ver` — the version parsed from the **local**
-  PKGBUILD. Stage-owned packages are excluded from the walk and therefore from `_sync_sources`, so
-  for a `source = "repo"` checkout that tree is a detached-HEAD pin (`source_sync._pin_repo_checkout`)
-  which only ever advances *inside* the owning stage's own run. Installed version and local
-  `pkgbuild_ver` are the same value by construction, the check never yields `NEEDS_REBUILD`, and no
-  advisory is emitted — the one case the feature was built for. Observed live: `spirv-llvm-translator`
-  sat at 22.1.2-1 while `extra` carried 22.1.5-1, and the intervening `update` run printed only the
-  `info`-level "skipping 8 toolchain-stage package(s)" line with no "Stage-owned updates available"
-  block. The user-visible signal degrades to pacman's own `warning: … ignoring package upgrade`,
-  which names the symptom but attributes it to `IgnoreGroup = sf-build` rather than to a stage that
-  has not run. AUR-sourced stage-owned packages are unaffected (RPC supplies the upstream version
-  without a sync). Fix in the advisory path only — for stage-owned entries classified `source =
-  "repo"`, read the candidate from pacman's sync DB (`source_sync.get_pacman_sync_version`, already
-  the authority the pin itself targets) instead of the un-synced local PKGBUILD; leave the walk's
-  exclusion and the pin's lifecycle untouched, since syncing stage-owned sources from `update` is
-  exactly the double-processing the `owner_stage` skip exists to prevent. Test both origins (repo
-  entry → advisory from sync DB; AUR entry → advisory from RPC, unchanged).
-  *Priority: med · Effort: small · Bump: patch* — advisory-only; no build or install behaviour changes.
-
----
 
 - **`3.1.0-B12` — `update --include-stage-owned` co-schedules a toolchain rebuild with the packages
   it compiles, and stamps them all with the pre-rebuild fingerprint.**
@@ -621,30 +486,6 @@ canonical ordering.
   **Standards home on adoption:** none new — the toolchain-identity contract already lives with
   `get_toolchain_fingerprint` as its single canonical computation site; this constrains *when* it is
   read, not what it means.
-
----
-
-- **`3.1.0-B15` — an `AlreadyBuilt` exit logs "Build failed" first, so a healthy package reads as
-  the failure in a batch that failed elsewhere.**
-  makepkg exits 13 when a matching artifact is already in `PKGDEST`. `build_core` classifies that
-  correctly — `build_core.py:942` logs `<pkgbase>: package already built — installing existing
-  artifact` and the run proceeds — but the wrapper's `finally` block has already fired:
-  `makepkg_wrapper.py:936-943` branches on a plain `success` boolean, and an `AlreadyBuilt` exit is
-  not `success`, so it warns `Build failed — leaving patched PKGBUILD in place` one line earlier.
-  The two lines are adjacent and contradict each other. Cost is diagnostic, not functional: in the
-  `3.1.0-B14` investigation the log read
-  ```
-  [WARN][BUILD] Build failed — leaving patched PKGBUILD in place: .../egl-wayland-git/PKGBUILD.sysforge
-  [INFO][BUILD] egl-wayland-git: package already built — installing existing artifact
-  ```
-  which points the reader at the wrong package — `egl-wayland-git` was fine; the failure was the
-  `pacman -U` two lines later. The patched-PKGBUILD retention is itself correct for this case (a
-  rebuild at the same pkgver still needs the file), so only the message is wrong, not the cleanup
-  policy. Fix direction: thread the `AlreadyBuilt` verdict into the `finally` branch so it logs
-  retention without the failure claim — the wrapper already distinguishes the exit upstream, it
-  just collapses to a boolean before this point.
-  *Priority: low · Effort: small · Bump: patch* — a log-message branch; retention behaviour and
-  every exit classification stay as they are.
 
 ### Open questions
 

@@ -324,7 +324,9 @@ _sysforge_artifact_list() {
 }
 
 _sysforge_artifact_review() {
-  _arguments
+  _arguments \
+    '--all[adopt every offerable candidate without prompting]' \
+    '--include-unknown[with --all, also adopt candidates of unknown ownership]'
 }
 
 _sysforge_artifact_adopt() {

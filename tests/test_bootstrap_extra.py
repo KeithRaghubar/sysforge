@@ -23,6 +23,7 @@ from sysforge.pipeline.stages.configure import (
     _configure_shell,
     _install_sysforge,
     _read_pkgver,
+    _sweep_stale_bootstrap_sudoers,
 )
 from sysforge.pipeline.stages.hardware import (
     _parse_cpuinfo,
@@ -336,6 +337,97 @@ class TestInstallSysforge:
             f"no built package path passed to pacman -U: {pacman_call}"
         # Temporary sudoers drop-in is removed at the end
         assert not (target / "etc/sudoers.d/99-sysforge-bootstrap-build").exists()
+
+    def test_sudoers_drop_is_scoped_to_pacman(self, tmp_path):
+        """3.0.0-B3: the drop must not grant NOPASSWD: ALL. The `finally`
+        cannot run after SIGKILL/OOM/power loss, so a leaked drop is a
+        permanent grant on a freshly installed system — scope it to the one
+        binary `makepkg -s` actually needs so the residue is not
+        root-equivalent."""
+        src = self._stage_source(tmp_path)
+        target = self._make_target(tmp_path)
+        cfg = make_cfg(target=str(target), username="builder")
+        build_dir = target / "home/builder/sysforge-pkg"
+        drop = target / "etc/sudoers.d/99-sysforge-bootstrap-build"
+        seen = {}
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            # Capture the drop while it is still live — the finally removes it.
+            if drop.exists() and "content" not in seen:
+                seen["content"] = drop.read_text()
+                seen["mode"] = drop.stat().st_mode & 0o777
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
+                   return_value=src), \
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect):
+            _install_sysforge(cfg)
+
+        assert "content" in seen, "sudoers drop never existed during the build"
+        assert seen["content"] == "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n"
+        assert "NOPASSWD: ALL" not in seen["content"]
+        assert seen["mode"] == 0o440
+        # Still removed on the happy path.
+        assert not drop.exists()
+
+    def test_stale_sudoers_drop_swept_before_reprovisioning(self, tmp_path):
+        """3.0.0-B3: a --resume after a killed bootstrap must clean up its
+        predecessor. The sweep runs on the path that re-creates the file, so a
+        stale drop left by an earlier run is gone once the build starts."""
+        src = self._stage_source(tmp_path)
+        target = self._make_target(tmp_path)
+        cfg = make_cfg(target=str(target), username="builder")
+        build_dir = target / "home/builder/sysforge-pkg"
+
+        # A predecessor left behind by a SIGKILLed run, with the old wide grant.
+        stale = target / "etc/sudoers.d/99-sysforge-bootstrap-build"
+        stale.write_text("builder ALL=(ALL) NOPASSWD: ALL\n")
+        other = target / "etc/sudoers.d/99-sysforge-bootstrap-legacy"
+        other.write_text("builder ALL=(ALL) NOPASSWD: ALL\n")
+
+        def chroot_side_effect(target_arg, cmd, check=True):
+            if cmd[:3] == ["sudo", "-u", "builder"]:
+                # The glob-matched sibling is gone by build time...
+                assert not other.exists()
+                # ...and the re-provisioned drop carries the scoped rule.
+                assert stale.read_text() == (
+                    "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n"
+                )
+                build_dir.mkdir(parents=True, exist_ok=True)
+                (build_dir / "sysforge-1.0.0-1-any.pkg.tar.zst").touch()
+            return MagicMock(returncode=0)
+
+        with patch("sysforge.pipeline.stages.configure._find_sysforge_source",
+                   return_value=src), \
+             patch("sysforge.pipeline.stages.configure._chroot",
+                   side_effect=chroot_side_effect):
+            _install_sysforge(cfg)
+
+        assert not stale.exists()
+        assert not other.exists()
+
+    def test_sweep_is_nonfatal_when_sudoers_dir_missing(self, tmp_path):
+        """A bootstrap must never be blocked by an unreadable/absent
+        sudoers.d — the drop is re-provisioned immediately afterwards."""
+        _sweep_stale_bootstrap_sudoers(str(tmp_path / "no-such-target"))
+
+    def test_sweep_leaves_unrelated_sudoers_drops_alone(self, tmp_path):
+        """The glob is prefix-anchored: only sysforge's own bootstrap drops."""
+        target = tmp_path / "target"
+        (target / "etc/sudoers.d").mkdir(parents=True)
+        keep = target / "etc/sudoers.d/10-installer"
+        keep.write_text("root ALL=(ALL) ALL\n")
+        mine = target / "etc/sudoers.d/99-sysforge-bootstrap-build"
+        mine.write_text("builder ALL=(ALL) NOPASSWD: ALL\n")
+
+        _sweep_stale_bootstrap_sudoers(str(target))
+
+        assert keep.exists()
+        assert not mine.exists()
 
     def test_install_scriptlet_staged_into_build_dir(self, tmp_path):
         """A PKGBUILD declaring `install=sysforge.install` requires that file to

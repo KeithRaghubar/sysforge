@@ -754,6 +754,14 @@ def _add_artifact_parser(sub):
 
     a_review = asub.add_parser(
         "review", help="interactively offer discovered candidates for adoption")
+    a_review.add_argument(
+        "--all", action="store_true",
+        help="adopt every offerable candidate without prompting",
+    )
+    a_review.add_argument(
+        "--include-unknown", dest="include_unknown", action="store_true",
+        help="with --all, also adopt candidates of unknown ownership",
+    )
     a_review.set_defaults(verb_cls=ArtifactReviewVerb)
 
     a_adopt = asub.add_parser("adopt", help="bring a live artifact under management")

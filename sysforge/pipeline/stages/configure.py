@@ -273,6 +273,40 @@ def _read_pkgver(pkgbuild: Path) -> str:
     return match.group(1)
 
 
+_BOOTSTRAP_SUDOERS_DIR = "etc/sudoers.d"
+_BOOTSTRAP_SUDOERS_NAME = "99-sysforge-bootstrap-build"
+_BOOTSTRAP_SUDOERS_GLOB = "99-sysforge-bootstrap-*"
+
+
+def _sweep_stale_bootstrap_sudoers(target: str) -> None:
+    """Remove any leftover bootstrap sudoers drop before provisioning a new one.
+
+    3.0.0-B3: the provisioning site's ``finally`` cannot run after SIGKILL, an
+    OOM kill, or power loss, so a killed bootstrap leaves the drop behind in a
+    file the user has no reason to look for. This runs on the path that would
+    otherwise *re-create* it — a ``pre_check`` refusal would be the wrong shape,
+    since the resume that needs the file is exactly the run that must clean up
+    its predecessor.
+
+    Best-effort by design: a bootstrap must not be blocked by an unreadable
+    sudoers.d, and the drop is re-provisioned immediately afterwards anyway.
+    """
+    drop_dir = Path(target) / _BOOTSTRAP_SUDOERS_DIR
+    try:
+        stale = sorted(drop_dir.glob(_BOOTSTRAP_SUDOERS_GLOB))
+    except OSError:
+        return
+    for path in stale:
+        try:
+            path.unlink()
+        except OSError as e:
+            _log.warn(f"could not remove stale sudoers drop {path}: {e}")
+            continue
+        _log.warn(
+            f"removed a stale bootstrap sudoers drop left by a killed run: {path}"
+        )
+
+
 def _install_sysforge(cfg: BootstrapConfig) -> None:
     """Place sysforge source under <target>/root/sysforge and install it.
 
@@ -368,9 +402,18 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     # makepkg -s calls `sudo pacman -S` to sync makedeps, which needs to run
     # non-interactively. Grant the build user passwordless sudo for the
     # duration of the build. Removed in the finally block below.
-    sudoers_drop = Path(cfg.target) / "etc/sudoers.d/99-sysforge-bootstrap-build"
+    #
+    # 3.0.0-B3: scoped to pacman rather than ALL. The finally covers exceptions
+    # and non-zero exits but not SIGKILL, an OOM kill, or power loss mid-build,
+    # any of which would strand this file on a freshly installed system. Scoped
+    # to the one binary makepkg actually needs, a leaked drop is no longer a
+    # root-equivalent escalation primitive. Paired with the entry-time sweep
+    # (_sweep_stale_bootstrap_sudoers) so a --resume after a kill also cleans
+    # up its predecessor.
+    _sweep_stale_bootstrap_sudoers(cfg.target)
+    sudoers_drop = Path(cfg.target) / _BOOTSTRAP_SUDOERS_DIR / _BOOTSTRAP_SUDOERS_NAME
     sudoers_drop.parent.mkdir(parents=True, exist_ok=True)
-    sudoers_drop.write_text(f"{cfg.username} ALL=(ALL) NOPASSWD: ALL\n")
+    sudoers_drop.write_text(f"{cfg.username} ALL=(ALL) NOPASSWD: /usr/bin/pacman\n")
     sudoers_drop.chmod(0o440)
 
     try:

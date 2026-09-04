@@ -196,8 +196,13 @@ def test_remove_verb_passes_force_through(tmp_path, monkeypatch):
     assert not src.exists()
 
 
-def _review_args(tmp_path):
-    return argparse.Namespace(state_dir=tmp_path / "state")
+def _review_args(tmp_path, **kw):
+    ns = argparse.Namespace(
+        state_dir=tmp_path / "state", all=False, include_unknown=False
+    )
+    for k, v in kw.items():
+        setattr(ns, k, v)
+    return ns
 
 
 def _mk_live(tmp_path, name, body="x"):
@@ -349,3 +354,159 @@ def test_cli_wires_artifact_review():
 
     ns = _build_parser().parse_args(["artifact", "review"])
     assert ns.verb_cls is ArtifactReviewVerb
+
+
+# ---------------------------------------------------------------------------
+# 2.6.1-F28 — `artifact review --all` bulk adoption
+# ---------------------------------------------------------------------------
+
+def test_review_all_adopts_every_offerable_candidate(tmp_path, monkeypatch):
+    """Bulk adopt across mixed classes: --all walks the same iter_offerable
+    result the interactive loop does, so the exclusion rules cannot drift."""
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    a = _mk_live(tmp_path, "one.sh")
+    b = _mk_live(tmp_path, "two.sh", "other")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=a, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+        artifacts.Candidate(path=b, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+    ])
+    # --all must never prompt, even on a TTY.
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("--all must not prompt")))
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path, all=True), None)
+
+    assert rc.exit_code == 0
+    names = artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load()
+    assert "one.sh" in names
+    assert "two.sh" in names
+
+
+def test_review_all_skips_unknown_owner_by_default(tmp_path, monkeypatch, capsys):
+    """owner == unknown means pacman returned no verdict, so the file may in
+    fact be package-owned — a blind bulk adopt is where that mislabel does
+    damage. The interactive path can ask a human; the bulk path cannot."""
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    mine = _mk_live(tmp_path, "mine.sh")
+    mystery = _mk_live(tmp_path, "mystery.sh", "who")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=mine, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+        artifacts.Candidate(path=mystery, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_UNKNOWN),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path, all=True), None)
+
+    assert rc.exit_code == 0
+    names = artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load()
+    assert "mine.sh" in names
+    assert "mystery.sh" not in names
+    assert "--include-unknown" in "".join(capsys.readouterr())
+
+
+def test_review_all_include_unknown_adopts_them(tmp_path, monkeypatch):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    mystery = _mk_live(tmp_path, "mystery.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=mystery, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_UNKNOWN),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    rc = ArtifactReviewVerb().execute(
+        _review_args(tmp_path, all=True, include_unknown=True), None
+    )
+
+    assert rc.exit_code == 0
+    assert "mystery.sh" in artifacts.ArtifactRegistry(
+        state_dir=tmp_path / "state").load()
+
+
+def test_review_all_respects_the_ignore_list(tmp_path, monkeypatch):
+    """A recorded decline is a decision. --all is a convenience over the offer
+    set, not an override of it."""
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    declined = _mk_live(tmp_path, "declined.sh", "body")
+    keep = _mk_live(tmp_path, "keep.sh", "other")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=declined, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+        artifacts.Candidate(path=keep, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+    ig = artifacts.IgnoreList(state_dir=tmp_path / "state")
+    ig.save({declined: artifacts.hash_file(declined)})
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path, all=True), None)
+
+    assert rc.exit_code == 0
+    names = artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load()
+    assert "declined.sh" not in names
+    assert "keep.sh" in names
+
+
+def test_review_all_runs_off_tty(tmp_path, monkeypatch):
+    """--all needs no prompt, so it replaces the list-and-hint branch rather
+    than falling into it."""
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    live = _mk_live(tmp_path, "batch.sh")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=live, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path, all=True), None)
+
+    assert rc.exit_code == 0
+    assert "batch.sh" in artifacts.ArtifactRegistry(
+        state_dir=tmp_path / "state").load()
+
+
+def test_review_all_continues_past_a_failed_adopt(tmp_path, monkeypatch, capsys):
+    """A mid-run ArtifactError logs and continues, mirroring the interactive
+    loop — one unreadable file must not abandon the rest of the batch."""
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    bad = _mk_live(tmp_path, "bad.sh")
+    good = _mk_live(tmp_path, "good.sh", "ok")
+    monkeypatch.setattr(artifacts, "scan", lambda roots=None: [
+        artifacts.Candidate(path=bad, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+        artifacts.Candidate(path=good, cls=artifacts.CLASS_SCRIPT,
+                            owner=artifacts.OWNER_YOU),
+    ])
+    monkeypatch.setattr(prompt, "is_interactive", lambda: False)
+
+    real_adopt = artifacts.adopt
+
+    def flaky(registry, path, cls=None):
+        if path == bad:
+            raise artifacts.ArtifactError("boom")
+        return real_adopt(registry, path, cls=cls)
+    monkeypatch.setattr(artifacts, "adopt", flaky)
+
+    rc = ArtifactReviewVerb().execute(_review_args(tmp_path, all=True), None)
+
+    assert rc.exit_code == 0
+    names = artifacts.ArtifactRegistry(state_dir=tmp_path / "state").load()
+    assert "good.sh" in names
+    assert "bad.sh" not in names
+    assert "boom" in "".join(capsys.readouterr())

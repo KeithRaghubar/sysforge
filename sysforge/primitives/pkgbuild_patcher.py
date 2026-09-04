@@ -2281,15 +2281,26 @@ def cleanup_patch_artifacts(pkgbuild_path):
             _log.info(f"Removed artifact: {target}")
 
 
-def warn_artifacts_left(has_extracted_profile: bool) -> None:
-    """Log (under the PATCH tag) that patch artifacts are being kept after a
-    failed build for diagnosis.
+def warn_artifacts_left(
+    has_extracted_profile: bool, already_built: bool = False
+) -> None:
+    """Log (under the PATCH tag) that patch artifacts are being kept.
 
-    The failure-side counterpart to :func:`cleanup_patch_artifacts`: this module
+    The non-cleanup counterpart to :func:`cleanup_patch_artifacts`: this module
     owns the artifact names, so the build orchestrator delegates the message
     here instead of re-spelling ``PKGBUILD.sysforge`` itself.
+
+    ``already_built`` distinguishes the ``AlreadyBuilt`` exit (makepkg refused
+    to rebuild because PKGDEST already holds a matching artifact) from a real
+    failure. Retention is correct in both cases — a rebuild at the same pkgver
+    still needs the sidecar — but claiming "Build failed" for a healthy package
+    points the reader at the wrong pkgbase when something else in the batch is
+    the actual failure (``3.1.0-B15``).
     """
     artifacts = "PKGBUILD.sysforge"
     if has_extracted_profile:
         artifacts += " and pkgbuild_extracted_profile.toml"
-    _log.warn(f"Build failed — leaving {artifacts} in place for diagnosis")
+    if already_built:
+        _log.info(f"Package already built — leaving {artifacts} in place")
+    else:
+        _log.warn(f"Build failed — leaving {artifacts} in place for diagnosis")

@@ -122,9 +122,20 @@ def test_state_failed_verb_journal_target():
     from sysforge.state_cmd import StateFailedVerb
 
     verb = StateFailedVerb()
-    assert verb.journal_target(SimpleNamespace(clear="mesa")) == "pkg:mesa"
-    # no --clear: not sentinel-gated, no subject
-    assert verb.journal_target(SimpleNamespace(clear=None)) is None
+    assert verb.journal_target(SimpleNamespace(clear="mesa", clear_all=False)) == "pkg:mesa"
+    # neither flag: not sentinel-gated, no subject
+    assert verb.journal_target(SimpleNamespace(clear=None, clear_all=False)) is None
+    # 2.5.1-F3: --clear-all is equally sentinel-gated (it rewrites
+    # build_state.toml) but subjectless, so it emits a `mode:` target rather
+    # than journalling the bare verb name.
+    assert (
+        verb.journal_target(SimpleNamespace(clear=None, clear_all=True))
+        == "mode:failed-clear-all"
+    )
+    # --clear wins when both are somehow set: the named subject is more useful.
+    assert (
+        verb.journal_target(SimpleNamespace(clear="mesa", clear_all=True)) == "pkg:mesa"
+    )
 
 
 def test_state_repair_verb_journal_target():

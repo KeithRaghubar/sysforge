@@ -664,6 +664,100 @@ def test_detect_stage_owned_updates_reports_behind(monkeypatch):
     assert out == [("linux-custom", "6.9", "6.10", "kernel")]
 
 
+# ---------------------------------------------------------------------------
+# 3.0.0-B1 — stage-owned advisory for `source = "repo"` pinned checkouts
+# ---------------------------------------------------------------------------
+
+def test_detect_stage_owned_repo_reads_sync_db_not_local_pkgbuild(monkeypatch):
+    """3.0.0-B1: a stage-owned `source = "repo"` entry sits on a detached-HEAD
+    pin, so its local pkgbuild_ver always equals the installed version and
+    _check_one_pkgbase can never yield NEEDS_REBUILD. The advisory must come
+    from pacman's sync DB instead — the authority the pin targets."""
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+
+    def boom(*a, **k):  # the repo path must not consult the local PKGBUILD
+        raise AssertionError("_check_one_pkgbase called for a repo-source entry")
+    monkeypatch.setattr(up, "_check_one_pkgbase", boom)
+    monkeypatch.setattr(pac, "get_pacman_sync_version", lambda n: "22.1.5-1")
+
+    stage_owned = {
+        "spirv-llvm-translator": {"owner_stage": "toolchain", "source": "repo"},
+    }
+    out = up._detect_stage_owned_updates(
+        stage_owned, all_installed={"spirv-llvm-translator": "22.1.2-1"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert out == [
+        ("spirv-llvm-translator", "22.1.2-1", "22.1.5-1", "toolchain")
+    ]
+
+
+def test_detect_stage_owned_repo_no_advisory_when_sync_db_not_newer(monkeypatch):
+    """Sync DB at or behind the installed version yields no advisory."""
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+    monkeypatch.setattr(pac, "get_pacman_sync_version", lambda n: "22.1.2-1")
+
+    stage_owned = {
+        "spirv-llvm-translator": {"owner_stage": "toolchain", "source": "repo"},
+    }
+    out = up._detect_stage_owned_updates(
+        stage_owned, all_installed={"spirv-llvm-translator": "22.1.2-1"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert out == []
+
+
+def test_detect_stage_owned_repo_unknown_to_sync_db_is_silent(monkeypatch):
+    """Best-effort: a package the sync DB does not carry omits the advisory
+    rather than raising — this path must never fail an update run."""
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+    monkeypatch.setattr(pac, "get_pacman_sync_version", lambda n: None)
+
+    stage_owned = {"some-local-pkg": {"owner_stage": "toolchain", "source": "repo"}}
+    out = up._detect_stage_owned_updates(
+        stage_owned, all_installed={"some-local-pkg": "1.0-1"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert out == []
+
+
+def test_detect_stage_owned_aur_still_uses_rpc_path(monkeypatch):
+    """3.0.0-B1 fixes the repo origin only: AUR-sourced stage-owned packages
+    get their upstream version from RPC without a sync, so they keep running
+    through _check_one_pkgbase unchanged."""
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+    from sysforge.update_result import _UpdateResult
+
+    def unexpected(name):
+        raise AssertionError("sync DB consulted for an AUR-source entry")
+    monkeypatch.setattr(pac, "get_pacman_sync_version", unexpected)
+
+    seen = []
+
+    def fake_check(pkgbase, pkgnames, entry, *a, **k):
+        seen.append(pkgbase)
+        return _UpdateResult(pkgbase=pkgbase, pkgnames=pkgnames,
+                             action="NEEDS_REBUILD", installed_ver="6.9",
+                             pkgbuild_ver="6.10", pkgbuild_path=None)
+    monkeypatch.setattr(up, "_check_one_pkgbase", fake_check)
+
+    stage_owned = {"linux-custom": {"owner_stage": "kernel", "source": "aur"}}
+    out = up._detect_stage_owned_updates(
+        stage_owned, all_installed={"linux-custom": "6.9"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert seen == ["linux-custom"]
+    assert out == [("linux-custom", "6.9", "6.10", "kernel")]
+
+
 def test_source_built_record_survives_sync_with_installed(state_dir):
     """Durability: sync_with_installed only adds pacman markers for packages
     with no record and prunes uninstalled ones — it must never downgrade an

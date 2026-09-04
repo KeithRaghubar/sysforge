@@ -53,7 +53,7 @@ downstream code sees a consistent subcommand name either way.
 | `uninstall` | resolve state dir + `plan_uninstall` over `BuildState` (pure) | `pacman -Rnsu`, then demote any tracked target via `state forget` + reconcile | (state written inline) | yes |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
 | `artifact list` | null | `primitives/artifacts.unified_rows()` + PATH check + optional `scan()` for `--unmanaged` | null | no |
-| `artifact review` | null | interactively offer discovered candidates for adoption via `primitives/artifacts.iter_offerable()`; off-TTY lists candidates + adopt hint | null | no |
+| `artifact review` | `--all`, `--include-unknown` | interactively offer discovered candidates for adoption via `primitives/artifacts.iter_offerable()`; off-TTY lists candidates + adopt hint; `--all` bulk-adopts the same offer set without prompting | null | no |
 | `artifact adopt <path>` | null | `primitives/artifacts.adopt()` — copy live → managed, seed registry entry | null | no |
 | `artifact edit <name>` | null | launch editor on managed copy, then `primitives/artifacts.rehash()` | null | no |
 | `artifact deploy <name>\|--all` | null | `primitives/artifacts.deploy()` — per-class live write + post-deploy action; refuses on `drifted`/`conflict` without `--force`/`--adopt-live` | null | yes |
@@ -104,6 +104,23 @@ verb prompts `[a]dopt / [s]kip / [i]gnore / [q]uit` — `a` calls `artifacts.ado
 adopt` does, `i` records the path+hash into the ignore-list, `s` leaves it to be re-offered next run,
 `q` stops the walk early. Off a TTY it never prompts: it lists the reviewable candidates and prints a
 `sysforge artifact adopt <path>` hint, exiting 0.
+
+**`--all`** bulk-adopts every offerable candidate, for the case where the scan root is already a
+curated set (a `~/.local/bin` that has accumulated dozens of hand-written scripts) and one keystroke
+per file is the only thing standing between the user and a managed inventory. It iterates the *same*
+`iter_offerable(registry, ignore)` result the interactive loop walks — that single composition point
+is the design: the exclusion rules (package-owned, sysforge-owned, already-managed,
+declined-and-unchanged) keep one home and cannot drift between the interactive and bulk paths. Three
+properties it must hold: it **skips `OWNER_UNKNOWN` candidates** unless **`--include-unknown`** is
+also given (`owner == unknown` means `pacman.owners_of` returned no verdict, so the file may in fact
+be package-owned — the interactive path can surface `[ownership unknown]` and let a human decide, a
+blind bulk adopt cannot); it **respects the ignore-list** exactly as the interactive loop does, since
+a recorded decline is a decision and `--all` is a convenience over the offer set rather than an
+override of it; and it **runs off a TTY**, replacing the list-and-hint branch when the flag is given,
+since it needs no prompt. A per-candidate `ArtifactError` logs and continues, mirroring the
+interactive loop, and the run ends with an adopted/skipped/failed count. Low risk by construction:
+adoption is copy-only (`requires_sentinel = False`), touches no live file, and is undone by
+`artifact remove --purge`.
 
 ### `artifact adopt` / `artifact edit`
 

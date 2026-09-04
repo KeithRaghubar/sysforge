@@ -16,6 +16,7 @@ Covers:
   apply_patch_pkgbuild      — flag lines removed, conditional blocks removed,
                                original untouched, groups line preserved
   cleanup_patch_artifacts   — removes both artifacts, missing files non-fatal
+  warn_artifacts_left       — failure wording vs AlreadyBuilt wording (3.1.0-B15)
 """
 import sys
 import os
@@ -37,6 +38,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
+    warn_artifacts_left,
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_subpackages,
@@ -574,6 +576,63 @@ def test_cleanup_missing_files_nonfatal():
         pb.touch()
         # Neither artifact exists — should not raise
         cleanup_patch_artifacts(pb)
+
+
+# ---------------------------------------------------------------------------
+# warn_artifacts_left  (3.1.0-B15)
+# ---------------------------------------------------------------------------
+
+class _LogRecorder:
+    """Records (level, message) so the retention wording can be asserted."""
+
+    def __init__(self):
+        self.calls = []
+
+    def warn(self, msg):
+        self.calls.append(("warn", msg))
+
+    def info(self, msg):
+        self.calls.append(("info", msg))
+
+
+def test_warn_artifacts_left_failure_wording(monkeypatch):
+    """A real failure keeps the warn-level "Build failed" claim."""
+    import sysforge.primitives.pkgbuild_patcher as pp
+    rec = _LogRecorder()
+    monkeypatch.setattr(pp, "_log", rec)
+    warn_artifacts_left(False)
+    assert rec.calls == [
+        ("warn", "Build failed — leaving PKGBUILD.sysforge in place for diagnosis")
+    ]
+
+
+def test_warn_artifacts_left_already_built_does_not_claim_failure(monkeypatch):
+    """3.1.0-B15: an AlreadyBuilt exit retains the same artifacts, but a healthy
+    package must not be logged as a failure — the reader chases the wrong
+    pkgbase when something else in the batch is the real failure."""
+    import sysforge.primitives.pkgbuild_patcher as pp
+    rec = _LogRecorder()
+    monkeypatch.setattr(pp, "_log", rec)
+    warn_artifacts_left(False, already_built=True)
+    assert len(rec.calls) == 1
+    level, msg = rec.calls[0]
+    assert level == "info"
+    assert "Build failed" not in msg
+    assert "already built" in msg
+    assert "PKGBUILD.sysforge" in msg
+
+
+def test_warn_artifacts_left_already_built_names_extracted_profile(monkeypatch):
+    """The artifact list is shared by both wordings — the extracted-profile
+    sidecar is still named on the AlreadyBuilt path."""
+    import sysforge.primitives.pkgbuild_patcher as pp
+    rec = _LogRecorder()
+    monkeypatch.setattr(pp, "_log", rec)
+    warn_artifacts_left(True, already_built=True)
+    level, msg = rec.calls[0]
+    assert level == "info"
+    assert "pkgbuild_extracted_profile.toml" in msg
+    assert "Build failed" not in msg
 
 
 # ---------------------------------------------------------------------------

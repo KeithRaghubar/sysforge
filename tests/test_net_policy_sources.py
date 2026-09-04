@@ -75,3 +75,42 @@ def test_missing_pkgbuild_returns_empty(tmp_path):
     d = tmp_path / "nothing"
     d.mkdir()
     assert warn_ungated_sources(d) == []
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-B5 — the warning must fire for stage builds too
+# ---------------------------------------------------------------------------
+
+def test_warning_is_wired_at_the_shared_makepkg_seam():
+    """3.0.0-B5: toolchain and kernel builds reach makepkg without passing
+    through ``build_core``, so a call site there leaves the longest, most
+    unattended builds silently uncovered. The gate belongs at
+    ``makepkg_wrapper.run`` — the one seam every build path crosses.
+
+    Structural, in the spirit of ``test_module_layering``: a second call site
+    would drift the same way the frozen-exit check did before 3.0.0-F2
+    centralised it, and only the wiring can be asserted cheaply here.
+    """
+    import inspect
+
+    from sysforge import build_core
+    from sysforge.primitives import makepkg_wrapper
+
+    assert "warn_ungated_sources" in inspect.getsource(makepkg_wrapper.run)
+    assert "warn_ungated_sources" not in inspect.getsource(build_core)
+
+
+def test_stage_build_pkgbuild_dir_is_reported_under_freeze(tmp_path, monkeypatch):
+    """The kernel/toolchain shape — a PKGBUILD whose sources are remote and
+    uncached — is exactly what the hoisted call now names."""
+    monkeypatch.setattr(
+        "sysforge.primitives.pacman.get_srcdest", lambda: tmp_path / "empty")
+    d = _write(
+        tmp_path,
+        'pkgname=linux-custom\n'
+        'source=("https://cdn.kernel.org/linux-6.10.tar.xz" "config")\n',
+    )
+    (d / "config").write_text("", encoding="utf-8")
+    assert warn_ungated_sources(d) == [
+        "https://cdn.kernel.org/linux-6.10.tar.xz"
+    ]
