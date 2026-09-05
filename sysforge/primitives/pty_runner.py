@@ -55,9 +55,17 @@ from typing import Callable, Optional
 # hyperlinks even in "non-interactive" builds — GCC >= 16 wraps quoted option
 # names in OSC-8 links, splitting the visible text mid-token. Order matters:
 # OSC must precede the bare two-byte branch (ESC ] would otherwise match it).
+#
+# The nF branch is not optional decoration: makepkg's message helpers close
+# every line with ``ESC ( B`` (designate ASCII into G0) alongside the SGR
+# reset. Its second byte is an *intermediate* (0x20-0x2F), which none of the
+# other three branches accept, so the sequence used to survive whole — and
+# because ESC does not print, what reached the terminal and the log was a bare
+# ``(B`` glued to the text (3.2.0-B8).
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC (hyperlinks, titles), BEL/ST-terminated
     r"|\x1b\[[0-9;:?]*[ -/]*[@-~]"         # CSI (SGR colors, erase-line K)
+    r"|\x1b[ -/]+[0-~]"                     # nF (charset designation, e.g. ESC ( B)
     r"|\x1b[@-Z\\-_]"                      # remaining two-byte C1 escapes
 )
 
@@ -75,6 +83,40 @@ def strip_ansi(text: str) -> str:
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     with contextlib.suppress(OSError):
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+# Opt-in raw-stream dump for diagnosing terminal-state bugs (3.2.0-B9).
+# Set SYSFORGE_PTY_RAW_DUMP=<path> to append every byte the child emits,
+# *before* strip_ansi runs. The normal log cannot answer questions about
+# terminal state because it is written post-strip: a child that resets the
+# DECSTBM scroll region, issues RIS, or switches to the alternate screen
+# would have that erased from the record by the very filter whose output we
+# are reading. The dump also leads with the winsize actually handed to the
+# pty, which is what says whether the progress bar's row reservation reached
+# the child or was lost across the nested-pty layer.
+_RAW_DUMP_ENV = "SYSFORGE_PTY_RAW_DUMP"
+
+
+def _open_raw_dump(rows: int, cols: int, reserve: int):
+    """Return an append-mode handle for the raw dump, or None.
+
+    Every failure is swallowed: this is a diagnostic, and a bad path must
+    never be the reason a build stops.
+    """
+    path = os.environ.get(_RAW_DUMP_ENV)
+    if not path:
+        return None
+    try:
+        # Deliberately not a context manager: the handle spans the child's
+        # whole lifetime and is closed in run_with_pty's finally.
+        fh = Path(path).open("ab", buffering=0)  # noqa: SIM115
+        fh.write(
+            f"--- sysforge pty winsize rows={rows} cols={cols} "
+            f"reserve={reserve} pid={os.getpid()}\n".encode()
+        )
+        return fh
+    except Exception:  # noqa: BLE001 — diagnostics are strictly best-effort
+        return None
 
 
 def run_with_pty(
@@ -114,7 +156,9 @@ def run_with_pty(
     master_fd, slave_fd = pty.openpty()
 
     sz = shutil.get_terminal_size(fallback=(80, 24))
-    _set_winsize(slave_fd, max(1, sz.lines - reserve_bottom_rows), sz.columns)
+    _pty_rows = max(1, sz.lines - reserve_bottom_rows)
+    _set_winsize(slave_fd, _pty_rows, sz.columns)
+    raw_dump = _open_raw_dump(_pty_rows, sz.columns, reserve_bottom_rows)
 
     if reserve_bottom_rows:
         # 3.2.0-B3: hand the child *our* pty as stdin too, rather than the
@@ -201,6 +245,10 @@ def run_with_pty(
                 raise
             if not chunk:
                 break
+            if raw_dump is not None:
+                # Never fail a build for a diagnostic write.
+                with contextlib.suppress(Exception):
+                    raw_dump.write(chunk)
             if forward_bytes:
                 try:
                     sys.stdout.buffer.write(chunk)
@@ -220,6 +268,9 @@ def run_with_pty(
         proc.wait()
         return proc.returncode
     finally:
+        if raw_dump is not None:
+            with contextlib.suppress(Exception):
+                raw_dump.close()
         if is_main_thread and prev_winch is not None:
             with contextlib.suppress(OSError, ValueError):
                 signal.signal(signal.SIGWINCH, prev_winch)

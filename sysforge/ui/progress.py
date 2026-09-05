@@ -47,6 +47,7 @@ import os
 import shutil
 import signal
 import sys
+import time
 from typing import Iterator, Optional, Protocol
 
 from sysforge import log
@@ -74,10 +75,32 @@ _CLEAR_LINE = _ESC + "[2K"
 _mode: Optional[str] = None
 _reserved: bool = False
 _last_status: Optional[str] = None
+_last_base: Optional[str] = None
 _phase: Optional[str] = None
 _rows: int = 0
 _cols: int = 0
 _sigwinch_installed: bool = False
+
+# Opt-in region-transition trace for diagnosing a vanishing bar (3.2.0-B11).
+# Set SYSFORGE_PROGRESS_TRACE=<path> to append a timestamped record of every
+# establish / release / paint / resize. The two explanations for a bar that is
+# not on screen look identical to the user — the scroll region was released, or
+# it simply stopped being repainted — and the pty raw dump (3.2.0-B9) already
+# ruled out the third, a child scrolling over the row. Nothing here writes to
+# the terminal, and every failure is swallowed: a diagnostic must never be able
+# to break the thing it observes.
+_TRACE_ENV = "SYSFORGE_PROGRESS_TRACE"
+
+
+def _trace(event: str) -> None:
+    path = os.environ.get(_TRACE_ENV)
+    if not path:
+        return
+    try:
+        with open(path, "a") as fh:  # noqa: PTH123 — best-effort diagnostic
+            fh.write(f"{time.time():.3f} {event}\n")
+    except Exception:  # noqa: S110 — a trace must never break the run
+        pass
 _atexit_installed: bool = False
 
 
@@ -128,6 +151,7 @@ def _establish_region() -> None:
         return
     _refresh_size()
     if _rows < 3:
+        _trace(f"establish-skipped rows={_rows} (terminal too short)")
         return
     # Reserve the bar's row (N) and guarantee the cursor ends up INSIDE the
     # scroll region regardless of where the shell prompt started. A DECSTBM
@@ -151,6 +175,7 @@ def _establish_region() -> None:
     _write(_RESTORE)
     _write(f"{_ESC}[1A")
     _reserved = True
+    _trace(f"establish rows={_rows} cols={_cols} region=[1,{_rows - 1}]")
 
 
 def _release_region() -> None:
@@ -166,6 +191,7 @@ def _release_region() -> None:
     _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
     _write(_RESTORE)
     _reserved = False
+    _trace(f"release rows={_rows}")
 
 
 def _paint(text: str) -> None:
@@ -179,11 +205,14 @@ def _paint(text: str) -> None:
     _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
     _write(truncated)
     _write(_RESTORE)
+    _trace(f"paint row={_rows} text={truncated!r}")
 
 
 def _on_sigwinch(*_args) -> None:
     if _mode != "tty" or not _reserved:
+        _trace(f"sigwinch-ignored mode={_mode} reserved={_reserved}")
         return
+    _trace("sigwinch")
     _release_region()
     _establish_region()
     if _last_status is not None:
@@ -236,6 +265,8 @@ def render(current: int, total: int, label: str) -> None:
         return
     text = f"[SYSFORGE][PROGRESS] [{current}/{total}] {label}"
     _last_status = text
+    global _last_base
+    _last_base = text
     if not _reserved:
         _establish_region()
     if _reserved:
@@ -267,6 +298,43 @@ def phase(label: Optional[str]) -> None:
             _last_status = msg
         return
     text = f"[SYSFORGE][PROGRESS] {label}"
+    _last_status = text
+    global _last_base
+    _last_base = text
+    if not _reserved:
+        _establish_region()
+    if _reserved:
+        _paint(text)
+
+
+
+def heartbeat(detail: str) -> None:
+    """Repaint the current status with live *detail*, advancing nothing.
+
+    A whole package build sits inside a single ``tick()``, so the bar was
+    painted once and then left untouched for the build's entire duration — a
+    trace of one real run showed a 379-second gap between paints against a
+    4-second runner-up, which is a bar that is stale for six minutes rather
+    than one that is working (3.2.0-B13). ``pty_runner``'s idle callback
+    already knows the child is alive and what it is compiling every
+    ``MAKEPKG_HEARTBEAT_S``; this is the channel that was missing between the
+    two. The periodic repaint also makes the reserved row self-healing, since
+    anything that corrupts it is now overwritten within the heartbeat interval
+    rather than persisting for the rest of the build.
+
+    Detail replaces rather than appends — it fires for the length of a build,
+    so appending would grow the line without bound — and the next ``render()``
+    or ``phase()`` overwrites it, since those set a new base. No-op before any
+    status exists, and in plain mode, where painting goes through ``log.ui()``
+    and a 30-second repaint would append to the log forever (the per-package
+    log already receives the same heartbeat from ``makepkg_invoke``).
+    """
+    global _last_status
+    if _mode is None:
+        init()
+    if _mode != "tty" or not _last_base:
+        return
+    text = f"{_last_base} · {detail}" if detail else _last_base
     _last_status = text
     if not _reserved:
         _establish_region()

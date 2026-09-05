@@ -421,3 +421,117 @@ def test_phase_plain_mode_dedupes_repeats(monkeypatch):
     assert seen == ["[PROGRESS] version check", "[PROGRESS] drift check"]
 
 
+
+
+# --- Region trace (3.2.0-B11) -----------------------------------------------
+
+def _trace_lines(path):
+    return [ln.split(None, 1)[1] for ln in path.read_text().splitlines() if ln.strip()]
+
+
+def test_region_trace_records_establish_and_release(tmp_path, monkeypatch):
+    """The bar's disappearance has two candidate explanations that look
+    identical on screen: the region was released, or it was never repainted.
+    The raw pty dump (3.2.0-B9) ruled out the container scrolling over the
+    row, so the remaining question is on sysforge's own side, and only a
+    record of the transitions can separate the two."""
+    trace = tmp_path / "trace.log"
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(trace))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 2, "building")
+    progress.shutdown()
+    events = _trace_lines(trace)
+    assert any(e.startswith("establish") for e in events), events
+    assert any(e.startswith("paint") for e in events), events
+    assert any(e.startswith("release") for e in events), events
+
+
+def test_region_trace_paint_records_the_row_and_text(tmp_path, monkeypatch):
+    trace = tmp_path / "trace.log"
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(trace))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 2, "compiling mesa")
+    paint = [e for e in _trace_lines(trace) if e.startswith("paint")][0]
+    assert "row=" in paint and "compiling mesa" in paint
+
+
+def test_region_trace_is_off_without_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.delenv("SYSFORGE_PROGRESS_TRACE", raising=False)
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 2, "x")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_region_trace_failure_never_breaks_the_run(tmp_path, monkeypatch):
+    """A diagnostic must not be able to take down the thing it observes."""
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(tmp_path / "no" / "dir" / "t.log"))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 2, "x")  # must not raise
+
+
+# --- Heartbeat repaint (3.2.0-B13) ------------------------------------------
+
+def test_heartbeat_repaints_without_advancing_the_counter(tmp_path, monkeypatch):
+    """3.2.0-B13. A whole package build sits inside one ``tick()``, so the bar
+    was painted once and left untouched for the build's entire duration — the
+    trace showed a 379s gap between paints against a 4s runner-up. The
+    heartbeat repaints the same count with live detail."""
+    trace = tmp_path / "t.log"
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(trace))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 1, "building · mesa-sysforge")
+    progress.heartbeat("[220/900] Compiling rusticl")
+    paints = [e for e in _trace_lines(trace) if e.startswith("paint")]
+    assert "[1/1]" in paints[-1], paints[-1]
+    assert "building · mesa-sysforge" in paints[-1]
+    # Truncated to the terminal width, so match the head of the detail.
+    assert "[220/900] Compiling" in paints[-1]
+
+
+def test_heartbeat_does_not_stack_detail_across_calls(tmp_path, monkeypatch):
+    """It fires every 30s for the length of a build; appending to the previous
+    painted text would grow the line without bound."""
+    trace = tmp_path / "t.log"
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(trace))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 1, "building · mesa")
+    progress.heartbeat("first")
+    progress.heartbeat("second")
+    last = [e for e in _trace_lines(trace) if e.startswith("paint")][-1]
+    assert "second" in last and "first" not in last
+
+
+def test_heartbeat_before_any_status_is_a_noop(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.heartbeat("x")  # must not raise
+
+
+def test_heartbeat_is_silent_in_plain_mode(monkeypatch):
+    """Plain mode writes through log.ui(), so a 30s repaint would append a
+    line to the log forever; the per-package log already gets the heartbeat."""
+    buf = _fake_plain_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 1, "building · mesa")
+    before = buf.getvalue()
+    progress.heartbeat("[220/900] Compiling")
+    assert buf.getvalue() == before
+
+
+def test_heartbeat_survives_a_later_render(tmp_path, monkeypatch):
+    """The next real tick must replace the heartbeat detail, not inherit it."""
+    trace = tmp_path / "t.log"
+    monkeypatch.setenv("SYSFORGE_PROGRESS_TRACE", str(trace))
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.render(1, 2, "building · mesa")
+    progress.heartbeat("compiling")
+    progress.render(2, 2, "building · volk")
+    last = [e for e in _trace_lines(trace) if e.startswith("paint")][-1]
+    assert "volk" in last and "compiling" not in last

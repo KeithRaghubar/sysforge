@@ -1075,3 +1075,193 @@ def test_install_args_without_a_pkgbuild_is_the_session_registry_only(tmp_path):
     fresh.write_text("")
     bs.register_artifacts([fresh])
     assert bs.install_args() == [fresh]
+
+
+def _pol(chroot: Path) -> "bs.SandboxPolicy":
+    return bs.SandboxPolicy(enabled=True, chroot_dir=chroot)
+
+
+def _conf_with(tmp_path: Path, body: str) -> Path:
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text(body)
+    return conf
+
+
+def test_missing_toolchain_reads_fuse_ld_out_of_the_emitted_conf(tmp_path):
+    """The exact 3.2.0-B7 failure. ``LDFLAGS`` never travels in the export
+    dict — the profile delivers it in the makepkg conf body that
+    ``chroot_conf_text`` copies wholesale — so a probe that consults only
+    ``exports`` is asking the one dict that cannot hold the answer, and the
+    container gets clang with no linker behind it."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    conf = _conf_with(tmp_path, 'LDFLAGS="-Wl,-O1 -Wl,--as-needed -fuse-ld=lld"\n')
+    missing = bs.missing_toolchain(pol, {"CC": "clang"}, conf_path=conf)
+    assert missing == {"clang": "clang", "ld.lld": "lld"}
+
+
+def test_missing_toolchain_conf_flag_values_are_unquoted(tmp_path):
+    """``parse_system_makepkg_conf`` returns the value verbatim, quotes and
+    all, so a naive ``\\S+`` capture yields ``lld"`` and maps to no package."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    for body in ('LDFLAGS="-fuse-ld=lld"\n', "LDFLAGS='-fuse-ld=lld'\n",
+                 "LDFLAGS=-fuse-ld=lld\n"):
+        conf = _conf_with(tmp_path, body)
+        assert bs.missing_toolchain(pol, {}, conf_path=conf) == {"ld.lld": "lld"}
+
+
+def test_missing_toolchain_conf_compiler_flags_carry_fuse_ld_too(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    conf = _conf_with(tmp_path, 'CFLAGS="-O3 -fuse-ld=mold"\n')
+    assert bs.missing_toolchain(pol, {}, conf_path=conf) == {"ld.mold": "mold"}
+
+
+def test_missing_toolchain_conf_is_satisfied_when_the_chroot_has_it(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True,
+                           chroot_dir=_chroot_with(tmp_path, "gcc", "ld.lld"))
+    conf = _conf_with(tmp_path, 'LDFLAGS="-fuse-ld=lld"\n')
+    assert bs.missing_toolchain(pol, {}, conf_path=conf) == {}
+
+
+def test_missing_toolchain_without_a_conf_is_unchanged(tmp_path):
+    """conf_path is optional: every existing caller and test passes none."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"CC": "clang"}) == {"clang": "clang"}
+
+
+def test_missing_toolchain_conf_other_flags_name_no_binary(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    conf = _conf_with(tmp_path, 'CFLAGS="-march=native -O3 -flto=thin"\n')
+    assert bs.missing_toolchain(pol, {}, conf_path=conf) == {}
+
+
+def test_provision_toolchain_installs_the_conf_named_linker(tmp_path):
+    """End of the B7 chain: the conf-sourced linker must reach pacman."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    conf = _conf_with(tmp_path, 'LDFLAGS="-fuse-ld=lld"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang"}, conf_path=conf)
+    argv = run.call_args[0][0]
+    assert argv[-2:] == ["clang", "lld"]
+
+
+def test_host_profile_data_finds_the_referenced_profdata(tmp_path):
+    """The exact 3.2.0-B10 failure. The PGO stage injects
+    ``-fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata`` into the
+    flags, that path exists only on the host, and clang treats an unreadable
+    profile as a hard error — which meson reports as ``Compiler clang cannot
+    compile programs``, indistinguishable from having no compiler at all."""
+    prof = tmp_path / "store" / "mesa.profdata"
+    prof.parent.mkdir(parents=True)
+    prof.write_bytes(b"profile")
+    conf = _conf_with(tmp_path, f'CFLAGS="-O3 -fprofile-use={prof}"\n')
+    assert bs.host_profile_data(None, conf_path=conf) == [prof]
+
+
+def test_host_profile_data_ignores_a_path_absent_on_the_host(tmp_path):
+    """Nothing to copy, and the host build would fail identically — so the
+    sandbox must not invent a distinct failure mode for it."""
+    conf = _conf_with(tmp_path, 'CFLAGS="-fprofile-use=/nowhere/x.profdata"\n')
+    assert bs.host_profile_data(None, conf_path=conf) == []
+
+
+def test_host_profile_data_covers_the_other_use_flags(tmp_path):
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    for flag in ("-fprofile-use", "-fprofile-instr-use", "-fprofile-sample-use"):
+        conf = _conf_with(tmp_path, f'CFLAGS="{flag}={prof}"\n')
+        assert bs.host_profile_data(None, conf_path=conf) == [prof], flag
+
+
+def test_host_profile_data_ignores_generate_flags(tmp_path):
+    """``-fprofile-generate`` names an output directory, not an input file:
+    there is nothing to copy in, and a run that writes profiles inside a
+    container that is then torn down is a separate problem."""
+    d = tmp_path / "gen"
+    d.mkdir()
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-generate={d}"\n')
+    assert bs.host_profile_data(None, conf_path=conf) == []
+
+
+def test_host_profile_data_reads_the_exports_too(tmp_path):
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    assert bs.host_profile_data({"CFLAGS": f"-fprofile-use={prof}"}) == [prof]
+
+
+def test_host_profile_data_deduplicates_across_the_flag_vars(tmp_path):
+    """makepkg_conf injects the same token into CFLAGS, CXXFLAGS and LDFLAGS,
+    so the naive read yields the file three times."""
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    conf = _conf_with(tmp_path, "".join(
+        f'{k}="-fprofile-use={prof}"\n' for k in ("CFLAGS", "CXXFLAGS", "LDFLAGS")))
+    assert bs.host_profile_data(None, conf_path=conf) == [prof]
+
+
+def test_provision_profile_data_mirrors_at_the_same_absolute_path(tmp_path):
+    """Materialized at the *same* absolute path inside the chroot, so the
+    path already baked into the flags resolves in the container and nothing
+    has to rewrite them on the way in."""
+    chroot = _chroot_with(tmp_path, "clang")
+    prof = tmp_path / "store" / "mesa.profdata"
+    prof.parent.mkdir(parents=True)
+    prof.write_bytes(b"profile-bytes")
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-use={prof}"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_profile_data(_pol(chroot), None, conf_path=conf)
+    argv = run.call_args[0][0]
+    assert argv[0] == "install"
+    assert argv[-2] == str(prof)
+    assert argv[-1] == str(chroot / "root" / str(prof).lstrip("/"))
+    # World-readable: the container builds as builduser, not as this uid.
+    assert "-Dm644" in argv
+
+
+def test_provision_profile_data_copies_unconditionally(tmp_path):
+    """The store is rewritten by every ``--pgo=use`` merge, so an existing
+    mirror is not evidence of a current one — skipping on presence would pin
+    the container to whatever profile the last build happened to leave."""
+    chroot = _chroot_with(tmp_path, "clang")
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"new")
+    mirror = chroot / "root" / str(prof).lstrip("/")
+    mirror.parent.mkdir(parents=True)
+    mirror.write_bytes(b"old")
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-use={prof}"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_profile_data(_pol(chroot), None, conf_path=conf)
+    assert run.called
+
+
+def test_provision_profile_data_is_a_noop_when_disabled(tmp_path):
+    pol = bs.SandboxPolicy(enabled=False, chroot_dir=_chroot_with(tmp_path, "clang"))
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-use={prof}"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_profile_data(pol, None, conf_path=conf)
+    assert not run.called
+
+
+def test_provision_profile_data_does_not_run_with_nothing_to_mirror(tmp_path):
+    chroot = _chroot_with(tmp_path, "clang")
+    conf = _conf_with(tmp_path, 'CFLAGS="-march=native -O3"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_profile_data(_pol(chroot), None, conf_path=conf)
+    assert not run.called
+
+
+def test_provision_profile_data_failure_is_a_hard_stop(tmp_path):
+    """Continuing would hand clang a flag naming a file that is still absent,
+    which is the cryptic ``cannot compile programs`` this fix exists to
+    remove — and silently dropping the flag would build a non-PGO package
+    under a PGO profile, the downgrade the sandbox refuses on principle."""
+    chroot = _chroot_with(tmp_path, "clang")
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-use={prof}"\n')
+    with patch("sysforge.primitives.build_sandbox.run_privileged",
+               side_effect=OSError("boom")):
+        with pytest.raises(bs.SandboxUnavailable) as e:
+            bs.provision_profile_data(_pol(chroot), None, conf_path=conf)
+    assert "p.profdata" in str(e.value)

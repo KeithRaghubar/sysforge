@@ -359,3 +359,78 @@ def test_strip_ansi_tolerates_unterminated_osc():
     # An OSC split across read chunks can reach the matcher unterminated;
     # stripping must not swallow the rest of the line or raise.
     assert strip_ansi("before \x1b]8;;https://example.com") == "before "
+
+
+def test_strip_ansi_removes_charset_designation_escapes():
+    """The exact 3.2.0-B8 corruption. makepkg's message helpers close every
+    line with ``ESC ( B`` (designate ASCII into G0) beside the SGR reset. It
+    is an nF-class escape — ESC, an intermediate byte, a final byte — which
+    none of the OSC/CSI/two-byte-C1 branches match, so the whole sequence
+    survived and the non-printing ESC left a bare ``(B`` in the output."""
+    assert strip_ansi("==>\x1b(B Retrieving sources...\x1b(B") == "==> Retrieving sources..."
+    assert strip_ansi("\x1b(B\x1b[m==> ERROR:\x1b(B") == "==> ERROR:"
+
+
+def test_strip_ansi_removes_the_other_nf_designations():
+    """G1/G2/G3 and the line-drawing set are the same escape class; a fix
+    that special-cases ``ESC ( B`` alone just moves the corruption."""
+    for seq in ("\x1b(0", "\x1b)B", "\x1b*A", "\x1b+B", "\x1b(1"):
+        assert strip_ansi(f"a{seq}b") == "ab", f"{seq!r} survived"
+
+
+def test_strip_ansi_keeps_an_ordinary_parenthesis():
+    """The final byte is only special after ESC — bare text must not lose it."""
+    assert strip_ansi("f(x) == (B)") == "f(x) == (B)"
+
+
+def test_raw_dump_captures_pre_strip_bytes(tmp_path, monkeypatch):
+    """3.2.0-B9 instrumentation. The bar's disappearance cannot be diagnosed
+    from the normal log: that is written after strip_ansi, so the very
+    sequences under suspicion (DECSTBM reset, RIS, alt-screen) are gone by the
+    time anything is recorded. The dump is the raw child stream, untouched."""
+    dump = tmp_path / "raw.bin"
+    monkeypatch.setenv("SYSFORGE_PTY_RAW_DUMP", str(dump))
+    lines = []
+    rc = run_with_pty(
+        ["printf", "a\\033[1;40rb\\033(Bc\\n"],
+        cwd=tmp_path, env=dict(os.environ), line_callback=lines.append,
+        forward_bytes=False,
+    )
+    assert rc == 0
+    raw = dump.read_bytes()
+    assert b"\x1b[1;40r" in raw, f"escape did not survive into the dump: {raw!r}"
+    assert b"\x1b(B" in raw
+    # The callback is unaffected: run_with_pty relays verbatim and stripping
+    # is the caller's job, which is exactly why the dump has to sit here.
+    assert lines == ["a\x1b[1;40rb\x1b(Bc"]
+
+
+def test_raw_dump_records_the_negotiated_winsize(tmp_path, monkeypatch):
+    """The other half of the B9 question: whether the reservation actually
+    reached the pty, or was lost across the nested-pty layer."""
+    dump = tmp_path / "raw.bin"
+    monkeypatch.setenv("SYSFORGE_PTY_RAW_DUMP", str(dump))
+    run_with_pty(
+        ["true"], cwd=tmp_path, env=dict(os.environ),
+        line_callback=lambda _l: None, forward_bytes=False,
+        reserve_bottom_rows=1,
+    )
+    header = dump.read_bytes().split(b"\n", 1)[0]
+    assert b"winsize" in header and b"reserve=1" in header, header
+
+
+def test_raw_dump_is_off_without_the_env_var(tmp_path, monkeypatch):
+    monkeypatch.delenv("SYSFORGE_PTY_RAW_DUMP", raising=False)
+    run_with_pty(["true"], cwd=tmp_path, env=dict(os.environ),
+                 line_callback=lambda _l: None, forward_bytes=False)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_raw_dump_failure_never_breaks_the_build(tmp_path, monkeypatch):
+    """Diagnostics are best-effort: an unwritable path must not take the
+    build down with it."""
+    monkeypatch.setenv("SYSFORGE_PTY_RAW_DUMP", str(tmp_path / "nope" / "x.bin"))
+    lines = []
+    rc = run_with_pty(["printf", "ok\\n"], cwd=tmp_path, env=dict(os.environ),
+                      line_callback=lines.append, forward_bytes=False)
+    assert rc == 0 and lines == ["ok"]

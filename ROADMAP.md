@@ -93,6 +93,7 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
+| `3.2.0-B12` | a --pgo=generate build under the sandbox writes its profiles into the container and loses them at teardown | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
@@ -398,6 +399,48 @@ canonical ordering.
   uncertainty, isolated here so it cannot hold up the rest.
 
 ### Bugs
+
+- **`3.2.0-B12` — a `--pgo=generate` build under the sandbox writes its profiles into the container
+  and loses them at teardown.**
+  `3.2.0-B10` carries the profile-*use* files into the chroot: `host_profile_data` collects
+  `-fprofile-use` / `-fprofile-instr-use` / `-fprofile-sample-use` and `provision_profile_data`
+  mirrors each at its host path, so the flag already baked into the conf resolves inside the
+  container. The `-fprofile-*generate` family was deliberately left out of that fix, because it is
+  the opposite direction of travel: the value names an **output directory**, so there is nothing to
+  copy *in*, and carrying it would have widened a bug fix into a feature. That leaves the gap this
+  entry records. `mesa_pgo.generate_flag` returns `-fprofile-generate=<store>` with `<store>` an
+  absolute host path under `[toolchain] profile_store_root`; under the sandbox the instrumented
+  binary is told to write there, the path is inside the container, and `makechrootpkg -c` discards
+  the working copy when the build ends. The raw profiles are gone before anything can merge them.
+  **The failure mode is silence, which is what makes it worth an entry.** Nothing errors: the build
+  succeeds, the package installs, and the subsequent `--pgo=use` finds an empty store and either
+  falls back to an unprofiled build or reuses a stale `.profdata` from an earlier host-path run
+  (`mesa_pgo.reuse_profdata` treats the *existence* of a merged profile as the durable opt-in
+  signal, so a stale one is indistinguishable from a current one). The user asked for a profiled
+  rebuild and got neither the profile nor a diagnostic. This is the same class the sandbox's
+  refuse-rather-than-downgrade rule exists to prevent — `3.2.0-B4` rejected falling back to the
+  chroot's gcc for exactly this reason — but the existing guards do not catch it, because every
+  probe added so far asks "is this input present?" and a generate flag has no input to be absent.
+  **The fix is a direction decision, not a patch.** Three options, in rising cost. *Refuse:* detect
+  a `-fprofile-*generate` token when `[security] sandbox_builds` is on and raise
+  `SandboxUnavailable` naming the conflict — honest, cheap, consistent with how the sandbox already
+  treats what it cannot honour, and it leaves `--pgo=generate` simply unavailable under the sandbox.
+  *Extract:* let the build write inside the container and copy the store back out before teardown —
+  which needs a teardown hook the sandbox path does not currently have, and has to survive a
+  **failed** build, since a partial profile is still worth keeping. *Bind-mount:* give the store a
+  writable mount so the container writes straight to the host path, which is the only option that
+  makes the sandboxed and host paths behave identically, and is also the one that puts a writable
+  host directory inside the isolation boundary — a `[security]` opt-in that quietly opens a write
+  channel needs its own justification, not an inherited one. Recommend refusing first and revisiting
+  the other two only if `--pgo=generate` under the sandbox turns out to be wanted; do not implement
+  the mount without settling the isolation question.
+  Reproduce with `sysforge build mesa-sysforge --pgo=generate` under `[security] sandbox_builds =
+  true`, then check `<profile_store_root>/pgo-mesa` for `.profraw` files.
+  *Priority: med · Effort: small · Bump: patch* — small on the recommended (refuse) path: a token
+  scan next to the existing `host_profile_data` probe plus a preflight refusal and its tests; the
+  extract and mount options are medium and large respectively and are not what this is tagged for.
+  **Standards home on adoption:** none new — this constrains when the existing sandbox refusal fires,
+  and the profile-store contract already has its single home in `primitives/mesa_pgo.py`.
 
 - **`3.1.0-B12` — `update --include-stage-owned` co-schedules a toolchain rebuild with the packages
   it compiles, and stamps them all with the pre-rebuild fingerprint.**

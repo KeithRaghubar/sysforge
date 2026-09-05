@@ -106,6 +106,91 @@ class AlreadyBuilt(Exception):
         self.pkgbuild_path = pkgbuild_path
         super().__init__(f"package already built: {pkgbuild_path}")
 
+# Markers that open a real failure block, in the vocabulary the build tools
+# actually use: ninja's ``FAILED:``, compiler ``error:``/``error[E0605]:``,
+# ``fatal error:``, and makepkg's own verdict.
+_FAILURE_MARKERS = (
+    "FAILED:",
+    "error:",
+    "error[",
+    "fatal error:",
+    "ERROR:",
+)
+# Lines of lead-in kept before the marker, and of makepkg's closing verdict
+# kept after an elision.
+_FAILURE_TAIL_CONTEXT = 3
+_FAILURE_TAIL_CLOSING = 6
+
+
+def _is_failure_marker(line: str) -> bool:
+    stripped = line.strip()
+    return any(m in stripped for m in _FAILURE_MARKERS)
+
+
+def _is_makepkg_verdict(line: str) -> bool:
+    """makepkg's own ``==> ERROR: ...`` epilogue.
+
+    It matches the marker vocabulary but is the *last* thing printed on every
+    failure, so treating it as an anchor would re-anchor on the end of the
+    stream and reproduce exactly the blind tail this replaces. It stays a
+    fallback anchor for the case where nothing else was captured.
+    """
+    return line.strip().startswith("==>")
+
+
+def select_failure_tail(lines: list, limit: int) -> list:
+    """Choose the slice of captured output most likely to explain the failure.
+
+    A blind ``lines[-limit:]`` assumes the failure is the last thing said,
+    which a compiler flatly contradicts: ninja keeps running its other targets
+    after one fails, and a PGO build emits a ``-Wbackend-plugin`` skew warning
+    per function. On the run this was written for, mesa's real error — ninja's
+    ``FAILED:`` block and a ``error[E0605]`` from rustc — was followed by
+    several hundred warnings, so the last 80 lines held warnings only and the
+    persisted tail explained nothing. That defeats the entire purpose of
+    keeping one, which is to diagnose a failure without a ``-vvv`` re-run
+    (3.2.0-B14).
+
+    The window is therefore anchored on the **last** failure marker rather
+    than on the end of the stream, with a few lines of lead-in. When that
+    anchor sits inside the ordinary last-*limit* window — the common case —
+    the result is exactly the old contiguous slice, unchanged. When it does
+    not, the closing lines are appended too, because makepkg's own
+    ``==> ERROR: A failure occurred in build()`` is always last and names the
+    failing phase; the join carries an explicit ``omitted`` marker so the two
+    segments are never mistaken for contiguous output.
+    """
+    if not lines or limit <= 0:
+        return list(lines[-limit:]) if limit > 0 else []
+    if len(lines) <= limit:
+        return list(lines)
+
+    window_start = len(lines) - limit
+    anchor = None
+    for idx in range(len(lines) - 1, -1, -1):
+        if _is_failure_marker(lines[idx]) and not _is_makepkg_verdict(lines[idx]):
+            anchor = idx
+            break
+    if anchor is None:
+        for idx in range(len(lines) - 1, -1, -1):
+            if _is_failure_marker(lines[idx]):
+                anchor = idx
+                break
+    # No marker, or the marker is already visible: keep today's behaviour.
+    if anchor is None or anchor >= window_start:
+        return list(lines[-limit:])
+
+    start = max(0, anchor - _FAILURE_TAIL_CONTEXT)
+    closing = min(_FAILURE_TAIL_CLOSING, limit - 1)
+    head_room = limit - closing - 1  # one line spent on the elision marker
+    head = lines[start:start + head_room]
+    tail = lines[len(lines) - closing:] if closing else []
+    omitted = len(lines) - closing - (start + len(head))
+    if omitted <= 0:
+        return list(lines[-limit:])
+    return [*head, f"... {omitted} line(s) omitted ...", *tail]
+
+
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
@@ -223,9 +308,19 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         build_sandbox.preflight(sandbox, pkgbuild_path)
         # The chroot is base-devel, which is gcc + binutils; a profile that
         # resolved to LLVM exports CC=clang into it and every C build dies in
-        # configure (3.2.0-B4). Same exports dict that reaches the container
-        # conf below, so what is probed is exactly what is exported.
-        build_sandbox.provision_toolchain(sandbox, extra_env)
+        # configure (3.2.0-B4). Both channels the container is handed are
+        # probed, not just the export dict: conf_path is the same file whose
+        # body chroot_conf_text copies below, and it is where the flag
+        # variables actually live — LDFLAGS never travels in extra_env, so
+        # probing exports alone missed the profile's linker entirely
+        # (3.2.0-B7).
+        build_sandbox.provision_toolchain(sandbox, extra_env, conf_path=conf_path)
+        # A PGO profile is an input *file* at a host path baked into the
+        # flags, and clang errors rather than warns when it cannot read one —
+        # which meson reports as "cannot compile programs", the same text a
+        # chroot with no compiler produces (3.2.0-B10). Mirrored at the same
+        # absolute path so the already-baked flags resolve unchanged.
+        build_sandbox.provision_profile_data(sandbox, extra_env, conf_path=conf_path)
         # Inside the PKGBUILD dir: that is what makechrootpkg bind-mounts, so
         # the conf is reachable from both sides without a second mount.
         conf_dir = Path(tempfile.mkdtemp(
@@ -395,10 +490,21 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Routed through _makepkg_log so the entry inherits the same
         # [SYSFORGE][DEBUG][MAKEPKG] prefix and ends up in the per-package log
         # automatically — visible at -vvv on the terminal, always in the file.
+        from sysforge.ui import progress as _progress
+
         if latest:
-            _makepkg_log.debug(f"[heartbeat] {strip_ansi(latest)}")
+            detail = strip_ansi(latest).strip()
+            _makepkg_log.debug(f"[heartbeat] {detail}")
         else:
-            _makepkg_log.debug(f"[heartbeat] no output for ~{MAKEPKG_HEARTBEAT_S:.0f}s")
+            detail = f"no output for ~{MAKEPKG_HEARTBEAT_S:.0f}s"
+            _makepkg_log.debug(f"[heartbeat] {detail}")
+        # A whole package build sits inside one tick(), so without this the bar
+        # holds a single "building · <pkg>" line for the build's entire length
+        # — six minutes, on the run this was found on (3.2.0-B13). The idle
+        # callback already knows what the child is compiling; this is the
+        # channel that was missing. Repainting also makes the reserved row
+        # self-healing rather than corrupt for the rest of the build.
+        _progress.heartbeat(detail)
 
     forward_bytes = (not verbose_log) and sys.stdout.isatty()
     # makepkg's child tools (cargo/ninja/cmake) do their own full-screen cursor
@@ -431,7 +537,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # line was already logged, so skip. Exit 13 (already-built) is not a real
         # failure — no tail needed there.
         if not verbose_log and returncode != 13 and not already_built and captured_lines:
-            tail = captured_lines[-MAKEPKG_FAILURE_TAIL_LINES:]
+            tail = select_failure_tail(captured_lines, MAKEPKG_FAILURE_TAIL_LINES)
             _makepkg_log.debug(
                 f"--- last {len(tail)} line(s) of makepkg output "
                 f"(build failed, exit {returncode}) ---"

@@ -331,7 +331,47 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
         )
 
 
-def missing_toolchain(policy: SandboxPolicy, exports: dict | None) -> dict:
+def _fuse_ld_names(values) -> list[str]:
+    """Binary names for every ``-fuse-ld=`` occurrence across *values*.
+
+    The flag names a linker *flavour*, not the binary: the driver resolves
+    ``-fuse-ld=lld`` to ``ld.lld``. An explicit path is taken as written,
+    matching how the driver treats it.
+    """
+    out: list[str] = []
+    for raw in values:
+        for name in _FUSE_LD_RE.findall(str(raw or "")):
+            out.append(name if "/" in name else f"ld.{name}")
+    return out
+
+
+def _conf_flag_values(conf_path) -> list[str]:
+    """The flag variables' values out of an emitted makepkg conf.
+
+    ``parse_system_makepkg_conf`` returns each value *verbatim*, surrounding
+    quotes included, so a bare ``\\S+`` capture over it yields ``lld"`` and maps
+    to no package at all. Unquote before matching.
+    """
+    if conf_path is None:
+        return []
+    from sysforge.primitives.config import parse_system_makepkg_conf
+
+    try:
+        assignments = parse_system_makepkg_conf(conf_path)
+    except Exception:
+        return []
+    out: list[str] = []
+    for key in _LINKER_FLAG_KEYS:
+        raw = str(assignments.get(key) or "").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+            raw = raw[1:-1]
+        if raw:
+            out.append(raw)
+    return out
+
+
+def missing_toolchain(policy: SandboxPolicy, exports: dict | None,
+                      conf_path=None) -> dict:
     """Return ``{binary: package}`` for toolchain binaries absent from the chroot.
 
     Probes the chroot *root* copy — the template ``makechrootpkg`` clones the
@@ -340,6 +380,15 @@ def missing_toolchain(policy: SandboxPolicy, exports: dict | None) -> dict:
     chroot, never against the host, because that path names a location in the
     container's filesystem and the host almost certainly has a binary of the
     same name sitting at it (which is precisely why this went unnoticed).
+
+    *conf_path* is the emitted host conf, and it is not optional in practice.
+    The flag variables never travel in *exports* — ``extra_env`` carries only
+    ``CC``/``CXX`` and the profile's env-type keys — so a profile that selects
+    its linker with ``LDFLAGS=-fuse-ld=lld`` puts that nowhere the export dict
+    can see it. It reaches the container inside the conf body that
+    :func:`chroot_conf_text` copies wholesale, which is the only reason the
+    build got clang with no linker behind it (3.2.0-B7). Both sources are read:
+    a stage may still inject a flag through the environment.
     """
     root = (policy.chroot_dir / "root") if policy.chroot_dir else None
     if root is None or not root.is_dir():
@@ -364,24 +413,104 @@ def missing_toolchain(policy: SandboxPolicy, exports: dict | None) -> dict:
             continue
         missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
 
-    for key in _LINKER_FLAG_KEYS:
-        raw = str((exports or {}).get(key) or "").strip()
-        if not raw:
+    flag_values = [(exports or {}).get(key) for key in _LINKER_FLAG_KEYS]
+    flag_values += _conf_flag_values(conf_path)
+    for value in _fuse_ld_names(flag_values):
+        probe = (root / value.lstrip("/")) if value.startswith("/") \
+            else (root / "usr" / "bin" / value)
+        if probe.exists():
             continue
-        for name in _FUSE_LD_RE.findall(raw):
-            # The flag names a linker *flavour*, not the binary: the driver
-            # resolves ``-fuse-ld=lld`` to ``ld.lld``. An explicit path is
-            # taken as written, matching how the driver treats it.
-            value = name if "/" in name else f"ld.{name}"
-            probe = (root / value.lstrip("/")) if value.startswith("/") \
-                else (root / "usr" / "bin" / value)
-            if probe.exists():
-                continue
-            missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
+        missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
     return missing
 
 
-def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
+# Profile-data flags whose value is an *input file* the compiler must read.
+# The ``-fprofile-*generate`` family is deliberately absent: those name an
+# output directory, so there is nothing to carry in (a container that writes
+# profiles and is then torn down is a separate problem, not this one).
+_PROFILE_USE_PREFIXES = (
+    "-fprofile-use",
+    "-fprofile-instr-use",
+    "-fprofile-sample-use",
+)
+_PROFILE_USE_RE = re.compile(
+    r"(?:^|\s)(?:" + "|".join(re.escape(p) for p in _PROFILE_USE_PREFIXES) + r")=(\S+)"
+)
+
+
+def host_profile_data(exports: dict | None, conf_path=None) -> list:
+    """Host profile files named by the flags, in first-seen order.
+
+    The PGO stages bake an absolute host path into the flag
+    (``-fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata``), and clang
+    treats an unreadable profile as a hard **error** rather than a warning —
+    which meson surfaces as ``Compiler clang cannot compile programs``, the
+    same message a chroot with no compiler at all produces. That collision is
+    why this read as a missing-toolchain problem (3.2.0-B10).
+
+    Both channels are read for the same reason :func:`missing_toolchain` reads
+    both, and the result is deduplicated: ``makepkg_conf`` injects one token
+    into CFLAGS, CXXFLAGS *and* LDFLAGS, so the naive read returns it three
+    times. A path absent on the host is skipped — there is nothing to copy, and
+    the host build would fail on it identically, so the sandbox must not invent
+    a failure mode of its own for it.
+    """
+    values = [(exports or {}).get(key) for key in _LINKER_FLAG_KEYS]
+    values += _conf_flag_values(conf_path)
+    out: list[Path] = []
+    for raw in values:
+        for match in _PROFILE_USE_RE.findall(str(raw or "")):
+            path = Path(match)
+            if path in out or not path.is_file():
+                continue
+            out.append(path)
+    return out
+
+
+def provision_profile_data(policy: SandboxPolicy, exports: dict | None,
+                           conf_path=None) -> None:
+    """Materialize the flags' profile files inside the chroot.
+
+    Copied to the **same absolute path** the flag already names, so nothing has
+    to rewrite the flags on the way in: the token that works on the host works
+    unchanged in the container. Into the *root* copy, which ``makechrootpkg -c``
+    reseeds the working copy from, matching :func:`provision_toolchain`.
+
+    Unconditional rather than existence-gated: the store is rewritten by every
+    ``--pgo=use`` merge, so a mirror left by an earlier build is not evidence of
+    a current one, and skipping on presence would quietly pin the container to a
+    stale profile — a wrong-output bug rather than a loud one.
+
+    A failed copy is a hard stop. Continuing hands clang a flag naming a file
+    that is still absent, which is exactly the cryptic failure this removes;
+    dropping the flag instead would build a non-PGO package under a PGO profile,
+    the silent downgrade the sandbox refuses on principle.
+    """
+    if not policy.enabled or not policy.chroot_dir:
+        return
+    files = host_profile_data(exports, conf_path=conf_path)
+    if not files:
+        return
+    root = policy.chroot_dir / "root"
+    for src in files:
+        dest = root / str(src).lstrip("/")
+        _log.info(f"Mirroring profile data into the sandbox chroot: {src} -> {dest}")
+        try:
+            # 644: the container builds as builduser, which is not this uid.
+            run_privileged(
+                ["install", "-Dm644", str(src), str(dest)],
+                tag="SANDBOX",
+            )
+        except Exception as exc:
+            raise SandboxUnavailable(
+                f"could not copy the profile data {src} into the sandbox "
+                f"chroot at {dest}: {exc} — the build would fail with "
+                f"clang unable to read {src.name}"
+            ) from exc
+
+
+def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
+                        conf_path=None) -> None:
     """Install the profile's toolchain into the chroot root, if it is absent.
 
     Runs before the build rather than letting the container fail: the failure
@@ -405,7 +534,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
     """
     if not policy.enabled:
         return
-    missing = missing_toolchain(policy, exports)
+    missing = missing_toolchain(policy, exports, conf_path=conf_path)
     if not missing:
         return
 
