@@ -115,7 +115,23 @@ _ENV_EXPORT_DENY = {
     "MAKEPKG_CONF", "PATH", "HOME", "PWD", "OLDPWD", "SHELL", "USER", "LOGNAME",
     "TMPDIR", "VIRTUAL_ENV", "PYTHONPATH", "LLVM_PROFILE_FILE",
     "BUILDDIR", "PKGDEST", "SRCDEST", "SRCPKGDEST", "LOGDEST",
+    # Host-only compiler caches (3.2.0-B2). RUSTC_WRAPPER names a binary the
+    # clean chroot does not carry, so exporting it fails every Rust build the
+    # same way an inherited ``ccache`` BUILDENV fails every C one; the *_DIR
+    # keys name host paths, which is the category above.
+    "RUSTC_WRAPPER", "CCACHE_DIR", "SCCACHE_DIR",
 }
+
+# BUILDENV options that name a binary rather than a policy. The sandbox chroot
+# is base-devel only, and makepkg treats a missing accelerator as a hard error
+# ("Cannot find the ccache binary required for compiler cache usage") raised
+# before prepare() — so an inherited host BUILDENV failed every package the
+# sandbox was ever pointed at (3.2.0-B2). Disabled rather than installed into
+# the chroot: ``makechrootpkg -c`` resets the working copy each build and never
+# mounts a cache directory, so the hit rate in there is structurally zero and
+# the accelerators buy nothing to trade away. ``check``/``sign`` are policy,
+# not tooling, and are left exactly as the user set them.
+_HOST_ONLY_BUILDENV = ("ccache", "distcc")
 
 # makechrootpkg reads these from the environment (devtools' check_root preserve
 # list) and moves the built artifacts back to them, so exporting them keeps the
@@ -362,6 +378,29 @@ def chroot_env(env: dict) -> dict:
     return out
 
 
+def _container_buildenv(conf_path: Path) -> str | None:
+    """Return a ``BUILDENV=(...)`` line with the host-only accelerators off.
+
+    ``None`` when the conf sets no ``BUILDENV`` — makepkg's own default already
+    disables both, so emitting a line would only add noise. Every other option
+    keeps its position and its sense: this corrects tooling availability, not
+    the user's build policy.
+    """
+    from sysforge.primitives.config import parse_system_makepkg_conf
+
+    raw = (parse_system_makepkg_conf(conf_path).get("BUILDENV") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("(") and raw.endswith(")"):
+        raw = raw[1:-1]
+    options = []
+    for opt in raw.split():
+        if opt.lstrip("!") in _HOST_ONLY_BUILDENV and not opt.startswith("!"):
+            opt = f"!{opt}"
+        options.append(opt)
+    return "BUILDENV=(" + " ".join(options) + ")"
+
+
 def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
     """Derive the container-side ``makepkg.conf`` from the emitted host one.
 
@@ -369,6 +408,8 @@ def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
 
     * the container's dest paths (``BUILDDIR=/build`` &c) — the host values
       name directories that do not exist inside the container;
+    * a ``BUILDENV`` with ``ccache``/``distcc`` forced off — they name host
+      binaries the clean chroot does not carry (:data:`_HOST_ONLY_BUILDENV`);
     * ``export`` lines for the env-delivered keys (``CC``/``CXX`` and the
       profile's env-type keys). Those are deliberately absent from the conf on
       the host path because makepkg sources the conf *after* the invocation
@@ -379,6 +420,9 @@ def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
     lines = [body.rstrip("\n"), "", "# --- sysforge build sandbox ---"]
     for key, value in _CHROOT_DEST_KEYS.items():
         lines.append(f"{key}={value}")
+    buildenv = _container_buildenv(conf_path)
+    if buildenv is not None:
+        lines.append(buildenv)
     for key, value in sorted((exports or {}).items()):
         if key in _ENV_EXPORT_DENY or not key.isidentifier():
             continue

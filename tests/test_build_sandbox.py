@@ -280,6 +280,61 @@ def test_chroot_conf_drops_host_specific_exports(tmp_path):
     assert "PKGDEST=/pkgdest" in text
 
 
+# --- host-only build accelerators (3.2.0-B2) -------------------------------
+#
+# The clean chroot is base-devel only. A BUILDENV naming ccache/distcc, or a
+# RUSTC_WRAPPER naming sccache, points at host binaries that are not in there,
+# and makepkg hard-errors before build() ever runs.
+
+
+def test_chroot_conf_disables_host_only_buildenv(tmp_path):
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("BUILDENV=(!distcc color ccache !check !sign)\n")
+    text = bs.chroot_conf_text(conf)
+    tail = text[text.index("# --- sysforge build sandbox ---"):]
+    assert "BUILDENV=(!distcc color !ccache !check !sign)" in tail
+
+
+def test_chroot_conf_buildenv_preserves_unrelated_options(tmp_path):
+    """Only the accelerators are touched: check/sign are policy, not tooling."""
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("BUILDENV=(distcc color ccache check sign)\n")
+    text = bs.chroot_conf_text(conf)
+    tail = text[text.index("# --- sysforge build sandbox ---"):]
+    assert "BUILDENV=(!distcc color !ccache check sign)" in tail
+
+
+def test_chroot_conf_buildenv_already_disabled_is_untouched(tmp_path):
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("BUILDENV=(!distcc color !ccache !check !sign)\n")
+    text = bs.chroot_conf_text(conf)
+    tail = text[text.index("# --- sysforge build sandbox ---"):]
+    assert "BUILDENV=(!distcc color !ccache !check !sign)" in tail
+
+
+def test_chroot_conf_omits_buildenv_when_the_conf_has_none(tmp_path):
+    """No host BUILDENV to correct: makepkg's own default already disables
+    both accelerators, so inventing a line here would be noise."""
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text('CFLAGS="-O2"\n')
+    text = bs.chroot_conf_text(conf)
+    assert "BUILDENV=" not in text
+
+
+def test_chroot_conf_drops_host_only_wrapper_exports(tmp_path):
+    """RUSTC_WRAPPER=sccache would break every Rust build in the container
+    exactly as BUILDENV's ccache breaks every C one."""
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    text = bs.chroot_conf_text(conf, exports={
+        "RUSTC_WRAPPER": "sccache", "CCACHE_DIR": "/home/u/.ccache",
+        "SCCACHE_DIR": "/home/u/.cache/sccache", "RUSTFLAGS": "-C opt-level=3",
+    })
+    assert "export RUSTFLAGS=" in text
+    for denied in ("RUSTC_WRAPPER", "CCACHE_DIR", "SCCACHE_DIR"):
+        assert f"export {denied}=" not in text
+
+
 def test_dest_env_from_conf_unquotes(tmp_path):
     conf = tmp_path / "makepkg.conf"
     conf.write_text('PKGDEST="/home/u/packages"\nLOGDEST="/home/u/logs"\n')
