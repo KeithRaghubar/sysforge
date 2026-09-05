@@ -221,6 +221,11 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Raises SandboxUnavailable rather than falling back to a host build:
         # a security opt-in that silently degrades is worse than one that stops.
         build_sandbox.preflight(sandbox, pkgbuild_path)
+        # The chroot is base-devel, which is gcc + binutils; a profile that
+        # resolved to LLVM exports CC=clang into it and every C build dies in
+        # configure (3.2.0-B4). Same exports dict that reaches the container
+        # conf below, so what is probed is exactly what is exported.
+        build_sandbox.provision_toolchain(sandbox, extra_env)
         # Inside the PKGBUILD dir: that is what makechrootpkg bind-mounts, so
         # the conf is reachable from both sides without a second mount.
         conf_dir = Path(tempfile.mkdtemp(
@@ -252,7 +257,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # artifacts back where the host path leaves them.
         env = build_sandbox.chroot_env(env)
         env.update(build_sandbox.dest_env_from_conf(conf_path))
-        install_pkgs = build_sandbox.install_args()
+        # Seeded from two sources (3.1.0-F9): artifacts built earlier in this
+        # run, plus this target's source-built dep closure read out of
+        # build_state. The container resolves from the stock repos only, so
+        # without this a dep the user built from source is `target not found`.
+        from sysforge.primitives.pacman import get_pkgdest
+        install_pkgs = build_sandbox.install_args(
+            pkgbuild_path, search_dir=get_pkgdest())
         cmd = prefix + build_sandbox.build_argv(
             sandbox, flags,
             conf_dir_name=conf_dir.name, install_pkgs=install_pkgs,

@@ -98,7 +98,6 @@ canonical ordering.
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
-| `3.1.0-F9` | a sandboxed build cannot see dependencies you built in an earlier run | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -326,57 +325,9 @@ canonical ordering.
 
 ---
 
-- **`3.1.0-F9` — a sandboxed build cannot see dependencies you built in an earlier run.**
-  Follow-up to the shipped build sandbox (`[security] sandbox_builds`). `arch-nspawn` gives the
-  container its own `/etc/pacman.conf`, so `makechrootpkg --syncdeps` resolves build deps from the
-  stock repos and never from the host's installed set. `build_sandbox.register_artifacts` /
-  `install_args` cover packages built **in the same run** — the `build_core` build loop and the
-  `aur_resolve` dep loop both register — so `update` across a stack resolves; a one-off
-  `sysforge build cosmic-comp-git` whose `cosmic-protocols-git` was built last week gets
-  `target not found` instead, because that dep exists only as an installed host package. The whole
-  self-built stack is therefore out of the sandbox's reach today, which is why the feature is
-  documented as targeting untrusted AUR leaf packages whose deps come from repos.
-  The store to seed from already exists and already carries the right shape: `build_state.toml` is
-  keyed by **pkgname** (not pkgbase — so split packages are pre-expanded, which is what `-I` needs,
-  since it takes package *files*) and records `pkgver`/`pkgrel`/`epoch`/`build_mode`, exactly the
-  tuple `makepkg_artifacts._parse_built_pkg_filename` reconstructs from an artifact filename.
-  Four sub-decisions, three of them settled:
-  **Scope.** Injecting every `build_mode != "pacman"` package is unusable — ~150 files copied into
-  the working copy and installed in one `pacman -U` per build on a stack machine. Scope to the
-  target's dep closure ∩ source-built: start from `collect_builddeps` (already `prepare_deps`'
-  input) and walk transitively via `pacman -Qi` on each installed dep, since the host is the
-  authority on what a source-built package itself depends on and `build_state` records no deps.
-  **Version.** Select the artifact matching `pacman.get_installed_version(pkgname)`, never the
-  newest in `PKGDEST` — that directory is a long-lived archive of every historical build
-  (`3.1.0-B1`), and injecting the newest would hand the container a version the host does not run,
-  recreating the skew this is meant to remove. `build_core._find_existing_artifacts` is the matcher
-  already (strict glob, then filename-parse + `vercmp` fallback for VCS packages whose `pkgver()`
-  bumps at build time); it wants **lifting into `makepkg_artifacts`** with an exact-version mode
-  rather than copying, since `primitives/` cannot import from `build_core`.
-  **Missing artifact.** A source-built dep whose artifact was pruned from `PKGDEST` has no file to
-  inject: warn loudly, naming the package and the repo version that will be substituted, and
-  continue. Deliberately *not* the sandbox's own refuse-rather-than-downgrade rule — that rule
-  guards a security boundary, whereas this is a build-fidelity mismatch, and a hard stop over a
-  pruned archive would be friction without a matching risk.
-  **Seam.** `build_sandbox.install_args()` grows a resolver taking the target's PKGBUILD path and
-  unioning the session registry with the state-derived set, the registry winning: the run's own
-  freshly-built artifacts are newer than anything the store points at.
-  Does **not** fix version skew against repo packages — a source-built package ahead of `extra` is
-  still replaced in the container by the repo version unless it happens to be in the injection set.
-  That class is `3.1.0-F10`, whose `repo-add` step reuses this item's artifact-selection logic.
-  *Priority: med · Effort: medium · Bump: minor* — additive, behind an already-default-off feature,
-  and it converts the sandbox from "AUR leaves only" to "usable on your own stack"; effort is one
-  lifted helper, one dep-closure walk and one resolver, plus split-package / VCS-version /
-  missing-artifact tests.
-  **Standards home on adoption:** none new — `build_state.toml` is the existing steady-state
-  tracking authority (§update) and this reads it; the artifact matcher moves to the existing
-  `makepkg_artifacts` home rather than growing a second one.
-
----
-
 - **`3.1.0-F10` — a sandboxed build links against repo versions, not the versions the host runs.**
-  The other half of the sandbox's dependency-scope limit, and the one `3.1.0-F9` explicitly does not
-  reach. Even with locally-built artifacts injected, everything *not* injected is resolved from the
+  The other half of the sandbox's dependency-scope limit, and the one `3.1.0-F9` (shipped) explicitly
+  does not reach. Even with locally-built artifacts injected, everything *not* injected is resolved from the
   stock repos inside the container — so on a host whose LLVM is built from source ahead of `extra`,
   a sandboxed build compiles and links against the repo LLVM and the resulting package may not match
   what the host actually runs. This is not a lost optimization (a dependency's optimization lives in
@@ -391,9 +342,10 @@ canonical ordering.
   successful build, a chroot `pacman.conf` template, and a decision about pruning (a `repo-add`-ed
   archive grows without bound).
   Weigh against the alternative of simply leaving the sandbox scoped at AUR leaves: the local repo
-  is the difference between a per-profile opt-in and a mechanism that could reasonably default on,
-  so file it, but resolve `3.1.0-F9` first — F9 is cheap, closes the more common failure, and its
-  artifact-selection logic is what a `repo-add` pass would call.
+  is the difference between a per-profile opt-in and a mechanism that could reasonably default on.
+  `3.1.0-F9` shipped first as planned and closed the more common failure; its artifact selection is
+  now `makepkg_artifacts.find_artifacts(..., exact_ver=)`, which is what a `repo-add` pass calls to
+  decide *which* build of a package to publish.
   *Priority: low · Effort: large · Bump: minor* — the sandbox is usable without it and default-off,
   so this buys reach rather than fixing an active break; effort is a new artifact-publishing surface
   plus chroot provisioning and a retention policy, none of which exists today.

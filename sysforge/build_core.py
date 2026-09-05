@@ -34,14 +34,13 @@ Public API:
 """
 import time
 from dataclasses import dataclass, field
-from functools import cmp_to_key
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import build_sandbox
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.timing import PhaseRecord, PhaseTimer
-from sysforge.primitives.version import vercmp
+from sysforge.primitives.makepkg_artifacts import find_artifacts
 from sysforge.primitives.pacman import (
     BATCH_STRIP_FLAGS,
     BATCH_EXTRA_FLAGS,
@@ -65,7 +64,6 @@ from sysforge.primitives.pkgbuild_review import (
     review_target,
 )
 from sysforge.ui import progress as _ui_progress
-import contextlib
 
 _log = log.get_logger("BUILD")
 
@@ -151,63 +149,15 @@ def _find_existing_artifacts(
 ) -> list[Path]:
     """Locate already-built .pkg.tar artifacts matching pkgnames.
 
-    Two-stage lookup:
-      1. Strict glob ``{pkgname}-{pkgbuild_ver}-*.pkg.tar*`` — matches
-         non-VCS packages where the static PKGBUILD parse equals the
-         filename version exactly.
-      2. Fallback ``{pkgname}-*-*-*.pkg.tar*`` + filename parse + vercmp
-         to pick the newest. Required for VCS (-git/-svn/...) packages,
-         where ``pkgver()`` bumps the version at build time
-         (PKGBUILD ``pkgver=0.1.0`` → artifact ``0.1.0.r45.g1234567``)
-         so the static ``pkgbuild_ver`` never matches the filename.
-
-    If ``installed_ver`` is provided, the fallback only returns artifacts
-    strictly newer than installed — used by ``--install-only`` to avoid
-    redundant reinstalls or downgrades.
+    Thin delegate: the matcher itself lives in ``primitives.makepkg_artifacts``
+    (3.1.0-F9), because the build sandbox's dependency injection needs the same
+    selection logic and ``primitives/`` cannot import from ``build_core``. Kept
+    as a name here because ``update``'s install-only scan imports it.
     """
-    from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
-
-    if not search_dir or not Path(search_dir).is_dir():
-        return []
-
-    found: list[Path] = []
-    for pkgname in pkgnames:
-        if pkgbuild_ver:
-            strict = [
-                p for p in Path(search_dir).glob(
-                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar*"
-                )
-                if not p.name.endswith(".sig")
-            ]
-            if strict:
-                found.extend(strict)
-                continue
-
-        candidates: list[tuple[str, Path]] = []
-        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar*"):
-            if p.name.endswith(".sig"):
-                continue
-            parsed = _parse_built_pkg_filename(pkgname, p.name)
-            if parsed is None:
-                continue
-            epoch, ver, rel = parsed
-            ver_string = f"{epoch}:{ver}-{rel}" if epoch != "0" else f"{ver}-{rel}"
-            if installed_ver is not None:
-                try:
-                    if vercmp(ver_string, installed_ver) <= 0:
-                        continue
-                except RuntimeError:
-                    continue
-            candidates.append((ver_string, p))
-
-        if not candidates:
-            continue
-
-        with contextlib.suppress(RuntimeError):
-            candidates.sort(key=cmp_to_key(lambda a, b: vercmp(a[0], b[0])))
-        found.append(candidates[-1][1])
-
-    return found
+    return find_artifacts(
+        search_dir, pkgnames,
+        pkgbuild_ver=pkgbuild_ver, installed_ver=installed_ver,
+    )
 
 
 def _record_build_failure(state_dir, target, exc) -> None:

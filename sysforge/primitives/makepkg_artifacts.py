@@ -7,12 +7,15 @@ makepkg_artifacts.py — built-package file discovery and filename parsing
 
 Pure helpers over the ``.pkg.tar*`` artifacts a makepkg build leaves in the
 PKGBUILD directory: locate them, and parse a built filename back into its
-resolved ``(epoch, pkgver, pkgrel)``.  No I/O beyond a directory glob, no
-subprocess, no logging — leaf utilities consumed by the build orchestrator
+resolved ``(epoch, pkgver, pkgrel)``.  No I/O beyond a directory glob and no
+logging (``find_artifacts``'s newest-wins mode calls ``vercmp``, which is the
+module's one subprocess-capable dependency) — leaf utilities consumed by the build orchestrator
 (``makepkg_wrapper``) and the post-build version readers (``build_core``,
 ``pacman``, ``vcs_pkgver``).
 """
+import contextlib
 import re
+from functools import cmp_to_key
 from pathlib import Path
 
 
@@ -99,3 +102,104 @@ def select_built_version(pkgname: str, paths) -> tuple[str, str, str] | None:
         if newest_mtime is None or mtime > newest_mtime:
             newest, newest_mtime = parsed, mtime
     return newest
+
+
+def find_artifacts(
+    search_dir,
+    pkgnames: list,
+    pkgbuild_ver: str | None = None,
+    installed_ver: str | None = None,
+    exact_ver: str | None = None,
+) -> list:
+    """Locate already-built ``.pkg.tar*`` artifacts for *pkgnames*.
+
+    Three selection modes, because PKGDEST is commonly a long-lived archive
+    holding every historical build of every package (3.1.0-B1), so "the file
+    for this package" is genuinely ambiguous in there:
+
+    ``exact_ver``
+        Return only artifacts whose filename version equals it exactly, and
+        skip the other two stages entirely. Used by the sandbox's dependency
+        injection (3.1.0-F9), which must hand the container the version the
+        *host actually runs* — selecting the newest instead would hand it a
+        version the host does not have, recreating the skew the injection
+        exists to remove. No ``vercmp``: an exact string match is the whole
+        question, and it holds for VCS packages too, whose installed version
+        is by definition the one their artifact filename carries.
+
+    ``pkgbuild_ver`` (strict stage)
+        Glob ``{pkgname}-{pkgbuild_ver}-*``. Matches non-VCS packages, where
+        the static PKGBUILD parse equals the filename version.
+
+    newest (fallback stage)
+        Filename parse + ``vercmp``, newest wins. Required for VCS packages,
+        whose ``pkgver()`` bumps at build time (PKGBUILD ``pkgver=0.1.0`` →
+        artifact ``0.1.0.r45.g1234567``) so ``pkgbuild_ver`` never matches.
+        With ``installed_ver`` set, only artifacts strictly newer than it are
+        considered — ``--install-only``\'s guard against redundant reinstalls
+        and downgrades.
+    """
+    from sysforge.primitives.version import vercmp
+
+    if not search_dir or not Path(search_dir).is_dir():
+        return []
+
+    found: list = []
+    for pkgname in pkgnames:
+        if exact_ver is not None:
+            for path in sorted(Path(search_dir).glob(f"{pkgname}-*.pkg.tar*")):
+                if path.name.endswith(".sig"):
+                    continue
+                parsed = _parse_built_pkg_filename(pkgname, path.name)
+                if parsed is None:
+                    continue
+                if _version_string(parsed) == exact_ver:
+                    found.append(path)
+                    break
+            continue
+
+        if pkgbuild_ver:
+            strict = [
+                p for p in Path(search_dir).glob(
+                    f"{pkgname}-{pkgbuild_ver}-*.pkg.tar*"
+                )
+                if not p.name.endswith(".sig")
+            ]
+            if strict:
+                found.extend(strict)
+                continue
+
+        candidates: list = []
+        for p in Path(search_dir).glob(f"{pkgname}-*-*-*.pkg.tar*"):
+            if p.name.endswith(".sig"):
+                continue
+            parsed = _parse_built_pkg_filename(pkgname, p.name)
+            if parsed is None:
+                continue
+            ver_string = _version_string(parsed)
+            if installed_ver is not None:
+                try:
+                    if vercmp(ver_string, installed_ver) <= 0:
+                        continue
+                except RuntimeError:
+                    continue
+            candidates.append((ver_string, p))
+
+        if not candidates:
+            continue
+
+        with contextlib.suppress(RuntimeError):
+            candidates.sort(key=cmp_to_key(lambda a, b: vercmp(a[0], b[0])))
+        found.append(candidates[-1][1])
+
+    return found
+
+
+def _version_string(parsed: tuple) -> str:
+    """Render a parsed ``(epoch, pkgver, pkgrel)`` the way pacman prints it.
+
+    Epoch ``0`` is omitted, matching ``pacman -Q`` output and the artifact
+    filenames themselves — both write ``1.2.3-1``, never ``0:1.2.3-1``.
+    """
+    epoch, ver, rel = parsed
+    return f"{epoch}:{ver}-{rel}" if epoch != "0" else f"{ver}-{rel}"

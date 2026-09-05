@@ -687,3 +687,318 @@ def test_seam_restores_the_checkout_when_the_build_fails(tmp_path):
     assert sorted(p.name for p in sidecar.parent.iterdir()) == [
         "PKGBUILD", "PKGBUILD.sysforge"]
     assert (sidecar.parent / "PKGBUILD").read_text() == "# upstream\n"
+
+
+# ---------------------------------------------------------------------------
+# Chroot toolchain provisioning (3.2.0-B4)
+# ---------------------------------------------------------------------------
+
+
+def _chroot_with(tmp_path: Path, *binaries: str) -> Path:
+    """A chroot root whose /usr/bin holds exactly *binaries*."""
+    bindir = tmp_path / "chroot" / "root" / "usr" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for name in binaries:
+        (bindir / name).write_text("#!/bin/sh\n")
+    return tmp_path / "chroot"
+
+
+def test_missing_toolchain_flags_a_compiler_the_chroot_lacks(tmp_path):
+    """The exact 3.2.0-B4 failure: the profile exports CC=clang and the
+    base-devel chroot ships only gcc, so every C build dies in configure."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc", "g++"))
+    missing = bs.missing_toolchain(pol, {"CC": "clang", "CXX": "clang++"})
+    assert missing == {"clang": "clang", "clang++": "clang"}
+
+
+def test_missing_toolchain_is_empty_when_the_chroot_has_them(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc", "g++"))
+    assert bs.missing_toolchain(pol, {"CC": "gcc", "CXX": "g++"}) == {}
+
+
+def test_missing_toolchain_maps_the_llvm_binutils(tmp_path):
+    """LD/AR/NM/RANLIB name binaries too, and they come from two more
+    packages than the compiler does."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    missing = bs.missing_toolchain(pol, {
+        "LD": "ld.lld", "AR": "llvm-ar", "NM": "llvm-nm", "RANLIB": "llvm-ranlib",
+    })
+    assert missing == {
+        "ld.lld": "lld", "llvm-ar": "llvm", "llvm-nm": "llvm", "llvm-ranlib": "llvm",
+    }
+
+
+def test_missing_toolchain_ignores_non_toolchain_exports(tmp_path):
+    """CFLAGS names flags, not a binary — only the binary-valued keys are
+    checkable against the chroot's filesystem."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"CFLAGS": "-O3 -march=native"}) == {}
+
+
+def test_missing_toolchain_takes_the_binary_out_of_a_wrapped_value(tmp_path):
+    """CC='clang -m32' is a legal makepkg value; the binary is the first word."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"CC": "clang -m32"}) == {"clang": "clang"}
+
+
+def test_missing_toolchain_resolves_an_absolute_value_inside_the_chroot(tmp_path):
+    """An absolute CC is a path *in the container*, so it must be probed
+    relative to the chroot root, never against the host filesystem."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "clang"))
+    assert bs.missing_toolchain(pol, {"CC": "/usr/bin/clang"}) == {}
+
+
+def test_provision_toolchain_installs_the_missing_packages_once(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang", "CXX": "clang++", "LD": "ld.lld"})
+    argv = run.call_args[0][0]
+    assert argv[0] == "arch-nspawn"
+    assert str(pol.chroot_dir / "root") in argv
+    # Deduplicated and deterministic: clang++ and clang are one package.
+    assert argv[-2:] == ["clang", "lld"]
+    assert "--noconfirm" in argv
+
+
+def test_provision_toolchain_is_a_noop_when_nothing_is_missing(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "gcc"})
+    run.assert_not_called()
+
+
+def test_provision_toolchain_noop_when_the_sandbox_is_off(tmp_path):
+    pol = bs.SandboxPolicy(enabled=False, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang"})
+    run.assert_not_called()
+
+
+def test_provision_toolchain_refuses_an_unmappable_binary(tmp_path):
+    """No package known for it, so it cannot be installed — stop with an
+    actionable message rather than spending the build to reach a cryptic
+    'compiler cannot compile programs' several minutes in."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        with pytest.raises(bs.SandboxUnavailable) as e:
+            bs.provision_toolchain(pol, {"CC": "zapcc"})
+    run.assert_not_called()
+    assert "zapcc" in str(e.value)
+    assert "arch-nspawn" in str(e.value)
+
+
+def test_provision_toolchain_reports_a_failed_install(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged",
+               side_effect=RuntimeError("boom")):
+        with pytest.raises(bs.SandboxUnavailable) as e:
+            bs.provision_toolchain(pol, {"CC": "clang"})
+    assert "clang" in str(e.value)
+
+
+def test_seam_installs_the_missing_toolchain_into_the_chroot(tmp_path):
+    """End-to-end 3.2.0-B4: a clang profile against a gcc-only chroot
+    provisions clang before makechrootpkg runs, instead of reaching a
+    'compiler cannot compile programs' failure minutes into the build."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    pol = _policy(tmp_path)
+    (pol.chroot_dir / "root" / "usr" / "bin").mkdir(parents=True, exist_ok=True)
+    (pol.chroot_dir / "root" / "usr" / "bin" / "gcc").write_text("#!/bin/sh\n")
+    bs.set_policy(pol)
+
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        cap = _invoke(pb, conf, {}, extra_env={"CC": "clang", "CXX": "clang++"})
+
+    argv = run.call_args[0][0]
+    assert argv[0] == "arch-nspawn"
+    assert argv[-1] == "clang"
+    # ...and the build still ran, with the same toolchain in its container conf.
+    assert cap["cmd"][0] == "makechrootpkg"
+
+
+def test_seam_refuses_before_building_when_the_toolchain_cannot_be_installed(tmp_path):
+    """The refusal must land *before* makechrootpkg is spawned — its whole
+    value over the status quo is not paying for the build first."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    pol = _policy(tmp_path)
+    (pol.chroot_dir / "root" / "usr" / "bin").mkdir(parents=True, exist_ok=True)
+    bs.set_policy(pol)
+
+    with patch("sysforge.primitives.build_sandbox.run_privileged",
+               side_effect=RuntimeError("no network")):
+        with pytest.raises(bs.SandboxUnavailable):
+            _invoke(pb, conf, {}, extra_env={"CC": "clang"})
+
+    # The checkout is left exactly as it was found.
+    assert [p.name for p in pb.parent.iterdir()] == ["PKGBUILD"]
+
+
+# ---------------------------------------------------------------------------
+# Dependency injection from build state (3.1.0-F9)
+# ---------------------------------------------------------------------------
+#
+# The container resolves deps from the stock repos only, so a source-built dep
+# that exists solely as an installed *host* package is `target not found` in
+# there. These cover the resolver that seeds `-I` from build_state.toml.
+
+
+def _dep_fixture(tmp_path: Path, *, pkgbuild_deps, installed, source_built, artifacts):
+    """Build the four inputs the resolver reads, and return its kwargs.
+
+    pkgbuild_deps  — the target's own depends, as collect_builddeps yields them
+    installed      — {pkgname: (version, [deps])} for the host's local DB
+    source_built   — pkgnames build_state records as not-from-pacman
+    artifacts      — filenames to create in the PKGDEST archive
+    """
+    src = tmp_path / "src"
+    src.mkdir(exist_ok=True)
+    pb = src / "PKGBUILD"
+    pb.write_text("# fake\n")
+
+    dest = tmp_path / "pkgdest"
+    dest.mkdir(exist_ok=True)
+    for name in artifacts:
+        (dest / name).write_text("")
+
+    graph = {name: deps for name, (_v, deps) in installed.items()}
+    versions = {name: v for name, (v, _d) in installed.items()}
+    state = {name: {"build_mode": ("source_built" if name in source_built
+                                   else "pacman")}
+             for name in installed}
+
+    return pb, dest, graph, versions, state
+
+
+def _resolve(pb, dest, graph, versions, state, pkgbuild_deps):
+    with patch("sysforge.primitives.pacman.collect_builddeps",
+               return_value=pkgbuild_deps), \
+         patch("sysforge.primitives.pacman.get_all_package_depends",
+               return_value=graph), \
+         patch("sysforge.primitives.pacman.get_installed_version",
+               side_effect=lambda n: versions.get(n)), \
+         patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value=state):
+        return bs.resolve_dep_artifacts(pb, search_dir=dest, state_dir=None)
+
+
+def test_resolver_injects_a_source_built_direct_dep(tmp_path):
+    pb, dest, graph, versions, state = _dep_fixture(
+        tmp_path,
+        pkgbuild_deps=["libfoo"],
+        installed={"libfoo": ("1.0.0-1", [])},
+        source_built={"libfoo"},
+        artifacts=["libfoo-1.0.0-1-x86_64.pkg.tar.zst"],
+    )
+    got = _resolve(pb, dest, graph, versions,
+                   {"libfoo"}, ["libfoo"])
+    assert [p.name for p in got] == ["libfoo-1.0.0-1-x86_64.pkg.tar.zst"]
+
+
+def test_resolver_skips_repo_packages(tmp_path):
+    """A dep pacman installed is resolvable inside the container already;
+    injecting it would copy the whole repo set into every build."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path,
+        pkgbuild_deps=["zlib"],
+        installed={"zlib": ("1.3-1", [])},
+        source_built=set(),
+        artifacts=["zlib-1.3-1-x86_64.pkg.tar.zst"],
+    )
+    got = _resolve(pb, dest, {"zlib": []}, {"zlib": "1.3-1"}, set(), ["zlib"])
+    assert got == []
+
+
+def test_resolver_walks_transitively(tmp_path):
+    """build_state records no deps, so the host's local DB is the authority
+    on what a source-built package itself needs."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path,
+        pkgbuild_deps=["libfoo"],
+        installed={},
+        source_built=set(),
+        artifacts=["libfoo-1.0.0-1-x86_64.pkg.tar.zst",
+                   "libbar-2.0.0-1-x86_64.pkg.tar.zst"],
+    )
+    graph = {"libfoo": ["libbar>=2.0"], "libbar": []}
+    versions = {"libfoo": "1.0.0-1", "libbar": "2.0.0-1"}
+    got = _resolve(pb, dest, graph, versions, {"libfoo", "libbar"}, ["libfoo"])
+    assert sorted(p.name for p in got) == [
+        "libbar-2.0.0-1-x86_64.pkg.tar.zst",
+        "libfoo-1.0.0-1-x86_64.pkg.tar.zst",
+    ]
+
+
+def test_resolver_survives_a_dependency_cycle(tmp_path):
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["a"], installed={}, source_built=set(),
+        artifacts=["a-1-1-x86_64.pkg.tar.zst", "b-1-1-x86_64.pkg.tar.zst"],
+    )
+    graph = {"a": ["b"], "b": ["a"]}
+    got = _resolve(pb, dest, graph, {"a": "1-1", "b": "1-1"}, {"a", "b"}, ["a"])
+    assert sorted(p.name for p in got) == [
+        "a-1-1-x86_64.pkg.tar.zst", "b-1-1-x86_64.pkg.tar.zst"]
+
+
+def test_resolver_picks_the_installed_version_not_the_newest(tmp_path):
+    """PKGDEST is a historical archive; the newest file there is very often
+    a version the host does not run."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["libfoo"], installed={}, source_built=set(),
+        artifacts=["libfoo-1.0.0-1-x86_64.pkg.tar.zst",
+                   "libfoo-9.9.9-1-x86_64.pkg.tar.zst"],
+    )
+    got = _resolve(pb, dest, {"libfoo": []}, {"libfoo": "1.0.0-1"},
+                   {"libfoo"}, ["libfoo"])
+    assert [p.name for p in got] == ["libfoo-1.0.0-1-x86_64.pkg.tar.zst"]
+
+
+def test_resolver_warns_and_continues_when_the_artifact_was_pruned(tmp_path, capsys):
+    """A build-fidelity mismatch, not a security one — the container falls
+    back to the repo version and the user is told which one and why."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["libfoo", "libbar"], installed={},
+        source_built=set(), artifacts=["libbar-2.0.0-1-x86_64.pkg.tar.zst"],
+    )
+    got = _resolve(pb, dest, {"libfoo": [], "libbar": []},
+                   {"libfoo": "1.0.0-1", "libbar": "2.0.0-1"},
+                   {"libfoo", "libbar"}, ["libfoo", "libbar"])
+    # The one that still exists is still injected.
+    assert [p.name for p in got] == ["libbar-2.0.0-1-x86_64.pkg.tar.zst"]
+    warned = capsys.readouterr().err
+    assert "libfoo" in warned
+    assert "1.0.0-1" in warned
+
+
+def test_resolver_skips_a_dep_that_is_not_installed(tmp_path):
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["ghost"], installed={}, source_built=set(),
+        artifacts=[],
+    )
+    assert _resolve(pb, dest, {}, {}, set(), ["ghost"]) == []
+
+
+def test_install_args_unions_the_session_registry_over_the_resolver(tmp_path):
+    """The run's own freshly-built artifact is newer than anything the store
+    points at, so the registry wins and lands last."""
+    bs.reset_session()
+    fresh = tmp_path / "libfoo-2.0.0-1-x86_64.pkg.tar.zst"
+    fresh.write_text("")
+    bs.register_artifacts([fresh])
+    stale = tmp_path / "libbar-1.0.0-1-x86_64.pkg.tar.zst"
+    stale.write_text("")
+
+    with patch("sysforge.primitives.build_sandbox.resolve_dep_artifacts",
+               return_value=[stale, fresh]):
+        got = bs.install_args(tmp_path / "PKGBUILD", search_dir=tmp_path)
+
+    assert got == [stale, fresh]
+    assert got.count(fresh) == 1
+
+
+def test_install_args_without_a_pkgbuild_is_the_session_registry_only(tmp_path):
+    """Back-compatible: the resolver is opt-in per call site."""
+    bs.reset_session()
+    fresh = tmp_path / "libfoo-2.0.0-1-x86_64.pkg.tar.zst"
+    fresh.write_text("")
+    bs.register_artifacts([fresh])
+    assert bs.install_args() == [fresh]

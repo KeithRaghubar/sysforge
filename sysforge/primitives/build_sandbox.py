@@ -61,7 +61,10 @@ Public API:
     chroot_conf_text(conf_path, exports) -> str
     chroot_env(env) -> dict
     mem_cap_applies(policy) -> bool
-    register_artifacts(paths) / install_args() / reset_session()
+    missing_toolchain(policy, exports) -> dict
+    provision_toolchain(policy, exports) -> None
+    register_artifacts(paths) / install_args(pkgbuild) / reset_session()
+    resolve_dep_artifacts(pkgbuild, search_dir, state_dir) -> list[Path]
 """
 from __future__ import annotations
 
@@ -72,6 +75,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.privilege import run_privileged
 
 _log = log.get_logger("SANDBOX")
 
@@ -132,6 +136,31 @@ _ENV_EXPORT_DENY = {
 # the accelerators buy nothing to trade away. ``check``/``sign`` are policy,
 # not tooling, and are left exactly as the user set them.
 _HOST_ONLY_BUILDENV = ("ccache", "distcc")
+
+# Env keys whose value *is* a binary name, as opposed to flags or a policy.
+# These are what the profile's resolved toolchain travels into the container
+# on, via the ``export`` lines :func:`chroot_conf_text` appends.
+_TOOLCHAIN_ENV_KEYS = ("CC", "CXX", "LD", "AR", "NM", "RANLIB", "STRIP", "OBJCOPY")
+
+# Which pacman package provides each toolchain binary. The clean chroot is
+# ``base-devel``, which carries gcc and binutils and nothing else — so a
+# profile resolving to LLVM exports ``CC=clang`` into a container with no
+# clang in it, and every C build dies in configure with "Could not find the
+# compiler specified in the environment variable CC" (3.2.0-B4). Same category
+# as the ccache BUILDENV above, but the opposite remedy: an accelerator is
+# free to drop, whereas the compiler *is* the profile's intent, so the missing
+# package is installed into the chroot rather than the export dropped.
+_TOOLCHAIN_PACKAGE = {
+    "clang": "clang", "clang++": "clang", "clang-cpp": "clang",
+    "ld.lld": "lld", "lld": "lld", "wasm-ld": "lld",
+    "llvm-ar": "llvm", "llvm-nm": "llvm", "llvm-ranlib": "llvm",
+    "llvm-strip": "llvm", "llvm-objcopy": "llvm",
+    "gcc": "gcc", "g++": "gcc", "cpp": "gcc",
+    "ar": "binutils", "nm": "binutils", "ranlib": "binutils",
+    "ld": "binutils", "ld.bfd": "binutils", "ld.gold": "binutils",
+    "strip": "binutils", "objcopy": "binutils",
+}
+
 
 # makechrootpkg reads these from the environment (devtools' check_root preserve
 # list) and moves the built artifacts back to them, so exporting them keeps the
@@ -289,6 +318,91 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
             f"build, and swapping over it would lose the upstream PKGBUILD "
             f"— restore it with: mv {stash} {stash.parent / REQUIRED_PKGBUILD_NAME}"
         )
+
+
+def missing_toolchain(policy: SandboxPolicy, exports: dict | None) -> dict:
+    """Return ``{binary: package}`` for toolchain binaries absent from the chroot.
+
+    Probes the chroot *root* copy — the template ``makechrootpkg`` clones the
+    working copy from — for each binary-valued export. A relative value is
+    looked up in ``/usr/bin``; an absolute one is resolved **inside** the
+    chroot, never against the host, because that path names a location in the
+    container's filesystem and the host almost certainly has a binary of the
+    same name sitting at it (which is precisely why this went unnoticed).
+    """
+    root = (policy.chroot_dir / "root") if policy.chroot_dir else None
+    if root is None or not root.is_dir():
+        return {}
+
+    missing: dict[str, str] = {}
+    for key in _TOOLCHAIN_ENV_KEYS:
+        raw = str((exports or {}).get(key) or "").strip()
+        if not raw:
+            continue
+        # ``CC='clang -m32'`` is a legal value: the binary is the first word.
+        try:
+            words = shlex.split(raw)
+        except ValueError:
+            continue
+        if not words:
+            continue
+        value = words[0]
+        probe = (root / value.lstrip("/")) if value.startswith("/") \
+            else (root / "usr" / "bin" / value)
+        if probe.exists():
+            continue
+        missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
+    return missing
+
+
+def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
+    """Install the profile's toolchain into the chroot root, if it is absent.
+
+    Runs before the build rather than letting the container fail: the failure
+    it replaces costs a full source checkout and configure per package and
+    surfaces as a CMake/meson error that names neither the sandbox nor the
+    profile (3.2.0-B4).
+
+    Installed into the *root* copy, which persists: ``makechrootpkg -c`` resets
+    only the working copy, so this is a one-time cost per chroot rather than a
+    per-build one. A binary with no known package is a hard stop with the
+    command that fixes it — guessing a package name would install the wrong
+    thing, and continuing just buys back the cryptic failure.
+    """
+    if not policy.enabled:
+        return
+    missing = missing_toolchain(policy, exports)
+    if not missing:
+        return
+
+    unmappable = sorted(b for b, pkg in missing.items() if not pkg)
+    if unmappable:
+        root = policy.chroot_dir / "root"
+        raise SandboxUnavailable(
+            f"the sandbox chroot has no {', '.join(unmappable)} and sysforge "
+            f"does not know which package provides it — install it yourself "
+            f"with: arch-nspawn {root} pacman -S <package>"
+        )
+
+    packages = sorted({pkg for pkg in missing.values()})
+    root = policy.chroot_dir / "root"
+    _log.info(
+        "Chroot is missing " + ", ".join(sorted(missing))
+        + " — installing " + ", ".join(packages) + " into " + str(root)
+    )
+    try:
+        run_privileged(
+            ["arch-nspawn", str(root), "pacman", "-S", "--needed",
+             "--noconfirm", *packages],
+            tag="SANDBOX",
+        )
+    except Exception as exc:
+        raise SandboxUnavailable(
+            f"could not install the profile's toolchain "
+            f"({', '.join(packages)}) into the sandbox chroot at {root}: "
+            f"{exc} — the build would fail with a missing "
+            f"{', '.join(sorted(missing))}"
+        ) from exc
 
 
 @contextlib.contextmanager
@@ -531,13 +645,140 @@ def register_artifacts(paths) -> None:
             _session.artifacts.append(path)
 
 
-def install_args() -> list[Path]:
+def _source_built_packages(state_dir) -> set:
+    """Return the pkgnames ``build_state.toml`` records as not-from-pacman.
+
+    Keyed by **pkgname**, not pkgbase, which is what makes this the right store
+    to seed from: split packages are already expanded, and ``-I`` takes package
+    *files*, one per pkgname. Unreadable state degrades to "nothing is
+    source-built", which costs fidelity rather than correctness.
+    """
+    import os
+
+    from sysforge.primitives.build_state import BUILD_MODE_PACMAN, BuildState
+
+    if state_dir is None:
+        # Same resolution ArtifactRegistry uses, and for the same reason: this
+        # is a primitive, so it cannot reach pipeline.resolve_state_dir, and a
+        # caller several layers up that forgets to thread the value would
+        # silently degrade injection to "nothing is source-built".
+        env = os.environ.get("SYSFORGE_STATE_DIR")
+        state_dir = Path(env) if env else Path("/var/lib/sysforge")
+
+    try:
+        packages = BuildState(state_dir).all_packages()
+    except Exception:
+        return set()
+    return {
+        name for name, entry in packages.items()
+        if (entry or {}).get("build_mode") != BUILD_MODE_PACMAN
+    }
+
+
+def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[Path]:
+    """Return locally-built artifacts for *pkgbuild_path*'s source-built deps.
+
+    ``arch-nspawn`` gives the container its own ``pacman.conf``, so
+    ``makechrootpkg --syncdeps`` resolves from the stock repos and never from
+    the host's installed set. A dependency the user built from source therefore
+    exists only as an installed *host* package and comes back as ``target not
+    found`` — or, worse, silently resolves to an older repo version. ``-I`` is
+    the only channel back in (3.1.0-F9).
+
+    Three rules, each chosen against a failure mode:
+
+    * **Scope** is the target's dependency closure ∩ source-built, not every
+      source-built package: on a stack machine the latter is ~150 files copied
+      into the working copy and installed in one ``pacman -U`` per build. The
+      closure is walked over the host's local DB, because ``build_state``
+      records versions but no dependency edges.
+    * **Version** is the one the host actually runs, never the newest artifact
+      in ``search_dir`` — that directory is a long-lived archive of every
+      historical build (3.1.0-B1), and injecting its newest would hand the
+      container a version the host does not have, recreating the very skew
+      this removes.
+    * **A pruned artifact warns and continues.** The container falls back to
+      the repo version, which is a build-fidelity mismatch, not a breach of
+      the isolation boundary — so unlike the sandbox's own refuse-rather-than-
+      downgrade rule, a missing file in an archive is not worth a hard stop.
+
+    Does not fix skew against packages outside the injection set; that is
+    ``3.1.0-F10``.
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.aur_resolve import _strip_version
+    from sysforge.primitives.makepkg_artifacts import find_artifacts
+
+    if not pkgbuild_path or not search_dir:
+        return []
+
+    source_built = _source_built_packages(state_dir)
+    if not source_built:
+        return []
+
+    try:
+        roots = pacman.collect_builddeps([pkgbuild_path])
+    except Exception as exc:
+        _log.debug(f"sandbox dep injection: could not read deps: {exc}")
+        return []
+    if not roots:
+        return []
+
+    # One pass over the local DB rather than a `pacman -Qi` per package: a
+    # whole-system walk the other way is O(N^2) directory reads (2.6.1-B22).
+    graph = pacman.get_all_package_depends()
+
+    seen: set = set()
+    queue = list(roots)
+    closure: list = []
+    while queue:
+        name = _strip_version(queue.pop())
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        closure.append(name)
+        queue.extend(graph.get(name, []))
+
+    found: list[Path] = []
+    for name in closure:
+        if name not in source_built:
+            continue
+        version = pacman.get_installed_version(name)
+        if not version:
+            continue
+        match = find_artifacts(search_dir, [name], exact_ver=version)
+        if match:
+            found.extend(match)
+            continue
+        _log.warn(
+            f"sandbox: no built artifact for {name} {version} in {search_dir} "
+            f"— the container will use the repo version instead, which may "
+            f"not match what this host runs"
+        )
+    return found
+
+
+def install_args(pkgbuild_path=None, *, search_dir=None,
+                 state_dir=None) -> list[Path]:
     """Return the artifacts to ``-I`` into the next container, newest last.
+
+    The union of two sources, the session registry winning: packages built
+    earlier in *this run* are newer than anything the persistent store points
+    at. With no *pkgbuild_path* it is the registry alone, which is what call
+    sites that have no target in hand get.
 
     Only files that still exist: an artifact cleaned out between builds is a
     stale registry entry, not a reason to fail the build.
     """
-    return [p for p in _session.artifacts if p.exists()]
+    resolved: list[Path] = []
+    if pkgbuild_path is not None:
+        resolved = resolve_dep_artifacts(
+            pkgbuild_path, search_dir=search_dir, state_dir=state_dir)
+
+    session = [p for p in _session.artifacts if p.exists()]
+    out = [p for p in resolved if p.exists() and p not in session]
+    out.extend(session)
+    return out
 
 
 def reset_session() -> None:
