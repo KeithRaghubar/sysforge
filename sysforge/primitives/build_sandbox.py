@@ -24,8 +24,9 @@ Why this is not just another ``build_throttle.wrapper_argv`` prefix entry
 
 * ``makechrootpkg`` operates on the *current directory* and hardcodes
   ``source PKGBUILD`` for its pkgbase probe, so it cannot honour an arbitrary
-  ``-p <name>``.  :func:`preflight` refuses a non-``PKGBUILD`` filename rather
-  than build the wrong file.
+  ``-p <name>`` — while sysforge always builds the patched ``PKGBUILD.sysforge``
+  sidecar, never the upstream file.  :func:`as_canonical_pkgbuild` reconciles
+  the two with a scoped rename around the build, undone in a ``finally``.
 * It re-execs itself under ``sudo`` (devtools' ``check_root``) with its own
   env-preserve list, so sysforge must *not* prefix ``sudo`` — doing so would
   strip ``PKGDEST``/``SRCDEST``/``LOGDEST``/``MAKEFLAGS`` from the environment
@@ -54,6 +55,7 @@ Public API:
     for_profile(policy, resolved_profile) -> SandboxPolicy
     set_policy(policy) / get_policy() / reset_policy() / suppressed(active)
     preflight(policy, pkgbuild_path) -> None      (raises SandboxUnavailable)
+    as_canonical_pkgbuild(pkgbuild_path) -> ctx  (yields ./PKGBUILD)
     build_argv(policy, flags, conf_dir_name, install_pkgs) -> list[str]
     dest_env_from_conf(conf_path) -> dict
     chroot_conf_text(conf_path, exports) -> str
@@ -85,6 +87,12 @@ REQUIRED_PKGBUILD_NAME = "PKGBUILD"
 # names are dotted so they never match the ``*.pkg.tar*`` / ``PKGBUILD*`` globs
 # the rest of the tree runs over that directory, and the whole scratch dir is
 # removed in the caller's ``finally``.
+# Where the upstream PKGBUILD is parked while the patched sidecar occupies the
+# canonical name (see :func:`as_canonical_pkgbuild`). Dotted for the same
+# reason as the names below: the rest of the tree globs ``PKGBUILD*`` over this
+# directory, and an undotted stash would read as a second build candidate.
+UPSTREAM_STASH_NAME = ".sysforge-upstream-PKGBUILD"
+
 CHROOT_CONF_NAME = ".sysforge-chroot-makepkg.conf"
 CHROOT_CONF_DIR_PREFIX = ".sysforge-chroot-"
 CHROOT_STARTDIR = "/startdir"
@@ -252,14 +260,80 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
             f"(or point [security] sandbox_chroot_dir at an existing one)"
         )
 
-    name = Path(pkgbuild_path).name
-    if name != REQUIRED_PKGBUILD_NAME:
+    # makechrootpkg can only build the canonical name, and sysforge never
+    # hands the seam that name — every build route swaps in the patched
+    # ``PKGBUILD.sysforge`` sidecar. :func:`as_canonical_pkgbuild` reconciles
+    # the two, so the filename itself is no longer a refusal (3.2.0-B1); what
+    # *is* a refusal is a stash left behind by an interrupted earlier run,
+    # because completing the swap over it would destroy the user's checkout.
+    stash = Path(pkgbuild_path).parent / UPSTREAM_STASH_NAME
+    if stash.exists():
         raise SandboxUnavailable(
-            f"cannot sandbox a build of {name!r}: makechrootpkg builds the "
-            f"'{REQUIRED_PKGBUILD_NAME}' in the invocation directory and reads "
-            f"pkgbase from it, so a differently-named file would build one "
-            f"package and report another"
+            f"refusing to sandbox: {stash} is left over from an interrupted "
+            f"build, and swapping over it would lose the upstream PKGBUILD "
+            f"— restore it with: mv {stash} {stash.parent / REQUIRED_PKGBUILD_NAME}"
         )
+
+
+@contextlib.contextmanager
+def as_canonical_pkgbuild(pkgbuild_path: Path):
+    """Present *pkgbuild_path* as ``./PKGBUILD`` for the duration of the block.
+
+    ``makechrootpkg`` bind-mounts the invocation directory and runs
+    ``source PKGBUILD`` on the host to read pkgbase, so it cannot honour an
+    arbitrary ``-p <name>``. sysforge, meanwhile, never builds the upstream
+    file: every route through ``makepkg_wrapper._run_build`` reassigns the path
+    to the patched ``PKGBUILD.sysforge`` sidecar. Without reconciling the two
+    the sandbox refused every package it was pointed at (3.2.0-B1).
+
+    The reconciliation is a scoped rename in the package directory rather than
+    a staged copy elsewhere: the build needs everything else that directory
+    holds — local source files, ``.install`` scripts, patches, keys — and
+    replicating that set is a larger surface to get wrong than a swap that is
+    undone in a ``finally``.
+
+    Yields the canonical path. A no-op (yielding the original) when the file is
+    already named ``PKGBUILD``. Not concurrency-safe within one package
+    directory, which matches the build loop: sysforge builds a given package
+    once at a time.
+    """
+    pkgbuild_path = Path(pkgbuild_path)
+    if pkgbuild_path.name == REQUIRED_PKGBUILD_NAME:
+        yield pkgbuild_path
+        return
+
+    directory = pkgbuild_path.parent
+    canonical = directory / REQUIRED_PKGBUILD_NAME
+    stash = directory / UPSTREAM_STASH_NAME
+
+    # Re-checked here and not only in preflight: this is the step that would do
+    # the damage, and ``rename`` replaces silently on POSIX.
+    if stash.exists():
+        raise SandboxUnavailable(
+            f"refusing to sandbox: {stash} is left over from an interrupted "
+            f"build, and swapping over it would lose the upstream PKGBUILD "
+            f"— restore it with: mv {stash} {canonical}"
+        )
+
+    stashed = False
+    if canonical.exists():
+        canonical.rename(stash)
+        stashed = True
+    try:
+        pkgbuild_path.rename(canonical)
+    except OSError:
+        # Never leave the checkout half-swapped because step two failed.
+        if stashed:
+            stash.rename(canonical)
+        raise
+
+    try:
+        yield canonical
+    finally:
+        with contextlib.suppress(OSError):
+            canonical.rename(pkgbuild_path)
+            if stashed:
+                stash.rename(canonical)
 
 
 def mem_cap_applies(policy: SandboxPolicy) -> bool:

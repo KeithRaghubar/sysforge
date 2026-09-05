@@ -10,8 +10,9 @@ isolated, plus the seam that swaps the argv:
      - suppressed() forces host builds and restores the policy
 
   2. Preflight (refuse rather than silently downgrade)
-     - missing makechrootpkg / missing chroot root / non-"PKGBUILD" filename
-     - clean pass when all three hold
+     - missing makechrootpkg / missing chroot root / stale upstream stash
+     - a non-canonical filename is admitted (the swap reconciles it)
+     - clean pass when all of them hold
 
   3. Argv + conf derivation
      - makechrootpkg shape, no sudo prefix, no -p, flags after --
@@ -24,6 +25,11 @@ isolated, plus the seam that swaps the argv:
      - policy on   → makechrootpkg, scratch conf written then removed
      - RLIMIT_AS cap dropped (it would cap the wrapper, not the build)
      - session registry: dedupe, .sig skip, vanished files filtered
+
+  5. Canonical-PKGBUILD swap (3.2.0-B1)
+     - the patched sidecar occupies ./PKGBUILD for the build, and only for it
+     - the checkout is restored on success, on failure, and on exception
+     - a stale stash from an interrupted run is refused, never clobbered
 """
 import os
 import sys
@@ -156,14 +162,24 @@ def test_preflight_requires_chroot_root(tmp_path):
     assert "mkarchroot" in str(e.value)
 
 
-def test_preflight_refuses_non_pkgbuild_filename(tmp_path):
-    """makechrootpkg reads pkgbase from ./PKGBUILD regardless of -p, so a
-    differently-named file would build one package and report another."""
+def test_preflight_admits_a_non_canonical_filename(tmp_path):
+    """makechrootpkg reads pkgbase from ./PKGBUILD regardless of -p, but that
+    is reconciled by the scoped swap (3.2.0-B1) rather than by refusing the
+    build — sysforge never hands the seam the canonical name."""
+    with patch("sysforge.primitives.build_sandbox.shutil.which",
+               return_value="/usr/bin/makechrootpkg"):
+        bs.preflight(_policy(tmp_path), tmp_path / "PKGBUILD-git")
+
+
+def test_preflight_refuses_a_stale_upstream_stash(tmp_path):
+    """An interrupted run's stash means the canonical name holds a *patched*
+    file; swapping again would lose the upstream one for good."""
+    (tmp_path / bs.UPSTREAM_STASH_NAME).write_text("# real upstream\n")
     with patch("sysforge.primitives.build_sandbox.shutil.which",
                return_value="/usr/bin/makechrootpkg"):
         with pytest.raises(bs.SandboxUnavailable) as e:
-            bs.preflight(_policy(tmp_path), tmp_path / "PKGBUILD-git")
-    assert "PKGBUILD-git" in str(e.value)
+            bs.preflight(_policy(tmp_path), tmp_path / "PKGBUILD.sysforge")
+    assert "interrupted" in str(e.value)
 
 
 def test_preflight_passes_when_everything_is_in_place(tmp_path):
@@ -339,6 +355,11 @@ def _invoke(pkgbuild, conf, profile, **kwargs):
         # Snapshot what exists in the build dir *during* the run, so the
         # scratch-conf lifetime is observable.
         captured["during"] = sorted(p.name for p in Path(cwd).iterdir())
+        # What ./PKGBUILD actually held while makepkg ran: under the sandbox
+        # that must be the *patched* sidecar's text, not the upstream file.
+        _canonical = Path(cwd) / "PKGBUILD"
+        captured["during_pkgbuild"] = (
+            _canonical.read_text() if _canonical.exists() else None)
         return 0
 
     def fake_popen(cmd, **kw):
@@ -488,3 +509,126 @@ def test_seam_throttle_prefix_stays_outside_the_container(tmp_path):
                return_value=["nice", "-n", "19"]):
         cap = _invoke(pb, conf, {})
     assert cap["cmd"][:4] == ["nice", "-n", "19", "makechrootpkg"]
+
+
+# ---------------------------------------------------------------------------
+# 5. Canonical-PKGBUILD swap (3.2.0-B1)
+# ---------------------------------------------------------------------------
+#
+# sysforge never builds the upstream PKGBUILD: every route through
+# makepkg_wrapper._run_build reassigns pkgbuild_path to the patched sidecar
+# PKGBUILD.sysforge. makechrootpkg can only build a file named PKGBUILD, so
+# without a swap the sandbox refused every package it was ever pointed at.
+
+
+def _patched_pair(tmp_path: Path):
+    """The realistic seam input: an upstream PKGBUILD *and* its sidecar."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "PKGBUILD").write_text("# upstream\n")
+    sidecar = src / "PKGBUILD.sysforge"
+    sidecar.write_text("# patched by sysforge\n")
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text('CFLAGS="-O2"\nPKGDEST="%s"\n' % (tmp_path / "packages"))
+    return sidecar, conf
+
+
+def test_canonical_swap_puts_the_sidecar_at_pkgbuild(tmp_path):
+    sidecar, _ = _patched_pair(tmp_path)
+    with bs.as_canonical_pkgbuild(sidecar) as canonical:
+        assert canonical.name == "PKGBUILD"
+        assert canonical.read_text() == "# patched by sysforge\n"
+        assert not sidecar.exists()
+
+
+def test_canonical_swap_restores_both_names(tmp_path):
+    sidecar, _ = _patched_pair(tmp_path)
+    before = sorted(p.name for p in sidecar.parent.iterdir())
+    with bs.as_canonical_pkgbuild(sidecar):
+        pass
+    assert sorted(p.name for p in sidecar.parent.iterdir()) == before
+    assert (sidecar.parent / "PKGBUILD").read_text() == "# upstream\n"
+    assert sidecar.read_text() == "# patched by sysforge\n"
+
+
+def test_canonical_swap_restores_on_exception(tmp_path):
+    sidecar, _ = _patched_pair(tmp_path)
+    with pytest.raises(RuntimeError), bs.as_canonical_pkgbuild(sidecar):
+        raise RuntimeError("build blew up")
+    assert (sidecar.parent / "PKGBUILD").read_text() == "# upstream\n"
+    assert sidecar.read_text() == "# patched by sysforge\n"
+
+
+def test_canonical_swap_is_a_noop_for_an_already_canonical_name(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    pb = src / "PKGBUILD"
+    pb.write_text("# upstream\n")
+    with bs.as_canonical_pkgbuild(pb) as canonical:
+        assert canonical == pb
+        assert [p.name for p in src.iterdir()] == ["PKGBUILD"]
+
+
+def test_canonical_swap_without_an_upstream_sibling(tmp_path):
+    """A sidecar whose upstream was already cleaned away still builds."""
+    src = tmp_path / "src"
+    src.mkdir()
+    sidecar = src / "PKGBUILD.sysforge"
+    sidecar.write_text("# patched\n")
+    with bs.as_canonical_pkgbuild(sidecar) as canonical:
+        assert canonical.read_text() == "# patched\n"
+    assert [p.name for p in src.iterdir()] == ["PKGBUILD.sysforge"]
+
+
+def test_canonical_swap_refuses_a_stale_stash(tmp_path):
+    """An interrupted earlier run left the upstream stashed; clobbering it
+    would destroy the user's checkout, so refuse instead."""
+    sidecar, _ = _patched_pair(tmp_path)
+    (sidecar.parent / bs.UPSTREAM_STASH_NAME).write_text("# real upstream\n")
+    with pytest.raises(bs.SandboxUnavailable) as e:
+        with bs.as_canonical_pkgbuild(sidecar):
+            pass
+    assert bs.UPSTREAM_STASH_NAME in str(e.value)
+
+
+def test_preflight_accepts_the_patched_sidecar(tmp_path):
+    """The regression: this is the only filename the real pipeline ever
+    hands the seam, and preflight used to refuse it outright."""
+    sidecar, _ = _patched_pair(tmp_path)
+    with patch("sysforge.primitives.build_sandbox.shutil.which",
+               return_value="/usr/bin/makechrootpkg"):
+        bs.preflight(_policy(tmp_path), sidecar)
+
+
+def test_seam_sandboxes_the_patched_sidecar(tmp_path):
+    """End-to-end at the seam: the sandbox path must build the *patched*
+    file, under the canonical name, and leave the checkout as it found it."""
+    sidecar, conf = _patched_pair(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    cap = _invoke(sidecar, conf, {})
+    assert cap["cmd"][0] == "makechrootpkg"
+    assert "-p" not in cap["cmd"]
+    # While makepkg ran, ./PKGBUILD was the patched text.
+    assert cap["during_pkgbuild"] == "# patched by sysforge\n"
+    assert sorted(p.name for p in sidecar.parent.iterdir()) == [
+        "PKGBUILD", "PKGBUILD.sysforge"]
+    assert (sidecar.parent / "PKGBUILD").read_text() == "# upstream\n"
+
+
+def test_seam_restores_the_checkout_when_the_build_fails(tmp_path):
+    sidecar, conf = _patched_pair(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+
+    def boom(*_a, **_kw):
+        raise OSError("pty blew up")
+
+    with patch.dict(os.environ, {"PATH": "/usr/bin", "HOME": "/root"}, clear=True), \
+            patch("sysforge.primitives.makepkg_invoke.run_with_pty", side_effect=boom), \
+            patch("sysforge.primitives.build_sandbox.shutil.which",
+                  return_value="/usr/bin/makechrootpkg"):
+        with pytest.raises(OSError):
+            invoke_makepkg(sidecar, conf, {})
+
+    assert sorted(p.name for p in sidecar.parent.iterdir()) == [
+        "PKGBUILD", "PKGBUILD.sysforge"]
+    assert (sidecar.parent / "PKGBUILD").read_text() == "# upstream\n"

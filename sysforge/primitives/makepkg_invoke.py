@@ -21,6 +21,7 @@ flag transforms and env resolvers it draws on stay in ``makepkg_flags`` /
 ``ToolchainMismatchError`` / ``AlreadyBuilt`` exceptions are re-exported from
 ``makepkg_wrapper``.
 """
+import contextlib
 import contextvars
 import os
 import shutil
@@ -234,7 +235,16 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             build_sandbox.chroot_conf_text(conf_path, exports=extra_env))
         chroot_conf.chmod(0o644)
 
-        def sandbox_cleanup(_dir=conf_dir):
+        # The canonical-name swap (3.2.0-B1): makechrootpkg builds the
+        # ``PKGBUILD`` in the bind-mounted directory, and pkgbuild_path here is
+        # always the patched sidecar. Scoped to the build and undone by
+        # sandbox_cleanup, which every exit path already calls.
+        _swap = contextlib.ExitStack()
+        _swap.enter_context(build_sandbox.as_canonical_pkgbuild(pkgbuild_path))
+
+        def sandbox_cleanup(_dir=conf_dir, _swap=_swap):
+            # Restore the checkout first: the scratch conf lives inside it.
+            _swap.close()
             shutil.rmtree(_dir, ignore_errors=True)
 
         # makechrootpkg escalates itself (devtools' check_root re-exec) and
