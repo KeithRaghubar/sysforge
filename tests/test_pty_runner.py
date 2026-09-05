@@ -124,6 +124,106 @@ def test_reserve_bottom_rows_shrinks_child_winsize(tmp_path, monkeypatch):
     assert lines == ["29"]
 
 
+def _stdin_rows_cmd() -> list[str]:
+    return [
+        sys.executable, "-c",
+        "import os\n"
+        "try:\n"
+        "    print(os.get_terminal_size(0).lines)\n"
+        "except OSError:\n"
+        "    print('NOTTY')\n",
+    ]
+
+
+def test_reserve_bottom_rows_also_sizes_child_stdin(tmp_path, monkeypatch):
+    # 3.2.0-B3: a winsize belongs to the tty device, not the fd, so sizing only
+    # stdout leaves stdin reporting the *unreserved* height of the inherited
+    # terminal. Under a reservation the child's stdin must be our pty too.
+    monkeypatch.setattr(
+        "sysforge.primitives.pty_runner.shutil.get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((80, 30)),
+    )
+    lines: list[str] = []
+    rc = run_with_pty(
+        _stdin_rows_cmd(),
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False,
+        reserve_bottom_rows=1,
+    )
+    assert rc == 0
+    assert lines == ["29"]
+
+
+def test_no_reserve_leaves_child_stdin_inherited(tmp_path, monkeypatch):
+    # Without a reservation there is nothing to protect, so stdin keeps the
+    # documented inherit-from-parent behaviour (DEVNULL under pytest capture).
+    monkeypatch.setattr(
+        "sysforge.primitives.pty_runner.shutil.get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((80, 30)),
+    )
+    lines: list[str] = []
+    rc = run_with_pty(
+        _stdin_rows_cmd(),
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False,
+    )
+    assert rc == 0
+    assert lines == ["NOTTY"]
+
+
+# The sandbox shape: makechrootpkg -> sudo -> arch-nspawn -> systemd-nspawn
+# --console=autopipe each allocate a *nested* pty, and that inner pty is sized
+# from stdin. This child stands in for that whole stack -- it opens its own pty
+# and reports the size the innermost process sees, which is the size the
+# container's build output actually scrolls within.
+_NESTED_PTY_CHILD = """
+import os, pty, subprocess, sys
+m, s = pty.openpty()
+# Mirror what a pty-allocating wrapper does: seed the new pty from stdin.
+try:
+    import fcntl, struct, termios
+    fcntl.ioctl(s, termios.TIOCSWINSZ,
+                fcntl.ioctl(0, termios.TIOCGWINSZ, b"\\0" * 8))
+except OSError:
+    pass
+p = subprocess.Popen(
+    [sys.executable, "-c",
+     "import os; print(os.get_terminal_size(1).lines)"],
+    stdin=s, stdout=s, stderr=s, close_fds=True)
+os.close(s)
+p.wait()
+out = b""
+while True:
+    try:
+        c = os.read(m, 4096)
+    except OSError:
+        break
+    if not c:
+        break
+    out += c
+sys.stdout.write(out.decode().strip() + "\\n")
+"""
+
+
+def test_reservation_survives_a_nested_pty(tmp_path, monkeypatch):
+    # The regression itself: with stdin inherited the nested pty was sized from
+    # the real terminal, so the container scrolled over the reserved bar row and
+    # the progress indicator vanished for the whole sandboxed build.
+    monkeypatch.setattr(
+        "sysforge.primitives.pty_runner.shutil.get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((80, 30)),
+    )
+    lines: list[str] = []
+    rc = run_with_pty(
+        [sys.executable, "-c", _NESTED_PTY_CHILD],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False,
+        reserve_bottom_rows=1,
+    )
+    assert rc == 0
+    assert [ln for ln in lines if ln.strip()] == ["29"]
+
+
 def test_returns_nonzero(tmp_path):
     rc = run_with_pty(
         ["bash", "-c", "exit 7"],

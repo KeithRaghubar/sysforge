@@ -90,7 +90,7 @@ def run_with_pty(
     reserve_bottom_rows: int = 0,
 ) -> int:
     """Spawn cmd with stdout+stderr attached to a pty. Returns the child's
-    return code. stdin is inherited from the parent (DEVNULL if unavailable).
+    return code.
 
     ``reserve_bottom_rows`` shrinks the child's pty by that many rows (the
     parent's progress bar reserves the bottom row via a DECSTBM region). The
@@ -98,6 +98,13 @@ def run_with_pty(
     full-screen redraws/scrolling to the rows above the bar — so the bar stays
     permanently visible during the build instead of the child scrolling over
     it. Pass ``progress.reserved_rows()``.
+
+    That reservation also decides where stdin comes from. With rows reserved
+    the child's stdin is *the same pty*, so both descriptors report the
+    reserved height and a child that allocates a nested pty (the sandbox's
+    ``systemd-nspawn``) inherits the reservation instead of the real terminal's
+    full height. With no rows reserved stdin is inherited from the parent
+    (DEVNULL if unavailable).
 
     If idle_callback is set, it is invoked when no line has been delivered for
     idle_timeout_s seconds. It receives either the latest ``\\r``-overwritten
@@ -109,12 +116,31 @@ def run_with_pty(
     sz = shutil.get_terminal_size(fallback=(80, 24))
     _set_winsize(slave_fd, max(1, sz.lines - reserve_bottom_rows), sz.columns)
 
-    try:
-        stdin_arg = (
-            sys.stdin.fileno() if sys.stdin and sys.stdin.fileno() >= 0 else subprocess.DEVNULL
-        )
-    except (OSError, ValueError):
-        stdin_arg = subprocess.DEVNULL
+    if reserve_bottom_rows:
+        # 3.2.0-B3: hand the child *our* pty as stdin too, rather than the
+        # inherited terminal. A window size is a property of the tty device,
+        # not of the fd, so inheriting real stdin leaves fd0 reporting the full
+        # terminal height while fd1 reports the reserved one. A child that
+        # merely writes never notices, but one that allocates a *nested* pty
+        # sizes it from stdin — which is exactly the sandbox path
+        # (makechrootpkg -> sudo -> arch-nspawn -> systemd-nspawn
+        # --console=autopipe, itself picked because stdin is a tty). The
+        # container then believes it owns the bottom row, scrolls over the
+        # progress bar and the bar never comes back. Sharing the pty makes both
+        # descriptors agree, so the reservation survives the extra layer.
+        #
+        # Only the non-interactive branch reaches here (it runs with
+        # --noconfirm and is documented as trading prompts for classification),
+        # so nothing is expected to read stdin; sharing it also stops a child
+        # from stealing the user's keystrokes.
+        stdin_arg = slave_fd
+    else:
+        try:
+            stdin_arg = (
+                sys.stdin.fileno() if sys.stdin and sys.stdin.fileno() >= 0 else subprocess.DEVNULL
+            )
+        except (OSError, ValueError):
+            stdin_arg = subprocess.DEVNULL
 
     prev_winch = None
     is_main_thread = threading.current_thread() is threading.main_thread()
