@@ -102,6 +102,7 @@ canonical ordering.
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
+| `3.2.0-Q1` | should the container's config be an allowlist of what may cross, rather than a copy of the host's with known-bad keys subtracted? | low | medium | minor |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 | `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
 <!-- END roadmap-table -->
@@ -483,6 +484,53 @@ canonical ordering.
   read, not what it means.
 
 ### Open questions
+
+- **`3.2.0-Q1` — should the container's config be an allowlist of what may cross, rather than a copy
+  of the host's with known-bad keys subtracted?**
+  `chroot_conf_text` derives the container's `makepkg.conf` by reading the *emitted host* conf and
+  appending overrides, so every setting the host carries crosses the isolation boundary by default
+  and is corrected only where someone has already enumerated it. The corrections are five disjoint
+  sets in `primitives/build_sandbox.py`: `_CHROOT_DEST_KEYS` (host paths that must be rewritten),
+  `_ENV_EXPORT_DENY` (env keys that must not travel), `_HOST_ONLY_BUILDENV` (accelerators naming
+  host binaries), `_TOOLCHAIN_PACKAGE` (binaries to install instead of strip), and
+  `_PROFILE_USE_PREFIXES` (data files to mirror in). Each is correct. Together they cover exactly
+  the cases that have already failed.
+  **The evidence that this is structural, not incidental, is the failure history.** `3.2.0-B2`
+  (ccache/distcc in `BUILDENV`), `3.2.0-B4` (`CC=clang` naming an absent binary), `3.2.0-B5` (the
+  chroot's own databases), `3.2.0-B6` and `3.2.0-B7` (`-fuse-ld` inside a flag string, and then in
+  the conf rather than the exports) and `3.2.0-B10` (`-fprofile-use` naming a host *file*) are one
+  bug six times: a host-only assumption riding into the container in the copied conf. They could
+  only be found one at a time, because each was masked by the previous one failing earlier — the
+  ccache error hid the missing compiler, which hid the stale databases, which hid the missing
+  linker. Every fix was a new entry in one of the five sets, which is to say every fix widened the
+  subtraction list without changing the reason there is one. `3.2.0-B12` is the same shape arriving
+  from the write side.
+  **The question is whether inversion is worth its cost, and it is genuinely arguable.** An
+  allowlist — name the keys the container may receive, drop everything else — makes a new host-only
+  setting a *default-deny* rather than a silent leak, and turns the failure mode from "cryptic build
+  error six layers in" into "sysforge did not pass X". That is the same refuse-rather-than-downgrade
+  principle preflight already applies (`3.2.0-B1`), extended from availability to configuration.
+  Against it: makepkg's conf surface is large and not stable across devtools releases, so an
+  allowlist has its own maintenance burden and its own failure mode — a legitimate setting silently
+  *not* crossing, which is quieter than the bug it replaces and would show up as an unexplained
+  build-output difference rather than an error. It would also be a behaviour change for existing
+  sandbox users, whose builds currently inherit conf keys nobody has enumerated on either list.
+  A middle option exists and may be the real answer: keep the copy, but add a **preflight audit**
+  that walks the emitted conf for absolute host paths and unresolvable binary names and refuses on
+  anything unrecognised — default-deny on the *detectable* subset without having to enumerate the
+  whole conf surface. That reaches the six bugs above (every one named a path or a binary) at a
+  fraction of the cost.
+  Resolve by deciding which of the three models the sandbox commits to, then promote to an `F`
+  (allowlist or audit) or move to `docs/ROADMAP-ABANDONED.md` with the rationale if the current
+  subtract-known-bad model is judged good enough. Do not implement straight off this entry. Note
+  the sandbox is default-off and now works for the profiles it has been exercised against, so
+  nothing forces the question today; the trigger to revisit is a seventh entry in this class.
+  *Priority: low · Effort: medium · Bump: minor* — low because the current model is functional and
+  the feature is opt-in; the effort is the model decision plus a preflight pass and its tests, not
+  the token lists themselves.
+  **Standards home on adoption:** none new — this changes how the container's configuration is
+  derived, and `docs/design/11-makepkg-wrapper.md` already owns that description; the isolation
+  boundary itself remains a `[security]` opt-in, not an external spec.
 
 - **`3.1.0-Q1` — should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit?**
   sysforge builds kernels from `kernel.toml` fragments, so the Arch wiki's
