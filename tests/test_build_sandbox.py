@@ -748,6 +748,54 @@ def test_missing_toolchain_resolves_an_absolute_value_inside_the_chroot(tmp_path
     assert bs.missing_toolchain(pol, {"CC": "/usr/bin/clang"}) == {}
 
 
+def test_missing_toolchain_sees_the_linker_named_by_fuse_ld(tmp_path):
+    """The exact 3.2.0-B6 failure: the profile picks its linker with
+    ``LDFLAGS=-fuse-ld=lld`` and never sets ``LD``, so the binary probe saw
+    only the compiler and the chroot got clang without lld — every build then
+    died with ``clang: error: invalid linker name in argument '-fuse-ld=lld'``."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    missing = bs.missing_toolchain(pol, {
+        "CC": "clang", "LDFLAGS": "-Wl,-O1 -fuse-ld=lld -Wl,--as-needed",
+    })
+    assert missing == {"clang": "clang", "ld.lld": "lld"}
+
+
+def test_missing_toolchain_fuse_ld_is_satisfied_when_the_chroot_has_it(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "ld.lld"))
+    assert bs.missing_toolchain(pol, {"LDFLAGS": "-fuse-ld=lld"}) == {}
+
+
+def test_missing_toolchain_fuse_ld_maps_the_other_linkers(tmp_path):
+    """``-fuse-ld=<name>`` makes the driver look for ``ld.<name>``, which is a
+    different binary name than the value written in the flag."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"LDFLAGS": "-fuse-ld=mold"}) == {"ld.mold": "mold"}
+    assert bs.missing_toolchain(pol, {"LDFLAGS": "-fuse-ld=gold"}) == {"ld.gold": "binutils"}
+
+
+def test_missing_toolchain_reads_fuse_ld_out_of_the_compiler_flags_too(tmp_path):
+    """``-fuse-ld`` is a driver flag, so it is equally legal in CFLAGS or
+    CXXFLAGS; a profile that puts it there needs the same linker present."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"CFLAGS": "-O3 -fuse-ld=lld"}) == {"ld.lld": "lld"}
+    assert bs.missing_toolchain(pol, {"CXXFLAGS": "-O3 -fuse-ld=lld"}) == {"ld.lld": "lld"}
+
+
+def test_missing_toolchain_flag_values_still_carry_no_other_binary(tmp_path):
+    """Only ``-fuse-ld`` names a binary; the rest of a flag string must stay
+    invisible to the probe, or every ``-march`` value becomes a lookup."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    assert bs.missing_toolchain(pol, {"CFLAGS": "-march=native -O3 -flto=thin"}) == {}
+
+
+def test_provision_toolchain_installs_the_fuse_ld_linker(tmp_path):
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang", "LDFLAGS": "-fuse-ld=lld"})
+    argv = run.call_args[0][0]
+    assert argv[-2:] == ["clang", "lld"]
+
+
 def test_provision_toolchain_installs_the_missing_packages_once(tmp_path):
     pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
     with patch("sysforge.primitives.build_sandbox.run_privileged") as run:

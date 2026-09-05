@@ -69,6 +69,7 @@ Public API:
 from __future__ import annotations
 
 import contextlib
+import re
 import shlex
 import shutil
 from dataclasses import dataclass, field, replace
@@ -142,6 +143,15 @@ _HOST_ONLY_BUILDENV = ("ccache", "distcc")
 # on, via the ``export`` lines :func:`chroot_conf_text` appends.
 _TOOLCHAIN_ENV_KEYS = ("CC", "CXX", "LD", "AR", "NM", "RANLIB", "STRIP", "OBJCOPY")
 
+# Flag-valued keys are not binary-valued, with exactly one exception: the
+# driver flag ``-fuse-ld=<name>``, which sends clang/gcc looking for
+# ``ld.<name>`` at link time. A profile that selects its linker this way never
+# sets ``LD``, so the binary probe above cannot see the choice (3.2.0-B6).
+# ``-fuse-ld`` is a driver flag rather than a link-only one, so it is equally
+# legal in CFLAGS/CXXFLAGS and all three are scanned.
+_LINKER_FLAG_KEYS = ("LDFLAGS", "CFLAGS", "CXXFLAGS")
+_FUSE_LD_RE = re.compile(r"(?:^|\s)-fuse-ld=(\S+)")
+
 # Which pacman package provides each toolchain binary. The clean chroot is
 # ``base-devel``, which carries gcc and binutils and nothing else — so a
 # profile resolving to LLVM exports ``CC=clang`` into a container with no
@@ -153,6 +163,7 @@ _TOOLCHAIN_ENV_KEYS = ("CC", "CXX", "LD", "AR", "NM", "RANLIB", "STRIP", "OBJCOP
 _TOOLCHAIN_PACKAGE = {
     "clang": "clang", "clang++": "clang", "clang-cpp": "clang",
     "ld.lld": "lld", "lld": "lld", "wasm-ld": "lld",
+    "ld.mold": "mold", "mold": "mold",
     "llvm-ar": "llvm", "llvm-nm": "llvm", "llvm-ranlib": "llvm",
     "llvm-strip": "llvm", "llvm-objcopy": "llvm",
     "gcc": "gcc", "g++": "gcc", "cpp": "gcc",
@@ -352,6 +363,21 @@ def missing_toolchain(policy: SandboxPolicy, exports: dict | None) -> dict:
         if probe.exists():
             continue
         missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
+
+    for key in _LINKER_FLAG_KEYS:
+        raw = str((exports or {}).get(key) or "").strip()
+        if not raw:
+            continue
+        for name in _FUSE_LD_RE.findall(raw):
+            # The flag names a linker *flavour*, not the binary: the driver
+            # resolves ``-fuse-ld=lld`` to ``ld.lld``. An explicit path is
+            # taken as written, matching how the driver treats it.
+            value = name if "/" in name else f"ld.{name}"
+            probe = (root / value.lstrip("/")) if value.startswith("/") \
+                else (root / "usr" / "bin" / value)
+            if probe.exists():
+                continue
+            missing[Path(value).name] = _TOOLCHAIN_PACKAGE.get(Path(value).name, "")
     return missing
 
 
