@@ -93,15 +93,23 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
+| `3.2.0-F1` | Close the remaining upward edges out of primitives/ | high | medium | patch |
+| `3.2.0-F2` | Split pipeline/stages/toolchain.py into a stage package | high | large | patch |
 | `3.2.0-B12` | a --pgo=generate build under the sandbox writes its profiles into the container and loses them at teardown | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
+| `3.2.0-F3` | Make update's phases functions, not comments | med | medium | patch |
+| `3.2.0-F4` | Relocate makepkg_wrapper out of the leaf layer | med | medium | patch |
+| `3.2.0-F6` | Typed stage configs parsed once at stage entry | med | medium | patch |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
+| `3.2.0-F5` | Fence direct subprocess use behind the run seam | med | large | patch |
+| `3.2.0-F8` | Shared verb helpers module to keep *_cmd modules leaf-like | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
+| `3.2.0-F7` | Per-verb parser assembly on the Verb class | low | medium | patch |
 | `3.2.0-Q1` | should the container's config be an allowlist of what may cross, rather than a copy of the host's with known-bad keys subtracted? | low | medium | minor |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 | `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
@@ -398,6 +406,151 @@ canonical ordering.
   fabricated count. If the mount lifetime proves hostile, drop this item; F24–F26 stand alone.
   *Priority: low · Effort: medium · Bump: patch* — the one piece carrying implementation
   uncertainty, isolated here so it cannot hold up the rest.
+
+---
+
+- **`3.2.0-F1` — Close the remaining upward edges out of `primitives/`.** The layering guard
+  (`tests/test_module_layering.py`) bans `pipeline.stages` imports from the leaf layer, but two
+  neighbouring targets are unguarded and the function-level import count across the package (270)
+  is the fossil record of cycles dodged rather than removed. Three concrete leaks: (a)
+  `resolve_state_dir` lives in `pipeline/state.py`, whose own imports are only `log` and
+  `primitives.paths`, yet `makepkg_wrapper`, `state_probe`, `source_sync`, `llvm_state` and
+  `init_notice` all reach up for it at function level — move it to `primitives/paths.py`, re-export
+  from `pipeline.state` for one cycle; (b) seven primitives (`prompt`, `pager`, `editor`,
+  `makepkg_invoke`, `aur_resolve`, …) import `sysforge.ui.progress` for the same small surface
+  (`suspend_for_prompt`, `suspended`, `reserved_rows`, `heartbeat`, `tracker`) — that is a protocol,
+  not a dependency on the bar: define a `ProgressHooks` protocol with a no-op default in primitives
+  and have `ui.progress` register itself at startup; (c) `llvm_targets` and `mesa_drivers` still
+  import live detection (`detect_host_arch`, `parse_gpu_vendors`, `derive_*`) from
+  `stages/hardware.py`, and `archinstall_config` imports `BootstrapConfig` from `stages/_bootstrap`
+  — move the probe down into a `primitives/hardware_probe.py` and the dataclass into
+  `primitives/archinstall_config.py` where its consumer lives. On completion the allowlist is empty
+  and the test extends its forbidden set to `sysforge.pipeline` and `sysforge.ui` in full.
+  *Priority: high · Effort: medium · Bump: patch* — pure relocation with no behaviour change; each
+  sub-step shrinks the allowlist and is verifiable by the existing test.
+  **Standards home on adoption:** none new — this tightens an existing structural guard.
+
+---
+
+- **`3.2.0-F2` — Split `pipeline/stages/toolchain.py` into a stage package.** At 4263 lines with
+  four classes, thirty distinct sysforge imports and a 701-line `_build_llvm_pgo_inner`, it is the
+  highest-risk file in the tree; its test file is 4922 lines. The internal structure already names
+  the seams: gate-1 preflight, gate-2 audit, PGO passes (`_build_pass`, `_validate_pgo_environment`,
+  `_PGOAborted`), BOLT (`_run_bolt`, `_build_bolt_tools`), soname-consumer gating, dynsym evidence,
+  `_ReuseCtx`, `ToolchainIdentity`, PKGBUILD resolution (`_resolve_all_pkgbuilds`,
+  `_sync_pkgbuild_dirs`). Convert to `pipeline/stages/toolchain/` with `gates.py`, `pgo.py`,
+  `bolt.py`, `reuse.py`, `identity.py`, `pkgbuilds.py` and a thin `stage.py` holding
+  `ToolchainStage`; the package `__init__` re-exports the current public names so
+  `sysforge.pipeline.stages.toolchain` stays a valid import path and `stages/__init__.py`'s eager
+  instantiation is untouched. Tests split along the same lines. Rule for the split: every seam a
+  test currently reaches via `monkeypatch.setattr(toolchain, "_private")` becomes either a public
+  function of its new module or an injected dependency — the private-patch count must fall, not
+  move. `stages/kernel.py` (2352 lines, 567-line `KernelStage`) is the same shape one size smaller
+  and follows the same pattern as a second step.
+  *Priority: high · Effort: large · Bump: patch* — no user-visible change; largest stability payoff
+  given how much sandbox and PGO work lands in this area.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.2.0-F3` — Make `update`'s phases functions, not comments.** `_cmd_update_body` is a
+  790-line function; the numbered phases DESIGN describes (§update) exist in the code only as
+  `# Phase N` comments and roadmap-ID annotations. The helpers are already extracted
+  (`update_sync`, `update_version`, `update_assemble`, `update_summary`, `update_common`) — what
+  remains inline is the *sequencing* itself. Introduce one function per phase taking and returning
+  a small `UpdateRun` dataclass that carries the run's accumulated state (package set, sync results,
+  drift verdicts, build outcomes, the `_UpdateResult`), and reduce the body to the ordered call
+  list. "Which phase did this fail in" then becomes a stack frame rather than a comment search, and
+  each phase gets a test that constructs the dataclass directly instead of driving the whole verb.
+  Pairs with `3.2.0-F4`: the update phases and the wrapper's per-package lifecycle are the same
+  story seen from both ends, and the dataclass boundary between them is where the two meet.
+  *Priority: med · Effort: medium · Bump: patch* — behaviour-preserving; the existing
+  `tests/test_update.py` (2709 lines) is the regression net.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.2.0-F4` — Relocate `makepkg_wrapper` out of the leaf layer.** It is filed under
+  `primitives/` but has the fan-out of an orchestrator: thirty distinct sysforge imports (tied with
+  `cli.py` and the toolchain stage), three function-level reaches into `pipeline.state`, and a
+  437-line `_run_build` holding the whole per-package lifecycle (prepare, invoke, artifact discovery,
+  build-state recording, install). A primitive with thirty dependencies is a coordinator in the
+  wrong drawer, and every primitive it imports is a candidate cycle the moment that primitive needs
+  the wrapper back. Two acceptable shapes, decide at implementation: (a) promote it to a new
+  `sysforge/build/` layer sitting between primitives and verbs, alongside `build_core.py`, with the
+  layering test extended to forbid `primitives → build`; or (b) keep the name but split the
+  lifecycle into `prepare`, `invoke`, `record` steps where `record` is the *only* writer of
+  `build_state` (the one-home invariant §`sysforge/CLAUDE.md` already implies). Either way
+  `BuildOptions` stays the single argument surface and `build_core.build_and_install` remains the
+  sole caller. Depends on `3.2.0-F1` (a) landing first so the `resolve_state_dir` reach-up is
+  already gone.
+  *Priority: med · Effort: medium · Bump: patch* — internal restructuring only.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.2.0-F5` — Fence direct `subprocess` use behind the run seam.** Fifty-eight modules call
+  `subprocess.run`/`Popen`/`check_output` directly, although `primitives/run.py`, `pty_runner.py`
+  and the privilege seam (`privilege.run_privileged`, §Privilege-Escalation Seam) exist precisely so
+  that the unified run-log, `--dry-run`, the throttle preexec (`resource_guard.make_child_preexec`)
+  and the sandbox `BUILDENV` scrub apply uniformly. Every raw call is a site where one of those can
+  be bypassed — the accelerator leak fixed as `3.2.0-B2` was exactly such a site. Add a ruff
+  `banned-api` rule (extending the `STD8`-era config) that forbids `subprocess.*` outside an
+  allowlist (`run.py`, `pty_runner.py`, `privilege.py`, `sudo_session.py`), migrate call sites in
+  batches to `run.run()` / `run_privileged()`, and record it as a standards row whose *enforced*
+  column names the ruff rule. Probes that legitimately need a bare call (`os_release`,
+  `version.py`) go through a thin `run.capture()` rather than earning an exemption.
+  *Priority: med · Effort: large · Bump: patch* — large by count, mechanical per site; ship in
+  batches, each independently green.
+  **Standards home on adoption:** new `21-standards.md` row "subprocess goes through `primitives/run`",
+  enforced by the ruff `banned-api` entry plus `tests/test_standards_compliance.py`.
+
+---
+
+- **`3.2.0-F6` — Typed stage configs parsed once at stage entry.** `stages/toolchain.py` and
+  `stages/kernel.py` carry 27 and 28 `cfg.get(...)` calls respectively and zero config dataclasses;
+  `primitives/config.py` and `profile.py` likewise expose dicts. A mistyped key is a runtime
+  `None` deep in a gate rather than an import-time error, and every consumer re-derives the same
+  defaults. Introduce one frozen dataclass per stage config (`ToolchainConfig`, `KernelConfig`, …)
+  built by a single `from_toml(data)` that applies defaults and validation in one place, mirroring
+  the shape `BootstrapConfig` already has for the install path. Stages receive the dataclass; the
+  `cfg.get` calls go away. Schema validation (§Config Layer) then targets the dataclass field list
+  rather than a parallel hand-maintained key set, and both big stage test files shrink because
+  fixtures construct the dataclass instead of nested dicts. Sequence after `3.2.0-F2` so the split
+  modules are written against the typed shape from the start.
+  *Priority: med · Effort: medium · Bump: patch* — no config-file format change; TOML keys are
+  unchanged, only the in-process representation.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.2.0-F7` — Per-verb parser assembly on the `Verb` class.** `cli.py` is 1645 lines of
+  argparse construction with thirty distinct sysforge imports; `_add_run_parser` alone is 278
+  lines. None of it is logic, but it is the one place completions parity (§CLI Verb Framework,
+  `completions/_sysforge` lockstep rule) has to be checked by eye. Move each verb's flags into an
+  `add_parser(sub)` classmethod on its `Verb` subclass (the class already owns `pre_check`/
+  `execute`/`post_validate` and `requires_sentinel`), so `_build_parser` becomes a loop over the
+  verb registry and the flag surface lives next to the code that reads `args.<flag>`. Second
+  payoff: the `completions-cli-parity` audit and `help_cmd` can walk the registry rather than
+  importing `_build_parser` from `cli` (the one remaining `help_cmd → cli` reach-up).
+  *Priority: low · Effort: medium · Bump: patch* — behaviour-identical; verify with the completions
+  parity audit before and after.
+  **Standards home on adoption:** none new.
+
+---
+
+- **`3.2.0-F8` — Shared verb helpers module to keep `*_cmd` modules leaf-like.** The verb modules
+  have started importing each other: `revert_cmd` and `uninstall_cmd` both pull `cmd_state_forget`
+  from `state_cmd`, `build_cmd` reaches into `packages_cmd` for `_rewrite_packages_toml`, and
+  `doctor` deferred-imports `cmd_update`. Each is defensible alone; together they are the seed of a
+  fourth informal layer with no guard. Add `verbs/shared.py` (next to `verbs/helpers.py`) for
+  cross-verb operations — demotion/forget, packages.toml rewrite — and extend
+  `tests/test_module_layering.py` with a rule that `*_cmd.py` modules import from `verbs/`,
+  `primitives/` and `pipeline/` but never from a sibling `*_cmd.py`. The one-home invariants
+  (§`sysforge/CLAUDE.md`: "one packages.toml writer", demotion reuses `cmd_state_forget`) are
+  preserved by relocating the home, not by duplicating it.
+  *Priority: low · Effort: small · Bump: patch* — a handful of moves plus one new test.
+  **Standards home on adoption:** none new.
 
 ### Bugs
 
