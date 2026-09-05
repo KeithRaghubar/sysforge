@@ -760,6 +760,31 @@ def test_provision_toolchain_installs_the_missing_packages_once(tmp_path):
     assert "--noconfirm" in argv
 
 
+def test_provision_toolchain_refreshes_the_chroot_databases(tmp_path):
+    """The chroot's own sync databases age indefinitely: ``makechrootpkg -c``
+    resets the working copy from ``root/`` but never re-syncs ``root/``. A bare
+    ``pacman -S`` there resolves filenames from a months-old database, and
+    every mirror 404s the rotated-off tarball, so the install fails on a chroot
+    that is otherwise fine (3.2.0-B5)."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang"})
+    argv = run.call_args[0][0]
+    assert "-Syu" in argv, f"expected a refreshing, full-upgrade install, got {argv}"
+
+
+def test_provision_toolchain_never_partially_upgrades_the_chroot(tmp_path):
+    """``-Sy`` would refresh the databases and then install a current package
+    against months-old dependencies — the classic partial upgrade, which
+    breaks the chroot rather than the build."""
+    pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
+    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+        bs.provision_toolchain(pol, {"CC": "clang"})
+    argv = run.call_args[0][0]
+    assert "-Sy" not in argv
+    assert "-S" not in argv
+
+
 def test_provision_toolchain_is_a_noop_when_nothing_is_missing(tmp_path):
     pol = bs.SandboxPolicy(enabled=True, chroot_dir=_chroot_with(tmp_path, "gcc"))
     with patch("sysforge.primitives.build_sandbox.run_privileged") as run:

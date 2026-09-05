@@ -368,6 +368,14 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
     per-build one. A binary with no known package is a hard stop with the
     command that fixes it — guessing a package name would install the wrong
     thing, and continuing just buys back the cryptic failure.
+
+    The install is ``-Syu``, not ``-S``. Nothing else re-syncs the root copy's
+    databases — ``makechrootpkg -c`` reseeds the *working* copy from it — so
+    they age indefinitely, and ``arch-nspawn`` hands the container the host's
+    mirrorlist while leaving those databases alone. A bare ``-S`` therefore
+    resolves a months-old filename against current mirrors and 404s on every
+    one of them; ``-Sy`` would fix the lookup and leave a partial upgrade
+    behind, breaking the chroot instead of the build (3.2.0-B5).
     """
     if not policy.enabled:
         return
@@ -381,7 +389,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
         raise SandboxUnavailable(
             f"the sandbox chroot has no {', '.join(unmappable)} and sysforge "
             f"does not know which package provides it — install it yourself "
-            f"with: arch-nspawn {root} pacman -S <package>"
+            f"with: arch-nspawn {root} pacman -Syu <package>"
         )
 
     packages = sorted({pkg for pkg in missing.values()})
@@ -392,7 +400,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None) -> None:
     )
     try:
         run_privileged(
-            ["arch-nspawn", str(root), "pacman", "-S", "--needed",
+            ["arch-nspawn", str(root), "pacman", "-Syu", "--needed",
              "--noconfirm", *packages],
             tag="SANDBOX",
         )
