@@ -129,7 +129,7 @@ def maybe_pager(use_pager: bool):
     # the region for the pager's lifetime — the same contract `suspended()`
     # already provides for makepkg's TTY-inheriting child. Writes to stderr,
     # so it's unaffected by the stdout swap below; no-op outside TTY mode.
-    from sysforge.ui import progress
+    from sysforge.primitives import progress_hooks
 
     pager_env = _sanitized_pager_env()
     for cmd in _pager_candidates():
@@ -139,7 +139,7 @@ def maybe_pager(use_pager: bool):
         except (FileNotFoundError, OSError):
             continue
         old_stdout = sys.stdout
-        with progress.suspended():
+        with progress_hooks.hooks().suspended():
             try:
                 sys.stdout = proc.stdin  # type: ignore[assignment]
                 yield

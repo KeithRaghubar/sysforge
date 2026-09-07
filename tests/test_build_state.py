@@ -210,6 +210,55 @@ def test_reconcile_exempts_stage_owned(tmp_path):
     assert bs.get("llvm")["build_mode"] == "source_built"
 
 
+def test_reconcile_demotes_renamed_entry_from_stock_name(tmp_path):
+    """3.2.0-B15 (a): `pacman -S mesa` demotes the tracked `mesa-sysforge`.
+
+    The rename records the stock base in origin_pkgbase, so the external name
+    pacman saw never matches the tracked key directly.
+    """
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="mesa-sysforge", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="mesa-sysforge", pkgbuild_dir=Path("/src/mesa"),
+              build_mode="source_built", origin_pkgbase="mesa")
+    demoted = bs.reconcile_external_installs({"mesa"})
+    assert demoted == ["mesa-sysforge"]
+    entry = bs.get("mesa-sysforge")
+    assert entry["build_mode"] == "pacman"
+    assert "origin_pkgbase" not in entry
+
+
+def test_reconcile_demotes_split_siblings_by_pkgbase(tmp_path):
+    """3.2.0-B15 (b): a surviving split sibling is demoted with its pkgbase.
+
+    `pacman -S mesa` displaces only `mesa-sysforge`; `mesa-docs-sysforge`
+    conflicts with `mesa-docs`, was not a target, and survives installed. Left
+    source_built it drags pkgbase `mesa-sysforge` back in on the next update.
+    """
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="mesa-sysforge", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="mesa-sysforge", pkgbuild_dir=Path("/src/mesa"),
+              build_mode="source_built", origin_pkgbase="mesa")
+    bs.record(pkgname="mesa-docs-sysforge", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="mesa-sysforge", pkgbuild_dir=Path("/src/mesa"),
+              build_mode="source_built", origin_pkgbase="mesa-docs")
+    demoted = bs.reconcile_external_installs({"mesa"})
+    assert demoted == ["mesa-docs-sysforge", "mesa-sysforge"]
+    assert bs.get("mesa-docs-sysforge")["build_mode"] == "pacman"
+
+
+def test_reconcile_sibling_sweep_still_exempts_stage_owned(tmp_path):
+    """The pkgbase sweep does not widen the stage-owned exemption."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="llvm", pkgver="18", pkgrel="1", epoch="0", pkgbase="llvm",
+              pkgbuild_dir=Path("/src/llvm"), build_mode="source_built")
+    bs.record(pkgname="llvm-libs", pkgver="18", pkgrel="1", epoch="0",
+              pkgbase="llvm", pkgbuild_dir=Path("/src/llvm"),
+              build_mode="source_built", owner_stage="toolchain")
+    demoted = bs.reconcile_external_installs({"llvm"})
+    assert demoted == ["llvm"]
+    assert bs.get("llvm-libs")["build_mode"] == "source_built"
+
+
 def test_reconcile_ignores_pacman_and_unknown(tmp_path):
     bs = BuildState(tmp_path)
     _record(bs, pkgname="htop", pkgbase="htop", build_mode="pacman")

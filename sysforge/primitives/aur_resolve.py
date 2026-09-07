@@ -408,9 +408,9 @@ def build_resolved_deps(
 
     _log.ui(f"Building {len(aur_deps)} AUR dependency(ies) before main package")
 
-    from sysforge.ui import progress as _ui_progress
+    from sysforge.primitives import progress_hooks
     built: list[str] = []
-    with _ui_progress.tracker(len(aur_deps), "AUR dep") as _tick:
+    with progress_hooks.hooks().tracker(len(aur_deps), "AUR dep") as _tick:
         for i, dep in enumerate(aur_deps):
             req = ", ".join(dep.required_by)
             _tick(dep.name)

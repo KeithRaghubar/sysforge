@@ -11,10 +11,13 @@ stages (and the archinstall config builder they feed).
 """
 
 import tomllib
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge import log
+# The dataclass moved down to the leaf layer (3.2.0-F1c); re-exported so every
+# existing ``from stages._bootstrap import BootstrapConfig`` keeps working and
+# ``load_bootstrap`` below stays its only validating constructor.
+from sysforge.primitives.archinstall_config import BootstrapConfig  # noqa: F401
 from sysforge.primitives.paths import BOOTSTRAP_PATH
 from sysforge.primitives.pkg_catalog import valid_desktops
 
@@ -23,29 +26,6 @@ _log = log.get_logger("BOOTSTRAP")
 _VALID_ROOT_FS = {"ext4", "btrfs"}
 _VALID_SHELLS  = {"bash", "zsh"}
 _ZONEINFO_DIR  = Path("/usr/share/zoneinfo")
-
-
-@dataclass
-class BootstrapConfig:
-    target: str
-    device: str
-    hostname: str
-    locale: str
-    timezone: str
-    esp_size_mib: int = 1024
-    root_fs: str = "ext4"
-    keymap: str = "us"
-    parallel_downloads: int = 5
-    mirror_countries: list[str] = field(default_factory=list)
-    mirror_protocol: str = "https"
-    mirror_age: int = 12
-    root_password: str | None = None
-    username: str = "builder"
-    user_password: str | None = None
-    shell: str = "bash"
-    desktop: str | None = None
-    makepkg_packager: str | None = None
-    makepkg_makeflags: str | None = None
 
 
 def load_bootstrap(path: Path | None = None) -> BootstrapConfig:

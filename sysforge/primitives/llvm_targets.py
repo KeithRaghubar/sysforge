@@ -51,6 +51,11 @@ import tomllib
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.hardware_probe import (
+    derive_llvm_targets,
+    detect_host_arch,
+    parse_gpu_vendors,
+)
 from sysforge.primitives.hardware_tables import SYSTEM_LIBLLVM_CONSUMER_TARGETS
 
 _log = log.get_logger("LLVM")
@@ -161,11 +166,6 @@ def _detect_llvm_targets_live() -> list[str]:
     AMDGPU baseline still come through ``derive_llvm_targets``. Guard the binary
     being absent too (``FileNotFoundError``), not only a non-zero exit, so
     callers on a machine without pciutils don't raise."""
-    from sysforge.pipeline.stages.hardware import (
-        derive_llvm_targets,
-        detect_host_arch,
-        parse_gpu_vendors,
-    )
     try:
         lspci = subprocess.run(["lspci"], capture_output=True, text=True)
         gpu_vendors = parse_gpu_vendors(lspci.stdout) if lspci.returncode == 0 else []

@@ -8,11 +8,17 @@ check-standards` (group `claude_md`) verifies they still resolve.
 
 - **`tests/test_pipeline.py`** imports from both `primitives.config` and `…profile` — moving
   symbols across them breaks it; update the test in the same change.
-- **`primitives/` must not import from `pipeline.stages`** — it is the leaf layer. A function-level
-  import to dodge the cycle is not a fix: `pipeline/stages/__init__.py` instantiates every stage at
-  import, so one constant drags all eleven stage modules in. Shared tables go in
-  `primitives/hardware_tables.py` (imports nothing from sysforge). `tests/test_module_layering.py`
-  enforces this via a **shrinking** allowlist — never add a name to it.
+- **`primitives/` must not import from `pipeline/` or `ui/`** — it is the leaf layer, and since
+  `3.2.0-F1` the guard covers both in full, not just `pipeline.stages`. A function-level import to
+  dodge the cycle is not a fix: `pipeline/stages/__init__.py` instantiates every stage at import, so
+  one constant drags all eleven stage modules in. Two ways down: **relocate** (shared tables →
+  `primitives/hardware_tables.py`, detection → `primitives/hardware_probe.py`, state-dir resolution →
+  `resolve_state_dir` → `primitives/paths.py`, `BootstrapConfig` → `primitives/archinstall_config.py`),
+  leaving a re-export behind so import paths and test patch points still resolve; or **invert** —
+  `primitives/progress_hooks.py` declares the progress surface as a protocol with a no-op default and
+  `ui/progress.py` registers itself, so call `progress_hooks.hooks().<name>()` per use and never
+  import `ui.progress` from a primitive. `tests/test_module_layering.py` enforces this via a
+  **shrinking** allowlist — never add a name to it.
 - **`match_rules` matches against `pkgbase`** too (split packages) — don't regress.
 - **Source sync goes through the scheduler** (`source_sync.get_scheduler().request(...)`), never
   `git pull --rebase`. Fetch is full-history (`git_fetch_and_compare`), never `--depth=1`.
@@ -63,7 +69,10 @@ Mechanism lives in the cited §DESIGN section.
   + `bootstrap.toml [desktop]` + both completions). §Package Manifest.
 - **`build_state.toml` = steady-state tracking authority** (not packages.toml): `update` rebuilds
   every source-built pkg (`build_mode != "pacman"`), so `build mesa` is durable. Demotion on external
-  `pacman -S` via `BuildState.reconcile_external_installs`; stop via `state forget`. §update.
+  `pacman -S` via `BuildState.reconcile_external_installs`, which resolves each external name through
+  `install_reconcile.resolve_installed_name` (the `-sysforge` rename) and then sweeps its `pkgbase`
+  siblings, so a split set demotes as a unit (`3.2.0-B15`) — an exact-pkgname lookup silently misses
+  both. Stop via `state forget`. §update.
 - **`revert-to-stock` branch = rename mode, not a suffix test**: `revert_cmd.plan_revert` classifies
   via `profile.is_optimized_build_mode` then `rename_mode_for_build_mode` — plain `source_built`→
   `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (`pacman -S <origin_pkgbase>` **alone**;

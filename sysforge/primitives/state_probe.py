@@ -92,7 +92,7 @@ def collect_state_findings(state_dir: Path | str | None = None,
     """
     findings: list[diag.Finding] = []
 
-    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.paths import resolve_state_dir
     from sysforge.primitives.build_state import BuildState
 
     try:

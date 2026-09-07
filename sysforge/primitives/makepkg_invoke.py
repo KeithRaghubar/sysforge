@@ -490,7 +490,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Routed through _makepkg_log so the entry inherits the same
         # [SYSFORGE][DEBUG][MAKEPKG] prefix and ends up in the per-package log
         # automatically — visible at -vvv on the terminal, always in the file.
-        from sysforge.ui import progress as _progress
+        from sysforge.primitives import progress_hooks
 
         if latest:
             detail = strip_ansi(latest).strip()
@@ -504,7 +504,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # callback already knows what the child is compiling; this is the
         # channel that was missing. Repainting also makes the reserved row
         # self-healing rather than corrupt for the rest of the build.
-        _progress.heartbeat(detail)
+        progress_hooks.hooks().heartbeat(detail)
 
     forward_bytes = (not verbose_log) and sys.stdout.isatty()
     # makepkg's child tools (cargo/ninja/cmake) do their own full-screen cursor
@@ -512,7 +512,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # rows the progress bar reserves) so the child confines its redraws/scrolling
     # to the region above the bar and never collapses output onto the bar row —
     # the bar stays permanently visible during the build.
-    from sysforge.ui import progress
+    from sysforge.primitives import progress_hooks
     try:
         returncode = run_with_pty(
             cmd, cwd=build_dir, env=env,
@@ -521,7 +521,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             preexec_fn=make_child_preexec(child_mem_cap),
             idle_callback=_on_idle,
             idle_timeout_s=MAKEPKG_HEARTBEAT_S,
-            reserve_bottom_rows=progress.reserved_rows(),
+            reserve_bottom_rows=progress_hooks.hooks().reserved_rows(),
         )
     finally:
         if sandbox_cleanup is not None:

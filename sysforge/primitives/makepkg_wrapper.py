@@ -441,7 +441,7 @@ def _maybe_patch_llvm_targets(
     # PKGBUILD decide (stock lib32-llvm builds the full set).
     if pkgname.startswith("lib32-"):
         return False
-    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.paths import resolve_state_dir
     from sysforge.primitives.llvm_targets import resolve_or_detect_llvm_targets
     state_dir, _ = resolve_state_dir(state_dir_override)
     hw_profile = state_dir / "hardware_profile.toml"
@@ -478,7 +478,7 @@ def _maybe_patch_mesa_drivers(
     pkgname = _pkgname_from_meta(pkgmeta)
     if not is_mesa_pkgbase(pkgname):
         return None
-    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.paths import resolve_state_dir
     from sysforge.primitives.mesa_drivers import resolve_or_detect_mesa_drivers
     state_dir, _ = resolve_state_dir(state_dir_override)
     hw_profile = state_dir / "hardware_profile.toml"
@@ -1036,7 +1036,7 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
     threaded into BuildState.record(build_seconds=...) (1.2.0-F21).
     """
     try:
-        from sysforge.pipeline.state import resolve_state_dir
+        from sysforge.primitives.paths import resolve_state_dir
         from sysforge.primitives.build_state import BUILD_MODE_SOURCE, BuildState
         from sysforge.primitives.vcs_pkgver import read_built_upstream_commit
         _state_dir, _ = resolve_state_dir(options.state_dir)

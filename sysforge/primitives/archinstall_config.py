@@ -6,8 +6,39 @@
 No archinstall import: emits the versioned headless config schema
 (``archinstall --config <file> --silent``). The VM fixture
 ``tools/vm/archinstall-config.json`` is the golden source of truth.
+
+Also the home of the ``BootstrapConfig`` dataclass itself (3.2.0-F1c): it is a
+shared *shape*, not a stage behaviour, and this module — its principal consumer
+— is a primitive, so keeping the definition up in ``stages/_bootstrap`` made the
+leaf layer import a stage. ``_bootstrap`` re-exports it, so
+``from sysforge.pipeline.stages._bootstrap import BootstrapConfig`` still works
+and ``load_bootstrap`` stays the only validating constructor.
 """
-from sysforge.pipeline.stages._bootstrap import BootstrapConfig
+from dataclasses import dataclass, field
+
+
+@dataclass
+class BootstrapConfig:
+    target: str
+    device: str
+    hostname: str
+    locale: str
+    timezone: str
+    esp_size_mib: int = 1024
+    root_fs: str = "ext4"
+    keymap: str = "us"
+    parallel_downloads: int = 5
+    mirror_countries: list[str] = field(default_factory=list)
+    mirror_protocol: str = "https"
+    mirror_age: int = 12
+    root_password: str | None = None
+    username: str = "builder"
+    user_password: str | None = None
+    shell: str = "bash"
+    desktop: str | None = None
+    makepkg_packager: str | None = None
+    makepkg_makeflags: str | None = None
+
 
 ARCHINSTALL_SCHEMA_VERSION = "3.0.15"
 

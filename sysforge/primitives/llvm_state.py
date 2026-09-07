@@ -530,7 +530,7 @@ def _toolchain_built_packages() -> set[str]:
     treating the install as stock).
     """
     try:
-        from sysforge.pipeline.state import resolve_state_dir
+        from sysforge.primitives.paths import resolve_state_dir
         from sysforge.primitives.build_state import BuildState
 
         resolved_dir, _ = resolve_state_dir(None)

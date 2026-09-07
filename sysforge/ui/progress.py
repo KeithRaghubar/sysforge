@@ -458,3 +458,15 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
         else:
             clear()
             _last_status = None
+
+
+# ---------------------------------------------------------------------------
+# Registration with the leaf-layer protocol (3.2.0-F1b)
+# ---------------------------------------------------------------------------
+# Primitives ask ``primitives.progress_hooks.hooks()`` for this surface instead
+# of importing upward into ui/. The module object satisfies the protocol as-is,
+# so every call still resolves through this module's globals — monkeypatching a
+# name here behaves exactly as it did before.
+from sysforge.primitives import progress_hooks as _progress_hooks  # noqa: E402
+
+_progress_hooks.register(sys.modules[__name__])

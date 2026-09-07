@@ -152,58 +152,10 @@ def test_package_errors_survive_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# resolve_state_dir
+# resolve_state_dir re-export (3.2.0-F1a)
 # ---------------------------------------------------------------------------
 
-def test_resolve_default(monkeypatch):
-    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
-    import sysforge.pipeline.state as _state_mod
-    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: True)
-    path, source = resolve_state_dir()
-    assert source == "default"
-    assert str(path) == "/var/lib/sysforge"
-
-def test_resolve_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path))
-    path, source = resolve_state_dir()
-    assert source == "SYSFORGE_STATE_DIR"
-    assert path == tmp_path
-
-def test_resolve_cli_override_beats_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("SYSFORGE_STATE_DIR", "/some/env/path")
-    path, source = resolve_state_dir(cli_override=str(tmp_path))
-    assert source == "--state-dir"
-    assert path == tmp_path
-
-def test_resolve_xdg_fallback_when_var_lib_not_writable(monkeypatch):
-    """When /var/lib/sysforge is not writable and cannot be provisioned (no
-    sudo), fall back to the XDG state dir ($XDG_STATE_HOME/sysforge), not the
-    old ~/.config consolidation."""
-    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
-    import sysforge.pipeline.state as _state_mod
-    from sysforge.primitives import fs_provision
-    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
-
-    def _raise(*a, **k):
-        raise fs_provision.FsProvisionError("no sudo")
-
-    monkeypatch.setattr(fs_provision, "ensure_writable_dir", _raise)
-    path, source = resolve_state_dir()
-    assert source == "xdg-fallback"
-    assert path == _state_mod._FALLBACK_STATE_DIR
-    # XDG-correct: under a state root, never under ~/.config.
-    assert ".config/sysforge" not in str(path)
-    assert str(path).endswith("/sysforge")
-
-
-def test_resolve_provisions_default_when_possible(monkeypatch):
-    """When /var/lib/sysforge is not yet writable but can be provisioned
-    (root:sysforge via the shared primitive), use it rather than XDG."""
-    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
-    import sysforge.pipeline.state as _state_mod
-    from sysforge.primitives import fs_provision
-    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
-    monkeypatch.setattr(fs_provision, "ensure_writable_dir", lambda p, **k: p)
-    path, source = resolve_state_dir()
-    assert source == "default"
-    assert str(path) == "/var/lib/sysforge"
+def test_resolve_state_dir_is_the_paths_primitive():
+    """The name still imports from here, but the implementation lives in the
+    leaf layer — behaviour tests moved to tests/test_paths.py."""
+    assert resolve_state_dir.__module__ == "sysforge.primitives.paths"

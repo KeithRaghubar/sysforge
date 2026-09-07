@@ -683,7 +683,7 @@ def get_scheduler(
     global _scheduler
     if _scheduler is None:
         if state_dir is None:
-            from sysforge.pipeline.state import resolve_state_dir
+            from sysforge.primitives.paths import resolve_state_dir
             state_dir, _ = resolve_state_dir(None)
         _scheduler = SourceSyncScheduler(
             state_dir=state_dir,

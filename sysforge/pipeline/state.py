@@ -19,10 +19,8 @@ State dir resolution (highest priority first):
 Public API:
     PipelineState(state_dir)
 """
-import os
 import tomllib
 from sysforge import log
-from sysforge.primitives.paths import USER_STATE_DIR
 _log = log.get_logger("STATE")
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,71 +29,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Path resolution
 # ---------------------------------------------------------------------------
-
-_DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
-_FALLBACK_STATE_DIR = USER_STATE_DIR
-
-
-def _state_dir_is_writable(path: Path) -> bool:
-    """Return True if path exists and is writable, or its parent is writable
-    (so mkdir can succeed)."""
-    if path.exists():
-        return os.access(path, os.W_OK)
-    return path.parent.exists() and os.access(path.parent, os.W_OK)
-
-
-def resolve_state_dir(cli_override=None):
-    """
-    Resolve the state directory from CLI flag, env var, or default.
-    Returns (Path, source_str) where source_str describes which was used.
-    Logs both CLI and env sources whenever present.
-
-    If the system default (/var/lib/sysforge) is not writable (e.g. running
-    from source without root), falls back to the XDG state dir
-    ($XDG_STATE_HOME/sysforge, default ~/.local/state/sysforge) and logs
-    a one-time info message so the location is transparent.
-    """
-    env_val = os.environ.get("SYSFORGE_STATE_DIR")
-    sources = []
-
-    if cli_override:
-        sources.append(f"--state-dir={cli_override}")
-    if env_val:
-        sources.append(f"SYSFORGE_STATE_DIR={env_val}")
-
-    if sources:
-        _log.info(f"State dir source(s) found: {', '.join(sources)}")
-
-    if cli_override:
-        chosen = Path(cli_override)
-        _log.info(f"Using state dir (--state-dir takes priority): {chosen}")
-        return chosen, "--state-dir"
-
-    if env_val:
-        chosen = Path(env_val)
-        _log.info(f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
-        return chosen, "SYSFORGE_STATE_DIR"
-
-    if not _state_dir_is_writable(_DEFAULT_STATE_DIR):
-        # Attempt to provision the default into the shared root:sysforge tree
-        # (the one home for sysforge dir ownership). Falls back to the XDG
-        # state dir only when sudo is unavailable, so a non-root run-from-repo
-        # invocation still works without prompting.
-        from sysforge.primitives import fs_provision
-
-        try:
-            fs_provision.ensure_writable_dir(_DEFAULT_STATE_DIR)
-            return _DEFAULT_STATE_DIR, "default"
-        except fs_provision.FsProvisionError:
-            _log.info(
-                f"State dir {_DEFAULT_STATE_DIR} is not writable and could not be "
-                f"provisioned — falling back to {_FALLBACK_STATE_DIR} "
-                "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use "
-                "/var/lib/sysforge)",
-            )
-            return _FALLBACK_STATE_DIR, "xdg-fallback"
-
-    return _DEFAULT_STATE_DIR, "default"
+# Moved down to the leaf layer (3.2.0-F1a) — it is a path computation, and
+# primitives were reaching up here for it at function level. Re-exported for
+# one cycle so existing ``from sysforge.pipeline.state import resolve_state_dir``
+# imports (and the tests that patch this name) keep working; new callers should
+# import it from ``sysforge.primitives.paths`` directly.
+from sysforge.primitives.paths import (  # noqa: E402,F401
+    DEFAULT_STATE_DIR as _DEFAULT_STATE_DIR,
+    FALLBACK_STATE_DIR as _FALLBACK_STATE_DIR,
+    resolve_state_dir,
+)
 
 
 # ---------------------------------------------------------------------------

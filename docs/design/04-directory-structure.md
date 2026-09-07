@@ -30,9 +30,11 @@ sysforge/
 │   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
 │   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides)
 │   └── primitives/
-│       ├── archinstall_config.py      # pure BootstrapConfig → archinstall JSON (schema pin, _BASE_PACKAGES home)
+│       ├── archinstall_config.py      # BootstrapConfig dataclass + pure → archinstall JSON (schema pin, _BASE_PACKAGES home)
 │       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)
-│       ├── paths.py                   # config path constants + resolve_packages_path()
+│       ├── paths.py                   # config path constants + resolve_packages_path() + resolve_state_dir()
+│       ├── progress_hooks.py           # ProgressHooks protocol + no-op default (ui/progress registers itself)
+│       ├── hardware_probe.py           # host arch/GPU detection + LLVM-target / mesa-driver derivation
 │       ├── stage_ownership.py         # stage→package ownership registry (update skip bootstrap)
 │       ├── config.py                  # TOML config loading, path constants, system conf parsing
 │       ├── pacman.py                  # pacman queries, batch install, makedep helpers
@@ -78,7 +80,7 @@ sysforge/
 │       └── stages/
 │           ├── __init__.py            # STAGES ordered list
 │           ├── base.py                # Stage base class, RunOptions dataclass
-│           ├── _bootstrap.py          # shared bootstrap config loader (BootstrapConfig dataclass)
+│           ├── _bootstrap.py          # shared bootstrap config loader (load_bootstrap; re-exports BootstrapConfig)
 │           ├── _partition_plan.py     # shared destructive-op confirmation (plan table, glyph downgrade, _confirm)
 │           ├── install.py             # stage 1: disk + base install + identity via archinstall
 │           ├── hardware.py            # stage 2: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml

@@ -310,7 +310,12 @@ class BuildState:
         ``external_names`` is the set of packages installed by something other
         than sysforge (computed by ``install_reconcile.external_install_targets``:
         buildstate-hook targets minus sysforge's own ``pacman -U`` targets).
-        For each one currently recorded ``build_mode = "source_built"``, demote
+        Each name is resolved two ways before the lookup (3.2.0-B15), because
+        the key a tracked entry lives under is often not the name pacman saw:
+        through ``install_reconcile.resolve_installed_name`` for the
+        ``-sysforge`` rename, then across the resolved entry's ``pkgbase``
+        siblings so a split set is demoted as a unit. For each resulting entry
+        currently recorded ``build_mode = "source_built"``, demote
         it to a plain ``pacman`` marker: keep the version identity
         (pkgver/pkgrel/epoch/pkgbase) but strip the source provenance
         (pkgbuild_dir, flags_string, source, built_upstream_commit,
@@ -323,11 +328,33 @@ class BuildState:
         ``owner_stage``) are never auto-demoted — their lifecycle belongs to the
         owning stage. Returns the list of demoted pkgnames (caller saves).
         """
+        from sysforge.primitives.install_reconcile import resolve_installed_name
+
         demoted: list[str] = []
+        targets: set[str] = set()
         for name in external_names:
-            entry = self._data.get(name)
+            # (a) the ``-sysforge`` rename: pacman saw the stock name, the
+            # tracked key is the renamed one. ``resolve_installed_name`` is the
+            # single home for that reverse lookup (via ``origin_pkgbase``).
+            key = resolve_installed_name(self, name)
+            entry = self._data.get(key)
             if not entry:
                 continue
+            targets.add(key)
+            # (b) split-package siblings: conflict-mode renaming injects each
+            # member's *own* stock name into provides/conflicts, so ``pacman -S
+            # mesa`` displaces only ``mesa-sysforge`` — ``mesa-docs-sysforge``
+            # survives, stays ``source_built``, and drags the whole pkgbase back
+            # in on the next update. Demote the pkgbase as a unit, the same set
+            # ``cmd_state_forget`` sweeps.
+            pkgbase = entry.get("pkgbase")
+            if pkgbase:
+                targets |= {
+                    pn for pn, e in self._data.items()
+                    if e.get("pkgbase") == pkgbase
+                }
+        for name in sorted(targets):
+            entry = self._data[name]
             if entry.get("build_mode") != BUILD_MODE_SOURCE:
                 continue
             if entry.get("owner_stage"):

@@ -49,6 +49,10 @@ import tomllib
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.hardware_probe import (
+    derive_mesa_drivers,
+    parse_gpu_vendors,
+)
 from sysforge.primitives.hardware_tables import (
     MESA_MANDATORY_GALLIUM,
     MESA_MANDATORY_VULKAN,
@@ -174,10 +178,6 @@ def _detect_mesa_drivers_live() -> dict[str, list[str]]:
     A missing/failing ``lspci`` is non-fatal — no vendor drivers get detected,
     but ``derive_mesa_drivers`` still returns the mandatory software baseline.
     """
-    from sysforge.pipeline.stages.hardware import (
-        derive_mesa_drivers,
-        parse_gpu_vendors,
-    )
     try:
         lspci = subprocess.run(["lspci"], capture_output=True, text=True)
         gpu_vendors = parse_gpu_vendors(lspci.stdout) if lspci.returncode == 0 else []

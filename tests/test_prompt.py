@@ -332,8 +332,13 @@ def _record_suspend_order(monkeypatch):
         order.append("input")
         return ""
 
+    # 3.2.0-F1b: prompt reaches the bar through the progress_hooks protocol,
+    # and ui.progress registers itself as the implementation — so patching the
+    # renderer's own name still exercises the whole seam.
+    import sysforge.ui.progress  # noqa: F401  (ensure it is registered)
+
     monkeypatch.setattr(
-        "sysforge.primitives.prompt.progress.suspend_for_prompt", fake_suspend
+        "sysforge.ui.progress.suspend_for_prompt", fake_suspend
     )
     monkeypatch.setattr("builtins.input", fake_input)
     return order
