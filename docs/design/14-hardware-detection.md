@@ -53,7 +53,7 @@ CONFIG_IGC            = "m"
 
 Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The file has four readers:
 
-- **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
+- **`pipeline/stages/kernel/kconfig.py`** — `load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
 - **`primitives/llvm_targets.py`** — `_read_hardware_targets()` consumes `[hardware] llvm_targets`; resolves the `LLVM_TARGETS_TO_BUILD` cmake arg injected by `pkgbuild_patcher.patch_llvm_targets`.
 - **`primitives/mesa_drivers.py`** — `_read_hardware_drivers()` consumes `[hardware] mesa_gallium_drivers` / `mesa_vulkan_drivers`; resolves (opt-in, gated by `sysforge.toml [mesa] filter_drivers`) the `-D gallium-drivers=` / `-D vulkan-drivers=` meson options rewritten by `pkgbuild_patcher.patch_mesa_drivers`.
 - **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.

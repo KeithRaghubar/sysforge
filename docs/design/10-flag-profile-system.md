@@ -295,7 +295,7 @@ profile.
 
 The single write home is `profile_writer.write_package_compiler_override`
 (line-level, comment-preserving — it never round-trips the whole document
-through a TOML emitter, mirroring `packages_cmd._rewrite_packages_toml`). The
+through a TOML emitter, mirroring `verbs/shared.py`'s `rewrite_packages_toml`). The
 sole caller is the makepkg wrapper, persisting a successful recovery-menu
 compiler swap; don't add a second writer for this table or write it from
 anywhere else.

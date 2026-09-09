@@ -3,338 +3,37 @@
 # SPDX-License-Identifier: MIT
 
 """
-state.py — pipeline checkpoint state
+state.py — compatibility re-export of the pipeline checkpoint state
 
-Manages reading and writing /var/lib/sysforge/pipeline_state.toml (or
-the configured override). Tracks per-stage status and per-package progress
-within the packages stage.
+The implementation moved down to :mod:`sysforge.primitives.pipeline_state`
+in 3.2.0-F12: ``primitives/init_notice.py`` needs to read
+``pipeline_state.toml`` to decide whether the bootstrap stages are done, and
+``PipelineState`` is the single home for that file's format, so the reader had
+to move down rather than the parse be duplicated. That closed the last entry in
+``tests/test_module_layering.py``'s ``_ALLOWED_UPWARD_IMPORTS``.
 
-State dir resolution (highest priority first):
-  1. Explicit Path passed at construction (from --state-dir CLI flag)
-  2. SYSFORGE_STATE_DIR environment variable
-  3. /var/lib/sysforge (default)
-  4. XDG fallback when /var/lib/sysforge is not writable: $XDG_STATE_HOME/sysforge
-     (default ~/.local/state/sysforge), per the XDG Base Directory Specification
-
-Public API:
-    PipelineState(state_dir)
+This module stays for one cycle so existing
+``from sysforge.pipeline.state import …`` imports — and the tests that patch
+names here — keep working. New callers import from
+``sysforge.primitives.pipeline_state`` (or ``primitives.paths`` for
+``resolve_state_dir``) directly.
 """
-import tomllib
-from sysforge import log
-_log = log.get_logger("STATE")
-from datetime import datetime, timezone
-from pathlib import Path
-
-
-# ---------------------------------------------------------------------------
-# Path resolution
-# ---------------------------------------------------------------------------
-# Moved down to the leaf layer (3.2.0-F1a) — it is a path computation, and
-# primitives were reaching up here for it at function level. Re-exported for
-# one cycle so existing ``from sysforge.pipeline.state import resolve_state_dir``
-# imports (and the tests that patch this name) keep working; new callers should
-# import it from ``sysforge.primitives.paths`` directly.
-from sysforge.primitives.paths import (  # noqa: E402,F401
-    DEFAULT_STATE_DIR as _DEFAULT_STATE_DIR,
-    FALLBACK_STATE_DIR as _FALLBACK_STATE_DIR,
+from sysforge.primitives.pipeline_state import (  # noqa: F401
+    _DEFAULT_STATE_DIR,
+    _FALLBACK_STATE_DIR,
+    PACKAGE_STATUSES,
+    PipelineState,
+    STAGE_STATUSES,
+    get_toolchain_fingerprint,
+    get_toolchain_variant,
     resolve_state_dir,
 )
 
-
-# ---------------------------------------------------------------------------
-# Valid values
-# ---------------------------------------------------------------------------
-
-STAGE_STATUSES = {"pending", "running", "done", "failed", "skipped_to"}
-PACKAGE_STATUSES = {"pending", "building", "built", "failed", "skipped"}
-
-
-# ---------------------------------------------------------------------------
-# PipelineState
-# ---------------------------------------------------------------------------
-
-class PipelineState:
-    """
-    Read/write wrapper around pipeline_state.toml.
-
-    The state file is the authoritative record of pipeline progress. It is
-    written after every status transition so a crash leaves a valid checkpoint.
-
-    State file is TOML for human readability — useful for manual recovery
-    when a stage fails and needs intervention before resuming.
-    """
-
-    def __init__(self, state_dir):
-        self._dir = Path(state_dir)
-        self.path = self._dir / "pipeline_state.toml"
-        self._data = self._load()
-
-    # ------------------------------------------------------------------
-    # Load / save
-    # ------------------------------------------------------------------
-
-    def _load(self):
-        if not self.path.exists():
-            return {"meta": {}, "stages": {}}
-        with self.path.open("rb") as f:
-            return tomllib.load(f)
-
-    def save(self):
-        """Write current state to disk atomically (write + rename)."""
-        self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text(self._serialize())
-        tmp.rename(self.path)
-
-    def _now(self):
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    @staticmethod
-    def _escape_toml_str(s):
-        """Escape a string for use in a TOML basic (double-quoted) string."""
-        s = s.replace("\\", "\\\\").replace('"', '\\"')
-        s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-        # Escape remaining control characters as \uXXXX
-        return "".join(
-            c if ord(c) >= 0x20 and ord(c) != 0x7F else f"\\u{ord(c):04x}"
-            for c in s
-        )
-
-    def _serialize(self):
-        """
-        Serialize state dict to TOML string.
-        Handles the fixed known structure — not a general-purpose TOML writer.
-        """
-        lines = [
-            "# SysForge pipeline state",
-            "# Do not edit while the pipeline is running.",
-            "",
-        ]
-
-        meta = self._data.get("meta", {})
-        if meta:
-            lines.append("[meta]")
-            for key in ("started_at", "last_updated"):
-                if key in meta:
-                    lines.append(f'{key} = "{meta[key]}"')
-            lines.append("")
-
-        for stage_name, stage_data in self._data.get("stages", {}).items():
-            if "status" not in stage_data:
-                continue  # progress-only entry not yet formally assigned a status
-            lines.append(f"[stages.{stage_name}]")
-            lines.append(f'status = "{stage_data["status"]}"')
-            for key in ("started_at", "completed_at"):
-                if key in stage_data:
-                    lines.append(f'{key} = "{stage_data[key]}"')
-            if "error" in stage_data:
-                lines.append(f'error = "{self._escape_toml_str(stage_data["error"])}"')
-            lines.append("")
-
-            progress = stage_data.get("progress")
-            if progress:
-                lines.append(f"[stages.{stage_name}.progress]")
-                for key in ("built", "failed", "skipped", "remaining"):
-                    if key in progress:
-                        items = ", ".join(f'"{v}"' for v in progress[key])
-                        lines.append(f"{key} = [{items}]")
-                lines.append("")
-
-            errors = stage_data.get("errors")
-            if errors:
-                lines.append(f"[stages.{stage_name}.errors]")
-                for pkgname, errmsg in errors.items():
-                    lines.append(f'{pkgname} = "{self._escape_toml_str(errmsg)}"')
-                lines.append("")
-
-            result = stage_data.get("result")
-            if result:
-                lines.append(f"[stages.{stage_name}.result]")
-                for key, val in result.items():
-                    if isinstance(val, str):
-                        lines.append(f'{key} = "{self._escape_toml_str(val)}"')
-                    else:
-                        lines.append(f"{key} = {val!r}")
-                lines.append("")
-
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Meta
-    # ------------------------------------------------------------------
-
-    def init_meta(self):
-        """Record pipeline start time. No-op if already set."""
-        if "started_at" not in self._data.get("meta", {}):
-            self._data.setdefault("meta", {})["started_at"] = self._now()
-        self._data["meta"]["last_updated"] = self._now()
-
-    def touch(self):
-        """Update last_updated timestamp."""
-        self._data.setdefault("meta", {})["last_updated"] = self._now()
-
-    # ------------------------------------------------------------------
-    # Stage status
-    # ------------------------------------------------------------------
-
-    def stage_status(self, name):
-        """Return stage status string, or 'pending' if not yet seen."""
-        return self._data.get("stages", {}).get(name, {}).get("status", "pending")
-
-    def mark_running(self, name):
-        self._set_stage(name, status="running", started_at=self._now())
-
-    def mark_done(self, name):
-        self._set_stage(name, status="done", completed_at=self._now())
-
-    def mark_failed(self, name, error=""):
-        self._set_stage(name, status="failed", completed_at=self._now(), error=error)
-
-    def mark_skipped_to(self, name):
-        """Mark a stage as skipped-to (bypassed by --start-from)."""
-        self._set_stage(name, status="skipped_to")
-
-    def _set_stage(self, name, **kwargs):
-        stages = self._data.setdefault("stages", {})
-        stage = stages.setdefault(name, {})
-        stage.update(kwargs)
-        self.touch()
-
-    # ------------------------------------------------------------------
-    # Package progress (packages stage only)
-    # ------------------------------------------------------------------
-
-    def _progress(self):
-        stages = self._data.setdefault("stages", {})
-        pkg_stage = stages.setdefault("packages", {})
-        # Ensure the stage entry has a status so _serialize doesn't skip it.
-        # "running" is correct — progress only exists while the stage is active.
-        pkg_stage.setdefault("status", "running")
-        return pkg_stage.setdefault("progress", {
-            "built": [],
-            "failed": [],
-            "skipped": [],
-            "remaining": [],
-        })
-
-    def init_package_list(self, names):
-        """
-        Initialise progress for the packages stage from a full ordered list.
-        Only sets remaining if it hasn't been set yet (idempotent on resume).
-        """
-        p = self._progress()
-        if not p.get("remaining") and not p.get("built"):
-            p["remaining"] = list(names)
-        self.touch()
-
-    def mark_package_building(self, name):
-        p = self._progress()
-        # Remove from remaining; will be re-added to built/failed on completion
-        p["remaining"] = [n for n in p.get("remaining", []) if n != name]
-        self.touch()
-
-    def mark_package_built(self, name):
-        p = self._progress()
-        p.setdefault("built", [])
-        if name not in p["built"]:
-            p["built"].append(name)
-        p["remaining"] = [n for n in p.get("remaining", []) if n != name]
-        p["failed"] = [n for n in p.get("failed", []) if n != name]
-        self.touch()
-
-    def mark_package_failed(self, name, error=""):
-        p = self._progress()
-        if name not in p.get("failed", []):
-            p.setdefault("failed", []).append(name)
-        p["remaining"] = [n for n in p.get("remaining", []) if n != name]
-        # Store error per-package under a sub-key
-        stage = self._data["stages"]["packages"]
-        stage.setdefault("errors", {})[name] = error
-        self.touch()
-
-    def mark_package_skipped(self, name):
-        p = self._progress()
-        if name not in p.get("skipped", []):
-            p.setdefault("skipped", []).append(name)
-        p["remaining"] = [n for n in p.get("remaining", []) if n != name]
-        p["failed"] = [n for n in p.get("failed", []) if n != name]
-        self.touch()
-
-    def get_package_progress(self):
-        """
-        Return a copy of the current package progress dict.
-        Keys: built, failed, skipped, remaining.
-        """
-        return dict(self._progress())
-
-    def get_package_errors(self):
-        """Return dict of {pkgname: error_str} for failed packages."""
-        return dict(
-            self._data.get("stages", {})
-            .get("packages", {})
-            .get("errors", {})
-        )
-
-    # ------------------------------------------------------------------
-    # Stage result (toolchain compiler propagation)
-    # ------------------------------------------------------------------
-
-    def set_stage_result(self, stage_name: str, result: dict):
-        """Write result key/value data for a stage (e.g. toolchain compiler paths)."""
-        stages = self._data.setdefault("stages", {})
-        stage = stages.setdefault(stage_name, {})
-        stage["result"] = dict(result)
-        self.touch()
-
-    def get_stage_result(self, stage_name: str) -> dict:
-        """Read result data for a stage. Returns empty dict if not set."""
-        return dict(
-            self._data.get("stages", {})
-            .get(stage_name, {})
-            .get("result", {})
-        )
-
-
-def get_toolchain_variant(state) -> str:
-    """Return the active toolchain variant for downstream conditional behaviour.
-
-    One of:
-      ``"gcc"``        — system gcc registered by the toolchain stage
-      ``"stock_llvm"`` — clang from a non-PGO LLVM build (or skip_build with
-                         no profdata on disk)
-      ``"pgo_llvm"``   — clang built with -fprofile-use, profdata + version
-                         sidecar present in pgo_store
-      ``"system"``     — toolchain stage has never run on this state dir;
-                         downstream code should fall back to /usr/bin/gcc
-
-    This is the single canonical accessor — do not re-derive variant from
-    ``cc`` path heuristics or by re-reading ``toolchain.toml`` elsewhere.
-    """
-    result = state.get_stage_result("toolchain") or {}
-    return result.get("variant", "system")
-
-
-def get_toolchain_fingerprint(state):
-    """Return the active toolchain's identity fingerprint, or ``None`` (Q9).
-
-    The finer-grained companion to :func:`get_toolchain_variant`: it fingerprints
-    the *active toolchain's compiler* (the ``cc`` recorded in the toolchain stage
-    result) under the configured ``[toolchain] drift_detect`` method, so a
-    same-variant toolchain rebuild (fresh PGO codegen, unchanged soname) is
-    detectable. ``None`` when the toolchain stage has never run (variant
-    ``"system"``) — nothing built under it, so nothing to stamp or compare.
-
-    This is the single canonical computation site, shared by build-time stamping
-    (into ``build_state.toolchain_fingerprint``) and update-time comparison — the
-    two must agree, so they must not re-derive it independently.
-    """
-    result = state.get_stage_result("toolchain") or {}
-    variant = result.get("variant", "system")
-    if variant == "system":
-        return None
-    # Imported lazily to keep this low-level module free of a config/primitives
-    # import at module load (avoids an import cycle via pipeline ← build_core).
-    from sysforge.primitives import build_fingerprint, config
-    return build_fingerprint.toolchain_fingerprint(
-        config.resolve_drift_detect(), result.get("cc")
-    )
+__all__ = [
+    "PACKAGE_STATUSES",
+    "PipelineState",
+    "STAGE_STATUSES",
+    "get_toolchain_fingerprint",
+    "get_toolchain_variant",
+    "resolve_state_dir",
+]

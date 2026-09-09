@@ -40,7 +40,7 @@ from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman, profile, prompt
 from sysforge.primitives.build_state import BuildState
-from sysforge.state_cmd import cmd_state_forget
+from sysforge.verbs.shared import forget_packages
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("REVERT")
@@ -172,8 +172,7 @@ class RevertToStockVerb(Verb):
                     _log.error("[revert] stopping — remaining targets not processed")
                     return ExecResult(exit_code=1)
             # forget this entry so `update` stops rebuilding it
-            fa = _forget_args(args, p.pkgname)
-            cmd_state_forget(fa)
+            forget_packages(pre.ctx["state_dir"], [p.pkgname])
 
         # Demote any that pacman now owns (belt-and-suspenders alongside forget).
         bs = BuildState(pre.ctx["state_dir"])
@@ -184,10 +183,3 @@ class RevertToStockVerb(Verb):
         return ExecResult(exit_code=0)
 
 
-def _forget_args(args, pkgname: str):
-    import argparse
-    ns = argparse.Namespace(pkgnames=[pkgname])
-    for k in ("dry_run", "state_dir"):
-        if hasattr(args, k):
-            setattr(ns, k, getattr(args, k))
-    return ns

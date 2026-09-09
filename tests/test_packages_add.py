@@ -20,9 +20,8 @@ from sysforge.packages_cmd import (
     cmd_packages_add,
     cmd_packages_add_group,
     cmd_packages_remove,
-    entry_is_inert,
-    _rewrite_packages_toml,
 )
+from sysforge.verbs.shared import entry_is_inert, rewrite_packages_toml
 
 
 def _args(pkg, packages, **overrides):
@@ -171,7 +170,7 @@ def test_rewrite_preserves_header_comment(tmp_path):
         '# Second comment line.\n\n'
         '[build]\npkgbuild_src_dir = "~/src"\n',
     )
-    _rewrite_packages_toml(
+    rewrite_packages_toml(
         path, append='\n[[package]]\nname = "x"\nenable_build_from_source = true\n'
     )
     text = path.read_text()
@@ -239,7 +238,6 @@ def test_write_side_rewrite_still_migrates_legacy_key(tmp_path):
     This is why the read-path removal is low-risk: a packages.toml touched by
     `packages add`/`remove` since the rename has already self-migrated.
     """
-    from sysforge.packages_cmd import _rewrite_packages_toml
 
     path = tmp_path / "packages.toml"
     path.write_text(
@@ -249,7 +247,7 @@ def test_write_side_rewrite_still_migrates_legacy_key(tmp_path):
         'pkgbuild_patch = true\n',
         encoding="utf-8")
 
-    _rewrite_packages_toml(path)
+    rewrite_packages_toml(path)
 
     text = path.read_text(encoding="utf-8")
     assert "enable_build_from_source = true" in text
@@ -264,7 +262,6 @@ def test_legacy_only_entry_is_migrated_not_pruned(tmp_path):
     must survive a rewrite (migrated in place) rather than being silently
     deleted by the auto-prune as if it had no override at all.
     """
-    from sysforge.packages_cmd import _rewrite_packages_toml
 
     path = tmp_path / "packages.toml"
     path.write_text(
@@ -273,7 +270,7 @@ def test_legacy_only_entry_is_migrated_not_pruned(tmp_path):
         'pkgbuild_patch = true\n',
         encoding="utf-8")
 
-    _rewrite_packages_toml(path)
+    rewrite_packages_toml(path)
 
     text = path.read_text(encoding="utf-8")
     assert 'name = "only-legacy"' in text

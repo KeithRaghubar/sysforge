@@ -50,7 +50,7 @@ import contextlib
 
 from sysforge import build_core
 from sysforge.build_core import _find_existing_artifacts
-from sysforge.packages_cmd import entry_is_inert
+from sysforge.verbs.shared import entry_is_inert
 from sysforge.pipeline.state import (
     PipelineState,
     get_toolchain_fingerprint,

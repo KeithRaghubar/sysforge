@@ -93,7 +93,7 @@ def test_toolchain_build_pkg_reuses_on_already_built(tmp_path):
     catch at all — AlreadyBuilt propagated and killed a 5-pass PGO run)."""
     from types import SimpleNamespace
 
-    import sysforge.pipeline.stages.toolchain as tc
+    from sysforge.pipeline.stages.toolchain import passes as tc
     from sysforge.primitives.makepkg_invoke import AlreadyBuilt
 
     pkgbuild = tmp_path / "PKGBUILD"
@@ -105,11 +105,11 @@ def test_toolchain_build_pkg_reuses_on_already_built(tmp_path):
     ), patch.object(
         tc, "make_build_options", return_value=object()
     ), patch(
-        "sysforge.pipeline.stages.toolchain.resolve_already_built",
+        "sysforge.pipeline.stages.toolchain.passes.resolve_already_built",
         wraps=__import__(
             "sysforge.primitives.already_built", fromlist=["x"]
         ).resolve_already_built,
     ) as routed:
-        tc._build_pkg("llvm", pkgbuild, options)  # must not raise
+        tc.build_pkg("llvm", pkgbuild, options)  # must not raise
 
     assert routed.call_count == 1

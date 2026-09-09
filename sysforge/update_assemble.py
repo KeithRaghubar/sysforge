@@ -36,7 +36,7 @@ from sysforge.primitives.config import (
     REPO_MODE_SOURCE,
 )
 from sysforge.primitives.stage_ownership import load_stage_ownership
-from sysforge.packages_cmd import entry_is_inert
+from sysforge.verbs.shared import entry_is_inert
 
 _log = log.get_logger("UPDATE")
 

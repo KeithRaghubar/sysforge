@@ -161,7 +161,18 @@ Mechanism lives in the cited §DESIGN section.
 
 ## Toolchain & kernel deep invariants (rationale: DESIGN.md §07)
 
-- **Health = exactly two checkers**: `toolchain.py::_verify_llvm_install` (`run toolchain`) +
+- **Both stages are packages, not modules** (`pipeline/stages/{toolchain,kernel}/`). Two rules keep
+  the split honest: modules call each other **module-qualified** (`profdata.pgo_install(...)`, never
+  a bare imported name) so a test patch on the owning module reaches every caller; and a name that
+  **crosses a module boundary is public**. Each `__init__` re-exports the public names, so the old
+  flat import paths still resolve. §07.
+- **Stage config is parsed once at entry** into a frozen `ToolchainConfig`/`KernelConfig`
+  (`<stage>/config.py::from_toml`) — **never re-read a TOML key at a use site**, and never default
+  one there. `raw` is kept only for `resolve_pgo_store`, `resolve_pkgbuild_src_dir` and the Pass-4
+  `config_digest` (which must keep hashing the raw table or every reuse cache key changes).
+  `KernelConfig.compiler` is `str | None`: unset means "inherit from pipeline state". §Config Layer.
+
+- **Health = exactly two checkers**: `toolchain/verify.py::verify_llvm_install` (`run toolchain`) +
   `toolchain_preflight._probe_cc` (`update`), over `LLVM_LOCKSTEP_SUITE`. `toolchain_safety.py` /
   `llvm_state.detect_toolchain_config_mismatch` are facts, **not** a third checker.
 - **Stages = 3 gates, build split from install, snapshot+auto-restore.** Build is `install=False`;
@@ -184,8 +195,9 @@ Mechanism lives in the cited §DESIGN section.
   `pkgbuild_patcher.patch_mesa_drivers` (only meson injector/validator). Software baseline always kept
   (`_ensure_mesa_software_baseline`). Opt-in `[mesa] filter_drivers`; lib32-mesa is filtered.
   §Hardware detection.
-- **Kernel stage**: compiler independent of toolchain (`_compiler_paths`); **interactive by default**;
-  subpackage toggles `_resolve_subpackages` + `pkgbuild_patcher.patch_kernel_subpackages` (disabling
+- **Kernel stage**: compiler independent of toolchain (`toolchain/identity.py::compiler_paths`);
+  **interactive by default**; subpackage toggles `kernel/config.py::resolve_subpackages` +
+  `pkgbuild_patcher.patch_kernel_subpackages` (disabling
   headers keeps the Gate-1 DKMS warning); boot-safety in `kernel_safety.py`/`device_probe`. §Kernel.
 
 `run toolchain`, `run kernel`, and the PGO profdata-reuse path are stable but default `enabled =

@@ -90,7 +90,7 @@ Three layers:
 └─────────────────────────────────────────┘
 ```
 
-**Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module. See [CLI Verb Framework](#cli-verb-framework).
+**Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module — shared operations live in `verbs/shared.py`, and `tests/test_module_layering.py` enforces the rule rather than leaving it to convention (3.2.0-F8). See [CLI Verb Framework](#cli-verb-framework).
 
 ### Module & function decomposition
 
@@ -550,6 +550,20 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[security]` | `sandbox_clean` | `true` | Sync a pristine copy of the chroot before each build (`makechrootpkg -c`). `false` reuses the working copy — faster, but a previous build's leftovers stay visible to the next one |
 | `[security]` | `sandbox_update` | `true` | Update the working copy before building (`makechrootpkg -u`), so a build never links against a stale chroot |
 
+### Typed stage configs
+
+`toolchain.toml` and `kernel.toml` are parsed **once, at stage entry**, into frozen dataclasses — `ToolchainConfig` (`pipeline/stages/toolchain/config.py`) and `KernelConfig` (`pipeline/stages/kernel/config.py`), each built by a single `from_toml(data)` classmethod (`3.2.0-F6`). The TOML keys are unchanged; this is the in-process representation only.
+
+The stages previously carried 27 and 21 `cfg.get(...)` calls respectively, which meant every default was re-derived at each read site. That is not a hypothetical hazard: `compiler` was defaulted to `"gcc"` in the toolchain stage body and to `"llvm"` in Gate 1's sentinel, so a config with no `compiler` key would have run the GCC path while stamping its sentinel `"llvm"`. One parse site gives one answer.
+
+Three properties follow from the shape:
+
+- **Frozen.** A stage's configuration is decided before it starts and must not drift mid-run — with a dict, any consumer could write back into it, and the kernel stage did exactly that to publish its resolved `pkgbuild_src_dir`. It now rebinds to a `dataclasses.replace()` instance instead, so the resolved value reaches every downstream reader without anything holding the original seeing it change underneath them.
+- **Types carry meaning.** `rebuild_soname_consumers` is a three-valued mode (`"prompt"` | `"auto"` | `"off"`), not a flag, and is validated at parse time — an unrecognised value warns and falls back to `"prompt"`, where before it silently matched none of the gate's branches. `KernelConfig.compiler` is `str | None` because "unset" is load-bearing: it is the signal to fall through to the toolchain stage's result in pipeline state, so defaulting it would make a machine that built an LLVM toolchain silently compile its kernel with gcc.
+- **`raw` survives, narrowly.** Both dataclasses keep the undecoded dict for consumers that take the whole table by design: `makepkg_pgo.resolve_pgo_store(raw)`, which owns its own config > env > default precedence; `config.resolve_pkgbuild_src_dir(build_cfg=raw)`; and the toolchain's Pass-4 reuse `config_digest`, which **must** keep hashing the raw table — hashing a field list instead would change every existing cache key and silently invalidate every user's reuse cache.
+
+Schema validation targets the dataclass rather than a parallel key set: `tests/test_check_shipped.py` compares `_KNOWN_TOP_KEYS`/`_KNOWN_SECTIONS` against the keys `from_toml` actually reads, as an equality of sets. With one parse site that comparison is exact in both directions, where it used to be one-way containment plus a hand-maintained list of helper exemptions.
+
 ### Toolchain drift detection (`toolchain.toml`)
 
 `[toolchain] drift_detect` selects how `update` fingerprints the active toolchain to catch a **same-variant** rebuild (Phase 4.25; see §`update`). Resolved by `config.resolve_drift_detect()` — a missing file/key or an unrecognised value all fall back to the default. The value is the sole input to `build_fingerprint.toolchain_fingerprint(method, cc)`, whose opaque output is both stamped into `build_state.toml`'s `toolchain_fingerprint` at build time and recomputed for the active toolchain at update time; comparison is equality-only, so a method flip self-heals (old stamps stop matching → one fail-safe rebuild re-stamps).
@@ -796,7 +810,7 @@ clears ccache/sccache and drops caches before measuring anything.
 
 ### Checkpoint state
 
-`pipeline_state.toml` is the authoritative checkpoint record. Written atomically (write-then-rename) after every state transition. Human-readable TOML for manual recovery.
+`pipeline_state.toml` is the authoritative checkpoint record. Written atomically (write-then-rename) after every state transition. Human-readable TOML for manual recovery. The reader/writer is `primitives/pipeline_state.py` (§Primitives Layer) rather than a module under `pipeline/`: the leaf layer needs to read this file too — `init_notice.py` asks whether the bootstrap stages are done — and `PipelineState` is its single format home, so the class sits below both consumers (3.2.0-F12). `sysforge.pipeline.state` re-exports every public name for one cycle, so existing imports and test patch points are unaffected.
 
 Per-stage status: `pending` → `running` → `done` / `failed` / `skipped_to`
 
@@ -827,6 +841,21 @@ The ownership model is a single one for every writable sysforge runtime dir: **`
 The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `USER` > `getpass.getuser()`). The same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE` constants are reused by the VM-bootstrap `configure.py` state-dir setup, so bootstrapped and package-installed systems agree. Install-time, the shipped `tmpfiles.d` provisions all four dirs `root:sysforge 2775` and a shipped `sysusers.d` declares the group (so `systemd-sysusers` creates it before `systemd-tmpfiles`) — making the runtime sudo path a no-op on a normally-installed host. `fs_provision.empty_dir_contents(path)` clears a directory's contents while leaving the node intact, used for the PGO purge so a root-owned parent never blocks the cleanup.
 
 ### Kernel stage (stage 7)
+
+**Module layout.** Like the toolchain stage, `pipeline/stages/kernel/` is a package — the same shape one size smaller (2355 lines, a 567-line `KernelStage`), split by `3.2.0-F2` under the same two conventions (module-qualified calls; names crossing a boundary are public):
+
+| module | holds |
+| --- | --- |
+| `constants.py` | valid-value contracts and the canonical recovery command |
+| `config.py` | `kernel.toml` → `KernelConfig`, plus the precedence-bearing resolvers |
+| `source.py` | locating and syncing the PKGBUILD tree, and the pkgname checks |
+| `fdo.py` | sample-based FDO (AutoFDO / Propeller) orchestration |
+| `kconfig.py` | authoring the kconfig fragment the PKGBUILD merges |
+| `install.py` | initramfs and bootloader — the steps that make a kernel bootable |
+| `gates.py` | Gate 1/2/3 and the kconfig drift check |
+| `stage.py` | `KernelStage` — sequencing only |
+
+The resolvers stay functions rather than becoming `KernelConfig` fields because their inputs are not all config: `resolve_compiler` weighs a CLI flag against `kernel.toml` against pipeline state, `resolve_source` probes the filesystem, and `resolve_names` derives a pair that must agree with the PKGBUILD.
 
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled. Also fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) before the build, sharing the same process-wide once-guard as the packages stage and `build_and_install`.
 
@@ -915,7 +944,7 @@ The snapshot **accumulates**: `_capture_lsmod_snapshot` union-merges each new `l
 
 **Configurable kconfig target sequence (`kconfig_targets`):**
 
-`kernel.toml [kernel] kconfig_targets` (default: unset — feature off, zero behavior change) names an explicit sequence of `make <target>` kconfig-generation steps to run, replacing the PKGBUILD's own kconfig invocation. `resolve_kconfig_targets(kernel_cfg, interactive=…)` (in `pipeline/stages/kernel.py`) validates and reorders the configured list before it reaches the patcher:
+`kernel.toml [kernel] kconfig_targets` (default: unset — feature off, zero behavior change) names an explicit sequence of `make <target>` kconfig-generation steps to run, replacing the PKGBUILD's own kconfig invocation. `resolve_kconfig_targets(kernel_cfg, interactive=…)` (in `pipeline/stages/kernel/`) validates and reorders the configured list before it reaches the patcher:
 
 - **Silent targets** (`olddefconfig`, `defconfig`, `allmodconfig`, `alldefconfig`, `savedefconfig`, `listnewconfig`) always run, in any interactive mode.
 - **Prompting targets** (`oldconfig`, `localmodconfig`, `localyesconfig`, `mod2yesconfig`) require an interactive stage run; requesting one under `interactive=False` raises, naming the fix — `oldconfig` names its silent equivalent `olddefconfig`, the local*/mod2yes targets say to run the stage interactively (no silent equivalent exists for those).
@@ -995,6 +1024,25 @@ Walks `packages.toml` in order:
 The AUR-dep build and per-package install loop are wrapped in `sentinel_scope(state_name="packages", …)` (no `recovery_cmd` — there's no single shell command that restores a partially-installed package set; the operator verifies with `pacman -Dk` and re-runs `sysforge run packages`). Per-package `RuntimeError` is caught and reported via the state machine; only an interruption or unexpected exception inside the scope preserves the sentinel.
 
 ### Toolchain stage (stage 5)
+
+**Module layout.** The stage is a package (`pipeline/stages/toolchain/`), not a module. It was one 4263-line file with four classes and a 701-line `_build_llvm_pgo_inner`; `3.2.0-F2` split it along the seams its own comment banners already named:
+
+| module | holds |
+| --- | --- |
+| `constants.py` | defaults and tuning values; no imports, no logic |
+| `config.py` | `toolchain.toml` → `ToolchainConfig`, parsed once at stage entry |
+| `pkgbuilds.py` | resolving package names to PKGBUILDs, and syncing those trees |
+| `reuse.py` | Pass-4 input-fingerprint reuse (opt-in) |
+| `passes.py` | `build_pkg` (one package) and `build_pass` (one pass over many) |
+| `profdata.py` | profile generation, merging, staging, the version sidecar |
+| `verify.py` | post-install evidence that the installed clang actually links |
+| `pgo.py` | the four-pass sequence itself |
+| `gates.py` | Gate 1 / Gate 2, soname consumers, snapshot + rollback |
+| `identity.py` | which toolchain is active; the register-only GCC path |
+| `bolt.py` | Pass 5, optional post-link optimization |
+| `stage.py` | `ToolchainStage` — sequencing only, delegating every step |
+
+Dependencies run one way (`constants` ← `config` ← … ← `stage`), and `stage.py` is the only module importing most of the others. Two conventions make the split hold: **modules call each other module-qualified** (`profdata.pgo_install(...)`, never a bare imported name) so a patch on the owning module is seen by every caller; and **a name that crosses a module boundary is public**, since an underscore is a promise about one module's internals that stopped being true the moment another module needed the name. The package `__init__` re-exports every public name, so `sysforge.pipeline.stages.toolchain` remains a valid import path and `stages/__init__.py`'s eager instantiation is untouched. Read `stage.py` to learn what the stage does; read the siblings to learn how each step works.
 
 **Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent or has `enabled = false`. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
@@ -1160,8 +1208,8 @@ The sentinel-installation and clean-exit machinery is exposed as a shared `senti
 
 | Caller | `stage_name` | `recovery_cmd` | Notes |
 |---|---|---|---|
-| `pipeline/stages/toolchain.py` (LLVM path) | `toolchain` | snapshot-aware: offline `sudo pacman -U <cached suite>`, else `sudo pacman -S <suite>` | Sentinel scoped to install → Gate-3 verify → auto-rollback (build + Gates 1–2 run outside it). Full three-layer protection (sentinel + verify + clean-exit). |
-| `pipeline/stages/kernel.py` | `kernel` | `sudo mkinitcpio -P` (regenerates initramfs — the boot-critical step) | Wraps `makepkg --install`, `mkinitcpio -P`, and the bootloader regen. |
+| `pipeline/stages/toolchain/` (LLVM path) | `toolchain` | snapshot-aware: offline `sudo pacman -U <cached suite>`, else `sudo pacman -S <suite>` | Sentinel scoped to install → Gate-3 verify → auto-rollback (build + Gates 1–2 run outside it). Full three-layer protection (sentinel + verify + clean-exit). |
+| `pipeline/stages/kernel/` | `kernel` | `sudo mkinitcpio -P` (regenerates initramfs — the boot-critical step) | Wraps `makepkg --install`, `mkinitcpio -P`, and the bootloader regen. |
 | `pipeline/stages/packages.py` | `packages` | _none_ (no single command restores a partially-installed package set) | Wraps AUR-dep build + per-package install loop. Per-package failures are state-tracked and don't preserve the sentinel; only an interruption / unexpected exception does. |
 | `pipeline/stages/reconfigure.py` (`_try_install_editor`) | `reconfigure-editor` | _none_ | Single-package install; sentinel is cheap consistency with the larger stages. |
 | `verbs/runner.py` (any verb with `requires_sentinel=True`) | _verb name_ | per-verb (`verb.sentinel_recovery_cmd(args, pre)`) | Currently `build`, `update`, `state repair`, `state orphans --prune`, `state failed --clear`/`--clear-all`. |
@@ -1173,6 +1221,14 @@ The kernel and packages stage sentinels close the audit gap where an interrupted
 ## CLI Verb Framework
 
 Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `help`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `help_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
+
+
+**Verb modules are peers; shared operations live in `verbs/shared.py` (invariant).** A `*_cmd.py` module may import from `verbs/`, `primitives/` and `pipeline/`, but **never from a sibling `*_cmd.py`** — enforced by `test_verb_modules_do_not_import_siblings` in `tests/test_module_layering.py`, which counts function-level imports too (deferring one dodges the load-time cycle without removing the dependency). The rule exists because an edge between two verb modules is arbitrary: nothing makes `state_cmd` the owner of "stop maintaining this package" except that `sysforge state forget` is the verb that spells it, and a set of such edges is a fourth informal layer with nothing guarding its shape.
+
+The fix for a violation is always to relocate the operation's *one home*, never to duplicate it — the one-home invariants (a single `packages.toml` writer; a single demotion path) are what the rule protects. Two modules serve that:
+
+- **`verbs/shared.py`** — operations shared *between verbs*. Two clusters today: the `packages.toml` entry shape and writer (`OVERRIDE_FIELDS`, `entry_toml_block`, `entry_is_inert`, `rewrite_packages_toml` — every mutation goes through the writer, which is line-level so header comments and surrounding whitespace survive and inert entries are pruned on the same write), consumed by `packages_cmd` and `build_cmd`'s repo opt-in gate; and `forget_packages(state_dir, pkgnames) -> (forgotten, missing)`, the build_state demotion behind `state forget`, `revert` and `uninstall`. It takes a state dir and a name list rather than an `args` namespace because two of its three callers are not the `forget` verb and had been synthesising a fake namespace to reach it; printing is the caller's business, since `revert` and `uninstall` fold demotion into their own summaries while `state forget` reports both lists.
+- **`verbs/helpers.py`** — small generic utilities with no cross-verb *behaviour* (today: `load_config_with_overrides`). Kept out of `base.py`, which is the verb protocol, and out of `cli.py`, which would close an import cycle since `cli` imports the verb modules.
 
 **Parent-verb subcommand default (invariant).** A verb namespace declares a
 default subverb via `set_defaults(verb_cls=…, <dest>=…)` on the *parent* parser
@@ -1398,7 +1454,7 @@ Three more global flags implement the **source freeze**: **`--frozen`** (valuele
 
 `build` is a strict subset of `update`: both route their actual building through one engine in `sysforge/build_core.py`, so the two paths cannot drift the way they once did (a `build` that left makepkg's `-s`/`--syncdeps` in place would have makepkg run `pacman -S` on an AUR-only dependency and fail, while `update` stripped those flags and pre-resolved every dep itself). `update` extends the shared core with the things that are genuinely its own — version checking, source-sync scheduling, `--install-only`, toolchain pre-flight, the bulk `pacman -Syu`, and the run summary — but the dependency prep, the per-package makepkg invocation, and the install are identical code. Multi-package `build` runs end with their own `Build complete:` totals block (`build_cmd._print_build_summary`, mirroring `update`'s built/failed/skipped/pgo-skipped lines from the `BuildOutcome`); single-package runs skip it since the per-package narration already tells the whole story.
 
-**Repo-package opt-in gate.** `build` source-builds AUR/git/local targets unconditionally — that is their only path — but a **repo** package is normally a pacman binary, so source-building one is opt-in. Before handing a `source = "repo"` target to the engine, `build_cmd` checks whether it is already opted in (global `repo_mode = "build_from_source"` **or** per-package `enable_build_from_source = true`, resolved through `config.resolve_repo_mode` / `expand_package_groups`). If opted in, it builds silently. Otherwise, on a TTY it prompts (`build from source? [y/N]`); a `yes` builds the package **and** records `enable_build_from_source = true` in `packages.toml` (reusing the `packages_cmd` writers — no parallel mutator), a `no` skips just that target and continues the batch. On a non-TTY it skips the target with a hint (set the key, or pass `--force`). The **`--force`** flag bypasses the gate entirely: it source-builds every argument for that run only and never prompts for or modifies `packages.toml` opt-in keys. `--force` is *only* the opt-in waiver — it never reaches makepkg; **`--rebuild`** is the separate flag that forces the build itself (per-target `-f`, above). The gate lives in `build_cmd` (helpers `_load_repo_optin` / `_repo_pkg_opted_in` / `_write_repo_optin`); the source-origin stamping that classifies a target `repo` happens first, so the stamp is unaffected by the gate decision.
+**Repo-package opt-in gate.** `build` source-builds AUR/git/local targets unconditionally — that is their only path — but a **repo** package is normally a pacman binary, so source-building one is opt-in. Before handing a `source = "repo"` target to the engine, `build_cmd` checks whether it is already opted in (global `repo_mode = "build_from_source"` **or** per-package `enable_build_from_source = true`, resolved through `config.resolve_repo_mode` / `expand_package_groups`). If opted in, it builds silently. Otherwise, on a TTY it prompts (`build from source? [y/N]`); a `yes` builds the package **and** records `enable_build_from_source = true` in `packages.toml` (reusing the shared `verbs/shared.py` writer — no parallel mutator), a `no` skips just that target and continues the batch. On a non-TTY it skips the target with a hint (set the key, or pass `--force`). The **`--force`** flag bypasses the gate entirely: it source-builds every argument for that run only and never prompts for or modifies `packages.toml` opt-in keys. `--force` is *only* the opt-in waiver — it never reaches makepkg; **`--rebuild`** is the separate flag that forces the build itself (per-target `-f`, above). The gate lives in `build_cmd` (helpers `_load_repo_optin` / `_repo_pkg_opted_in` / `_write_repo_optin`); the source-origin stamping that classifies a target `repo` happens first, so the stamp is unaffected by the gate decision.
 
 **Instrumentation PGO (`build --pgo=record|use`).** Instrumentation PGO is "just a build flag" — it rides the `compiler_flags_extra` seam (`emit_makepkg_conf` appends it to CFLAGS/CXXFLAGS/LDFLAGS) with no second injector and no meson `-Db_pgo` surgery — so it works on **any** package, not only mesa (F5). mesa remains the seeded/default target and the only one with bespoke graphics handling; it is also the canonical example of a *runtime-exercised library*, where an instrumented build only emits profile data when applications later call into it, so the store path is baked into the build rather than discovered at runtime. Every `mesa_pgo` function takes a `pkgbase`:
 
@@ -1692,7 +1748,7 @@ Key contract:
 - `prompt_key` reads one character in cbreak mode (`termios`/`tty`, restored in a `finally`) and echoes it plus a newline so the transcript still shows the answer — no Enter required. It degrades to line-based `input()` (first character of the stripped line) when stdin is not a TTY, `termios` is unavailable, or raw-mode setup fails, so tests and pipes keep working. Ctrl-C raises `KeyboardInterrupt` (cbreak delivers it as `\x03`); Ctrl-D/EOF/unreadable stdin raise `EOFError`; a bare Enter returns `""` ("no answer", distinct from EOF) so callers can re-prompt. Validation and re-prompt loops stay in the caller, matching `prompt_choice`'s contract. Used by the PKGBUILD review gate.
 - Optional `tag`/`level` kwargs reuse `log.prompt_prefix(level, tag)` so prompts keep the standard `[SYSFORGE][LEVEL][TAG] ` format.
 
-Call sites: `pipeline/stages/reconfigure.py` (11), `pipeline/stages/packages.py` (`_prompt_failed_packages`), `pipeline/stages/toolchain.py` (3), `pipeline/stages/partition.py` (1), `setup_cmd.py` (1), `primitives/makepkg_wrapper.py` (4). No stage may call `input()` directly.
+Call sites: `pipeline/stages/reconfigure.py` (11), `pipeline/stages/packages.py` (`_prompt_failed_packages`), `pipeline/stages/toolchain/` (3), `pipeline/stages/partition.py` (1), `setup_cmd.py` (1), `primitives/makepkg_wrapper.py` (4). No stage may call `input()` directly.
 
 ### `progress_hooks.py`
 
@@ -1973,7 +2029,7 @@ The one home for the presentation vocabulary shared by every tag-gutter report b
 
 `version_pair` renders a transition as `old → new`, collapsing to `ver (=)` when both sides are known and identical (`equal_marker=False` keeps the arrow form unconditionally — the built-package and stage-owned-update rows read as a report of what was done, so an unchanged version is still a transition there). An unknown side renders as `—`. `tag_header` returns the `  [TAG]` prefix padded to the shared 17-column gutter. `em_dash()` is `arrow()`'s counterpart for a standalone `—` (e.g. a failure message's clause separator) — any renderer wanting one goes through here rather than hardcoding the glyph. `fmt_bytes(n)` formats a byte count as a human-readable binary-prefix string (`142.3 MiB`); promoted from `cache_probe._fmt_bytes` so the cache report and the change summary's size column format identically. `ellipsis_glyph()` is the same for a `…` (used by truncated report blocks — `… and N more`); it carries the `_glyph` suffix because bare `ellipsis` names a Python builtin type. All glyph-bearing helpers route through `log.downgrade_glyphs` so they degrade together under the Unicode gate.
 
-**Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain.py`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
+**Glyphs are resolved at format time**, not left to the emit path. Every pre-flight block now emits through `log.ui` (`update.py`, `build_cmd.py`, `fetch.py`, `pipeline/stages/toolchain/`), which applies `log.downgrade_glyphs` and mirrors the block into the unified run-log — the bare `print()` sites that let a hardcoded `→` survive under `TERM=linux` are gone. Resolving early is kept regardless: `downgrade_glyphs` is idempotent, so it costs nothing, and it keeps a renderer's return value correct for any caller that formats without emitting. It covers the `—` placeholder in the same pass. Leaf module: imports only `sysforge.log`, so any layer may use it.
 
 ### `llvm_state.py`
 
@@ -2077,6 +2133,16 @@ Log tag: `[PROV]`. The `suggest_*` / `files_db_present` queries are pure read-on
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
 
 `handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+
+### `run.py`
+
+The external-command seam. Two entry points, for the two shapes an external command takes.
+
+`run_or_raise(cmd, *, tag, operation=None, hint=None, capture=True, **kwargs)` runs *cmd* and raises `RuntimeError` tagged `[TAG] {operation} failed (exit N): {detail}` on non-zero, where detail is captured stderr, then `hint`, then a generic fallback. `capture=False` lets both streams flow to the terminal for long-running commands whose progress should stream live (pacstrap, makepkg).
+
+`capture(cmd, **kwargs) -> CompletedProcess | None` is the **probe** form (`3.2.0-F5`): ask the system a question and tolerate every answer. argv-list only, text capture, `check` forced off — a caller cannot re-arm the raise by accident — and **a missing binary returns `None`**, distinct from a command that ran and failed, which replaces a hand-written `try/except FileNotFoundError` at every probe site. Probes are logged at debug, so `-vvv` shows them; bare calls appeared nowhere in the run log, which made "why did sysforge decide that?" unanswerable from a log alone.
+
+Probes are why raw `subprocess` calls kept reappearing outside this module despite it existing: `run_or_raise` raises, which is exactly wrong when "that tool is not installed" is an answer rather than an error, so every probe author correctly declined the seam and wrote a bare call. A seam that does not fit half its callers is bypassed out of correctness, not carelessness — the fix was to add the missing shape. The toolchain stage's ten probes (`pacman -Q`, `ldd`, `nm`, `clang --version`, `ld.lld --version`, `llvm-config`, `uname`, `readelf`) route through it; four calls in that package remain deliberately raw, being a raising `tar`, a streaming privileged `pacman -U`, an `llvm-profdata` invocation that needs its own `preexec_fn`, and a `makepkg --packagelist` build invocation rather than a probe. Migrating the remaining modules, plus a ruff `banned-api` rule fencing `subprocess` to this module's allowlist, is the rest of `3.2.0-F5`.
 
 ### `resource_guard.py`
 
@@ -2221,7 +2287,7 @@ Build state persistence. `/var/lib/sysforge/build_state.toml` is a **superset of
 
 `BuildState.reconcile_external_installs(external_names)` demotes a `source_built` entry back to a plain `pacman` marker when the package was reinstalled from the repo outside sysforge (e.g. `sudo pacman -S mesa` after `sysforge build mesa`). The version identity (`pkgver`/`pkgrel`/`epoch`/`pkgbase`) is kept; the source provenance (`pkgbuild_dir`, `flags_string`, `source`, `built_upstream_commit`, `toolchain_variant`, `reviewed_commit`, `origin_pkgbase`) is stripped. Demote (not delete) preserves the superset invariant; **stage-owned** entries (`owner_stage` set) are exempt. Each external name is resolved twice before the lookup, because the key a tracked entry lives under is routinely not the name pacman saw: through `install_reconcile.resolve_installed_name` (a `-sysforge` rename records the stock base in `origin_pkgbase`, so `pacman -S mesa` must reach the tracked `mesa-sysforge`), then across the resolved entry's `pkgbase` siblings — the same set `state forget` sweeps — so a **split package is demoted as a unit**. The sibling sweep is what makes the demotion actually stick: conflict-mode renaming injects each member's *own* stock name into `provides`/`conflicts`, so `pacman -S mesa` displaces `mesa-sysforge` alone while `mesa-docs-sysforge` (conflicting with `mesa-docs`, not a target) survives installed and `source_built` — and `update`'s `source_built` arm would rebuild pkgbase `mesa-sysforge`, reinstalling the optimized `mesa` the user just reverted. Both resolutions are pre-existing single-home helpers; the per-entry guards run unchanged over the resolved set, so the stage-owned exemption still applies to every sibling individually. `external_names` is computed by `primitives/install_reconcile.external_install_targets` (the buildstate pacman-hook targets minus sysforge's own `pacman -U` self-install targets) and applied by `sysforge update`'s `_reconcile_external_demotions` before the superset sync. See `install_reconcile.py` below.
 
-Read by `sysforge update` for version drift detection (every installed AUR package is iterated regardless of `build_mode`; source-built entries carry the prior `pkgver` for change-detection, pacman-mode entries are checked against PKGBUILD freshness) and for flag drift detection in Phase 4.3 (source-built entries only — including, via the build-state-wide fold, source-built entries outside the run's package walk; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `pipeline/state.py`. Records must carry `build_mode`; the previous compatibility fallback that treated missing `build_mode` as source-built was removed.
+Read by `sysforge update` for version drift detection (every installed AUR package is iterated regardless of `build_mode`; source-built entries carry the prior `pkgver` for change-detection, pacman-mode entries are checked against PKGBUILD freshness) and for flag drift detection in Phase 4.3 (source-built entries only — including, via the build-state-wide fold, source-built entries outside the run's package walk; pacman-mode entries are silently skipped). Follows the same atomic write-then-rename pattern as `primitives/pipeline_state.py`. Records must carry `build_mode`; the previous compatibility fallback that treated missing `build_mode` as source-built was removed.
 
 On the write path, after a successful build `makepkg_wrapper.py` derives `pkgver`/`pkgrel`/`epoch` from the produced `.pkg.tar.*` filenames rather than the static PKGBUILD parse. The static parser intentionally leaves shell parameter-expansion forms (e.g. `${_ver/[a-z]/.${_ver//[0-9.]/}}`) untouched so it never produces a misleading partial substitution, but a built package's filename always carries the fully resolved version. Falling back to filenames prevents source-built entries from storing literal `$...` strings that would mismatch every subsequent vercmp and cause the package to be flagged for rebuild on every `sysforge update` run.
 
@@ -2460,6 +2526,14 @@ The unified diagnostic vocabulary: one `Finding` dataclass + the renderer, exit-
 ### `system_probe.py`
 
 Read-only pacman / system-integrity checks for `doctor --pacman`. Public API: `collect_system_findings() -> list[Finding]`. Internal checks: `_check_db_consistency` (`pacman -Dk`), `_check_stale_lock` (`/var/lib/pacman/db.lck`), `_check_pacfiles` (`*.pacnew`/`*.pacsave` under `_ETC`, split by whether the base file still exists: those with a live base are `pacnew_unmerged` and advise `pacdiff`; those whose base is gone are `pacsave_orphaned` and advise manual removal, since `pacdiff` no-ops on them), `_check_orphans` (`pacman -Qtdq`). Strictly local-database — never issues a sync (`-Sy`), so a `doctor` run cannot change the installed package set. Module-level `_PACMAN_DB_LOCK` / `_ETC` are repointable for tests.
+
+### `pipeline_state.py`
+
+The single home for `pipeline_state.toml`'s format. `PipelineState(state_dir)` wraps the checkpoint file with per-stage status transitions (`mark_running`/`mark_done`/`mark_failed`/`mark_skipped_to`, validated against `STAGE_STATUSES`), intra-stage package progress for the packages stage (`PACKAGE_STATUSES`, plus per-package error strings), and free-form per-stage `result` data. Writes are atomic (write-then-rename) and happen after every transition, so a crash leaves a valid checkpoint. Serialization is a hand-rolled writer for this file's fixed shape, not a general TOML emitter; string values go through `_escape_toml_str`.
+
+Two module-level accessors read that `result` data and are the **canonical** derivations — do not re-derive either from `cc`-path heuristics or by re-parsing `toolchain.toml`. `get_toolchain_variant(state)` returns `"gcc"` / `"stock_llvm"` / `"pgo_llvm"` / `"system"` (§Pipeline Layer → Toolchain stage). `get_toolchain_fingerprint(state)` is its finer-grained companion, returning the active compiler's identity fingerprint under the configured `[toolchain] drift_detect` method, or `None` when the toolchain stage has never run; it is the shared computation site for build-time stamping and update-time comparison, which must agree (§`update` → Phase 4.25).
+
+It is filed here, not under `pipeline/`, because `init_notice.py` reads the same file to decide whether the bootstrap stages are done. Duplicating that parse would split the format's one home, so the class moved down instead (3.2.0-F12) — which closed the last entry in `tests/test_module_layering.py`'s `_ALLOWED_UPWARD_IMPORTS`, now empty and pinned empty by `test_layering_allowlist_is_empty`. The relocation also let `get_toolchain_fingerprint`'s `build_fingerprint`/`config` imports become ordinary module-level imports: the cycle the lazy import dodged (`pipeline` ← `build_core`) existed only because of the old filing. `sysforge.pipeline.state` re-exports the public names for one cycle. `resolve_state_dir` lives in `paths.py` (3.2.0-F1a) and is re-exported from both.
 
 ### `state_probe.py`
 
@@ -2869,7 +2943,7 @@ profile.
 
 The single write home is `profile_writer.write_package_compiler_override`
 (line-level, comment-preserving — it never round-trips the whole document
-through a TOML emitter, mirroring `packages_cmd._rewrite_packages_toml`). The
+through a TOML emitter, mirroring `verbs/shared.py`'s `rewrite_packages_toml`). The
 sole caller is the makepkg wrapper, persisting a successful recovery-menu
 compiler swap; don't add a second writer for this table or write it from
 anywhere else.
@@ -3423,7 +3497,7 @@ CONFIG_IGC            = "m"
 
 Written atomically (write-then-rename) to `<state_dir>/hardware_profile.toml`. The file has four readers:
 
-- **`pipeline/stages/kernel.py`** — `_load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
+- **`pipeline/stages/kernel/kconfig.py`** — `load_hardware_kconfig()` consumes `[kconfig]` and `[kconfig_devices]`; entries flow into the `sysforge.config` fragment merged into `.config` via `merge_config.sh` (precedence: manual `[[kconfig]]` > `[kconfig]` > `[kconfig_devices]`; the device table is gated by `kernel.toml device_kconfig`, default true). Absence is non-fatal (entries skipped with an INFO log).
 - **`primitives/llvm_targets.py`** — `_read_hardware_targets()` consumes `[hardware] llvm_targets`; resolves the `LLVM_TARGETS_TO_BUILD` cmake arg injected by `pkgbuild_patcher.patch_llvm_targets`.
 - **`primitives/mesa_drivers.py`** — `_read_hardware_drivers()` consumes `[hardware] mesa_gallium_drivers` / `mesa_vulkan_drivers`; resolves (opt-in, gated by `sysforge.toml [mesa] filter_drivers`) the `-D gallium-drivers=` / `-D vulkan-drivers=` meson options rewritten by `pkgbuild_patcher.patch_mesa_drivers`.
 - **`pipeline/stages/reconfigure.py`** — surfaces the file in the pre-build config review so the user can hand-edit before kernel build.
@@ -3758,7 +3832,7 @@ Standards defined outside sysforge, which the project conforms to.
 | # | Standard | Scope | Status | How it is enforced |
 |---|----------|-------|--------|--------------------|
 | 1 | [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/) | User dirs (`~/.config`, `~/.cache`, `~/.local/state`, `~/.local/share`) | enforced | `primitives/paths.py` (`_xdg_base`); `check_standards` `paths` group; `tests/test_paths.py` |
-| 2 | Filesystem Hierarchy Standard + systemd `file-hierarchy(7)` | System roots (`/etc`, `/var/lib`, `/var/cache`, `/run`) | enforced | `paths.py` (`CONFIG_BASE`), `pipeline/state.py`, `makepkg_pgo.py`; `check_standards` `paths` group |
+| 2 | Filesystem Hierarchy Standard + systemd `file-hierarchy(7)` | System roots (`/etc`, `/var/lib`, `/var/cache`, `/run`) | enforced | `paths.py` (`CONFIG_BASE`), `primitives/pipeline_state.py`, `makepkg_pgo.py`; `check_standards` `paths` group |
 | 3 | [Semantic Versioning 2.0.0](https://semver.org/) | Project version scheme **and declared bump selection** | enforced | Two facets. **Format + cross-file parity**: `tools/check_shipped.py` `versions` group. **Bump selection** (§§6–8: patch for a compatible fix, minor for a compatible addition, major for an incompatible change): the required bump is derived from the release-notes accumulator's Keep a Changelog sections (row 13) — a `**Breaking:**` bullet forces major, `## Added` minor, the rest patch — and `tools/release.sh` preflight refuses a `--bump` weaker than the derived value. `## Removed` is the one section the heading alone cannot settle, because row 24 splits a removal two ways: deleting a `compat` surface breaks a configuration that currently works (major), while deleting a `shim` deletes something that already failed (minor). `derive_bump` therefore resolves each `## Removed` entry against the deprecation registry and weakens to minor only when the entry names at least one known surface and every surface it names is a `shim`. The record is deleted by the same commit that does the removal, so `_historical_registry` recovers it from the last revision of `deprecations.py` that carried it (`git show` + the same AST reader — no tombstone table to keep in sync), newest revision winning and the working tree applied last. Every failure mode — no repo, no git, an unrecognised surface, one that predates the registry — lands on major: **the derivation only ever guesses in the strengthening direction.** This is what makes row 24's shim/compat distinction operative rather than decorative; before `3.0.0-STD3` the two rows contradicted each other, since row 24 mandates the very `## Removed` entry row 3 read as unconditionally breaking, printing the derived value with the evidence line that produced it so the inference is auditable. Planning-time counterpart: every `ROADMAP.md` Planned entry carries a `Bump:` tag (`tools/gen_roadmap_table.py`, sole parser). `make next-bump` prints the derived value; `check_standards` `semver_bump` group + `tests/test_check_standards_bump.py` |
 | 4 | POSIX Utility Conventions + GNU long-options | CLI argument grammar (`-h/--help`, `-V/--version`, `--`) | followed | argparse in `cli.py`; `tests/test_standards_compliance.py` |
 | 5 | [NO_COLOR](https://no-color.org/) + `FORCE_COLOR` | Terminal colour control | enforced | `log.use_color()` (single authority); `tests/test_standards_compliance.py` |

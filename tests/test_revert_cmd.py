@@ -89,7 +89,7 @@ def test_execute_reinstall_forgets_and_reconciles(tmp_path, monkeypatch):
     bs.save()
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
          patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
-         patch.object(revert_cmd, "cmd_state_forget") as forget:
+         patch.object(revert_cmd, "forget_packages") as forget:
         pre = verb.pre_check(_args())
         res = verb.execute(_args(), pre)
     reinstall.assert_called_once_with(["mesa"])
@@ -109,7 +109,7 @@ def test_execute_conflict_replace_reinstalls_only(tmp_path, monkeypatch):
     bs.save()
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
          patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
-         patch.object(revert_cmd, "cmd_state_forget"):
+         patch.object(revert_cmd, "forget_packages"):
         pre = verb.pre_check(_args(packages=["llvm-sysforge"]))
         verb.execute(_args(packages=["llvm-sysforge"]), pre)
     reinstall.assert_called_once_with(["llvm"])
@@ -127,7 +127,7 @@ def test_execute_coexist_derename_removes_then_reinstalls(tmp_path, monkeypatch)
     bs.save()
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
          patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
-         patch.object(revert_cmd, "cmd_state_forget"):
+         patch.object(revert_cmd, "forget_packages"):
         pre = verb.pre_check(_args(packages=["linux-sysforge"]))
         verb.execute(_args(packages=["linux-sysforge"]), pre)
     remove.assert_called_once_with(["linux-sysforge"])
@@ -162,7 +162,7 @@ def test_execute_derename_reinstall_failure_stops_and_skips_forget(tmp_path, mon
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs",
                        side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
          patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
-         patch.object(revert_cmd, "cmd_state_forget") as forget, \
+         patch.object(revert_cmd, "forget_packages") as forget, \
          patch.object(revert_cmd, "_log") as mock_log:
         pre = verb.pre_check(_args(packages=["linux-sysforge"]))
         res = verb.execute(_args(packages=["linux-sysforge"]), pre)
@@ -186,7 +186,7 @@ def test_execute_derename_remove_failure_reports_nothing_changed(tmp_path, monke
     with patch.object(revert_cmd.pacman, "remove_pkgs",
                        side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
          patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
-         patch.object(revert_cmd, "cmd_state_forget") as forget, \
+         patch.object(revert_cmd, "forget_packages") as forget, \
          patch.object(revert_cmd, "_log") as mock_log:
         pre = verb.pre_check(_args(packages=["linux-sysforge"]))
         res = verb.execute(_args(packages=["linux-sysforge"]), pre)
@@ -203,7 +203,7 @@ def test_execute_dry_run_mutates_nothing(tmp_path, monkeypatch):
     bs._data["mesa"] = {"build_mode": "source_built", "pkgbase": "mesa"}
     bs.save()
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
-         patch.object(revert_cmd, "cmd_state_forget") as forget:
+         patch.object(revert_cmd, "forget_packages") as forget:
         pre = verb.pre_check(_args(dry_run=True))
         verb.execute(_args(dry_run=True), pre)
     reinstall.assert_not_called()

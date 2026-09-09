@@ -78,7 +78,7 @@ def test_pkgdest_now_honours_env(monkeypatch, no_conf):
 # ---------------------------------------------------------------------------
 
 def test_kernel_resolve_built_config_uses_conf_builddir(tmp_path, monkeypatch):
-    from sysforge.pipeline.stages import kernel
+    from sysforge.pipeline.stages.kernel import gates as kernel
 
     pkgbuild_dir = tmp_path / "linux-custom"
     pkgbuild_dir.mkdir()
@@ -92,7 +92,7 @@ def test_kernel_resolve_built_config_uses_conf_builddir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         config, "parse_system_makepkg_conf", lambda: {"BUILDDIR": str(builddir)}
     )
-    found = kernel._resolve_built_config(pkgbuild_dir)
+    found = kernel.resolve_built_config(pkgbuild_dir)
     assert found == cfg
 
 

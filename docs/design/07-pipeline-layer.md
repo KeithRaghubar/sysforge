@@ -227,7 +227,7 @@ clears ccache/sccache and drops caches before measuring anything.
 
 ### Checkpoint state
 
-`pipeline_state.toml` is the authoritative checkpoint record. Written atomically (write-then-rename) after every state transition. Human-readable TOML for manual recovery.
+`pipeline_state.toml` is the authoritative checkpoint record. Written atomically (write-then-rename) after every state transition. Human-readable TOML for manual recovery. The reader/writer is `primitives/pipeline_state.py` (§Primitives Layer) rather than a module under `pipeline/`: the leaf layer needs to read this file too — `init_notice.py` asks whether the bootstrap stages are done — and `PipelineState` is its single format home, so the class sits below both consumers (3.2.0-F12). `sysforge.pipeline.state` re-exports every public name for one cycle, so existing imports and test patch points are unaffected.
 
 Per-stage status: `pending` → `running` → `done` / `failed` / `skipped_to`
 
@@ -258,6 +258,21 @@ The ownership model is a single one for every writable sysforge runtime dir: **`
 The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `USER` > `getpass.getuser()`). The same `SYSFORGE_GROUP`/`SYSFORGE_DIR_MODE` constants are reused by the VM-bootstrap `configure.py` state-dir setup, so bootstrapped and package-installed systems agree. Install-time, the shipped `tmpfiles.d` provisions all four dirs `root:sysforge 2775` and a shipped `sysusers.d` declares the group (so `systemd-sysusers` creates it before `systemd-tmpfiles`) — making the runtime sudo path a no-op on a normally-installed host. `fs_provision.empty_dir_contents(path)` clears a directory's contents while leaving the node intact, used for the PGO purge so a root-owned parent never blocks the cleanup.
 
 ### Kernel stage (stage 7)
+
+**Module layout.** Like the toolchain stage, `pipeline/stages/kernel/` is a package — the same shape one size smaller (2355 lines, a 567-line `KernelStage`), split by `3.2.0-F2` under the same two conventions (module-qualified calls; names crossing a boundary are public):
+
+| module | holds |
+| --- | --- |
+| `constants.py` | valid-value contracts and the canonical recovery command |
+| `config.py` | `kernel.toml` → `KernelConfig`, plus the precedence-bearing resolvers |
+| `source.py` | locating and syncing the PKGBUILD tree, and the pkgname checks |
+| `fdo.py` | sample-based FDO (AutoFDO / Propeller) orchestration |
+| `kconfig.py` | authoring the kconfig fragment the PKGBUILD merges |
+| `install.py` | initramfs and bootloader — the steps that make a kernel bootable |
+| `gates.py` | Gate 1/2/3 and the kconfig drift check |
+| `stage.py` | `KernelStage` — sequencing only |
+
+The resolvers stay functions rather than becoming `KernelConfig` fields because their inputs are not all config: `resolve_compiler` weighs a CLI flag against `kernel.toml` against pipeline state, `resolve_source` probes the filesystem, and `resolve_names` derives a pair that must agree with the PKGBUILD.
 
 Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled. Also fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) before the build, sharing the same process-wide once-guard as the packages stage and `build_and_install`.
 
@@ -346,7 +361,7 @@ The snapshot **accumulates**: `_capture_lsmod_snapshot` union-merges each new `l
 
 **Configurable kconfig target sequence (`kconfig_targets`):**
 
-`kernel.toml [kernel] kconfig_targets` (default: unset — feature off, zero behavior change) names an explicit sequence of `make <target>` kconfig-generation steps to run, replacing the PKGBUILD's own kconfig invocation. `resolve_kconfig_targets(kernel_cfg, interactive=…)` (in `pipeline/stages/kernel.py`) validates and reorders the configured list before it reaches the patcher:
+`kernel.toml [kernel] kconfig_targets` (default: unset — feature off, zero behavior change) names an explicit sequence of `make <target>` kconfig-generation steps to run, replacing the PKGBUILD's own kconfig invocation. `resolve_kconfig_targets(kernel_cfg, interactive=…)` (in `pipeline/stages/kernel/`) validates and reorders the configured list before it reaches the patcher:
 
 - **Silent targets** (`olddefconfig`, `defconfig`, `allmodconfig`, `alldefconfig`, `savedefconfig`, `listnewconfig`) always run, in any interactive mode.
 - **Prompting targets** (`oldconfig`, `localmodconfig`, `localyesconfig`, `mod2yesconfig`) require an interactive stage run; requesting one under `interactive=False` raises, naming the fix — `oldconfig` names its silent equivalent `olddefconfig`, the local*/mod2yes targets say to run the stage interactively (no silent equivalent exists for those).
@@ -426,6 +441,25 @@ Walks `packages.toml` in order:
 The AUR-dep build and per-package install loop are wrapped in `sentinel_scope(state_name="packages", …)` (no `recovery_cmd` — there's no single shell command that restores a partially-installed package set; the operator verifies with `pacman -Dk` and re-runs `sysforge run packages`). Per-package `RuntimeError` is caught and reported via the state machine; only an interruption or unexpected exception inside the scope preserves the sentinel.
 
 ### Toolchain stage (stage 5)
+
+**Module layout.** The stage is a package (`pipeline/stages/toolchain/`), not a module. It was one 4263-line file with four classes and a 701-line `_build_llvm_pgo_inner`; `3.2.0-F2` split it along the seams its own comment banners already named:
+
+| module | holds |
+| --- | --- |
+| `constants.py` | defaults and tuning values; no imports, no logic |
+| `config.py` | `toolchain.toml` → `ToolchainConfig`, parsed once at stage entry |
+| `pkgbuilds.py` | resolving package names to PKGBUILDs, and syncing those trees |
+| `reuse.py` | Pass-4 input-fingerprint reuse (opt-in) |
+| `passes.py` | `build_pkg` (one package) and `build_pass` (one pass over many) |
+| `profdata.py` | profile generation, merging, staging, the version sidecar |
+| `verify.py` | post-install evidence that the installed clang actually links |
+| `pgo.py` | the four-pass sequence itself |
+| `gates.py` | Gate 1 / Gate 2, soname consumers, snapshot + rollback |
+| `identity.py` | which toolchain is active; the register-only GCC path |
+| `bolt.py` | Pass 5, optional post-link optimization |
+| `stage.py` | `ToolchainStage` — sequencing only, delegating every step |
+
+Dependencies run one way (`constants` ← `config` ← … ← `stage`), and `stage.py` is the only module importing most of the others. Two conventions make the split hold: **modules call each other module-qualified** (`profdata.pgo_install(...)`, never a bare imported name) so a patch on the owning module is seen by every caller; and **a name that crosses a module boundary is public**, since an underscore is a promise about one module's internals that stopped being true the moment another module needed the name. The package `__init__` re-exports every public name, so `sysforge.pipeline.stages.toolchain` remains a valid import path and `stages/__init__.py`'s eager instantiation is untouched. Read `stage.py` to learn what the stage does; read the siblings to learn how each step works.
 
 **Opt-in:** stage is a clean no-op if `/etc/sysforge/toolchain.toml` is absent or has `enabled = false`. Systems that skip this stage use whatever compiler is already installed; packages and kernel stages proceed normally.
 
@@ -591,8 +625,8 @@ The sentinel-installation and clean-exit machinery is exposed as a shared `senti
 
 | Caller | `stage_name` | `recovery_cmd` | Notes |
 |---|---|---|---|
-| `pipeline/stages/toolchain.py` (LLVM path) | `toolchain` | snapshot-aware: offline `sudo pacman -U <cached suite>`, else `sudo pacman -S <suite>` | Sentinel scoped to install → Gate-3 verify → auto-rollback (build + Gates 1–2 run outside it). Full three-layer protection (sentinel + verify + clean-exit). |
-| `pipeline/stages/kernel.py` | `kernel` | `sudo mkinitcpio -P` (regenerates initramfs — the boot-critical step) | Wraps `makepkg --install`, `mkinitcpio -P`, and the bootloader regen. |
+| `pipeline/stages/toolchain/` (LLVM path) | `toolchain` | snapshot-aware: offline `sudo pacman -U <cached suite>`, else `sudo pacman -S <suite>` | Sentinel scoped to install → Gate-3 verify → auto-rollback (build + Gates 1–2 run outside it). Full three-layer protection (sentinel + verify + clean-exit). |
+| `pipeline/stages/kernel/` | `kernel` | `sudo mkinitcpio -P` (regenerates initramfs — the boot-critical step) | Wraps `makepkg --install`, `mkinitcpio -P`, and the bootloader regen. |
 | `pipeline/stages/packages.py` | `packages` | _none_ (no single command restores a partially-installed package set) | Wraps AUR-dep build + per-package install loop. Per-package failures are state-tracked and don't preserve the sentinel; only an interruption / unexpected exception does. |
 | `pipeline/stages/reconfigure.py` (`_try_install_editor`) | `reconfigure-editor` | _none_ | Single-package install; sentinel is cheap consistency with the larger stages. |
 | `verbs/runner.py` (any verb with `requires_sentinel=True`) | _verb name_ | per-verb (`verb.sentinel_recovery_cmd(args, pre)`) | Currently `build`, `update`, `state repair`, `state orphans --prune`, `state failed --clear`/`--clear-all`. |

@@ -2,12 +2,17 @@
 test_pipeline_state.py — unit tests for PipelineState read/write.
 
 Uses a temporary directory for all state file operations.
+
+The stage-result section at the end covers ``[stages.toolchain.result]`` and the
+two canonical accessors over it. Those tests used to live in the toolchain
+stage's test file; they moved here with the class in 3.2.0-F12, since what they
+actually exercise is this file's format rather than anything the stage does.
 """
 import tomllib
 
 import pytest
 
-from sysforge.pipeline.state import PipelineState, resolve_state_dir
+from sysforge.primitives.pipeline_state import PipelineState, resolve_state_dir
 
 
 @pytest.fixture
@@ -159,3 +164,74 @@ def test_resolve_state_dir_is_the_paths_primitive():
     """The name still imports from here, but the implementation lives in the
     leaf layer — behaviour tests moved to tests/test_paths.py."""
     assert resolve_state_dir.__module__ == "sysforge.primitives.paths"
+
+
+# ---------------------------------------------------------------------------
+# Stage result: [stages.<name>.result] and the toolchain accessors over it
+# ---------------------------------------------------------------------------
+
+def test_state_set_get_result(tmp_path):
+    state = PipelineState(tmp_path)
+    state.set_stage_result(
+        "toolchain", {"cc": "/usr/bin/clang", "cxx": "/usr/bin/clang++", "ld": "lld"})
+    result = state.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/clang"
+    assert result["cxx"] == "/usr/bin/clang++"
+    assert result["ld"] == "lld"
+
+def test_state_get_result_missing_returns_empty(tmp_path):
+    state = PipelineState(tmp_path)
+    assert state.get_stage_result("toolchain") == {}
+
+def test_state_result_serialized_to_toml(tmp_path):
+    state = PipelineState(tmp_path)
+    state.mark_running("toolchain")
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "ld": "lld"})
+    state.save()
+
+    text = (tmp_path / "pipeline_state.toml").read_text()
+    assert "[stages.toolchain.result]" in text
+    assert 'cc = "/usr/bin/clang"' in text
+    assert 'ld = "lld"' in text
+
+def test_state_result_round_trips(tmp_path):
+    state = PipelineState(tmp_path)
+    state.mark_done("toolchain")
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/gcc", "cxx": "/usr/bin/g++"})
+    state.save()
+
+    state2 = PipelineState(tmp_path)
+    result = state2.get_stage_result("toolchain")
+    assert result["cc"] == "/usr/bin/gcc"
+    assert result["cxx"] == "/usr/bin/g++"
+
+def test_get_toolchain_fingerprint_none_when_system(tmp_path):
+    from sysforge.pipeline.state import get_toolchain_fingerprint
+    state = PipelineState(tmp_path)  # toolchain stage never ran → "system"
+    assert get_toolchain_fingerprint(state) is None
+
+def test_get_toolchain_fingerprint_uses_active_cc_and_method(tmp_path, monkeypatch):
+    from sysforge.pipeline import state as state_mod
+    from sysforge.primitives import build_fingerprint, config
+    state = PipelineState(tmp_path)
+    state.set_stage_result("toolchain", {"cc": "/opt/clang", "variant": "pgo_llvm"})
+
+    monkeypatch.setattr(config, "resolve_drift_detect", lambda: "content_hash")
+    monkeypatch.setattr(
+        build_fingerprint, "toolchain_fingerprint",
+        lambda method, cc: f"{method}:{cc}",
+    )
+    assert state_mod.get_toolchain_fingerprint(state) == "content_hash:/opt/clang"
+
+def test_get_toolchain_variant_helper(tmp_path):
+    """get_toolchain_variant returns the canonical variant or 'system' fallback."""
+    from sysforge.pipeline.state import get_toolchain_variant
+
+    state = PipelineState(tmp_path)
+    assert get_toolchain_variant(state) == "system"  # no result yet
+
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/gcc", "variant": "gcc"})
+    assert get_toolchain_variant(state) == "gcc"
+
+    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "variant": "pgo_llvm"})
+    assert get_toolchain_variant(state) == "pgo_llvm"

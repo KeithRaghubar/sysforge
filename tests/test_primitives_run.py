@@ -1,8 +1,9 @@
-"""tests for sysforge.primitives.run.run_or_raise"""
+"""tests for sysforge.primitives.run — run_or_raise and capture"""
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sysforge.primitives import run
 from sysforge.primitives.run import run_or_raise
 
 
@@ -94,3 +95,64 @@ class TestRunOrRaiseFailure:
             mock_run.return_value = MagicMock(returncode=1)
             with pytest.raises(RuntimeError, match="no output captured"):
                 run_or_raise(["x"], tag="T", capture=False)
+
+
+# ---------------------------------------------------------------------------
+# capture — the probe form (3.2.0-F5)
+# ---------------------------------------------------------------------------
+
+def test_capture_returns_stdout_as_text():
+    proc = run.capture(["echo", "hello"])
+    assert proc is not None
+    assert proc.stdout.strip() == "hello"
+    assert proc.returncode == 0
+
+
+def test_capture_does_not_raise_on_non_zero_exit():
+    """A probe's whole job is to tolerate the answer 'no'.
+
+    ``run_or_raise`` raises, which is exactly wrong here — that mismatch is why
+    probes kept being written as bare subprocess calls instead of going through
+    this module at all.
+    """
+    proc = run.capture(["false"])
+    assert proc is not None
+    assert proc.returncode != 0
+
+
+def test_capture_returns_none_when_the_binary_is_absent():
+    """Distinct from 'ran and failed', so a caller can tell the two apart.
+
+    This is the check that replaces a hand-written try/except at every probe
+    site — the kind that is correct in nine places and forgotten in the tenth.
+    """
+    assert run.capture(["sysforge-no-such-binary-a1b2c3"]) is None
+
+
+def test_capture_forwards_input_and_kwargs(tmp_path):
+    proc = run.capture(["cat"], input="piped\n")
+    assert proc is not None and proc.stdout == "piped\n"
+
+    (tmp_path / "marker").write_text("x", encoding="utf-8")
+    proc = run.capture(["ls"], cwd=str(tmp_path))
+    assert proc is not None and "marker" in proc.stdout
+
+
+def test_capture_never_raises_on_a_failing_command_regardless_of_check_kwarg():
+    """``check`` is forced off; a caller cannot re-arm the raise by accident."""
+    proc = run.capture(["false"], check=True)
+    assert proc is not None and proc.returncode != 0
+
+
+def test_capture_logs_the_probe_at_debug(monkeypatch):
+    """Probes appear in -vvv output; bare calls appeared nowhere.
+
+    Patched at ``sysforge.log.debug`` rather than on the Logger instance, which
+    uses ``__slots__`` — the module functions are the stable seam.
+    """
+    import sysforge.log as sysforge_log
+
+    seen = []
+    monkeypatch.setattr(sysforge_log, "debug", lambda tag, msg: seen.append((tag, msg)))
+    run.capture(["echo", "logged"])
+    assert any(tag == "[RUN]" and "echo logged" in msg for tag, msg in seen)

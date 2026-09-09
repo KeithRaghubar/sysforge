@@ -38,6 +38,7 @@ import os
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.pipeline_state import PipelineState
 
 _log = log.get_logger("INIT")
 
@@ -106,8 +107,6 @@ def maybe_emit_init_notice(state_dir: Path | str | None = None) -> str | None:
 
         # Read the resolved dir's pipeline state directly (the marker lives in
         # the same dir as pipeline_state.toml).
-        from sysforge.pipeline.state import PipelineState
-
         ps = PipelineState(path.parent)
         pending = [s for s in _REQUIRED_STAGES if ps.stage_status(s) != "done"]
 

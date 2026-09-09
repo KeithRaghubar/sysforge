@@ -418,10 +418,76 @@ def _load_check_shipped():
 
 
 def _stage_reads(rel_path: str, accessor: str) -> set[str]:
-    """Keys read from a config dict via `<accessor>.get("<key>")` in a module."""
-    src = (REPO / rel_path).read_text(encoding="utf-8")
+    """Keys read from a config dict via `<accessor>.get("<key>")` in a stage.
+
+    Takes a module file or a stage *package* directory — the toolchain stage
+    became a package in 3.2.0-F2, and its reads are spread across the files
+    inside it, so scanning one file would silently under-report and let an
+    un-allowlisted key through.
+    """
+    target = REPO / rel_path
+    files = sorted(target.glob("*.py")) if target.is_dir() else [target]
     pat = _re2.escape(accessor) + r'\.get\(\s*"([a-z_][a-z0-9_]*)"'
-    return set(_re2.findall(pat, src))
+    keys: set[str] = set()
+    for f in files:
+        keys |= set(_re2.findall(pat, f.read_text(encoding="utf-8")))
+    return keys
+
+
+def _kernel_config_reads() -> set[str]:
+    """Every kernel.toml key KernelConfig parses.
+
+    The kernel counterpart of :func:`_config_dataclass_reads`. Scoped to
+    ``from_toml``, the one parse site since 3.2.0-F6.
+    """
+    import ast as _ast
+
+    path = REPO / "sysforge/pipeline/stages/kernel/config.py"
+    full = path.read_text(encoding="utf-8")
+    chunk = next(
+        (_ast.get_source_segment(full, n) for n in _ast.walk(_ast.parse(full))
+         if isinstance(n, _ast.FunctionDef) and n.name == "from_toml"), None)
+    assert chunk, "kernel config.py parse site moved or was renamed"
+    keys = set(_re2.findall(r'data\.get\(\s*"([a-z_][a-z0-9_]*)"', chunk))
+    return keys
+
+
+def _config_dataclass_reads() -> set[str]:
+    """Every toolchain.toml key ToolchainConfig parses, plus its sections.
+
+    Scans the one parse site rather than the whole package: since 3.2.0-F6 the
+    stage reads toolchain.toml in exactly one function, which is what makes the
+    allowlist comparison exact. Sections are collected separately because they
+    are read as sub-tables (``data.get("packages", {})``) and the allowlist
+    tracks them in ``_KNOWN_SECTIONS``.
+    """
+    import ast as _ast
+
+    path = REPO / "sysforge/pipeline/stages/toolchain/config.py"
+    full = path.read_text(encoding="utf-8")
+    # Scope to from_toml (and the bolt reader it calls). config.py also holds
+    # resolve_packages_repo_mode, which reads *packages.toml* — scanning the
+    # whole file would count its `build` key as a toolchain.toml key.
+    wanted = {"from_toml", "bolt_config"}
+    chunks = [
+        _ast.get_source_segment(full, n)
+        for n in _ast.walk(_ast.parse(full))
+        if isinstance(n, _ast.FunctionDef) and n.name in wanted
+    ]
+    assert len(chunks) == len(wanted), "config.py parse sites moved or were renamed"
+    src = "\n".join(chunks)
+    keys = set(_re2.findall(r'data\.get\(\s*"([a-z_][a-z0-9_]*)"', src))
+    keys |= set(_re2.findall(r'pkgs\.get\(\s*"([a-z_][a-z0-9_]*)"', src))
+    keys |= set(_re2.findall(r'bcfg\.get\(\s*"([a-z_][a-z0-9_]*)"', src))
+    # Sub-tables are sections, not top-level keys; the [llvm] section is read by
+    # llvm_targets straight off TOOLCHAIN_PATH, so name it explicitly.
+    keys |= {"packages", "bolt", "llvm"}
+    # Keys the dataclass carries but resolves through a helper that takes the
+    # whole table (asserted separately in the test that calls this).
+    keys |= {"pgo_store", "drift_detect"}
+    # [bolt]/[packages] member keys belong to their section, not the top level.
+    return keys - {"enabled", "libllvm", "training_workload", "pgo", "non_pgo",
+                   "lib32", "training_corpus"} | {"enabled", "pgo"}
 
 
 def _documented_keys(rel_path: str) -> set[str]:
@@ -431,47 +497,61 @@ def _documented_keys(rel_path: str) -> set[str]:
 
 
 class TestAllowlistCodeParity:
-    KERNEL = "sysforge/pipeline/stages/kernel.py"
-    TOOLCHAIN = "sysforge/pipeline/stages/toolchain.py"
+    KERNEL = "sysforge/pipeline/stages/kernel"  # a package since 3.2.0-F2
+    TOOLCHAIN = "sysforge/pipeline/stages/toolchain"  # a package since 3.2.0-F2
 
     def test_kernel_allowlist_matches_stage_reads(self):
-        """_KNOWN_TOP_KEYS|_KNOWN_SECTIONS for kernel.toml must equal exactly
-        the keys KernelStage reads via kernel_cfg.get(...). Catches both an
-        un-allowlisted read and a stale allowlist entry."""
+        """The allowlist must equal exactly the keys ``KernelConfig`` parses.
+
+        As for the toolchain (3.2.0-F6), the stage's scattered
+        ``kernel_cfg.get(...)`` calls became one typed config parsed at stage
+        entry, so this compares two sets rather than scanning read sites spread
+        across the package.
+        """
         cs = _load_check_shipped()
         allow = (cs._KNOWN_TOP_KEYS["kernel.toml"]
                  | cs._KNOWN_SECTIONS["kernel.toml"])
-        reads = _stage_reads(self.KERNEL, "kernel_cfg")
+        reads = _kernel_config_reads()
         assert reads == allow, (
-            f"kernel allowlist drift:\n"
-            f"  read but not allowlisted: {sorted(reads - allow)}\n"
-            f"  allowlisted but not read: {sorted(allow - reads)}"
+            f"kernel allowlist drift vs KernelConfig.from_toml:\n"
+            f"  parsed but not allowlisted: {sorted(reads - allow)}\n"
+            f"  allowlisted but not parsed: {sorted(allow - reads)}"
         )
 
     def test_toolchain_allowlist_matches_stage_reads(self):
-        """Toolchain reads partly flow through helpers (resolve_pgo_store takes
-        tcfg), so the guard is asymmetric: every direct tcfg.get(...) read must
-        be allowlisted, and every allowlisted key must be either read directly
-        or resolved by a known helper."""
+        """The allowlist must equal exactly the keys ``ToolchainConfig`` parses.
+
+        3.2.0-F6 replaced the stage's scattered ``tcfg.get(...)`` calls with one
+        typed config parsed at stage entry, which makes this guard exact rather
+        than asymmetric: there is now a single place where toolchain.toml keys
+        are read, so "every key read" and "every key allowlisted" can be
+        compared as sets instead of one-way containment plus a hand-maintained
+        set of helper exemptions.
+
+        Two keys are still resolved elsewhere, by helpers that take the whole
+        table by design, and the indirection is asserted rather than assumed.
+        """
         cs = _load_check_shipped()
-        allow_top = cs._KNOWN_TOP_KEYS["toolchain.toml"]
-        allow_sec = cs._KNOWN_SECTIONS["toolchain.toml"]
-        reads = _stage_reads(self.TOOLCHAIN, "tcfg")
-        # pgo_store is read inside primitives.makepkg_pgo.resolve_pgo_store(tcfg),
-        # not directly in the stage; assert that indirection really exists.
+        allow = (cs._KNOWN_TOP_KEYS["toolchain.toml"]
+                 | cs._KNOWN_SECTIONS["toolchain.toml"])
+        reads = _config_dataclass_reads()
+
+        # pgo_store is read inside primitives.makepkg_pgo.resolve_pgo_store(raw),
+        # which owns its config > env > default precedence and is shared with the
+        # wrapper's orphan-profraw guard.
         helper = (REPO / "sysforge/primitives/makepkg_pgo.py").read_text()
         assert 'get("pgo_store")' in helper
-        # drift_detect is read on the *update* path (config.resolve_drift_detect),
-        # not by the toolchain stage — it configures update's same-variant drift
-        # fingerprint. Assert that indirection really exists.
+        # drift_detect configures *update*'s same-variant drift fingerprint, not
+        # anything the toolchain stage does; ToolchainConfig carries it so the
+        # key is not orphaned, and config.resolve_drift_detect is the reader.
         cfg = (REPO / "sysforge/primitives/config.py").read_text()
         assert 'get("drift_detect")' in cfg
-        helper_resolved = {"pgo_store", "drift_detect"}
-        assert reads <= (allow_top | allow_sec), (
-            f"toolchain reads not allowlisted: "
-            f"{sorted(reads - (allow_top | allow_sec))}")
-        stale = allow_top - reads - helper_resolved
-        assert not stale, f"stale toolchain allowlist entries: {sorted(stale)}"
+
+        assert reads == allow, (
+            f"toolchain allowlist drift vs ToolchainConfig.from_toml:\n"
+            f"  parsed but not allowlisted: {sorted(reads - allow)}\n"
+            f"  allowlisted but not parsed: {sorted(allow - reads)}"
+        )
 
     def test_kernel_reads_are_documented_in_shipped(self):
         """Every key the kernel stage reads must be documented (active or as a

@@ -93,7 +93,6 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.2.0-F2` | Split pipeline/stages/toolchain.py into a stage package | high | large | patch |
 | `3.2.0-B12` | a --pgo=generate build under the sandbox writes its profiles into the container and loses them at teardown | med | small | patch |
 | `3.2.0-B16` | the mesa PGO store has no version sidecar, so an arbitrarily old profile is reused with no compatibility gate | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
@@ -103,15 +102,12 @@ canonical ordering.
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F3` | Make update's phases functions, not comments | med | medium | patch |
 | `3.2.0-F4` | Relocate makepkg_wrapper out of the leaf layer | med | medium | patch |
-| `3.2.0-F6` | Typed stage configs parsed once at stage entry | med | medium | patch |
 | `3.2.0-F9` | the mesa PGO rebuild suppresses its own staleness diagnostic, so a drifting profile is unobservable | med | medium | minor |
 | `3.2.0-F10` | nothing verifies that a freshly installed locally-built mesa actually initialises | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F5` | Fence direct subprocess use behind the run seam | med | large | patch |
-| `3.2.0-F8` | Shared verb helpers module to keep *_cmd modules leaf-like | low | small | patch |
 | `3.2.0-F11` | the profile store has no inspection or reclamation surface, and the purge path its own docstring promises does not exist | low | small | minor |
-| `3.2.0-F12` | Relocate PipelineState so the last upward edge out of primitives/ closes | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `3.2.0-F7` | Per-verb parser assembly on the Verb class | low | medium | patch |
@@ -414,46 +410,6 @@ canonical ordering.
 
 ---
 
-- **`3.2.0-F12` — Relocate `PipelineState` so the last upward edge out of `primitives/` closes.**
-  Surfaced by `3.2.0-F1` widening the layering guard from `sysforge.pipeline.stages` to
-  `sysforge.pipeline`/`sysforge.ui` in full: `primitives/init_notice.py` reaches up for
-  `pipeline.state.PipelineState` to ask whether the `reconfigure`/`hardware` stages are done, and is
-  now the sole entry in `_ALLOWED_UPWARD_IMPORTS`. Duplicating the read is not an option —
-  `PipelineState` is the single home for `pipeline_state.toml`'s format — so the fix is to move the
-  reader down (`primitives/pipeline_state.py`, re-exported from `pipeline.state` for one cycle, the
-  same shape `resolve_state_dir` and `hardware_probe` just used). `pipeline/state.py` is already
-  down to `PipelineState` plus `STAGE_STATUSES`/`PACKAGE_STATUSES` and the two
-  `get_toolchain_variant`/`get_toolchain_fingerprint` accessors, and its only sysforge imports are
-  `log` and `primitives.paths`, so the module is a leaf in everything but filing. Decide at
-  implementation whether the toolchain accessors travel with it (they read the same file) or stay
-  as pipeline-level helpers over a relocated class. On completion the allowlist is empty and
-  `test_layering_allowlist_has_no_dead_entries` guards it staying that way.
-  *Priority: low · Effort: small · Bump: patch* — pure relocation, one live call site, no
-  behaviour change; low because the reach-up is a single best-effort advisory that already
-  swallows every exception.
-  **Standards home on adoption:** none new — same structural guard `3.2.0-F1` tightened.
-
-- **`3.2.0-F2` — Split `pipeline/stages/toolchain.py` into a stage package.** At 4263 lines with
-  four classes, thirty distinct sysforge imports and a 701-line `_build_llvm_pgo_inner`, it is the
-  highest-risk file in the tree; its test file is 4922 lines. The internal structure already names
-  the seams: gate-1 preflight, gate-2 audit, PGO passes (`_build_pass`, `_validate_pgo_environment`,
-  `_PGOAborted`), BOLT (`_run_bolt`, `_build_bolt_tools`), soname-consumer gating, dynsym evidence,
-  `_ReuseCtx`, `ToolchainIdentity`, PKGBUILD resolution (`_resolve_all_pkgbuilds`,
-  `_sync_pkgbuild_dirs`). Convert to `pipeline/stages/toolchain/` with `gates.py`, `pgo.py`,
-  `bolt.py`, `reuse.py`, `identity.py`, `pkgbuilds.py` and a thin `stage.py` holding
-  `ToolchainStage`; the package `__init__` re-exports the current public names so
-  `sysforge.pipeline.stages.toolchain` stays a valid import path and `stages/__init__.py`'s eager
-  instantiation is untouched. Tests split along the same lines. Rule for the split: every seam a
-  test currently reaches via `monkeypatch.setattr(toolchain, "_private")` becomes either a public
-  function of its new module or an injected dependency — the private-patch count must fall, not
-  move. `stages/kernel.py` (2352 lines, 567-line `KernelStage`) is the same shape one size smaller
-  and follows the same pattern as a second step.
-  *Priority: high · Effort: large · Bump: patch* — no user-visible change; largest stability payoff
-  given how much sandbox and PGO work lands in this area.
-  **Standards home on adoption:** none new.
-
----
-
 - **`3.2.0-F3` — Make `update`'s phases functions, not comments.** `_cmd_update_body` is a
   790-line function; the numbered phases DESIGN describes (§update) exist in the code only as
   `# Phase N` comments and roadmap-ID annotations. The helpers are already extracted
@@ -490,38 +446,30 @@ canonical ordering.
 
 ---
 
-- **`3.2.0-F5` — Fence direct `subprocess` use behind the run seam.** Fifty-eight modules call
+- **`3.2.0-F5` — Fence direct `subprocess` use behind the run seam.** Modules call
   `subprocess.run`/`Popen`/`check_output` directly, although `primitives/run.py`, `pty_runner.py`
   and the privilege seam (`privilege.run_privileged`, §Privilege-Escalation Seam) exist precisely so
   that the unified run-log, `--dry-run`, the throttle preexec (`resource_guard.make_child_preexec`)
   and the sandbox `BUILDENV` scrub apply uniformly. Every raw call is a site where one of those can
-  be bypassed — the accelerator leak fixed as `3.2.0-B2` was exactly such a site. Add a ruff
-  `banned-api` rule (extending the `STD8`-era config) that forbids `subprocess.*` outside an
-  allowlist (`run.py`, `pty_runner.py`, `privilege.py`, `sudo_session.py`), migrate call sites in
-  batches to `run.run()` / `run_privileged()`, and record it as a standards row whose *enforced*
-  column names the ruff rule. Probes that legitimately need a bare call (`os_release`,
-  `version.py`) go through a thin `run.capture()` rather than earning an exemption.
+  be bypassed — the accelerator leak fixed as `3.2.0-B2` was exactly such a site.
+
+  **Landed so far:** `run.capture()` — the probe form the seam was missing, which is *why* raw calls
+  kept reappearing: `run_or_raise` raises, and "that tool is not installed" is an answer rather than
+  an error, so every probe author correctly declined the seam. It is argv-list only, forces
+  `check=False`, returns `None` for a missing binary (replacing a hand-written
+  `try/except FileNotFoundError` per site) and logs at debug so probes appear under `-vvv`. The
+  toolchain package's ten probes migrated with it.
+
+  **Remaining:** migrate the other modules in batches, then add a ruff `banned-api` rule (extending
+  the `STD8`-era config) forbidding `subprocess.*` outside an allowlist (`run.py`, `pty_runner.py`,
+  `privilege.py`, `sudo_session.py`) — the rule lands *last*, since it fails until the batches are
+  done. Non-probe calls that legitimately stay raw need naming in the allowlist rather than a blanket
+  exemption: a streaming or privileged invocation, and anything needing its own `preexec_fn`, are the
+  shapes `capture()` deliberately does not cover.
   *Priority: med · Effort: large · Bump: patch* — large by count, mechanical per site; ship in
   batches, each independently green.
   **Standards home on adoption:** new `21-standards.md` row "subprocess goes through `primitives/run`",
   enforced by the ruff `banned-api` entry plus `tests/test_standards_compliance.py`.
-
----
-
-- **`3.2.0-F6` — Typed stage configs parsed once at stage entry.** `stages/toolchain.py` and
-  `stages/kernel.py` carry 27 and 28 `cfg.get(...)` calls respectively and zero config dataclasses;
-  `primitives/config.py` and `profile.py` likewise expose dicts. A mistyped key is a runtime
-  `None` deep in a gate rather than an import-time error, and every consumer re-derives the same
-  defaults. Introduce one frozen dataclass per stage config (`ToolchainConfig`, `KernelConfig`, …)
-  built by a single `from_toml(data)` that applies defaults and validation in one place, mirroring
-  the shape `BootstrapConfig` already has for the install path. Stages receive the dataclass; the
-  `cfg.get` calls go away. Schema validation (§Config Layer) then targets the dataclass field list
-  rather than a parallel hand-maintained key set, and both big stage test files shrink because
-  fixtures construct the dataclass instead of nested dicts. Sequence after `3.2.0-F2` so the split
-  modules are written against the typed shape from the start.
-  *Priority: med · Effort: medium · Bump: patch* — no config-file format change; TOML keys are
-  unchanged, only the in-process representation.
-  **Standards home on adoption:** none new.
 
 ---
 
@@ -536,21 +484,6 @@ canonical ordering.
   importing `_build_parser` from `cli` (the one remaining `help_cmd → cli` reach-up).
   *Priority: low · Effort: medium · Bump: patch* — behaviour-identical; verify with the completions
   parity audit before and after.
-  **Standards home on adoption:** none new.
-
----
-
-- **`3.2.0-F8` — Shared verb helpers module to keep `*_cmd` modules leaf-like.** The verb modules
-  have started importing each other: `revert_cmd` and `uninstall_cmd` both pull `cmd_state_forget`
-  from `state_cmd`, `build_cmd` reaches into `packages_cmd` for `_rewrite_packages_toml`, and
-  `doctor` deferred-imports `cmd_update`. Each is defensible alone; together they are the seed of a
-  fourth informal layer with no guard. Add `verbs/shared.py` (next to `verbs/helpers.py`) for
-  cross-verb operations — demotion/forget, packages.toml rewrite — and extend
-  `tests/test_module_layering.py` with a rule that `*_cmd.py` modules import from `verbs/`,
-  `primitives/` and `pipeline/` but never from a sibling `*_cmd.py`. The one-home invariants
-  (§`sysforge/CLAUDE.md`: "one packages.toml writer", demotion reuses `cmd_state_forget`) are
-  preserved by relocating the home, not by duplicating it.
-  *Priority: low · Effort: small · Bump: patch* — a handful of moves plus one new test.
   **Standards home on adoption:** none new.
 
 ---

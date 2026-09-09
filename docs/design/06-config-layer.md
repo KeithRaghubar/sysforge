@@ -98,6 +98,20 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[security]` | `sandbox_clean` | `true` | Sync a pristine copy of the chroot before each build (`makechrootpkg -c`). `false` reuses the working copy — faster, but a previous build's leftovers stay visible to the next one |
 | `[security]` | `sandbox_update` | `true` | Update the working copy before building (`makechrootpkg -u`), so a build never links against a stale chroot |
 
+### Typed stage configs
+
+`toolchain.toml` and `kernel.toml` are parsed **once, at stage entry**, into frozen dataclasses — `ToolchainConfig` (`pipeline/stages/toolchain/config.py`) and `KernelConfig` (`pipeline/stages/kernel/config.py`), each built by a single `from_toml(data)` classmethod (`3.2.0-F6`). The TOML keys are unchanged; this is the in-process representation only.
+
+The stages previously carried 27 and 21 `cfg.get(...)` calls respectively, which meant every default was re-derived at each read site. That is not a hypothetical hazard: `compiler` was defaulted to `"gcc"` in the toolchain stage body and to `"llvm"` in Gate 1's sentinel, so a config with no `compiler` key would have run the GCC path while stamping its sentinel `"llvm"`. One parse site gives one answer.
+
+Three properties follow from the shape:
+
+- **Frozen.** A stage's configuration is decided before it starts and must not drift mid-run — with a dict, any consumer could write back into it, and the kernel stage did exactly that to publish its resolved `pkgbuild_src_dir`. It now rebinds to a `dataclasses.replace()` instance instead, so the resolved value reaches every downstream reader without anything holding the original seeing it change underneath them.
+- **Types carry meaning.** `rebuild_soname_consumers` is a three-valued mode (`"prompt"` | `"auto"` | `"off"`), not a flag, and is validated at parse time — an unrecognised value warns and falls back to `"prompt"`, where before it silently matched none of the gate's branches. `KernelConfig.compiler` is `str | None` because "unset" is load-bearing: it is the signal to fall through to the toolchain stage's result in pipeline state, so defaulting it would make a machine that built an LLVM toolchain silently compile its kernel with gcc.
+- **`raw` survives, narrowly.** Both dataclasses keep the undecoded dict for consumers that take the whole table by design: `makepkg_pgo.resolve_pgo_store(raw)`, which owns its own config > env > default precedence; `config.resolve_pkgbuild_src_dir(build_cfg=raw)`; and the toolchain's Pass-4 reuse `config_digest`, which **must** keep hashing the raw table — hashing a field list instead would change every existing cache key and silently invalidate every user's reuse cache.
+
+Schema validation targets the dataclass rather than a parallel key set: `tests/test_check_shipped.py` compares `_KNOWN_TOP_KEYS`/`_KNOWN_SECTIONS` against the keys `from_toml` actually reads, as an equality of sets. With one parse site that comparison is exact in both directions, where it used to be one-way containment plus a hand-maintained list of helper exemptions.
+
 ### Toolchain drift detection (`toolchain.toml`)
 
 `[toolchain] drift_detect` selects how `update` fingerprints the active toolchain to catch a **same-variant** rebuild (Phase 4.25; see §`update`). Resolved by `config.resolve_drift_detect()` — a missing file/key or an unrecognised value all fall back to the default. The value is the sole input to `build_fingerprint.toolchain_fingerprint(method, cc)`, whose opaque output is both stamped into `build_state.toml`'s `toolchain_fingerprint` at build time and recomputed for the active toolchain at update time; comparison is equality-only, so a method flip self-heals (old stamps stop matching → one fail-safe rebuild re-stamps).

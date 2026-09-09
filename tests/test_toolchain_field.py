@@ -205,31 +205,34 @@ def test_set_default_toolchain_missing_file_creates_section(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _import_stage():
-    from sysforge.pipeline.stages import toolchain as ts
-    return ts
+    # identity.py owns the register-only path (3.2.0-F2); it reaches
+    # set_default_toolchain through the primitives module, so that is where a
+    # patch has to land.
+    from sysforge.pipeline.stages.toolchain import identity
+    return identity
 
 
 def test_propagate_gcc(monkeypatch):
     ts = _import_stage()
     calls = []
-    monkeypatch.setattr(ts, "set_default_toolchain", lambda c: calls.append(c))
-    ts._propagate_default_toolchain("gcc", types.SimpleNamespace(dry_run=False))
+    monkeypatch.setattr(ts.prim_config, "set_default_toolchain", lambda c: calls.append(c))
+    ts.propagate_default_toolchain("gcc", types.SimpleNamespace(dry_run=False))
     assert calls == ["gcc"]
 
 
 def test_propagate_llvm(monkeypatch):
     ts = _import_stage()
     calls = []
-    monkeypatch.setattr(ts, "set_default_toolchain", lambda c: calls.append(c))
-    ts._propagate_default_toolchain("llvm", types.SimpleNamespace(dry_run=False))
+    monkeypatch.setattr(ts.prim_config, "set_default_toolchain", lambda c: calls.append(c))
+    ts.propagate_default_toolchain("llvm", types.SimpleNamespace(dry_run=False))
     assert calls == ["llvm"]
 
 
 def test_propagate_dry_run_is_noop(monkeypatch):
     ts = _import_stage()
     calls = []
-    monkeypatch.setattr(ts, "set_default_toolchain", lambda c: calls.append(c))
-    ts._propagate_default_toolchain("llvm", types.SimpleNamespace(dry_run=True))
+    monkeypatch.setattr(ts.prim_config, "set_default_toolchain", lambda c: calls.append(c))
+    ts.propagate_default_toolchain("llvm", types.SimpleNamespace(dry_run=True))
     assert calls == []
 
 
@@ -239,9 +242,9 @@ def test_propagate_tolerates_unwritable_config(monkeypatch):
     def _boom(_c):
         raise OSError("read-only fs")
 
-    monkeypatch.setattr(ts, "set_default_toolchain", _boom)
+    monkeypatch.setattr(ts.prim_config, "set_default_toolchain", _boom)
     # Must not raise — a config write failure is a warning, not a stage failure.
-    ts._propagate_default_toolchain("gcc", types.SimpleNamespace(dry_run=False))
+    ts.propagate_default_toolchain("gcc", types.SimpleNamespace(dry_run=False))
 
 
 # ---------------------------------------------------------------------------

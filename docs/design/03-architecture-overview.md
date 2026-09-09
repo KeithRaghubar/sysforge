@@ -17,7 +17,7 @@ Three layers:
 └─────────────────────────────────────────┘
 ```
 
-**Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module. See [CLI Verb Framework](#cli-verb-framework).
+**Import direction:** `cli.py` → `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass alongside its existing helpers; the runner dispatches uniformly across them. No command module imports from another command module — shared operations live in `verbs/shared.py`, and `tests/test_module_layering.py` enforces the rule rather than leaving it to convention (3.2.0-F8). See [CLI Verb Framework](#cli-verb-framework).
 
 ### Module & function decomposition
 

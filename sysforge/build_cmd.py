@@ -180,14 +180,14 @@ def _write_repo_optin(name: str, config) -> bool:
     success, False (with a warning) on any I/O error — a write failure must
     not abort the build the user already confirmed.
     """
-    from sysforge.packages_cmd import _rewrite_packages_toml, entry_toml_block
+    from sysforge.verbs.shared import entry_toml_block, rewrite_packages_toml
     from sysforge.primitives.paths import resolve_packages_path
     try:
         path = resolve_packages_path(config)
         entry = {"name": name, PKG_KEY_BUILD_FROM_SOURCE: True}
         block = "\n" + entry_toml_block(entry) + "\n"
         # Replace any existing entry for this name, then append the new one.
-        _rewrite_packages_toml(path, drop_name=name)
+        rewrite_packages_toml(path, drop_name=name)
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
@@ -195,7 +195,7 @@ def _write_repo_optin(name: str, config) -> bool:
                 "\n[build]\n"
                 'pkgbuild_src_dir = "~/src"\n'
             )
-        _rewrite_packages_toml(path, append=block)
+        rewrite_packages_toml(path, append=block)
         _log.ui(f"{name}: recorded enable_build_from_source = true in {path}")
         return True
     except Exception as e:

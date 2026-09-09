@@ -3,18 +3,31 @@
 # SPDX-License-Identifier: MIT
 
 """
-primitives/run.py — `run_or_raise` subprocess wrapper
+primitives/run.py — the external-command seam
 
-Centralizes the "run a command, raise a tagged error with stderr on failure"
-pattern that recurs across pipeline stages. The default captures stderr so
-the failure message has diagnostic context; pass capture=False for
-long-running commands whose progress should stream live to the terminal
-(e.g. pacstrap, makepkg).
+Two entry points, for the two shapes external commands take here.
+
+``run_or_raise`` centralizes "run a command, raise a tagged error with stderr
+on failure" — the pattern that recurs across pipeline stages. The default
+captures stderr so the failure message has diagnostic context; pass
+capture=False for long-running commands whose progress should stream live to
+the terminal (e.g. pacstrap, makepkg).
+
+``capture`` is the *probe* form: ask the system a question, tolerate every
+answer including "that tool is not installed". Probes were the reason raw
+``subprocess`` calls kept reappearing outside this module — ``run_or_raise``
+raises, which is exactly wrong for a probe — so they got a bare call each, and
+with it a hand-written ``try/except FileNotFoundError`` and no record in the
+run log. ``capture`` gives them a home (3.2.0-F5).
 """
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
+from sysforge import log
+
+_log = log.get_logger("RUN")
 
 
 def run_or_raise(
@@ -70,3 +83,40 @@ def run_or_raise(
     raise RuntimeError(
         f"[{tag}] {op} failed (exit {result.returncode}): {detail}"
     )
+
+
+def capture(
+    cmd: list[str],
+    **kwargs,
+) -> subprocess.CompletedProcess | None:
+    """Run *cmd* as a probe: capture text output, never raise.
+
+    The probe contract, in one place:
+
+    * **argv list only** — never a string command (standards row 17).
+    * **Non-zero is data, not an error.** ``check=False`` always; the caller
+      reads ``returncode`` and decides. A probe that raised would turn "this
+      machine does not have that feature" into a stack trace.
+    * **A missing binary returns ``None``**, distinct from a command that ran
+      and failed. Callers that need to tell "``nm`` is not installed" from "``nm``
+      found nothing" can; callers that do not can treat ``None`` as failure.
+      This replaces a ``try/except FileNotFoundError`` at every call site, which
+      is the kind of thing that is correct in nine places and forgotten in the
+      tenth.
+    * **Logged at debug**, so ``-vvv`` shows the probes as well as the builds.
+      Bare calls appeared nowhere in the run log, which made "why did sysforge
+      decide that?" unanswerable from a log alone.
+
+    ``**kwargs`` are forwarded to ``subprocess.run`` (``cwd``, ``env``,
+    ``input``, ...). ``capture_output``/``text``/``check`` are set here and
+    should not be passed.
+    """
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs["check"] = False
+    _log.debug(f"probe: {' '.join(cmd)}")
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except FileNotFoundError:
+        _log.debug(f"probe: {cmd[0]} not found on PATH")
+        return None

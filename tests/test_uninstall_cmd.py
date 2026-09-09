@@ -47,8 +47,9 @@ def test_execute_removes_then_forgets_and_reconciles(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
                         lambda names, extra_flags=None: order.append(
                             ("remove", names, extra_flags)))
-    monkeypatch.setattr(uninstall_cmd, "cmd_state_forget",
-                        lambda args: order.append(("forget", list(args.pkgnames))))
+    monkeypatch.setattr(uninstall_cmd, "forget_packages",
+                        lambda state_dir, pkgnames: order.append(
+                            ("forget", list(pkgnames))))
     monkeypatch.setattr(uninstall_cmd.install_reconcile, "external_install_targets",
                         lambda: set())
 

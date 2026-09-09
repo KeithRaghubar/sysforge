@@ -9,12 +9,11 @@ build-state authority so ``sysforge update`` stops rebuilding it. A naive
 ``pacman -R`` is wrong here on two counts: it leaves the ``build_state.toml``
 record in place, and it doesn't know an optimized build may be installed under
 a ``-sysforge`` renamed name. Resolution and demotion reuse the single homes
-(``install_reconcile.resolve_installed_name`` + ``cmd_state_forget`` +
+(``install_reconcile.resolve_installed_name`` + ``forget_packages`` +
 ``reconcile_external_installs``) — no parallel path.
 """
 from __future__ import annotations
 
-import argparse
 import subprocess
 from dataclasses import dataclass
 
@@ -22,7 +21,7 @@ from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman
 from sysforge.primitives.build_state import BuildState
-from sysforge.state_cmd import cmd_state_forget
+from sysforge.verbs.shared import forget_packages
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("UNINSTALL")
@@ -84,7 +83,7 @@ class UninstallVerb(Verb):
         # split-package siblings by pkgbase), then reconcile as belt-and-braces.
         tracked = [it.installed_name for it in items if it.tracked]
         if tracked:
-            cmd_state_forget(argparse.Namespace(pkgnames=tracked, state_dir=pre.ctx["state_dir"]))
+            forget_packages(pre.ctx["state_dir"], tracked)
             bs = BuildState(pre.ctx["state_dir"])
             demoted = bs.reconcile_external_installs(install_reconcile.external_install_targets())
             if demoted:

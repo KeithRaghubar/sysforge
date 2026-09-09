@@ -1,716 +1,51 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
 """
-test_stage_toolchain.py — tests for the toolchain stage.
+test_stage_toolchain.py — ToolchainStage.run() end to end.
+
+Whole-stage behaviour: the GCC register-only path, the LLVM single pass,
+the PGO 4-pass, skip_build, repo-install mode, and the sequencing between
+gates, build and install. The per-module unit tests live in the sibling
+test_toolchain_*.py files (3.2.0-F2).
 
 Mocks makepkg_wrapper.run() and subprocess so nothing real is built.
 """
-import os
-import threading
-import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
+from sysforge.pipeline.stages.toolchain.constants import DEFAULT_LLVM_LIB32
+from sysforge.pipeline.stages.toolchain.constants import DEFAULT_LLVM_NON_PGO
+from sysforge.pipeline.stages.toolchain.constants import DEFAULT_LLVM_PGO
+from sysforge.pipeline.stages.toolchain.stage import ToolchainStage
+from sysforge.pipeline.state import PipelineState
+from unittest.mock import MagicMock
+from unittest.mock import patch
 import pytest
 
-from sysforge.pipeline.stages.toolchain import (
-    ToolchainStage,
-    _bolt_config,
-    _run_bolt,
-    _load_toolchain_config,
-    _package_lists,
-    _resolve_training_corpus,
-    _resolve_all_pkgbuilds,
-    _extract_built_to_staging,
-    _build_pass,
-    _build_llvm_single,
-    _build_llvm_pgo_inner,
-    _do_profraw_merge,
-    _profraw_merge_daemon,
-    _merge_profraw,
-    _remove_staging,
-    _assert_staging_has_llvm_cmake,
-    _DEFAULT_LLVM_PGO,
-    _DEFAULT_LLVM_NON_PGO,
-    _DEFAULT_LLVM_LIB32,
-    _PGO_ALLOWED_MAKEPKG_FLAGS,
-    _PROFRAW_MERGE_BATCH_MAX,
-    _PROFRAW_MERGE_BATCH_MIN,
-    _PROFRAW_SETTLE_SECS,
-    _collect_pgo_packages,
-    _dump_stage_dynsym_evidence,
-    _assert_pass_links_shipped_libllvm,
-    _so_ver,
-    _newest_so,
-    _pgo_install,
-    _pgo_stage_instrumented,
-    _system_llvm_is_instrumented,
-    _profile_runtime_ldflag,
-    _validate_pgo_environment,
-    _PGO_PROFDATA_MIN_BYTES,
-    _gate_soname_consumers,
-    _rebuild_soname_consumers,
-    _ReuseCtx,
-    _pkg_fingerprint,
+from tests.toolchain_helpers import (  # noqa: F401 — autouse fixture
+    _bootstrap_missing,
+    _make_old_profraw,
+    _pgo_setup,
+    _sentinel_exists,
+    _single_pass_setup,
+    _toolchain_gates_clean,
+    _write_packages_repo_mode,
+    make_options,
+    make_pkgbuild,
 )
-from sysforge.primitives import build_fingerprint as bf
-from sysforge.pipeline.state import PipelineState
-from sysforge.pipeline.stages.base import RunOptions
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def make_options(**kwargs):
-    opts = RunOptions(no_pkg_logs=True)
-    for k, v in kwargs.items():
-        setattr(opts, k, v)
-    return opts
-
-
-def write_toolchain_toml(path: Path, content: str) -> Path:
-    path.write_text(content)
-    return path
-
-
-def make_pkgbuild(pkgbuild_dir: Path, name: str) -> Path:
-    d = pkgbuild_dir / name
-    d.mkdir(parents=True, exist_ok=True)
-    pb = d / "PKGBUILD"
-    pb.write_text(f"pkgname={name}\npkgver=1.0\npkgrel=1\n")
-    return pb
-
-
-def _make_artifact(d: Path, name: str, ver: str = "1.0-1") -> Path:
-    """Create a fake makepkg artifact (build_fingerprint reuse tests)."""
-    d.mkdir(parents=True, exist_ok=True)
-    p = d / f"{name}-{ver}-x86_64.pkg.tar.zst"
-    p.write_bytes(b"pkg")
-    return p
-
-
-@pytest.fixture(autouse=True)
-def _toolchain_gates_clean(monkeypatch):
-    """Make the host-dependent toolchain-safety facts inert by default.
-
-    Gate 1 (build-space / compiler smoke / multilib) and the install-time
-    snapshot read the real machine — free disk, /usr/bin/clang, /etc/pacman.conf,
-    the pacman cache — none of which a test controls. Mirroring the kernel
-    suite's clean-axis convention, this autouse fixture stubs each pure fact to
-    its no-finding result and the snapshot to "nothing cached" so the existing
-    full-flow tests exercise the build/install plumbing without tripping a gate.
-    Dedicated gate tests re-patch the specific function they target to inject a
-    finding (monkeypatch lets a test override the same attribute).
-    """
-    from sysforge.primitives import toolchain_safety as _ts
-
-    monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: [], raising=True)
-    monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(_ts, "check_multilib_enabled", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(_ts, "detect_residual_instrumentation", lambda: [], raising=True)
-    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [], raising=True)
-    monkeypatch.setattr(
-        _ts, "check_system_consumer_symbols", lambda pkgs: [], raising=True)
-    monkeypatch.setattr(
-        _ts, "check_installed_consumer_symbols", lambda: [], raising=True)
-    # On a successful llvm build the stage propagates profiles.toml [defaults]
-    # toolchain via set_default_toolchain — which writes SYSFORGE_CONFIG_DIR,
-    # pointed by conftest at the git-tracked fixture. Neutralise it so toolchain
-    # tests never mutate tests/data/etc/sysforge/profiles.toml (no test asserts
-    # propagation; set_default_toolchain has its own unit coverage).
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._propagate_default_toolchain",
-        lambda compiler, options: None, raising=True)
-    # Snapshot: no suite package resolves to a cached file (offline-undo
-    # unavailable). Tests that exercise rollback patch this explicitly.
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
-        lambda names: {n: None for n in names},
-        raising=True,
-    )
-
-
-# ---------------------------------------------------------------------------
-# _load_toolchain_config
-# ---------------------------------------------------------------------------
-
-def test_load_toolchain_config_absent_returns_none(tmp_path):
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH",
-               tmp_path / "nonexistent.toml"):
-        result = _load_toolchain_config()
-    assert result is None
-
-
-def test_load_toolchain_config_reads_toml(tmp_path):
-    p = tmp_path / "toolchain.toml"
-    p.write_text('compiler = "llvm"\npgo = false\n')
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", p):
-        result = _load_toolchain_config()
-    assert result == {"compiler": "llvm", "pgo": False}
-
-
-def test_load_toolchain_config_bad_toml_raises(tmp_path):
-    p = tmp_path / "toolchain.toml"
-    p.write_text("compiler = [[[bad toml")
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", p):
-        with pytest.raises(RuntimeError, match="Failed to parse"):
-            _load_toolchain_config()
-
-
-# ---------------------------------------------------------------------------
-# resolve_pgo_store — toolchain.toml > SYSFORGE_PGO_STORE > FHS default
-# ---------------------------------------------------------------------------
-
-def test_resolve_pgo_store_default_is_var_cache(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-    monkeypatch.delenv("SYSFORGE_PGO_STORE", raising=False)
-    assert resolve_pgo_store(None) == Path("/var/cache/sysforge/llvm-pgo")
-    assert resolve_pgo_store({}) == Path("/var/cache/sysforge/llvm-pgo")
-
-
-def test_resolve_pgo_store_env_override(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/env-pgo")
-    assert resolve_pgo_store(None) == Path("/tmp/env-pgo")
-
-
-def test_resolve_pgo_store_config_wins_over_env(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/env-pgo")
-    assert resolve_pgo_store({"pgo_store": "/cfg/pgo"}) == Path("/cfg/pgo")
-
-
-# ---------------------------------------------------------------------------
-# resolve_profile_store_root / resolve_method_store — shared multi-method store
-# ---------------------------------------------------------------------------
-
-def test_resolve_profile_store_root_default(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_profile_store_root
-    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
-    assert resolve_profile_store_root(None) == Path("/var/cache/sysforge")
-
-
-def test_resolve_profile_store_root_env_then_config(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_profile_store_root
-    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", "/tmp/env-prof")
-    assert resolve_profile_store_root(None) == Path("/tmp/env-prof")
-    # config wins over env
-    assert resolve_profile_store_root({"profile_store": "/cfg/prof"}) == Path("/cfg/prof")
-
-
-def test_resolve_method_store_instr_pgo_aliases_legacy(monkeypatch):
-    # instr-pgo must keep returning the legacy llvm-pgo location so the existing
-    # pgo_store / SYSFORGE_PGO_STORE overrides stay authoritative.
-    from sysforge.primitives.makepkg_pgo import resolve_method_store
-    monkeypatch.delenv("SYSFORGE_PGO_STORE", raising=False)
-    assert resolve_method_store(None, "instr-pgo") == Path("/var/cache/sysforge/llvm-pgo")
-    monkeypatch.setenv("SYSFORGE_PGO_STORE", "/tmp/legacy")
-    assert resolve_method_store(None, "instr-pgo") == Path("/tmp/legacy")
-
-
-def test_resolve_method_store_sibling_subdirs(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_method_store
-    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
-    assert resolve_method_store(None, "autofdo") == Path("/var/cache/sysforge/autofdo")
-    assert resolve_method_store(None, "bolt") == Path("/var/cache/sysforge/bolt")
-
-
-def test_resolve_method_store_target_namespacing(monkeypatch):
-    from sysforge.primitives.makepkg_pgo import resolve_method_store
-    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
-    assert resolve_method_store(None, "propeller", "linux-sysforge") == Path(
-        "/var/cache/sysforge/propeller/linux-sysforge"
-    )
-
-
-def test_resolve_method_store_rejects_unknown_method():
-    from sysforge.primitives.makepkg_pgo import resolve_method_store
-    with pytest.raises(ValueError, match="unknown profile method"):
-        resolve_method_store(None, "nonsense")
-
-
-# ---------------------------------------------------------------------------
-# _package_lists
-# ---------------------------------------------------------------------------
-
-def test_package_lists_llvm_defaults():
-    pgo, non_pgo, lib32 = _package_lists({"compiler": "llvm", "pgo": True})
-    assert pgo == _DEFAULT_LLVM_PGO
-    assert non_pgo == _DEFAULT_LLVM_NON_PGO
-    assert lib32 == _DEFAULT_LLVM_LIB32
-
-
-def test_package_lists_custom_override():
-    tcfg = {
-        "compiler": "llvm",
-        "pgo": True,
-        "packages": {
-            "pgo": ["llvm", "clang"],
-            "non_pgo": ["compiler-rt"],
-            "lib32": [],
-        },
-    }
-    pgo, non_pgo, lib32 = _package_lists(tcfg)
-    assert pgo == ["llvm", "clang"]
-    assert non_pgo == ["compiler-rt"]
-    assert lib32 == []
-
-
-# ---------------------------------------------------------------------------
-# _resolve_training_corpus — Pass-3 corpus enrichment (mesa)
-# ---------------------------------------------------------------------------
-
-def test_training_corpus_default_is_llvm_only():
-    # Default ["llvm"] means no *extra* targets — historical behaviour.
-    assert _resolve_training_corpus({}) == []
-    assert _resolve_training_corpus({"packages": {}}) == []
-
-
-def test_training_corpus_strips_implicit_llvm_base():
-    # "llvm" is the implicit base; only the extras come back.
-    assert _resolve_training_corpus(
-        {"packages": {"training_corpus": ["llvm", "mesa"]}}
-    ) == ["mesa"]
-
-
-def test_training_corpus_mesa_only_without_llvm():
-    # Omitting "llvm" still yields mesa (the self-build always trains LLVM
-    # regardless, so the base is implicit either way).
-    assert _resolve_training_corpus(
-        {"packages": {"training_corpus": ["mesa"]}}
-    ) == ["mesa"]
-
-
-def test_training_corpus_drops_unknown_members(capsys):
-    out = _resolve_training_corpus(
-        {"packages": {"training_corpus": ["mesa", "qt6", "llvm"]}}
-    )
-    assert out == ["mesa"]  # unknown "qt6" dropped
-
-
-def test_training_corpus_dedups_and_coerces_string():
-    assert _resolve_training_corpus(
-        {"packages": {"training_corpus": "mesa"}}
-    ) == ["mesa"]
-    assert _resolve_training_corpus(
-        {"packages": {"training_corpus": ["mesa", "mesa", "llvm"]}}
-    ) == ["mesa"]
-
-
-# ---------------------------------------------------------------------------
-# _resolve_all_pkgbuilds
-# ---------------------------------------------------------------------------
-
-def test_resolve_all_pkgbuilds_finds_local(tmp_path):
-    make_pkgbuild(tmp_path, "llvm")
-    make_pkgbuild(tmp_path, "clang")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-    result = _resolve_all_pkgbuilds(["llvm", "clang"], config, update=False)
-    assert "llvm" in result
-    assert "clang" in result
-    assert result["llvm"].name == "PKGBUILD"
-
-
-def test_resolve_all_pkgbuilds_missing_raises(tmp_path):
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-    with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={}):
-        with pytest.raises(RuntimeError, match="Could not resolve PKGBUILDs"):
-            _resolve_all_pkgbuilds(["nonexistent-pkg"], config, update=False)
-
-
-def test_resolve_all_pkgbuilds_partial_miss_reports_all(tmp_path):
-    make_pkgbuild(tmp_path, "llvm")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-    with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
-         patch("sysforge.primitives.aur.aur_info", return_value={}):
-        with pytest.raises(RuntimeError, match="Could not resolve"):
-            _resolve_all_pkgbuilds(["llvm", "clang", "lld"], config, update=False)
-
-
-def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
-    """gcc-libs must be resolved via split-package scan after gcc is cloned in Pass 3,
-    not attempted as a standalone pkgctl clone (which would require auth)."""
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    # gcc PKGBUILD declares both gcc and gcc-libs in pkgname
-    gcc_dir = tmp_path / "gcc"
-    gcc_dir.mkdir()
-    (gcc_dir / "PKGBUILD").write_text(
-        "pkgbase=gcc\npkgname=('gcc' 'gcc-libs')\npkgver=14.0\npkgrel=1\n"
-    )
-
-    def fake_pkgctl_checkout(name, dest, *, timeout=60):
-        # Simulate pkgctl cloning gcc (copies our prepared dir)
-        import shutil
-        shutil.copytree(gcc_dir, dest)
-
-    with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
-         patch("sysforge.primitives.aur.pkgctl_checkout", side_effect=fake_pkgctl_checkout):
-        result = _resolve_all_pkgbuilds(["gcc", "gcc-libs"], config, update=False)
-
-    assert "gcc" in result
-    assert "gcc-libs" in result
-    # Both must resolve to the same PKGBUILD — not two separate clones
-    assert result["gcc"].parent == result["gcc-libs"].parent
-
-
-def test_resolve_all_pkgbuilds_calls_scheduler_when_update_true(tmp_path):
-    """update=True must route every unique resolved dir through SourceSyncScheduler."""
-    make_pkgbuild(tmp_path, "llvm")
-    make_pkgbuild(tmp_path, "clang")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    fake_scheduler = MagicMock()
-    fake_result = MagicMock()
-    fake_result.status = "up_to_date"
-    fake_result.error = None
-    fake_scheduler.request.return_value = fake_result
-
-    # Patch repo_packages to {} so both pkgbases are routed as AUR,
-    # exercising the _ensure_rpc path (real pacman would classify
-    # llvm/clang as repo and skip it).
-    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
-               return_value=fake_scheduler), \
-         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
-               return_value={"git": {}, "aur": {}}), \
-         patch("sysforge.primitives.aur.repo_packages", return_value=set()):
-        result = _resolve_all_pkgbuilds(["llvm", "clang"], config, update=True)
-
-    assert "llvm" in result and "clang" in result
-    # Scheduler called once per unique pkgbuild_dir (two: llvm, clang)
-    assert fake_scheduler.request.call_count == 2
-    fake_scheduler._ensure_rpc.assert_called_once()
-    fake_scheduler.close.assert_called_once()
-
-
-def test_resolve_all_pkgbuilds_skips_scheduler_when_update_false(tmp_path):
-    """update=False (mapped from --no-update) must not invoke the scheduler."""
-    make_pkgbuild(tmp_path, "llvm")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    with patch("sysforge.pipeline.stages.toolchain.get_scheduler") as gs:
-        result = _resolve_all_pkgbuilds(["llvm"], config, update=False)
-
-    assert "llvm" in result
-    gs.assert_not_called()
-
-
-def test_resolve_all_pkgbuilds_blocker_status_raises(tmp_path):
-    """STATUS_FAILED / STATUS_RATE_LIMITED / STATUS_PURGE_REFUSED must abort."""
-    make_pkgbuild(tmp_path, "llvm")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    fake_scheduler = MagicMock()
-    fake_result = MagicMock()
-    fake_result.status = "failed"   # STATUS_FAILED literal
-    fake_result.error = "git fetch timed out"
-    fake_scheduler.request.return_value = fake_result
-
-    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
-               return_value=fake_scheduler), \
-         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
-               return_value={"git": {}, "aur": {}}), \
-         patch("sysforge.primitives.aur.repo_packages", return_value=set()), \
-         patch("sysforge.pipeline.stages.toolchain.STATUS_FAILED", "failed"), \
-         patch("sysforge.pipeline.stages.toolchain._SYNC_BLOCKING_STATUSES",
-               frozenset({"failed"})), pytest.raises(RuntimeError, match="PKGBUILD sync failed"):
-        _resolve_all_pkgbuilds(["llvm"], config, update=True)
-
-
-def test_sync_pkgbuild_dirs_classifies_repo_vs_aur(tmp_path):
-    """Each SyncRequest must carry source='repo' for [extra]/[core]/etc.
-    packages and source='aur' for AUR-only packages.
-
-    Regression: before this, all toolchain SyncRequests were source='aur',
-    so a --cleansrc on clang/llvm/lld silently failed to re-clone (the
-    purge succeeded, then aur_clone tried gitlab.aur.org/clang.git).
-    """
-    make_pkgbuild(tmp_path, "llvm")
-    make_pkgbuild(tmp_path, "clang")
-    make_pkgbuild(tmp_path, "cosmic-comp-git")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    captured: list = []
-    fake_scheduler = MagicMock()
-    fake_result = MagicMock()
-    fake_result.status = "up_to_date"
-    fake_result.error = None
-
-    def _request(req):
-        captured.append((req.pkgbase, req.source))
-        return fake_result
-
-    fake_scheduler.request.side_effect = _request
-
-    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
-               return_value=fake_scheduler), \
-         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
-               return_value={"git": {}, "aur": {}}), \
-         patch("sysforge.primitives.aur.repo_packages",
-               return_value={"llvm", "clang"}):
-        _resolve_all_pkgbuilds(
-            ["llvm", "clang", "cosmic-comp-git"], config, update=True,
-        )
-
-    by_pkgbase = dict(captured)
-    assert by_pkgbase["llvm"] == "repo"
-    assert by_pkgbase["clang"] == "repo"
-    assert by_pkgbase["cosmic-comp-git"] == "aur"
-    fake_scheduler._ensure_rpc.assert_called_once_with(["cosmic-comp-git"])
-
-
-def test_sync_pkgbuild_dirs_skips_rpc_for_repo_only_set(tmp_path):
-    """When every package is in pacman's sync DBs, _ensure_rpc must not run
-    — repo packages have no AUR-RPC equivalent and priming the cache with
-    their names just wastes a request.
-    """
-    make_pkgbuild(tmp_path, "llvm")
-    make_pkgbuild(tmp_path, "clang")
-    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
-
-    fake_scheduler = MagicMock()
-    fake_result = MagicMock()
-    fake_result.status = "up_to_date"
-    fake_result.error = None
-    fake_scheduler.request.return_value = fake_result
-
-    with patch("sysforge.pipeline.stages.toolchain.get_scheduler",
-               return_value=fake_scheduler), \
-         patch("sysforge.pipeline.stages.toolchain.load_sysforge_toml",
-               return_value={"git": {}, "aur": {}}), \
-         patch("sysforge.primitives.aur.repo_packages",
-               return_value={"llvm", "clang"}):
-        _resolve_all_pkgbuilds(["llvm", "clang"], config, update=True)
-
-    fake_scheduler._ensure_rpc.assert_not_called()
-    assert fake_scheduler.request.call_count == 2
-
-
-# ---------------------------------------------------------------------------
-# _extract_built_to_staging
-# ---------------------------------------------------------------------------
-
-def test_extract_built_dry_run_skips(tmp_path):
-    staging = tmp_path / "staging"
-    pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
-    # dry_run=True: should not touch filesystem
-    _extract_built_to_staging(pkgbuild_map, staging, dry_run=True)
-    assert not staging.exists()
-
-
-def test_extract_built_no_pkg_raises(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    (pkg_dir / "PKGBUILD").touch()
-    staging = tmp_path / "staging"
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}):
-        with pytest.raises(RuntimeError, match="No .pkg.tar"):
-            _extract_built_to_staging(pkgbuild_map, staging, dry_run=False)
-
-
-def test_extract_built_calls_tar(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    (pkg_dir / "PKGBUILD").touch()
-    staging = tmp_path / "staging"
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    fake_result = MagicMock()
-    fake_result.returncode = 0
-    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("subprocess.run", return_value=fake_result) as mock_run:
-        _extract_built_to_staging(pkgbuild_map, staging, dry_run=False)
-
-    assert mock_run.called
-    cmd = mock_run.call_args[0][0]
-    assert "tar" in cmd
-    assert str(fake_pkg) in cmd
-    assert str(staging) in cmd
-
-
-def test_extract_built_tar_failure_raises(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-    staging = tmp_path / "staging"
-
-    fake_result = MagicMock()
-    fake_result.returncode = 1
-    fake_result.stderr = b"extraction failed"
-    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("subprocess.run", return_value=fake_result):
-        with pytest.raises(RuntimeError, match="tar extraction failed"):
-            _extract_built_to_staging(pkgbuild_map, staging, dry_run=False)
-
-
-def test_extract_built_split_pkgname_does_not_swallow_sibling(tmp_path):
-    """Regression: name="llvm" must NOT match the split sibling "llvm-libs-…".
-
-    The pgo_map for the split package has two keys (``llvm`` + ``llvm-libs``)
-    pointing at the same PKGBUILD. A plain ``f"{name}-*"`` glob matches
-    ``llvm-libs-…`` for name="llvm", and the mtime tiebreak then staged
-    llvm-libs for BOTH keys — so the ``llvm`` (dev) package carrying
-    LLVMConfig.cmake/headers never reached staging3 and Pass 4b's
-    find_package(LLVM) silently fell back to the live /usr libLLVM (the Gate-3
-    brick). The glob is version-anchored to prevent this; llvm-libs is made the
-    newer artifact here so the old code would mis-select it.
-    """
-    pkgdest = tmp_path / "pkgdest"
-    pkgdest.mkdir()
-    pkg_llvm = pkgdest / "llvm-22.1.6-1-x86_64.pkg.tar"
-    pkg_libs = pkgdest / "llvm-libs-22.1.6-1-x86_64.pkg.tar"
-    pkg_llvm.touch()
-    pkg_libs.touch()
-    # Make llvm-libs strictly newer so a non-anchored glob's max(mtime) would
-    # pick it for the "llvm" key — the exact failure being guarded against.
-    os.utime(pkg_llvm, (1000, 1000))
-    os.utime(pkg_libs, (2000, 2000))
-
-    pb = tmp_path / "llvm" / "PKGBUILD"
-    pb.parent.mkdir()
-    pb.touch()
-    # Same PKGBUILD for both split keys, mirroring the real pgo_map.
-    pkgbuild_map = {"llvm": pb, "llvm-libs": pb}
-    staging = tmp_path / "staging"
-
-    extracted: list[str] = []
-
-    def _fake_run(cmd, *a, **k):
-        # Capture the .pkg.tar* path handed to tar for each extraction.
-        for tok in cmd:
-            if isinstance(tok, str) and ".pkg.tar" in tok:
-                extracted.append(Path(tok).name)
-        res = MagicMock()
-        res.returncode = 0
-        return res
-
-    with patch("sysforge.primitives.config.parse_system_makepkg_conf",
-               return_value={"PKGDEST": str(pkgdest)}), \
-         patch("subprocess.run", side_effect=_fake_run):
-        _extract_built_to_staging(pkgbuild_map, staging, dry_run=False)
-
-    # Each key must stage its own artifact: llvm → llvm-, llvm-libs → llvm-libs-.
-    assert pkg_llvm.name in extracted, (
-        f"the 'llvm' package was never staged (got {extracted}) — "
-        "staging3 would lack LLVMConfig.cmake/headers"
-    )
-    assert pkg_libs.name in extracted
-    assert extracted.count(pkg_libs.name) == 1, (
-        f"llvm-libs staged more than once (got {extracted}) — "
-        "the 'llvm' key swallowed the sibling artifact"
-    )
-
-
-# ---------------------------------------------------------------------------
-# _remove_staging
-# ---------------------------------------------------------------------------
-
-def test_remove_staging_removes_dir(tmp_path):
-    staging = tmp_path / "stage"
-    staging.mkdir()
-    (staging / "file").touch()
-    _remove_staging(staging)
-    assert not staging.exists()
-
-
-def test_remove_staging_no_dir_noop(tmp_path):
-    staging = tmp_path / "nonexistent"
-    _remove_staging(staging)  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# PipelineState.set_stage_result / get_stage_result
-# ---------------------------------------------------------------------------
-
-def test_state_set_get_result(tmp_path):
-    state = PipelineState(tmp_path)
-    state.set_stage_result(
-        "toolchain", {"cc": "/usr/bin/clang", "cxx": "/usr/bin/clang++", "ld": "lld"})
-    result = state.get_stage_result("toolchain")
-    assert result["cc"] == "/usr/bin/clang"
-    assert result["cxx"] == "/usr/bin/clang++"
-    assert result["ld"] == "lld"
-
-
-def test_state_get_result_missing_returns_empty(tmp_path):
-    state = PipelineState(tmp_path)
-    assert state.get_stage_result("toolchain") == {}
-
-
-def test_state_result_serialized_to_toml(tmp_path):
-    state = PipelineState(tmp_path)
-    state.mark_running("toolchain")
-    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "ld": "lld"})
-    state.save()
-
-    text = (tmp_path / "pipeline_state.toml").read_text()
-    assert "[stages.toolchain.result]" in text
-    assert 'cc = "/usr/bin/clang"' in text
-    assert 'ld = "lld"' in text
-
-
-def test_state_result_round_trips(tmp_path):
-    state = PipelineState(tmp_path)
-    state.mark_done("toolchain")
-    state.set_stage_result("toolchain", {"cc": "/usr/bin/gcc", "cxx": "/usr/bin/g++"})
-    state.save()
-
-    state2 = PipelineState(tmp_path)
-    result = state2.get_stage_result("toolchain")
-    assert result["cc"] == "/usr/bin/gcc"
-    assert result["cxx"] == "/usr/bin/g++"
-
-
-# ---------------------------------------------------------------------------
-# get_toolchain_fingerprint (Q9)
-# ---------------------------------------------------------------------------
-
-def test_get_toolchain_fingerprint_none_when_system(tmp_path):
-    from sysforge.pipeline.state import get_toolchain_fingerprint
-    state = PipelineState(tmp_path)  # toolchain stage never ran → "system"
-    assert get_toolchain_fingerprint(state) is None
-
-
-def test_get_toolchain_fingerprint_uses_active_cc_and_method(tmp_path, monkeypatch):
-    from sysforge.pipeline import state as state_mod
-    from sysforge.primitives import build_fingerprint, config
-    state = PipelineState(tmp_path)
-    state.set_stage_result("toolchain", {"cc": "/opt/clang", "variant": "pgo_llvm"})
-
-    monkeypatch.setattr(config, "resolve_drift_detect", lambda: "content_hash")
-    monkeypatch.setattr(
-        build_fingerprint, "toolchain_fingerprint",
-        lambda method, cc: f"{method}:{cc}",
-    )
-    assert state_mod.get_toolchain_fingerprint(state) == "content_hash:/opt/clang"
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — no-op when toolchain.toml absent
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_noop_when_absent(tmp_path):
     state = PipelineState(tmp_path / "state")
     options = make_options()
     config = {}
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH",
                tmp_path / "nonexistent.toml"):
         ToolchainStage().run(config, state, options)
 
     # No result written
     assert state.get_stage_result("toolchain") == {}
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — GCC path is register-only (no build)
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_gcc_registers_paths_without_building(tmp_path):
     """compiler="gcc" writes /usr/bin/gcc paths into state and returns
@@ -724,9 +59,10 @@ def test_toolchain_stage_gcc_registers_paths_without_building(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
-         patch("sysforge.pipeline.stages.toolchain._resolve_all_pkgbuilds") as resolve_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds"
+               ".resolve_all_pkgbuilds") as resolve_mock:
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
@@ -736,7 +72,6 @@ def test_toolchain_stage_gcc_registers_paths_without_building(tmp_path):
     assert result["variant"] == "gcc"
     makepkg_mock.assert_not_called()
     resolve_mock.assert_not_called()
-
 
 def test_toolchain_stage_default_compiler_is_gcc_register_only(tmp_path):
     """Implicit default (no 'compiler' key) resolves to gcc and registers
@@ -748,8 +83,8 @@ def test_toolchain_stage_default_compiler_is_gcc_register_only(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock:
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
@@ -759,24 +94,19 @@ def test_toolchain_stage_default_compiler_is_gcc_register_only(tmp_path):
     assert result["variant"] == "gcc"
     makepkg_mock.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — LLVM single pass (pgo=false)
-# ---------------------------------------------------------------------------
-
 def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
 
     pkgbuild_dir = tmp_path / "builds"
-    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
@@ -784,11 +114,6 @@ def test_toolchain_stage_llvm_no_pgo_dry_run(tmp_path):
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
     assert result["variant"] == "stock_llvm"
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — LLVM PGO 4-pass
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     staging = tmp_path / "staging"
@@ -798,14 +123,14 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     )
 
     pkgbuild_dir = tmp_path / "builds"
-    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
@@ -813,18 +138,6 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
     assert result["variant"] == "pgo_llvm"
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — repo-install path (LLVM, PGO off, repo_mode=pacman)
-# ---------------------------------------------------------------------------
-
-def _write_packages_repo_mode(tmp_path: Path, mode: str) -> str:
-    """Write a packages.toml with the given [build] repo_mode; return its path."""
-    p = tmp_path / "packages.toml"
-    p.write_text(f'[build]\nrepo_mode = "{mode}"\n')
-    return str(p)
-
 
 def test_toolchain_stage_llvm_no_pgo_pacman_installs_from_repo(tmp_path):
     """compiler=llvm, pgo=false, repo_mode=pacman → install the LLVM suite from
@@ -840,14 +153,15 @@ def test_toolchain_stage_llvm_no_pgo_pacman_installs_from_repo(tmp_path):
     }
     options = make_options(dry_run=False, state_dir=str(tmp_path / "sdir"))
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
-         patch("sysforge.pipeline.stages.toolchain._resolve_all_pkgbuilds") as resolve_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds"
+               ".resolve_all_pkgbuilds") as resolve_mock:
         ToolchainStage().run(config, state, options)
 
     install_mock.assert_called_once()
     installed = install_mock.call_args.args[0]
-    assert set(_DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO).issubset(set(installed))
+    assert set(DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO).issubset(set(installed))
     resolve_mock.assert_not_called()
 
     result = state.get_stage_result("toolchain")
@@ -855,7 +169,6 @@ def test_toolchain_stage_llvm_no_pgo_pacman_installs_from_repo(tmp_path):
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
     assert result["variant"] == "stock_llvm"
-
 
 def test_toolchain_stage_llvm_no_pgo_pacman_dry_run_skips_install(tmp_path):
     """Dry-run repo-install: log intent, write state, but never call pacman."""
@@ -869,14 +182,13 @@ def test_toolchain_stage_llvm_no_pgo_pacman_dry_run_skips_install(tmp_path):
     }
     options = make_options(dry_run=True, state_dir=str(tmp_path / "sdir"))
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock:
         ToolchainStage().run(config, state, options)
 
     install_mock.assert_not_called()
     result = state.get_stage_result("toolchain")
     assert result["variant"] == "stock_llvm"
-
 
 def test_toolchain_stage_llvm_no_pgo_source_mode_builds(tmp_path):
     """compiler=llvm, pgo=false, repo_mode=build_from_source → single-pass build
@@ -885,7 +197,7 @@ def test_toolchain_stage_llvm_no_pgo_source_mode_builds(tmp_path):
     toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
 
     pkgbuild_dir = tmp_path / "builds"
-    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
@@ -895,14 +207,13 @@ def test_toolchain_stage_llvm_no_pgo_source_mode_builds(tmp_path):
     }
     options = make_options(dry_run=True)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock:
         ToolchainStage().run(config, state, options)
 
     install_mock.assert_not_called()
     result = state.get_stage_result("toolchain")
     assert result["variant"] == "stock_llvm"
-
 
 def test_toolchain_stage_llvm_pgo_pacman_still_builds_from_source(tmp_path):
     """PGO wins over repo_mode: pgo=true, repo_mode=pacman → build from source,
@@ -914,7 +225,7 @@ def test_toolchain_stage_llvm_pgo_pacman_still_builds_from_source(tmp_path):
     )
 
     pkgbuild_dir = tmp_path / "builds"
-    for name in _DEFAULT_LLVM_PGO + _DEFAULT_LLVM_NON_PGO + _DEFAULT_LLVM_LIB32:
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
         make_pkgbuild(pkgbuild_dir, name)
 
     state = PipelineState(tmp_path / "state")
@@ -924,18 +235,13 @@ def test_toolchain_stage_llvm_pgo_pacman_still_builds_from_source(tmp_path):
     }
     options = make_options(dry_run=True)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock:
         ToolchainStage().run(config, state, options)
 
     install_mock.assert_not_called()
     result = state.get_stage_result("toolchain")
     assert result["variant"] == "pgo_llvm"
-
-
-# ---------------------------------------------------------------------------
-# skip_build variant reflects on-disk profdata
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_skip_build_reports_pgo_llvm_when_profdata_present(tmp_path):
     """skip_build = true with a profdata + version sidecar on disk reports
@@ -955,15 +261,14 @@ def test_toolchain_stage_skip_build_reports_pgo_llvm_when_profdata_present(tmp_p
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock:
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
     assert result["cc"] == "/usr/bin/clang"
     assert result["variant"] == "pgo_llvm"
     makepkg_mock.assert_not_called()
-
 
 def test_toolchain_stage_skip_build_reports_stock_llvm_when_profdata_absent(tmp_path):
     """skip_build = true with no profdata on disk reports variant=stock_llvm."""
@@ -980,352 +285,13 @@ def test_toolchain_stage_skip_build_reports_stock_llvm_when_profdata_absent(tmp_
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock:
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
     assert result["variant"] == "stock_llvm"
     makepkg_mock.assert_not_called()
-
-
-def test_get_toolchain_variant_helper(tmp_path):
-    """get_toolchain_variant returns the canonical variant or 'system' fallback."""
-    from sysforge.pipeline.state import get_toolchain_variant
-
-    state = PipelineState(tmp_path)
-    assert get_toolchain_variant(state) == "system"  # no result yet
-
-    state.set_stage_result("toolchain", {"cc": "/usr/bin/gcc", "variant": "gcc"})
-    assert get_toolchain_variant(state) == "gcc"
-
-    state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "variant": "pgo_llvm"})
-    assert get_toolchain_variant(state) == "pgo_llvm"
-
-
-def test_build_llvm_single_stamps_owner_stage(tmp_path):
-    """The non-PGO single-pass install path stamps owner_stage='toolchain' so
-    `sysforge update` skips the LLVM suite by default."""
-    pkgbuild_dir = tmp_path / "builds"
-    pb = make_pkgbuild(pkgbuild_dir, "llvm")
-    options = make_options(dry_run=False, makepkg_flags=[], state_dir=tmp_path / "state")
-
-    captured = {}
-
-    def fake_run(pkgbuild_path, options=None):
-        captured["owner_stage"] = options.owner_stage if options else None
-        captured["variant"] = options.toolchain_variant if options else None
-
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
-        _build_llvm_single({"llvm": pb}, {}, {}, options)
-
-    assert captured["owner_stage"] == "toolchain"
-    assert captured["variant"] == "stock_llvm"
-
-
-def test_build_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
-    """Regression: in the profdata-reuse fast path, the non-pgo suite (clang, …)
-    must build against the freshly-built OPTIMIZED libLLVM staged in stage3, NOT
-    the live /usr libLLVM. Otherwise libclang-cpp records `_ZNSt*@LLVM_<ver>`
-    against a libLLVM that the -fprofile-use build no longer exports (it inlines
-    the stdlib symbol away), bricking the live clang at the first symbol lookup —
-    the exact failure this split exists to prevent.
-    """
-    builds = tmp_path / "builds"
-    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
-    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
-    staging1, staging, staging3 = (
-        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
-    )
-    pgo_store = tmp_path / "pgo_store"
-    pgo_store.mkdir()
-    profdata = pgo_store / "clang.profdata"
-    profdata.write_bytes(b"fake")
-
-    options = make_options(
-        dry_run=False, rebuild_profdata=False, state_dir=tmp_path / "state"
-    )
-
-    calls = []
-
-    def fake_build_pass(label, pkgbuild_map, options, **kw):
-        calls.append({
-            "pkgs": set(pkgbuild_map.keys()),
-            "cfe": kw.get("compiler_flags_extra"),
-            "env": dict(kw.get("pgo_env") or {}),
-            "owner_stage": kw.get("owner_stage"),
-            "cc": kw.get("cc"),
-            "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
-        })
-        return {}  # real _build_pass returns {pkgbase: fingerprint}
-
-    extract_mock = MagicMock()
-    T = "sysforge.pipeline.stages.toolchain."
-    with patch(T + "_validate_pgo_environment"), \
-         patch(T + "_check_existing_profdata", return_value=("ready", str(profdata))), \
-         patch(T + "_pgo_confirm"), \
-         patch(T + "_build_pass", side_effect=fake_build_pass), \
-         patch(T + "_extract_built_to_staging", extract_mock), \
-         patch(T + "_assert_staging_has_llvm_cmake"), \
-         patch(T + "_remove_staging"), \
-         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
-        _build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, {},
-            staging1, staging, staging3, pgo_store, options,
-        )
-
-    # Exactly two sub-passes: 4a (pgo) then 4b (non_pgo). No 4c (lib32 empty).
-    assert len(calls) == 2
-    pgo_call, non_pgo_call = calls[0], calls[1]
-    assert pgo_call["pkgs"] == {"llvm"}
-    assert non_pgo_call["pkgs"] == {"clang"}
-
-    # 4a builds llvm itself — no find_package(LLVM) redirect on the reuse path
-    # (system clang, no staged cc).
-    assert "CMAKE_PREFIX_PATH" not in pgo_call["env"]
-
-    # 4b — the fix: clang/lld link against the staged OPTIMIZED libLLVM.
-    assert non_pgo_call["env"]["CMAKE_PREFIX_PATH"] == f"{staging3}/usr"
-    assert "LD_LIBRARY_PATH" not in non_pgo_call["env"], (
-        "host clang compiles the source; it must NOT be forced to LOAD the "
-        "staged libLLVM (mirror Pass 2)"
-    )
-    assert non_pgo_call["env"]["LLVM_PROFILE_FILE"] == ""
-    # 4b also forces -DLLVM_DIR at the staged cmake config so find_package(LLVM)
-    # cannot fall back to /usr (env CMAKE_PREFIX_PATH alone was losing to /usr).
-    assert non_pgo_call["cmake_llvm_dir"] == f"{staging3}/usr/lib/cmake/llvm"
-    # 4a builds llvm itself — no LLVM_DIR steering (it IS the libLLVM).
-    assert pgo_call["cmake_llvm_dir"] is None
-
-    for c in calls:
-        assert c["owner_stage"] == "toolchain"
-        assert c["cfe"] == f"-fprofile-use={profdata}"
-
-    # The optimized libLLVM was staged into stage3 *before* clang built.
-    extract_mock.assert_any_call(pgo_map, staging3, False)
-
-
-def test_build_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
-    """Same coherence guarantee on the full 4-pass path (rebuild_profdata=True):
-    Pass 4b builds the non-pgo suite against stage3's optimized libLLVM, after a
-    pgo sub-pass (4a) optimized llvm/llvm-libs with -fprofile-use.
-    """
-    builds = tmp_path / "builds"
-    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
-    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
-    staging1, staging, staging3 = (
-        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
-    )
-    pgo_store = tmp_path / "pgo_store"
-    pgo_store.mkdir()
-    # _merge_profraw returns this; kept OUTSIDE pgo_store (the fresh-build purge
-    # wipes pgo_store) and sized past _PGO_PROFDATA_MIN_BYTES so the
-    # "suspicious profdata" prompt does not fire.
-    profdata = tmp_path / "clang.profdata"
-    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
-
-    options = make_options(
-        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
-    )
-
-    calls = []
-
-    def fake_build_pass(label, pkgbuild_map, options, **kw):
-        calls.append({
-            "pkgs": set(pkgbuild_map.keys()),
-            "cfe": kw.get("compiler_flags_extra"),
-            "env": dict(kw.get("pgo_env") or {}),
-            "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
-            "cc": kw.get("cc"),
-            "cxx": kw.get("cxx"),
-        })
-        return {}  # real _build_pass returns {pkgbase: fingerprint}
-
-    T = "sysforge.pipeline.stages.toolchain."
-    with patch(T + "_validate_pgo_environment"), \
-         patch(T + "_pgo_confirm"), \
-         patch(T + "_pgo_stage_instrumented"), \
-         patch(T + "_profile_runtime_ldflag", return_value=None), \
-         patch(T + "_profraw_merge_daemon"), \
-         patch(T + "_merge_profraw", return_value=profdata), \
-         patch(T + "_write_profdata_version"), \
-         patch(T + "fs_provision.ensure_writable_dir"), \
-         patch(T + "fs_provision.empty_dir_contents"), \
-         patch(T + "_extract_built_to_staging"), \
-         patch(T + "_assert_staging_has_llvm_cmake"), \
-         patch(T + "_remove_staging"), \
-         patch(T + "_build_pass", side_effect=fake_build_pass), \
-         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
-        _build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, {},
-            staging1, staging, staging3, pgo_store, options,
-        )
-
-    # Pass 4b is the sub-pass steered at stage3.
-    build_nonpgo = [
-        c for c in calls
-        if c["env"].get("CMAKE_PREFIX_PATH") == f"{staging3}/usr"
-    ]
-    assert len(build_nonpgo) == 1
-    assert build_nonpgo[0]["pkgs"] == {"clang"}
-    assert "LD_LIBRARY_PATH" not in build_nonpgo[0]["env"]
-    assert build_nonpgo[0]["cfe"] == f"-fprofile-use={profdata}"
-    assert build_nonpgo[0]["cmake_llvm_dir"] == f"{staging3}/usr/lib/cmake/llvm"
-
-    # Pass 2 (bootstrap clang against stage1) is also LLVM_DIR-steered, at
-    # stage1's cmake config — so the training clang links stage1's libLLVM too.
-    # (Pass 3 shares CMAKE_PREFIX_PATH=stage1 via _stage_env but is the mixed
-    # pgo+non_pgo training pass and gets NO -DLLVM_DIR, so filter on it.)
-    bootstrap = [
-        c for c in calls
-        if c["cmake_llvm_dir"] == f"{staging1}/usr/lib/cmake/llvm"
-    ]
-    assert len(bootstrap) == 1
-    assert bootstrap[0]["pkgs"] == {"clang"}
-    # The mixed Pass-3 training pass is NOT LLVM_DIR-steered.
-    train = [c for c in calls if c["pkgs"] == {"clang", "llvm"}]
-    assert train and all(c["cmake_llvm_dir"] is None for c in train)
-
-    # A pgo sub-pass (4a) optimized llvm with -fprofile-use beforehand (Pass 1
-    # also touches llvm but with -fprofile-generate, so filter on the flag).
-    pgo_opt = [
-        c for c in calls
-        if c["pkgs"] == {"llvm"} and (c["cfe"] or "").startswith("-fprofile-use=")
-    ]
-    assert pgo_opt, "Pass 4a must optimize llvm/llvm-libs with -fprofile-use"
-
-    # Pass 1 (instrument) MUST bootstrap on the live system clang, never the
-    # resolved profile's CC=gcc — gcc + -fprofile-generate produces gcov
-    # __gcov_* refs in stage1's .a archives that the clang profile runtime
-    # cannot satisfy, bricking the Pass 2 link.
-    instrument = [
-        c for c in calls
-        if c["pkgs"] == {"llvm"}
-        and (c["cfe"] or "").startswith("-fprofile-generate=")
-    ]
-    assert len(instrument) == 1, "Pass 1 must instrument llvm with -fprofile-generate"
-    assert instrument[0]["cc"] == "/usr/bin/clang"
-    assert instrument[0]["cxx"] == "/usr/bin/clang++"
-
-
-def test_train_corpus_enrichment_compiles_extras_into_profile(tmp_path):
-    """A non-empty corpus_map compiles the extra targets (mesa) in Pass 3 with
-    the SAME instrumented LLVM_PROFILE_FILE so their codegen profraw merges into
-    clang.profdata — never installed, never -fprofile-use."""
-    builds = tmp_path / "builds"
-    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
-    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
-    corpus_map = {"mesa": make_pkgbuild(builds, "mesa")}
-    staging1, staging, staging3 = (
-        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
-    )
-    pgo_store = tmp_path / "pgo_store"
-    pgo_store.mkdir()
-    profdata = tmp_path / "clang.profdata"
-    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
-
-    options = make_options(
-        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
-    )
-
-    calls = []
-
-    def fake_build_pass(label, pkgbuild_map, options, **kw):
-        calls.append({
-            "label": label,
-            "pkgs": set(pkgbuild_map.keys()),
-            "env": dict(kw.get("pgo_env") or {}),
-            "install": kw.get("install"),
-            "cfe": kw.get("compiler_flags_extra"),
-        })
-        return {}
-
-    T = "sysforge.pipeline.stages.toolchain."
-    with patch(T + "_validate_pgo_environment"), \
-         patch(T + "_pgo_confirm"), \
-         patch(T + "_pgo_stage_instrumented"), \
-         patch(T + "_profile_runtime_ldflag", return_value=None), \
-         patch(T + "_profraw_merge_daemon"), \
-         patch(T + "_merge_profraw", return_value=profdata), \
-         patch(T + "_write_profdata_version"), \
-         patch(T + "fs_provision.ensure_writable_dir"), \
-         patch(T + "fs_provision.empty_dir_contents"), \
-         patch(T + "_extract_built_to_staging"), \
-         patch(T + "_assert_staging_has_llvm_cmake"), \
-         patch(T + "_remove_staging"), \
-         patch(T + "_build_pass", side_effect=fake_build_pass), \
-         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
-        _build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, {},
-            staging1, staging, staging3, pgo_store, options,
-            corpus_map=corpus_map,
-        )
-
-    corpus_calls = [c for c in calls if c["pkgs"] == {"mesa"}]
-    assert len(corpus_calls) == 1, "mesa corpus must be compiled exactly once"
-    cc = corpus_calls[0]
-    # Same instrumented profraw target as the Pass-3 LLVM training build, so it
-    # merges into the one clang.profdata.
-    assert cc["env"]["LLVM_PROFILE_FILE"] == f"{pgo_store}/default_%m_%p.profraw"
-    assert cc["env"]["CCACHE_DISABLE"] == "1"
-    # Never installed; never an -fprofile-use target (corpus, not consumer).
-    assert cc["install"] is False
-    assert cc["cfe"] is None
-
-
-def test_train_corpus_enrichment_failure_is_non_fatal(tmp_path):
-    """A corpus build that raises must NOT abort the PGO run — the toolchain
-    proceeds to Pass 4 with whatever LLVM-only profraw was collected."""
-    builds = tmp_path / "builds"
-    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
-    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
-    corpus_map = {"mesa": make_pkgbuild(builds, "mesa")}
-    staging1, staging, staging3 = (
-        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
-    )
-    pgo_store = tmp_path / "pgo_store"
-    pgo_store.mkdir()
-    profdata = tmp_path / "clang.profdata"
-    profdata.write_bytes(b"x" * (_PGO_PROFDATA_MIN_BYTES + 1))
-
-    options = make_options(
-        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
-    )
-
-    seen = []
-
-    def fake_build_pass(label, pkgbuild_map, options, **kw):
-        seen.append(set(pkgbuild_map.keys()))
-        if set(pkgbuild_map.keys()) == {"mesa"}:
-            raise RuntimeError("missing makedepend under --nodeps")
-        return {}
-
-    T = "sysforge.pipeline.stages.toolchain."
-    with patch(T + "_validate_pgo_environment"), \
-         patch(T + "_pgo_confirm"), \
-         patch(T + "_pgo_stage_instrumented"), \
-         patch(T + "_profile_runtime_ldflag", return_value=None), \
-         patch(T + "_profraw_merge_daemon"), \
-         patch(T + "_merge_profraw", return_value=profdata), \
-         patch(T + "_write_profdata_version"), \
-         patch(T + "fs_provision.ensure_writable_dir"), \
-         patch(T + "fs_provision.empty_dir_contents"), \
-         patch(T + "_extract_built_to_staging"), \
-         patch(T + "_assert_staging_has_llvm_cmake"), \
-         patch(T + "_remove_staging"), \
-         patch(T + "_build_pass", side_effect=fake_build_pass), \
-         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
-        # Must not raise despite the mesa corpus build failing.
-        _build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, {},
-            staging1, staging, staging3, pgo_store, options,
-            corpus_map=corpus_map,
-        )
-
-    # Pass 4 still ran after the failed corpus build (llvm re-optimized).
-    assert {"mesa"} in seen
-    assert any(s == {"llvm"} for s in seen), "Pass 4 must proceed after corpus failure"
-
 
 def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     """Verify makepkg_wrapper.run is called once per package per pass with correct PGO flags."""
@@ -1367,19 +333,19 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
-        # Create the --output file so atomic rename in _do_profraw_merge succeeds
+        # Create the --output file so atomic rename in do_profraw_merge succeeds
         if cmd and "llvm-profdata" in cmd[0]:
             idx = cmd.index("--output")
             Path(cmd[idx + 1]).touch()
         return result
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_stage_instrumented"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.run_llvm_preflight"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -1395,7 +361,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     assert call_log[1]["cc"] == "/usr/bin/clang"            # pass 3: pass-1 clang
     assert call_log[2]["cc"].endswith("/usr/bin/clang")     # pass 4a: system fallback
     # All PGO passes force a clean build and overwrite PKGDEST artifacts from
-    # the prior pass (--force); none pass --install (install is via _pgo_install)
+    # the prior pass (--force); none pass --install (install is via pgo_install)
     assert "--cleanbuild" in call_log[0]["flags"]
     assert "--cleanbuild" in call_log[1]["flags"]
     assert "--cleanbuild" in call_log[2]["flags"]
@@ -1438,7 +404,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     assert build_env.get("LLVM_PROFILE_FILE") == "", \
         "Pass 4a must clear LLVM_PROFILE_FILE so Pass-3 training env doesn't leak"
     # Pass 4a (pgo sub-pass) on the system-clang fallback (the test setup does
-    # not materialise staged_cc): _stage_env must NOT be injected. System
+    # not materialise staged_cc): stage_env must NOT be injected. System
     # /usr/bin/clang is linked against the live /usr libLLVM (full target list);
     # redirecting dyld at stage2's stripped LLVM_TARGETS_TO_BUILD-restricted
     # libLLVM via LD_LIBRARY_PATH triggers symbol lookup errors for missing
@@ -1456,7 +422,6 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     sidecar = pgo_store / "clang.profdata.version"
     assert sidecar.exists(), "Sidecar must be written after Pass 3 completes"
     assert sidecar.read_text().strip() == "1"
-
 
 def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
     """When Pass 4 fails (the version-skew failure mode the dyld fix exists to prevent
@@ -1501,12 +466,12 @@ def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
             Path(cmd[idx + 1]).touch()
         return result
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_stage_instrumented"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.run_llvm_preflight"), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="simulated Pass 4"):
@@ -1523,7 +488,6 @@ def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
     # And staging is intentionally NOT removed on Pass 4 failure (only cleared
     # on full-flow success), so the user can inspect it.
     assert staging.exists(), "Staging must persist after Pass 4 failure for inspection"
-
 
 def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
     """When stage2 contains a staged clang (e.g. clang is in the PGO package set),
@@ -1574,13 +538,13 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
             Path(cmd[idx + 1]).touch()
         return result
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_stage_instrumented"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._run_llvm_preflight"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.run_llvm_preflight"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
          patch("subprocess.run", side_effect=fake_subprocess), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
@@ -1595,1355 +559,6 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
         "Pass 4 must redirect dyld at stage2 when the staged clang is used"
     assert build_env.get("CMAKE_PREFIX_PATH", "").startswith(str(staging / "usr")), \
         "Pass 4 must redirect cmake at stage2 when the staged clang is used"
-
-
-# ---------------------------------------------------------------------------
-# Helpers shared across profraw tests
-# ---------------------------------------------------------------------------
-
-def _make_old_profraw(path: Path) -> Path:
-    """Touch a profraw file and backdate its mtime by 30 seconds so it passes the settle filter."""
-    path.touch()
-    past = time.time() - 30
-    os.utime(path, (past, past))
-    return path
-
-
-def fake_profdata_merge(cmd, **kwargs):
-    """subprocess.run side_effect that creates the --output file."""
-    result = MagicMock()
-    result.returncode = 0
-    result.stderr = ""
-    if cmd and "llvm-profdata" in cmd[0]:
-        idx = cmd.index("--output")
-        Path(cmd[idx + 1]).touch()
-    return result
-
-
-def fake_profdata_merge_fail(cmd, **kwargs):
-    result = MagicMock()
-    result.returncode = 1
-    result.stderr = "error: bad input"
-    return result
-
-
-# ---------------------------------------------------------------------------
-# _do_profraw_merge
-# ---------------------------------------------------------------------------
-
-def test_do_profraw_merge_merges_and_deletes(tmp_path):
-    _make_old_profraw(tmp_path / "a.profraw")
-    _make_old_profraw(tmp_path / "b.profraw")
-
-    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-
-    assert count == 2
-    assert n_batches == 1
-    cmd = mock_run.call_args[0][0]
-    assert cmd[0] == "llvm-profdata"
-    assert "--output" in cmd
-    assert str(tmp_path / "clang.profdata.tmp") in cmd
-    assert not (tmp_path / "a.profraw").exists()
-    assert not (tmp_path / "b.profraw").exists()
-    assert (tmp_path / "clang.profdata").exists()
-
-
-def test_do_profraw_merge_no_files_returns_zero(tmp_path):
-    with patch("subprocess.run") as mock_run:
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-    assert count == 0
-    assert n_batches == 0
-    mock_run.assert_not_called()
-
-
-def test_do_profraw_merge_includes_existing_profdata(tmp_path):
-    _make_old_profraw(tmp_path / "a.profraw")
-    (tmp_path / "clang.profdata").touch()
-
-    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
-        _do_profraw_merge(tmp_path, "test")
-
-    cmd = mock_run.call_args[0][0]
-    assert str(tmp_path / "clang.profdata") in cmd
-
-
-def test_do_profraw_merge_failure_returns_zero(tmp_path):
-    _make_old_profraw(tmp_path / "a.profraw")
-
-    with patch("subprocess.run", side_effect=fake_profdata_merge_fail):
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-
-    assert count == 0
-    assert n_batches == 0
-    assert (tmp_path / "a.profraw").exists()   # not deleted on failure
-
-
-def test_do_profraw_merge_batches_large_sets(tmp_path):
-    """With N > _PROFRAW_MERGE_BATCH_MAX settled files, llvm-profdata is called
-    in multiple batches rather than once with all files."""
-    n = _PROFRAW_MERGE_BATCH_MAX + 3
-    for i in range(n):
-        _make_old_profraw(tmp_path / f"p{i}.profraw")
-
-    call_counts = []
-    def counting_merge(cmd, **kwargs):
-        raws = [a for a in cmd if a.endswith(".profraw")]
-        call_counts.append(len(raws))
-        result = MagicMock()
-        result.returncode = 0
-        out_idx = cmd.index("--output")
-        Path(cmd[out_idx + 1]).touch()
-        return result
-
-    with patch("subprocess.run", side_effect=counting_merge):
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-
-    assert count == n
-    assert n_batches == 2
-    assert len(call_counts) == 2
-    assert call_counts[0] == _PROFRAW_MERGE_BATCH_MAX
-    assert call_counts[1] == 3
-    assert all(c <= _PROFRAW_MERGE_BATCH_MAX for c in call_counts)
-
-
-def test_do_profraw_merge_adaptive_shrink_on_failure(tmp_path):
-    """On merge failure, batch size halves and retries the same position."""
-    for i in range(4):
-        _make_old_profraw(tmp_path / f"p{i}.profraw")
-
-    attempts = []
-    call_n = [0]
-    def fail_first_only(cmd, **kwargs):
-        call_n[0] += 1
-        raws = [a for a in cmd if a.endswith(".profraw")]
-        attempts.append(len(raws))
-        result = MagicMock()
-        result.stderr = "OOM"
-        result.returncode = 1 if call_n[0] == 1 else 0  # first call fails
-        if result.returncode == 0:
-            out_idx = cmd.index("--output")
-            Path(cmd[out_idx + 1]).touch()
-        return result
-
-    with patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MAX", 4), \
-         patch("sysforge.pipeline.stages.toolchain._PROFRAW_MERGE_BATCH_MIN", 1), \
-         patch("subprocess.run", side_effect=fail_first_only):
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-
-    # First attempt: batch=4 (max) → fails
-    # Second attempt: batch=2 → succeeds, then another batch=2 → succeeds
-    assert attempts[0] == 4   # first try at max batch
-    assert attempts[1] == 2   # retry at half
-    assert count == 4
-    assert n_batches == 2
-
-
-def test_do_profraw_merge_gives_up_at_min_batch(tmp_path):
-    """If merge keeps failing down to min batch size, returns partial count."""
-    for i in range(_PROFRAW_MERGE_BATCH_MIN):
-        _make_old_profraw(tmp_path / f"p{i}.profraw")
-
-    def always_fail(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 1
-        result.stderr = "OOM"
-        return result
-
-    with patch("subprocess.run", side_effect=always_fail):
-        count, n_batches = _do_profraw_merge(tmp_path, "test")
-
-    assert count == 0  # nothing merged, gives up at min batch
-    assert n_batches == 0
-
-
-# ---------------------------------------------------------------------------
-# _profraw_merge_daemon
-# ---------------------------------------------------------------------------
-
-def test_profraw_merge_daemon_merges_on_wakeup(tmp_path):
-    """Daemon merges profraw files when stop_event fires while raws exist."""
-    _make_old_profraw(tmp_path / "a.profraw")
-    stop_event = threading.Event()
-
-    with patch("sysforge.pipeline.stages.toolchain._PGO_MERGE_INTERVAL", 0), \
-         patch("subprocess.run", side_effect=fake_profdata_merge):
-        t = threading.Thread(target=_profraw_merge_daemon,
-                             args=(tmp_path, stop_event), daemon=True)
-        t.start()
-        t.join(timeout=2)
-        stop_event.set()
-        t.join(timeout=2)
-
-    assert not (tmp_path / "a.profraw").exists()
-    assert (tmp_path / "clang.profdata").exists()
-
-
-def test_profraw_merge_daemon_stops_cleanly_with_no_files(tmp_path):
-    """Daemon exits cleanly when stop_event fires with no profraw present."""
-    stop_event = threading.Event()
-    stop_event.set()  # fire immediately
-
-    with patch("subprocess.run") as mock_run:
-        t = threading.Thread(target=_profraw_merge_daemon,
-                             args=(tmp_path, stop_event), daemon=True)
-        t.start()
-        t.join(timeout=2)
-
-    mock_run.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _collect_pgo_packages / _pgo_install
-# ---------------------------------------------------------------------------
-
-def test_collect_pgo_packages_uses_makepkg_packagelist(tmp_path):
-    """_collect_pgo_packages calls 'makepkg --packagelist' and returns existing paths."""
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    def fake_packagelist(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_packagelist):
-        pkgs = _collect_pgo_packages(pkgbuild_map)
-
-    assert pkgs == [fake_pkg]
-
-
-def test_collect_pgo_packages_deduplicates_by_dir(tmp_path):
-    """Split packages sharing a PKGBUILD dir are only queried once."""
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    pkgbuild_map = {
-        "llvm":      pkg_dir / "PKGBUILD",
-        "llvm-libs": pkg_dir / "PKGBUILD",
-    }
-
-    call_count = []
-    def fake_packagelist(cmd, **kwargs):
-        call_count.append(1)
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_packagelist):
-        _collect_pgo_packages(pkgbuild_map)
-
-    assert len(call_count) == 1
-
-
-def test_collect_pgo_packages_excludes_missing_and_sig(tmp_path):
-    """Non-existent paths and .sig files are filtered out."""
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    real_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    real_pkg.touch()
-    missing = pkg_dir / "llvm-missing-1-x86_64.pkg.tar.zst"
-    sig = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst.sig"
-    sig.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    def fake_packagelist(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = "\n".join([str(real_pkg), str(missing), str(sig)])
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_packagelist):
-        pkgs = _collect_pgo_packages(pkgbuild_map)
-
-    assert pkgs == [real_pkg]
-
-
-def test_pgo_install_calls_pacman_u(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    pacman_calls = []
-    def fake_run(cmd, **kwargs):
-        pacman_calls.append(cmd)
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        _pgo_install("test", pkgbuild_map, dry_run=False)
-
-    assert any("pacman" in c and "-U" in c for c in pacman_calls)
-
-
-def test_pgo_install_dry_run_skips_pacman(tmp_path):
-    pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
-    with patch("subprocess.run") as mock_run:
-        _pgo_install("test", pkgbuild_map, dry_run=True)
-    mock_run.assert_not_called()
-
-
-def test_pgo_install_raises_when_no_packages(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    def fake_packagelist(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = ""
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_packagelist):
-        with pytest.raises(RuntimeError, match="No built packages"):
-            _pgo_install("test", pkgbuild_map, dry_run=False)
-
-
-def test_pgo_install_raises_on_pacman_failure(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        if "pacman" in cmd:
-            result.returncode = 1
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="pacman -U failed"):
-            _pgo_install("test", pkgbuild_map, dry_run=False)
-
-
-# ---------------------------------------------------------------------------
-# Gate 2 ABI audit / _dump_stage_dynsym_evidence
-#
-# (The unit coverage for the hazard scan itself now lives in
-# test_toolchain_safety.py::test_scan_abi_hazards_* — the stage just calls it.)
-# ---------------------------------------------------------------------------
-
-
-def _g2_opts(rebuild_soname_consumers=None):
-    """Minimal options stand-in for _gate2_audit (only the heal path reads it)."""
-    import types
-    return types.SimpleNamespace(rebuild_soname_consumers=rebuild_soname_consumers)
-
-
-def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
-    """When scan_abi_hazards finds a leak, _gate2_audit aborts before install.
-
-    The ABI-hazard scan moved out of _pgo_install into Gate 2, which runs
-    *outside* the sentinel — so a hazardous build raises with nothing installed
-    and no sentinel left behind. (Replaces the old in-install hazard check.)
-    """
-    from sysforge.pipeline.stages.toolchain import _gate2_audit
-    from sysforge.primitives import toolchain_safety as _ts
-
-    pkg_dir = tmp_path / "clang"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "clang-22.1.5-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    built_map = {"clang": pkg_dir / "PKGBUILD"}
-
-    hazard = [_ts.ToolchainFinding(
-        "error", "abi_hazard",
-        f"{fake_pkg.name}: libclang-cpp.so.22.1: _M_assign@LLVM_22.1",
-        is_brick=True,
-    )]
-    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: hazard)
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [fake_pkg],
-    )
-
-    with pytest.raises(RuntimeError, match="refusing to install"):
-        _gate2_audit(built_map, [], _g2_opts(), {}, dry_run=False)
-
-
-def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
-    """No hazard → _gate2_audit returns without raising."""
-    from sysforge.pipeline.stages.toolchain import _gate2_audit
-
-    pkg_dir = tmp_path / "clang"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "clang-22.1.5-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [fake_pkg],
-    )
-    # scan_abi_hazards stubbed to [] by the autouse fixture.
-    assert _gate2_audit(
-        {"clang": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
-    ) == []  # must not raise
-
-
-def test_gate2_audit_refuses_graphics_consumer_brick(tmp_path, monkeypatch):
-    """A freshly-built libLLVM that drops a target an installed mesa consumer
-    imports aborts Gate 2 before install (outside the sentinel) — the
-    bricked-desktop class. scan_abi_hazards is clean; the consumer check trips."""
-    from sysforge.pipeline.stages.toolchain import _gate2_audit
-    from sysforge.primitives import toolchain_safety as _ts
-
-    pkg_dir = tmp_path / "llvm-libs"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [fake_pkg],
-    )
-    # scan_abi_hazards clean (autouse) — the consumer check is what aborts.
-    brick = [_ts.ToolchainFinding(
-        "error", "libllvm_consumer_symbols",
-        "libgallium-26.so links libLLVM.so.22.1 but the freshly-built libLLVM "
-        "does not export 6 symbol(s) — dropped LLVM target(s): AMDGPU",
-        "Rebuild with AMDGPU kept.",
-        is_brick=True,
-    )]
-    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: brick)
-
-    with pytest.raises(RuntimeError, match="graphics consumer"):
-        _gate2_audit(
-            {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
-        )
-
-
-def test_gate2_audit_heals_stddrift_consumer(tmp_path, monkeypatch):
-    """A healable std:: re-export drift does NOT abort: under mode=auto, Gate 2
-    returns the libLLVM consumers to rebuild after Gate 3 (same machinery as a
-    soname bump), and nothing is raised."""
-    from sysforge.pipeline.stages.toolchain import _gate2_audit
-    from sysforge.primitives import toolchain_safety as _ts
-
-    pkg_dir = tmp_path / "llvm-libs"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [fake_pkg],
-    )
-    drift = [_ts.ToolchainFinding(
-        "error", "libllvm_consumer_symbols",
-        "libgallium-26.so links libLLVM.so.22.1 but the freshly-built libLLVM "
-        "no longer re-exports 4 libstdc++ symbol(s)",
-        "Rebuild the affected libLLVM consumer(s).",
-        is_brick=True, healable=True,
-    )]
-    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: drift)
-    monkeypatch.setattr(_ts, "libllvm_abi_consumers", lambda *, exclude: ["mesa"])
-
-    out = _gate2_audit(
-        {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts("auto"), {},
-        dry_run=False,
-    )
-    assert out == ["mesa"]
-
-
-def test_gate2_audit_stddrift_prompt_noninteractive_aborts(tmp_path, monkeypatch):
-    """Healable drift + mode=prompt + non-interactive → abort (never silently
-    install a stranding libLLVM); points at --rebuild-soname-consumers."""
-    from sysforge.pipeline.stages import toolchain as _tc
-    from sysforge.primitives import toolchain_safety as _ts
-
-    pkg_dir = tmp_path / "llvm-libs"
-    pkg_dir.mkdir()
-    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
-    fake_pkg.touch()
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [fake_pkg],
-    )
-    drift = [_ts.ToolchainFinding(
-        "error", "libllvm_consumer_symbols", "std:: re-export drift",
-        "Rebuild the consumer.", is_brick=True, healable=True,
-    )]
-    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: drift)
-    monkeypatch.setattr(_ts, "libllvm_abi_consumers", lambda *, exclude: ["mesa"])
-    monkeypatch.setattr(_tc, "is_interactive", lambda: False)
-
-    with pytest.raises(RuntimeError, match="non-interactive"):
-        _tc._gate2_audit(
-            {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts("prompt"), {},
-            dry_run=False,
-        )
-
-
-def _make_so(base, name):
-    libdir = base / "usr/lib"
-    libdir.mkdir(parents=True, exist_ok=True)
-    (libdir / name).touch()
-
-
-def test_dump_stage_dynsym_evidence_writes_brick_diff(tmp_path):
-    """Evidence is the @LLVM_*-versioned std symbols a consumer demands that the
-    installed libLLVM does not provide (the brick), plus a note when staging3
-    DOES export them (the shipped libLLVM diverged from what 4b linked against).
-    """
-    install_root = tmp_path / "root"
-    _make_so(install_root, "libLLVM.so.22.1")
-    _make_so(install_root, "libclang-cpp.so.22.1")
-    staging3 = tmp_path / "stage3"
-    _make_so(staging3, "libLLVM.so.22.1")
-
-    def fake_run(cmd, **kwargs):
-        so = cmd[3]
-        undefined = "--undefined-only" in cmd
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        if "libclang-cpp" in so and undefined:
-            result.stdout = (
-                "                 U _ZNSt7providedSym@LLVM_22.1\n"
-                "                 U _ZNSt7missingSym@LLVM_22.1\n"
-            )
-        elif str(staging3) in so and not undefined:
-            result.stdout = "0000000000333333 W _ZNSt7missingSym@@LLVM_22.1\n"
-        elif not undefined:  # installed libLLVM defined-only
-            result.stdout = (
-                "0000000000111111 T LLVMCreateModule\n"
-                "0000000000222222 W _ZNSt7providedSym@@LLVM_22.1\n"
-            )
-        else:
-            result.stdout = ""
-        return result
-
-    dest_dir = tmp_path / "state"
-    with patch("subprocess.run", side_effect=fake_run):
-        out = _dump_stage_dynsym_evidence(staging3, dest_dir, install_root=install_root)
-
-    assert out is not None
-    assert out == dest_dir / "llvm_abi_hazard.log"
-    text = out.read_text()
-    assert "installed libLLVM:" in text
-    assert "brick cause" in text
-    assert "_ZNSt7missingSym@LLVM_22.1" in text
-    # provided-and-demanded symbol is NOT flagged as missing
-    assert "_ZNSt7missingSym@LLVM_22.1" in text
-    assert "ARE exported by" in text  # staging3 had it → divergence note
-    assert "_ZNSt7providedSym" in text  # full dump section present
-
-
-def test_dump_stage_dynsym_evidence_returns_none_when_no_installed_libllvm(tmp_path):
-    """No installed libLLVM under install_root → returns None, writes nothing."""
-    install_root = tmp_path / "root"
-    (install_root / "usr/lib").mkdir(parents=True)
-    dest_dir = tmp_path / "state"
-    out = _dump_stage_dynsym_evidence(tmp_path / "stage3", dest_dir, install_root=install_root)
-    assert out is None
-    assert not (dest_dir / "llvm_abi_hazard.log").exists()
-
-
-def test_dump_stage_dynsym_evidence_returns_none_when_dest_dir_none(tmp_path):
-    """Unset state dir (None) → returns None instead of raising TypeError.
-
-    Regression: the Gate-3 failure path passes ``options.state_dir`` which is
-    None whenever --state-dir isn't on the CLI, crashing on ``Path(None)``.
-    """
-    install_root = tmp_path / "root"
-    _make_so(install_root, "libLLVM.so.22.1")
-    out = _dump_stage_dynsym_evidence(tmp_path / "stage3", None, install_root=install_root)
-    assert out is None
-
-
-def test_dump_stage_dynsym_evidence_ignores_compat_libllvm(tmp_path):
-    """A compat package's older libLLVM.so.<old> (e.g. llvm21-libs alongside
-    llvm-libs) must NOT be picked as 'the installed libLLVM'. The lexical-first
-    glob did exactly that and reported a false '0 NOT provided' all-clear while
-    clang actually dangled against the real .22.1. The diff must run against the
-    libLLVM the consumers link (matched by soname version), not the compat one.
-    """
-    install_root = tmp_path / "root"
-    _make_so(install_root, "libLLVM.so.21.1")   # compat (llvm21-libs)
-    _make_so(install_root, "libLLVM.so.22.1")   # real (llvm-libs)
-    _make_so(install_root, "libclang-cpp.so.22.1")
-    staging3 = tmp_path / "stage3"
-    _make_so(staging3, "libLLVM.so.22.1")
-
-    def fake_run(cmd, **kwargs):
-        so = cmd[3]
-        undefined = "--undefined-only" in cmd
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        if "libclang-cpp" in so and undefined:
-            result.stdout = "                 U _ZNSt7missingSym@LLVM_22.1\n"
-        elif so.endswith("libLLVM.so.22.1") and not undefined:
-            # The REAL libLLVM does not export the demanded symbol → brick.
-            result.stdout = "0000000000111111 T LLVMCreateModule\n"
-        elif so.endswith("libLLVM.so.21.1") and not undefined:
-            # The compat libLLVM *does* export it — if (wrongly) selected, the
-            # diff would show 0 missing and hide the brick.
-            result.stdout = "0000000000222222 W _ZNSt7missingSym@@LLVM_21.1\n"
-        else:
-            result.stdout = ""
-        return result
-
-    dest_dir = tmp_path / "state"
-    with patch("subprocess.run", side_effect=fake_run):
-        out = _dump_stage_dynsym_evidence(staging3, dest_dir, install_root=install_root)
-
-    assert out is not None
-    text = out.read_text()
-    # The diff ran against the real .22.1 (matched to the consumer), not .21.1.
-    assert "libLLVM.so.22.1" in text
-    assert "brick cause" in text
-    assert "_ZNSt7missingSym@LLVM_22.1" in text
-
-
-# ---------------------------------------------------------------------------
-# _so_ver / _newest_so — numeric soname selection (compat-package safe)
-# ---------------------------------------------------------------------------
-
-def test_so_ver_parses_numeric_version():
-    assert _so_ver(Path("libLLVM.so.22.1")) == (22, 1)
-    assert _so_ver(Path("libLLVM.so.9.0")) == (9, 0)
-    assert _so_ver(Path("libLLVM.so")) == ()          # bare dev symlink name
-    assert _so_ver(Path("libfoo.so.1.2.3")) == (1, 2, 3)
-
-
-def test_newest_so_picks_highest_not_lexical_first(tmp_path):
-    """Numeric, not lexical: .22.1 wins over .21.1 and .9.0 (which sorts last
-    lexically). Symlinks are skipped so the unversioned dev symlink never wins.
-    """
-    lib = tmp_path / "usr/lib"
-    lib.mkdir(parents=True)
-    for n in ("libLLVM.so.21.1", "libLLVM.so.22.1", "libLLVM.so.9.0"):
-        (lib / n).touch()
-    (lib / "libLLVM.so").symlink_to("libLLVM.so.22.1")
-    assert _newest_so(tmp_path, "libLLVM.so.*").name == "libLLVM.so.22.1"
-
-
-def test_newest_so_none_when_absent(tmp_path):
-    (tmp_path / "usr/lib").mkdir(parents=True)
-    assert _newest_so(tmp_path, "libLLVM.so.*") is None
-
-
-# ---------------------------------------------------------------------------
-# _assert_pass_links_shipped_libllvm — Pass-4b post-build link assertion
-# ---------------------------------------------------------------------------
-
-def test_assert_pass_links_shipped_libllvm_raises_on_dangling(tmp_path, monkeypatch):
-    """A built consumer with a _ZNSt*@LLVM_* undefined ref means the pass linked
-    the live /usr libLLVM (split defeated) → abort before install.
-    """
-    from sysforge.primitives import toolchain_safety as _ts
-    pb = make_pkgbuild(tmp_path / "builds", "clang")
-    hazard = [_ts.ToolchainFinding(
-        _ts.SEV_ERROR, "abi_hazard",
-        "clang-x.pkg.tar: libclang-cpp.so: _ZNSt7foo@LLVM_22.1 (should be GLIBCXX_*)",
-        is_brick=True,
-    )]
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [tmp_path / "clang.pkg.tar"],
-    )
-    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: hazard)
-    with pytest.raises(RuntimeError, match="staged libLLVM"):
-        _assert_pass_links_shipped_libllvm(
-            {"clang": pb}, label="Pass 4b", dry_run=False,
-        )
-
-
-def test_assert_pass_links_shipped_libllvm_clean_passes(tmp_path, monkeypatch):
-    """No dangling refs → no raise (the correctly-steered build)."""
-    from sysforge.primitives import toolchain_safety as _ts
-    pb = make_pkgbuild(tmp_path / "builds", "clang")
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages",
-        lambda m: [tmp_path / "clang.pkg.tar"],
-    )
-    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [])
-    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 4b", dry_run=False)
-
-
-def test_assert_pass_links_shipped_libllvm_noop_when_no_pkgs(tmp_path, monkeypatch):
-    """No built packages resolved → no scan, no raise (degrade gracefully)."""
-    from sysforge.primitives import toolchain_safety as _ts
-    pb = make_pkgbuild(tmp_path / "builds", "clang")
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages", lambda m: [],
-    )
-    called = {"scan": False}
-
-    def _spy(pkgs):
-        called["scan"] = True
-        return []
-    monkeypatch.setattr(_ts, "scan_abi_hazards", _spy)
-    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 4b", dry_run=False)
-    assert called["scan"] is False
-
-
-def test_assert_pass_links_shipped_libllvm_dry_run_skips(tmp_path, monkeypatch):
-    """dry_run → never touches the artifacts (nothing was built)."""
-    from sysforge.primitives import toolchain_safety as _ts
-    pb = make_pkgbuild(tmp_path / "builds", "clang")
-
-    def _boom(m):
-        raise AssertionError("must not resolve packages in dry-run")
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._collect_pgo_packages", _boom,
-    )
-    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [])
-    _assert_pass_links_shipped_libllvm({"clang": pb}, label="Pass 4b", dry_run=True)
-
-
-def test_assert_staging_has_llvm_cmake_raises_when_missing(tmp_path):
-    """staging without LLVMConfig.cmake → fail fast (the root-cause guard)."""
-    staging = tmp_path / "stage3"
-    (staging / "usr/lib").mkdir(parents=True)  # libLLVM only, no cmake config
-    with pytest.raises(RuntimeError, match="Pass-4 staging is incomplete"):
-        _assert_staging_has_llvm_cmake(staging)
-
-
-def test_assert_staging_has_llvm_cmake_passes_when_present(tmp_path):
-    """staging with LLVMConfig.cmake → no raise."""
-    staging = tmp_path / "stage3"
-    cfg = staging / "usr/lib/cmake/llvm"
-    cfg.mkdir(parents=True)
-    (cfg / "LLVMConfig.cmake").touch()
-    _assert_staging_has_llvm_cmake(staging)  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# pgo_store provisioning is exercised in tests/test_fs_provision.py; the PGO
-# build wires it via fs_provision.ensure_writable_dir / empty_dir_contents.
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_stage_instrumented_extracts_all_packages(tmp_path):
-    """Phase 2: every Pass 1 package is staged into stage1 (including the
-    cmake-config llvm pkg) so Pass 2's find_package(LLVM) finds stage1.
-    Instrumented .a archives are tolerated and resolved via residual
-    profile-runtime LDFLAGS in Pass 2 / Pass 3.  And no `pacman -U`
-    is ever invoked — Pass 1 never touches the live root."""
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    llvm_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
-    llvm_libs_pkg = pkg_dir / "llvm-libs-18.0.0-1-x86_64.pkg.tar.zst"
-    llvm_pkg.touch()
-    llvm_libs_pkg.touch()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD", "llvm-libs": pkg_dir / "PKGBUILD"}
-    staging1 = tmp_path / "stage1"
-
-    extract_targets: list[str] = []
-    pacman_called: list[bool] = []
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = b""
-        result.stdout = ""
-        if "makepkg" in cmd:
-            result.stdout = f"{llvm_pkg}\n{llvm_libs_pkg}\n"
-        elif "tar" in cmd and "-xf" in cmd:
-            extract_targets.append(cmd[cmd.index("-xf") + 1])
-        elif "pacman" in cmd:
-            pacman_called.append(True)
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        _pgo_stage_instrumented(pkgbuild_map, staging1, dry_run=False)
-
-    assert str(llvm_libs_pkg) in extract_targets, "llvm-libs must stage to stage1"
-    assert str(llvm_pkg) in extract_targets, \
-        "Phase 2: cmake-config llvm pkg must also stage so find_package(LLVM) hits stage1"
-    assert not pacman_called, "Pass 1 must not invoke pacman — stage instead of install"
-
-
-def test_pgo_stage_instrumented_dry_run(tmp_path):
-    pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
-    staging1 = tmp_path / "stage1"
-    with patch("subprocess.run") as mock_run:
-        _pgo_stage_instrumented(pkgbuild_map, staging1, dry_run=True)
-    mock_run.assert_not_called()
-
-
-def test_pgo_stage_instrumented_raises_when_no_packages(tmp_path):
-    pkg_dir = tmp_path / "llvm"
-    pkg_dir.mkdir()
-    pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
-    staging1 = tmp_path / "stage1"
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = ""
-        result.stderr = b""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="No built packages"):
-            _pgo_stage_instrumented(pkgbuild_map, staging1, dry_run=False)
-
-
-# ---------------------------------------------------------------------------
-# _system_llvm_is_instrumented / _profile_runtime_ldflag
-# ---------------------------------------------------------------------------
-
-
-def test_system_llvm_is_instrumented_true(tmp_path):
-    """Returns True when nm output contains __llvm_profile_ symbols."""
-    fake_lib = tmp_path / "libLLVMSupport.a"
-    fake_lib.touch()
-    nm_output = "0000 T __llvm_profile_instrument_target\n0000 T __llvm_profile_instrument_memop\n"
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout=nm_output, stderr="")
-        result = _system_llvm_is_instrumented()
-    assert result is True
-
-
-def test_system_llvm_is_instrumented_false(tmp_path):
-    """Returns False when nm output has no profile symbols."""
-    nm_output = "0000 T some_other_symbol\n"
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout=nm_output, stderr="")
-        result = _system_llvm_is_instrumented()
-    assert result is False
-
-
-def test_system_llvm_is_instrumented_missing_lib():
-    """Returns False when libLLVMSupport.a does not exist."""
-    with patch("pathlib.Path.exists", return_value=False):
-        result = _system_llvm_is_instrumented()
-    assert result is False
-
-
-def test_profile_runtime_ldflag_returns_flag(tmp_path):
-    """Returns a force-loaded (--whole-archive) full-path flag when the runtime
-    lib exists. Force-load makes the runtime resolve regardless of link order, so
-    a bfd link can't drop it ahead of the archives that reference __llvm_profile_*."""
-    runtime_dir = tmp_path / "clang" / "lib" / "linux"
-    runtime_dir.mkdir(parents=True)
-    profile_lib = runtime_dir / "libclang_rt.profile-x86_64.a"
-    profile_lib.touch()
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        if "--print-runtime-dir" in cmd:
-            result.stdout = str(runtime_dir) + "\n"
-        elif "uname" in cmd:
-            result.stdout = "x86_64\n"
-        else:
-            result.stdout = ""
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        flag = _profile_runtime_ldflag()
-
-    assert flag is not None
-    # Full archive path, force-loaded, scoped by push/pop-state.
-    assert str(profile_lib) in flag
-    assert "-Wl,--push-state,--whole-archive" in flag
-    assert "-Wl,--pop-state" in flag
-
-
-def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
-    """Returns None when the profile runtime lib does not exist."""
-    runtime_dir = tmp_path / "clang" / "lib" / "linux"
-    runtime_dir.mkdir(parents=True)
-    # No .a file created
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        if "--print-runtime-dir" in cmd:
-            result.stdout = str(runtime_dir) + "\n"
-        elif "uname" in cmd:
-            result.stdout = "x86_64\n"
-        else:
-            result.stdout = ""
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        flag = _profile_runtime_ldflag()
-
-    assert flag is None
-
-
-# ---------------------------------------------------------------------------
-# _merge_profraw (final sweep)
-# ---------------------------------------------------------------------------
-
-def test_merge_profraw_merges_and_deletes_raws(tmp_path):
-    _make_old_profraw(tmp_path / "a.profraw")
-    _make_old_profraw(tmp_path / "b.profraw")
-
-    with patch("subprocess.run", side_effect=fake_profdata_merge):
-        result = _merge_profraw(tmp_path, dry_run=False)
-
-    assert result == tmp_path / "clang.profdata"
-    assert (tmp_path / "clang.profdata").exists()
-    assert not (tmp_path / "a.profraw").exists()
-    assert not (tmp_path / "b.profraw").exists()
-
-
-def test_merge_profraw_no_files_no_profdata_raises(tmp_path):
-    with pytest.raises(RuntimeError, match="No .profraw files and no profdata"):
-        _merge_profraw(tmp_path, dry_run=False)
-
-
-def test_merge_profraw_existing_profdata_no_raws_returns_it(tmp_path):
-    """Daemon already merged everything — final sweep returns existing profdata."""
-    (tmp_path / "clang.profdata").touch()
-
-    with patch("subprocess.run") as mock_run:
-        result = _merge_profraw(tmp_path, dry_run=False)
-
-    assert result == tmp_path / "clang.profdata"
-    mock_run.assert_not_called()
-
-
-def test_merge_profraw_combines_raws_with_existing_profdata(tmp_path):
-    """Final sweep merges remaining raws together with daemon's profdata."""
-    _make_old_profraw(tmp_path / "late.profraw")
-    (tmp_path / "clang.profdata").touch()
-
-    with patch("subprocess.run", side_effect=fake_profdata_merge) as mock_run:
-        result = _merge_profraw(tmp_path, dry_run=False)
-
-    assert result == tmp_path / "clang.profdata"
-    cmd = mock_run.call_args[0][0]
-    # Both the existing profdata and the remaining profraw were inputs
-    assert str(tmp_path / "clang.profdata") in cmd
-    assert str(tmp_path / "late.profraw") in cmd
-
-
-def test_merge_profraw_dry_run_skips_everything(tmp_path):
-    with patch("subprocess.run") as mock_run:
-        result = _merge_profraw(tmp_path, dry_run=True)
-
-    assert result == tmp_path / "clang.profdata"
-    mock_run.assert_not_called()
-
-
-def test_merge_profraw_fresh_raws_with_profdata_warns_and_returns(tmp_path):
-    """Fresh profraw (< _PROFRAW_SETTLE_SECS old) + existing profdata → warn, return profdata."""
-    # Fresh profraw: use default touch() mtime (now)
-    (tmp_path / "fresh.profraw").touch()
-    (tmp_path / "clang.profdata").touch()
-
-    # _do_profraw_merge returns 0 because all profraw is too fresh to merge;
-    # _merge_profraw should warn and return the existing profdata rather than raising
-    with patch("subprocess.run") as mock_run:
-        result = _merge_profraw(tmp_path, dry_run=False)
-
-    assert result == tmp_path / "clang.profdata"
-    mock_run.assert_not_called()  # llvm-profdata not invoked
-
-
-def test_merge_profraw_fresh_raws_no_profdata_raises(tmp_path):
-    """Fresh profraw + no profdata → error (no usable data at all)."""
-    (tmp_path / "fresh.profraw").touch()
-
-    with patch("subprocess.run"), pytest.raises(RuntimeError, match="too fresh"):
-        _merge_profraw(tmp_path, dry_run=False)
-
-
-def test_settle_secs_constant_is_positive():
-    assert _PROFRAW_SETTLE_SECS > 0
-
-
-# ---------------------------------------------------------------------------
-# PGO makepkg flag whitelist
-# ---------------------------------------------------------------------------
-
-def test_pgo_allowed_flags_whitelist():
-    assert "-f" in _PGO_ALLOWED_MAKEPKG_FLAGS
-    assert "--force" in _PGO_ALLOWED_MAKEPKG_FLAGS
-
-
-def test_build_pass_pgo_drops_disallowed_flags(tmp_path):
-    """pgo_build=True: only -f/--force pass through from user makepkg_flags."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    pkgbuild_map = {"llvm": pkgbuild}
-
-    captured = []
-    def fake_run(pb, options=None):
-        captured.append(list(options.extra_flags or []) if options else [])
-
-    # Simulate user passing -m '-f --noextract --noprepare'
-    options = make_options(dry_run=False,
-                           makepkg_flags=["-f", "--noextract", "--noprepare"])
-
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
-        _build_pass("test pass", pkgbuild_map, options,
-                    install=False, pgo_build=True)
-
-    # Only -f should survive; --noextract and --noprepare dropped
-    flags = captured[0]
-    assert "-f" in flags
-    assert "--noextract" not in flags
-    assert "--noprepare" not in flags
-
-
-def test_build_pass_non_pgo_passes_all_flags(tmp_path):
-    """pgo_build=False (default): all user flags pass through unchanged."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    pkgbuild_map = {"llvm": pkgbuild}
-
-    captured = []
-    def fake_run(pb, options=None):
-        captured.append(list(options.extra_flags or []) if options else [])
-
-    options = make_options(dry_run=False,
-                           makepkg_flags=["-f", "--noextract"])
-
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
-        _build_pass("test pass", pkgbuild_map, options, install=False)
-
-    flags = captured[0]
-    assert "-f" in flags
-    assert "--noextract" in flags
-
-
-def test_build_pass_staged_deps_adds_nodeps_and_strips_syncdeps(tmp_path):
-    """staged_deps=True: --nodeps added; --syncdeps/-s stripped via strip_flags.
-
-    Reproduces the failure mode that motivated F1: with --syncdeps in the
-    profile flags, Pass 2's clang build asks pacman to install llvm=<ver>
-    against repos that don't have it. The fix is to make Pass 2/3/4 set
-    staged_deps=True so makepkg never consults pacman for the staged deps.
-    """
-    pkgbuild = make_pkgbuild(tmp_path, "clang")
-    pkgbuild_map = {"clang": pkgbuild}
-
-    captured = []
-    def fake_run(pb, options=None):
-        captured.append({
-            "extra_flags": list(options.extra_flags or []) if options else [],
-            "strip_flags": options.strip_flags if options else None,
-        })
-
-    options = make_options(dry_run=False,
-                           makepkg_flags=["--syncdeps", "-s", "--noconfirm"])
-
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
-        _build_pass(
-            "PGO 2/4 · bootstrap clang/lld against stage1",
-            pkgbuild_map, options,
-            install=False, pgo_build=True, staged_deps=True,
-        )
-
-    rec = captured[0]
-    assert "--nodeps" in rec["extra_flags"]
-    assert rec["strip_flags"] is not None
-    assert "--syncdeps" in rec["strip_flags"]
-    assert "-s" in rec["strip_flags"]
-
-
-def test_build_pass_default_keeps_syncdeps_for_pass1a(tmp_path):
-    """staged_deps=False (default, Pass 1): no --nodeps, no strip_flags.
-
-    Pass 1 builds against the live system, so --syncdeps must stay so
-    that any missing build deps (cmake, ninja, python, z3, ...) get
-    installed normally before the build starts.
-    """
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    pkgbuild_map = {"llvm": pkgbuild}
-
-    captured = []
-    def fake_run(pb, options=None):
-        captured.append({
-            "extra_flags": list(options.extra_flags or []) if options else [],
-            "strip_flags": options.strip_flags if options else None,
-        })
-
-    options = make_options(dry_run=False,
-                           makepkg_flags=["--syncdeps", "--noconfirm"])
-
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run):
-        _build_pass(
-            "PGO 1/4 · instrument llvm",
-            pkgbuild_map, options,
-            install=False, pgo_build=True,  # staged_deps defaults False
-        )
-
-    rec = captured[0]
-    assert "--nodeps" not in rec["extra_flags"]
-    assert rec["strip_flags"] is None
-
-
-# ---------------------------------------------------------------------------
-# _build_pass — opt-in input-fingerprint reuse (Pass 4)
-# ---------------------------------------------------------------------------
-
-def _reuse_ctx(tmp_path, *, pass_id="build-pgo", consult=False, config_digest="d",
-               profdata_sha="p", staged_dep_fps=None):
-    return _ReuseCtx(
-        pass_id=pass_id,
-        cache=bf.load_cache(tmp_path / "build_cache.json"),
-        cache_path=tmp_path / "build_cache.json",
-        config_digest=config_digest,
-        profdata_sha=profdata_sha,
-        pkgdest=None,  # search the per-package build dir
-        consult=consult,
-        staged_dep_fps=staged_dep_fps or [],
-    )
-
-
-def test_build_pass_without_reuse_returns_empty_and_builds(tmp_path):
-    """No reuse ctx (passes 1/2/3, single-pass, gcc path): unchanged behavior."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    calls = []
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: calls.append(pb)):
-        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                             install=False, pgo_build=True)
-    assert result == {}
-    assert len(calls) == 1
-    assert not (tmp_path / "build_cache.json").exists()  # no cache I/O
-
-
-def test_build_pass_records_cache_without_consulting(tmp_path):
-    """consult=False still populates the cache (so a later resume can use it)."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    _make_artifact(tmp_path / "llvm", "llvm")
-    ctx = _reuse_ctx(tmp_path, consult=False)
-    calls = []
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: calls.append(pb)):
-        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                             install=False, pgo_build=True, reuse=ctx)
-    assert len(calls) == 1               # built
-    assert "llvm" in result              # fingerprint returned
-    cache = bf.load_cache(tmp_path / "build_cache.json")
-    assert bf.cache_key("build-pgo", "llvm") in cache  # recorded for next run
-
-
-def test_build_pass_skips_build_on_cache_hit(tmp_path):
-    """consult=True with a matching, present artifact: makepkg is NOT invoked."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    _make_artifact(tmp_path / "llvm", "llvm")
-
-    # First run populates the cache (not opted in).
-    ctx1 = _reuse_ctx(tmp_path, consult=False)
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: None):
-        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                    install=False, pgo_build=True, reuse=ctx1)
-
-    # Resume opted in: identical inputs → cache hit → no rebuild.
-    ctx2 = _reuse_ctx(tmp_path, consult=True)
-    calls = []
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: calls.append(pb)):
-        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                             install=False, pgo_build=True, reuse=ctx2)
-    assert calls == []          # build skipped
-    assert "llvm" in result     # fingerprint still reported (for Merkle chain)
-
-
-def test_build_pass_rebuilds_when_input_changes(tmp_path):
-    """consult=True but a changed input (config_digest) → fingerprint miss → build."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    _make_artifact(tmp_path / "llvm", "llvm")
-
-    ctx1 = _reuse_ctx(tmp_path, consult=False, config_digest="OLD")
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: None):
-        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                    install=False, pgo_build=True, reuse=ctx1)
-
-    ctx2 = _reuse_ctx(tmp_path, consult=True, config_digest="NEW")  # config changed
-    calls = []
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: calls.append(pb)):
-        _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=False),
-                    install=False, pgo_build=True, reuse=ctx2)
-    assert len(calls) == 1  # rebuilt — never reuses across a config change
-
-
-def test_build_pass_dry_run_does_no_cache_io(tmp_path):
-    """dry-run never consults or writes the cache (no artifacts to validate)."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    ctx = _reuse_ctx(tmp_path, consult=True)
-    calls = []
-    with patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=lambda pb, options=None: calls.append(pb)):
-        result = _build_pass("p", {"llvm": pkgbuild}, make_options(dry_run=True),
-                             install=False, pgo_build=True, reuse=ctx)
-    assert calls == []
-    assert result == {}
-    assert not (tmp_path / "build_cache.json").exists()
-
-
-def test_pkg_fingerprint_merkle_chain_changes(tmp_path):
-    """A consumer's fingerprint shifts when a staged dep's fingerprint shifts."""
-    pkgbuild = make_pkgbuild(tmp_path, "clang")
-    ctx_v1 = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm-v1"])
-    ctx_v2 = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm-v2"])
-    _, fp1 = _pkg_fingerprint(ctx_v1, "clang", pkgbuild, None, "-fp=/p", None, None, [])
-    _, fp2 = _pkg_fingerprint(ctx_v2, "clang", pkgbuild, None, "-fp=/p", None, None, [])
-    assert fp1 != fp2
-
-
-def _fake_clang(path: Path, version_line: str, filler: str = "") -> str:
-    """A minimal executable that prints ``version_line`` for any argument.
-
-    ``filler`` perturbs the file's bytes/size without changing its --version
-    output — modelling the staged stage-2 clang vs the installed /usr clang,
-    which report the same version but are different binaries at different paths.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f'#!/bin/sh\necho "{version_line}"\n# {filler}\n')
-    path.chmod(0o755)
-    return str(path)
-
-
-def test_pkg_fingerprint_stable_across_staged_vs_system_clang(tmp_path):
-    """Pass-4 reuse must survive the staged→installed compiler swap (2.1.0-B14).
-
-    A profgen run records Pass-4 fingerprints under the staged stage-2 clang; a
-    profdata-reuse resume recomputes them under /usr/bin/clang. Both report the
-    same compiler --version line, so the fingerprint must match — otherwise the
-    resume never hits the cache the profgen run populated, defeating reuse.
-    """
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    staged = _fake_clang(tmp_path / "stage2" / "clang", "clang version 19.1.0", "staged")
-    system = _fake_clang(tmp_path / "usr" / "clang", "clang version 19.1.0",
-                         "installed-bytes-differ")
-    ctx = _reuse_ctx(tmp_path)
-    _, fp_staged = _pkg_fingerprint(ctx, "llvm", pkgbuild, staged, None, None, None, [])
-    _, fp_system = _pkg_fingerprint(ctx, "llvm", pkgbuild, system, None, None, None, [])
-    assert fp_staged == fp_system
-
-
-def test_pkg_fingerprint_changes_across_compiler_version(tmp_path):
-    """The version line still guards a genuine compiler-version bump: a major
-    version change must invalidate the cache even though the reuse dimension no
-    longer folds in path/size/mtime."""
-    pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    v19 = _fake_clang(tmp_path / "a" / "clang", "clang version 19.1.0")
-    v20 = _fake_clang(tmp_path / "b" / "clang", "clang version 20.0.0")
-    ctx = _reuse_ctx(tmp_path)
-    _, fp19 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v19, None, None, None, [])
-    _, fp20 = _pkg_fingerprint(ctx, "llvm", pkgbuild, v20, None, None, None, [])
-    assert fp19 != fp20
-
-
-def test_dep_versions_excludes_build_set_members(monkeypatch):
-    """2.5.1-B2: build-set members (llvm/llvm-libs/…) are satisfied from the
-    staging prefix during Pass 4 (--nodeps), so their *installed* version is not
-    a build input and must be excluded from makedep_versions. External build deps
-    (cmake/…) come from the live /usr and stay."""
-    from sysforge.pipeline.stages import toolchain
-
-    monkeypatch.setattr(
-        toolchain, "_query_pacman_versions",
-        lambda names: {n: "9.9-9" for n in names},
-    )
-    globals_ = {
-        "makedepends": ["cmake", "llvm=1.0", "ninja"],
-        "depends": ["llvm-libs"],
-    }
-    result = toolchain._dep_versions_from_globals(
-        globals_, exclude={"llvm", "llvm-libs"},
-    )
-    assert set(result) == {"cmake", "ninja"}  # build-set members dropped
-
-
-# Installed versions before/after the suite self-install. cmake is a live-/usr
-# build dep (constant); llvm/llvm-libs are build-set members whose installed
-# version moves when Pass 4's output is installed.
-_DEPS_BEFORE_INSTALL = {"cmake": "3.0-1", "llvm": "22.1.6-1", "llvm-libs": "22.1.6-1"}
-_DEPS_AFTER_INSTALL = {"cmake": "3.0-1", "llvm": "22.1.8-2", "llvm-libs": "22.1.8-2"}
-
-
-def _clang_pkgbuild(tmp_path) -> Path:
-    pb = tmp_path / "clang" / "PKGBUILD"
-    pb.parent.mkdir(parents=True, exist_ok=True)
-    pb.write_text(
-        "pkgname=clang\npkgver=1.0\npkgrel=1\n"
-        "depends=('llvm-libs')\nmakedepends=('cmake' 'llvm')\n"
-    )
-    return pb
-
-
-def test_pkg_fingerprint_stable_across_build_set_member_install(tmp_path, monkeypatch):
-    """2.5.1-B2: a sanity re-run after installing the built suite must still hit
-    the cache. Pass 4 links the *staged* libLLVM (captured by staged_dep_fps), so
-    the bumped *installed* llvm-libs version must not move the fingerprint."""
-    from sysforge.pipeline.stages import toolchain
-
-    pb = _clang_pkgbuild(tmp_path)
-    ctx = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm"])
-    ctx.exclude_deps = frozenset({"llvm", "llvm-libs", "clang"})
-
-    monkeypatch.setattr(toolchain, "_query_pacman_versions",
-                        lambda names: {n: _DEPS_BEFORE_INSTALL[n] for n in names})
-    _, fp_before = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
-    monkeypatch.setattr(toolchain, "_query_pacman_versions",
-                        lambda names: {n: _DEPS_AFTER_INSTALL[n] for n in names})
-    _, fp_after = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
-    assert fp_before == fp_after
-
-
-def test_pkg_fingerprint_changes_when_external_dep_bumps(tmp_path, monkeypatch):
-    """The exclusion is surgical: an external build dep (cmake) bumping still
-    invalidates the fingerprint — only build-set members are exempted."""
-    from sysforge.pipeline.stages import toolchain
-
-    pb = _clang_pkgbuild(tmp_path)
-    ctx = _reuse_ctx(tmp_path, pass_id="build-nonpgo", staged_dep_fps=["fp-llvm"])
-    ctx.exclude_deps = frozenset({"llvm", "llvm-libs", "clang"})
-
-    monkeypatch.setattr(toolchain, "_query_pacman_versions",
-                        lambda names: {n: {"cmake": "3.0-1"}.get(n, "0") for n in names})
-    _, fp_old = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
-    monkeypatch.setattr(toolchain, "_query_pacman_versions",
-                        lambda names: {n: {"cmake": "3.1-1"}.get(n, "0") for n in names})
-    _, fp_new = _pkg_fingerprint(ctx, "clang", pb, None, None, None, None, [])
-    assert fp_old != fp_new
-
-
-def test_reuse_cache_path_survives_pgo_store_purge(tmp_path):
-    """The reuse cache must live outside pgo_store so a fresh 4-pass run's
-    startup purge (empty_dir_contents) can't wipe a prior run's cache (2.1.0-B14)."""
-    from sysforge.pipeline.stages.toolchain import _reuse_cache_path
-    from sysforge.primitives import fs_provision
-
-    pgo_store = tmp_path / "llvm-pgo"
-    pgo_store.mkdir()
-    cache_path = _reuse_cache_path(pgo_store)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text("{}")
-
-    fs_provision.empty_dir_contents(pgo_store)  # the fresh-run purge
-
-    assert cache_path.exists(), "reuse cache must survive the pgo_store purge"
-    assert pgo_store not in cache_path.parents
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — custom package list
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_custom_packages(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
@@ -2960,16 +575,11 @@ def test_toolchain_stage_custom_packages(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
     options = make_options(dry_run=True)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run(config, state, options)
 
     result = state.get_stage_result("toolchain")
     assert result["cc"] == "/usr/bin/clang"
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — skip_build
-# ---------------------------------------------------------------------------
 
 def test_toolchain_skip_build_gcc(tmp_path):
     """skip_build=true registers gcc paths in state without building anything."""
@@ -2977,7 +587,7 @@ def test_toolchain_skip_build_gcc(tmp_path):
     toml_path.write_text('enabled = true\ncompiler = "gcc"\nskip_build = true\n')
     state = PipelineState(tmp_path / "state")
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
 
     result = state.get_stage_result("toolchain")
@@ -2985,25 +595,19 @@ def test_toolchain_skip_build_gcc(tmp_path):
     assert result["cxx"] == "/usr/bin/g++"
     assert "ld" not in result
 
-
 def test_toolchain_skip_build_llvm(tmp_path):
     """skip_build=true registers clang paths in state without building anything."""
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
     state = PipelineState(tmp_path / "state")
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
 
     result = state.get_stage_result("toolchain")
     assert result["cc"] == "/usr/bin/clang"
     assert result["cxx"] == "/usr/bin/clang++"
     assert result["ld"] == "lld"
-
-
-# ---------------------------------------------------------------------------
-# Compiler-switch + disabled-stage state correctness (G.1)
-# ---------------------------------------------------------------------------
 
 def test_toolchain_state_overwrites_on_llvm_to_gcc_switch(tmp_path):
     """llvm→gcc switch must drop the stale 'ld' key from pipeline state.
@@ -3017,7 +621,7 @@ def test_toolchain_state_overwrites_on_llvm_to_gcc_switch(tmp_path):
 
     # Run 1: llvm skip_build (no real makepkg)
     toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
     r1 = state.get_stage_result("toolchain")
     assert r1.get("ld") == "lld"
@@ -3025,12 +629,11 @@ def test_toolchain_state_overwrites_on_llvm_to_gcc_switch(tmp_path):
 
     # Run 2: switch to gcc — same state object
     toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
     r2 = state.get_stage_result("toolchain")
     assert r2.get("cc") == "/usr/bin/gcc"
     assert "ld" not in r2  # stale 'ld' must not leak across the switch
-
 
 def test_toolchain_state_overwrites_on_gcc_to_llvm_switch(tmp_path):
     """gcc→llvm switch must populate the 'ld' key (lld)."""
@@ -3038,19 +641,18 @@ def test_toolchain_state_overwrites_on_gcc_to_llvm_switch(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
 
     toml_path.write_text('enabled = true\ncompiler = "gcc"\n')
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
     r1 = state.get_stage_result("toolchain")
     assert r1.get("cc") == "/usr/bin/gcc"
     assert "ld" not in r1
 
     toml_path.write_text('enabled = true\ncompiler = "llvm"\nskip_build = true\n')
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
     r2 = state.get_stage_result("toolchain")
     assert r2.get("cc") == "/usr/bin/clang"
     assert r2.get("ld") == "lld"
-
 
 def test_toolchain_disabled_clears_prior_state(tmp_path):
     """enabled=false must wipe any prior cc/cxx/ld result from state.
@@ -3065,23 +667,21 @@ def test_toolchain_disabled_clears_prior_state(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text('enabled = false\n')
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
 
     assert state.get_stage_result("toolchain") == {}
-
 
 def test_toolchain_absent_clears_prior_state(tmp_path):
     """toolchain.toml deleted between runs — same wipe behavior."""
     state = PipelineState(tmp_path / "state")
     state.set_stage_result("toolchain", {"cc": "/usr/bin/clang"})
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH",
                tmp_path / "nonexistent.toml"):
         ToolchainStage().run({}, state, make_options())
 
     assert state.get_stage_result("toolchain") == {}
-
 
 def test_toolchain_disabled_no_op_when_no_prior_state(tmp_path):
     """enabled=false with no prior state must not write to state."""
@@ -3090,301 +690,10 @@ def test_toolchain_disabled_no_op_when_no_prior_state(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text('enabled = false\n')
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run({}, state, make_options())
 
     state.save.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _compiler_paths binary mapping (G dual-toolchain parity)
-# ---------------------------------------------------------------------------
-
-def test_compiler_paths_gcc():
-    from sysforge.pipeline.stages.toolchain import _compiler_paths
-    assert _compiler_paths("gcc") == ("/usr/bin/gcc", "/usr/bin/g++", None)
-
-
-def test_compiler_paths_llvm():
-    from sysforge.pipeline.stages.toolchain import _compiler_paths
-    assert _compiler_paths("llvm") == ("/usr/bin/clang", "/usr/bin/clang++", "lld")
-
-
-# ---------------------------------------------------------------------------
-# Post-install LLVM verification (H)
-# ---------------------------------------------------------------------------
-
-def test_verify_llvm_install_clean_returns_no_issues():
-    """All components agree on version, clang/lld run, targets present."""
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    pacman_output = "\n".join(
-        f"{n} 22.0.1-1" for n in (
-            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
-        )
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        if cmd[0] == "clang":
-            return MagicMock(returncode=0, stdout="clang version 22.0.1", stderr="")
-        if cmd[0] == "ld.lld":
-            return MagicMock(returncode=0, stdout="LLD 22.0.1", stderr="")
-        if cmd[0] == "llvm-config":
-            return MagicMock(returncode=0, stdout="X86 AMDGPU NVPTX\n", stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        issues = _verify_llvm_install(expected_targets=["X86", "AMDGPU"])
-    assert issues == []
-
-
-def test_verify_llvm_install_uses_ld_lld_not_generic_driver():
-    """Gate 3 must probe ``ld.lld``, never bare ``lld``.
-
-    Regression for the false-positive Gate-3 failure: ``lld`` is the generic
-    multiplexer driver and exits 1 ("lld is a generic driver") when invoked
-    without a flavor, so probing it would always fail a perfectly good
-    toolchain. ``ld.lld`` is the GNU-compatible flavor that ``-fuse-ld=lld``
-    actually resolves to. This fake models the real behavior; the verifier must
-    never hit the exit-1 ``lld`` arm.
-    """
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    pacman_output = "\n".join(
-        f"{n} 22.0.1-1" for n in (
-            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
-        )
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        if cmd[0] == "clang":
-            return MagicMock(returncode=0, stdout="clang version 22.0.1", stderr="")
-        if cmd[0] == "lld":
-            # Generic driver: refuses to run without a flavor.
-            return MagicMock(
-                returncode=1, stdout="",
-                stderr="lld is a generic driver.\nInvoke ld.lld (Unix), ...",
-            )
-        if cmd[0] == "ld.lld":
-            return MagicMock(
-                returncode=0, stdout="LLD 22.0.1 (compatible with GNU linkers)",
-                stderr="",
-            )
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        issues = _verify_llvm_install()
-    assert issues == []
-
-
-def test_verify_llvm_install_detects_version_mismatch():
-    """Different versions across LLVM components → canonical mismatch issue."""
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    # llvm-libs at 22.0.1, the rest at 22.0.0 — the exact failure mode
-    # observed in practice (interrupted Pass-1 install of llvm-libs).
-    pacman_output = (
-        "llvm 22.0.0-1\n"
-        "llvm-libs 22.0.1-1\n"
-        "clang 22.0.0-1\n"
-        "lld 22.0.0-1\n"
-        "compiler-rt 22.0.0-1\n"
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        return MagicMock(returncode=0, stdout="ok", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        issues = _verify_llvm_install()
-    assert any("versions disagree" in i for i in issues)
-    assert any("llvm-libs=22.0.1-1" in i for i in issues)
-
-
-def test_verify_llvm_install_detects_missing_target():
-    """expected_targets not a subset of llvm-config output → issue raised."""
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    pacman_output = "\n".join(
-        f"{n} 22.0.0-1" for n in (
-            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
-        )
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        if cmd[0] == "llvm-config":
-            # X86 built, but AMDGPU and NVPTX were configured-out
-            return MagicMock(returncode=0, stdout="X86\n", stderr="")
-        return MagicMock(returncode=0, stdout="ok", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        issues = _verify_llvm_install(expected_targets=["X86", "AMDGPU", "NVPTX"])
-    assert any("missing expected backends" in i for i in issues)
-    assert any("AMDGPU" in i for i in issues)
-
-
-def test_verify_llvm_install_detects_crashing_clang():
-    """clang --version exits non-zero (e.g. missing libLLVM.so) → issue."""
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    pacman_output = "\n".join(
-        f"{n} 22.0.0-1" for n in (
-            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
-        )
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        if cmd[0] == "clang":
-            return MagicMock(
-                returncode=127, stdout="",
-                stderr="clang: error while loading shared libraries: libLLVM.so.22",
-            )
-        return MagicMock(returncode=0, stdout="ok", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        issues = _verify_llvm_install()
-    assert any("clang --version" in i for i in issues)
-
-
-def test_verify_llvm_install_skips_targets_when_none_configured():
-    """No expected_targets → llvm-config not queried."""
-    from sysforge.pipeline.stages.toolchain import _verify_llvm_install
-
-    pacman_output = "\n".join(
-        f"{n} 22.0.0-1" for n in (
-            "llvm", "llvm-libs", "clang", "lld", "compiler-rt",
-        )
-    )
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd[0])
-        if cmd[0] == "pacman":
-            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
-        return MagicMock(returncode=0, stdout="ok", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run):
-        _verify_llvm_install(expected_targets=None)
-    assert "llvm-config" not in calls
-
-
-def test_llvm_recovery_command_lists_all_components():
-    from sysforge.pipeline.stages.toolchain import _llvm_recovery_command
-    cmd = _llvm_recovery_command()
-    for pkg in ("llvm", "llvm-libs", "clang", "lld", "compiler-rt"):
-        assert pkg in cmd
-    assert cmd.startswith("sudo pacman -S ")
-
-
-def test_check_llvm_link_resolution_clean_returns_no_issues():
-    """ldd resolves libLLVM under /usr/lib for clang & lld → no issues."""
-    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
-
-    ldd_clang = (
-        "\tlinux-vdso.so.1 (0x00007ffd)\n"
-        "\tlibLLVM-22.so => /usr/lib/libLLVM-22.so (0x00007f01)\n"
-        "\tlibstdc++.so.6 => /usr/lib/libstdc++.so.6 (0x00007f00)\n"
-    )
-    ldd_lld = (
-        "\tlibLLVM-22.so => /usr/lib/libLLVM-22.so (0x00007f01)\n"
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
-            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
-        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/lld":
-            return MagicMock(returncode=0, stdout=ldd_lld, stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
-         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
-        issues = _check_llvm_link_resolution()
-    assert issues == []
-
-
-def test_check_llvm_link_resolution_detects_staging_leak():
-    """libLLVM resolves from /var/tmp/sysforge-llvm-stage* → issue raised.
-
-    This is the failure mode F3 guards against: a Pass-4 packaging mistake
-    leaves clang with an RPATH or symlink that points back at the staging
-    prefix; /usr looks fine until /var/tmp gets cleaned and clang stops
-    loading. Catch it in the verify step before the user sees a broken
-    toolchain.
-    """
-    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
-
-    ldd_clang = (
-        "\tlibLLVM-22.so => /var/tmp/sysforge-llvm-stage2/usr/lib/libLLVM-22.so "
-        "(0x00007f01)\n"
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
-            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
-        if cmd[:1] == ["ldd"]:
-            return MagicMock(returncode=0, stdout="", stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
-         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
-        issues = _check_llvm_link_resolution()
-    assert any("staging prefix" in i for i in issues)
-    assert any("/var/tmp/sysforge-llvm-stage2" in i for i in issues)
-
-
-def test_check_llvm_link_resolution_detects_non_usr_lib():
-    """libLLVM resolves outside /usr/lib (e.g. ~/.local) → issue raised."""
-    from sysforge.pipeline.stages.toolchain import _check_llvm_link_resolution
-
-    ldd_clang = (
-        "\tlibLLVM-22.so => /home/user/.local/lib/libLLVM-22.so (0x00007f01)\n"
-    )
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:1] == ["ldd"] and cmd[1] == "/usr/bin/clang":
-            return MagicMock(returncode=0, stdout=ldd_clang, stderr="")
-        if cmd[:1] == ["ldd"]:
-            return MagicMock(returncode=0, stdout="", stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-
-    with patch("sysforge.pipeline.stages.toolchain.subprocess.run", side_effect=fake_run), \
-         patch("sysforge.pipeline.stages.toolchain.Path.exists", return_value=True):
-        issues = _check_llvm_link_resolution()
-    assert any("outside /usr/lib" in i for i in issues)
-
-
-def test_pgo_lock_contention_raises_with_holder_pid(tmp_path):
-    """Second acquirer fails fast with the holder's PID surfaced."""
-    from sysforge.pipeline.stages.toolchain import _pgo_lock
-
-    lock_path = tmp_path / "sysforge-pgo.lock"
-
-    with _pgo_lock(lock_path):
-        # Lock is held; a nested attempt on the same path must fail.
-        with pytest.raises(RuntimeError, match="Another sysforge PGO build"):
-            with _pgo_lock(lock_path):
-                pass
-        # Lock file should name the holder PID.
-        assert lock_path.read_text().strip() == str(os.getpid())
-
-    # After release, a fresh acquirer succeeds.
-    with _pgo_lock(lock_path):
-        pass
-
-
-# ---------------------------------------------------------------------------
-# ToolchainStage.run() — PKGBUILD resolution error
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
     """LLVM path raises when PKGBUILDs can't be resolved.
@@ -3398,572 +707,11 @@ def test_toolchain_stage_missing_pkgbuild_raises(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options()
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
          patch("sysforge.primitives.aur.aur_info", return_value={}):
         with pytest.raises(RuntimeError, match="Could not resolve PKGBUILDs"):
             ToolchainStage().run(config, state, options)
-
-
-# ---------------------------------------------------------------------------
-# PGO flow integration helpers
-#
-# These helpers back tests that validate the real failure modes we've hit:
-#   - ccache/sccache bypassing the instrumented compiler in Pass 3
-#   - residual instrumented system LLVM static libs breaking Pass 3 or Pass 4
-#   - non_pgo packages absent from the Pass 3 training run
-#   - silently inadequate profdata going undetected
-#
-# Each test drives ToolchainStage().run() end-to-end with makepkg and
-# subprocess mocked, so no real builds execute but the full control-flow
-# (including env dict assembly and linker flag injection) runs for real.
-# ---------------------------------------------------------------------------
-
-
-def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
-    """
-    Prepare filesystem and objects for a full PGO ToolchainStage run.
-
-    Returns (toml_path, pkgbuild_dir, staging, pgo_store, state, config, options).
-    Each package in every list gets a PKGBUILD directory and a fake .pkg.tar.zst
-    so staging extraction does not error.
-    """
-    import json as _json
-    non_pgo_pkgs = non_pgo_pkgs or []
-    lib32_pkgs   = lib32_pkgs   or []
-
-    staging   = tmp_path / "staging"
-    pgo_store = tmp_path / "pgo_store"
-    toml_path = tmp_path / "toolchain.toml"
-    toml_path.write_text(
-        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
-        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
-        f"[packages]\n"
-        f"pgo = {_json.dumps(pgo_pkgs)}\n"
-        f"non_pgo = {_json.dumps(non_pgo_pkgs)}\n"
-        f"lib32 = {_json.dumps(lib32_pkgs)}\n"
-    )
-
-    pkgbuild_dir = tmp_path / "builds"
-    for name in pgo_pkgs + non_pgo_pkgs + lib32_pkgs:
-        pb = make_pkgbuild(pkgbuild_dir, name)
-        (pb.parent / f"{name}-18.0.0-1-x86_64.pkg.tar.zst").touch()
-
-    state   = PipelineState(tmp_path / "state")
-    config  = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    # auto_pgo=True: these tests exercise build behaviour, not prompt gating.
-    # The dedicated _pgo_confirm tests cover the prompt logic.
-    options = make_options(dry_run=False, auto_pgo=True)
-    return toml_path, pkgbuild_dir, staging, pgo_store, state, config, options
-
-
-def _pgo_fake_run_factory(pgo_store, call_log):
-    """
-    Return a fake makepkg_wrapper.run() that records every invocation and
-    writes a settled profraw file when Pass 3 runs (identified by CCACHE_DISABLE
-    in extra_env, which is only injected during the training pass).
-    """
-    def fake_run(pkgbuild_path, options=None):
-        env = dict(options.extra_env or {}) if options else {}
-        call_log.append({
-            "cc":      options.cc_override if options else None,
-            "pkgbuild": str(pkgbuild_path),
-            "cfe":     options.compiler_flags_extra if options else None,
-            "lfe":     options.linker_flags_extra if options else None,
-            "variant": options.toolchain_variant if options else None,
-            "env":     env,
-        })
-        # Pass 3 is the training run: it injects CCACHE_DISABLE into extra_env.
-        if env.get("CCACHE_DISABLE") == "1":
-            pgo_store.mkdir(parents=True, exist_ok=True)
-            _make_old_profraw(pgo_store / f"p{len(call_log)}.profraw")
-    return fake_run
-
-
-def _fake_subprocess_factory(profdata_size=100 * 1024 * 1024):
-    """
-    Return a subprocess.run side_effect that handles llvm-profdata by writing
-    profdata_size bytes to the --output path, and returns success for everything else.
-    """
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr     = ""
-        result.stdout     = ""
-        if cmd and "llvm-profdata" in cmd[0]:
-            idx = cmd.index("--output")
-            Path(cmd[idx + 1]).write_bytes(b"\x00" * profdata_size)
-        return result
-    return fake_run
-
-
-def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
-             instrumented=False, runtime_flag="-L/fake -lclang_rt.profile-x86_64",
-             profdata_size=100 * 1024 * 1024):
-    """
-    Run a full PGO ToolchainStage with standard mocking.  Returns call_log.
-    instrumented=True simulates a prior aborted Pass 1 leaving the system
-    LLVM static libs in an instrumented state.
-    """
-    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
-        _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs, lib32_pkgs)
-
-    call_log = []
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
-         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_stage_instrumented"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._assert_staging_has_llvm_cmake"), \
-         patch("subprocess.run", side_effect=_fake_subprocess_factory(profdata_size)), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
-         patch("sys.stdin.isatty", return_value=False), \
-         patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment"), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=instrumented), \
-         patch("sysforge.pipeline.stages.toolchain._profile_runtime_ldflag",
-               return_value=runtime_flag):
-        ToolchainStage().run(config, state, options)
-
-    return call_log
-
-
-def _instrument_calls(call_log):
-    return [c for c in call_log if "-fprofile-generate" in (c["cfe"] or "")]
-
-
-def _bootstrap_calls(call_log):
-    """Pass 2: non-instrumented build against stage1 — identified by the
-    CMAKE_PREFIX_PATH→stage1 env and the absence of training/profile flags."""
-    return [
-        c for c in call_log
-        if c["env"].get("CMAKE_PREFIX_PATH", "").startswith("/var/tmp/sysforge-llvm-stage1")
-        and "-fprofile-generate" not in (c["cfe"] or "")
-        and "-fprofile-use" not in (c["cfe"] or "")
-        and c["env"].get("CCACHE_DISABLE") != "1"
-    ]
-
-
-def _train_calls(call_log):
-    return [c for c in call_log if c["env"].get("CCACHE_DISABLE") == "1"]
-
-
-def _build_calls(call_log):
-    return [c for c in call_log if "-fprofile-use" in (c["cfe"] or "")]
-
-
-# ---------------------------------------------------------------------------
-# CCACHE_DISABLE / SCCACHE_DISABLE in Pass 3
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_train_disables_ccache_and_sccache(tmp_path):
-    """
-    Pass 3 must inject CCACHE_DISABLE=1 and SCCACHE_DISABLE=1 into the build
-    environment.  If either cache tool intercepts a compilation it bypasses the
-    instrumented compiler entirely, producing no profraw data and silently
-    degrading the PGO profile.
-    """
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"])
-    p2 = _train_calls(call_log)
-    assert p2, "Pass 3 must have run"
-    for call in p2:
-        assert call["env"].get("CCACHE_DISABLE") == "1", \
-            "CCACHE_DISABLE=1 missing from Pass 3 env"
-        assert call["env"].get("SCCACHE_DISABLE") == "1", \
-            "SCCACHE_DISABLE=1 missing from Pass 3 env"
-
-
-def test_pgo_instrument_and_build_do_not_disable_cache_tools(tmp_path):
-    """
-    CCACHE/SCCACHE_DISABLE must only be set in Pass 3 (the training run).
-    Passes 1 and 4 use distinct compiler flags (-fprofile-generate /
-    -fprofile-use) that already produce cache misses naturally; disabling
-    cache tools there would throw away legitimate cache benefit on reruns.
-    """
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"])
-    for call in _instrument_calls(call_log) + _build_calls(call_log):
-        assert "CCACHE_DISABLE" not in call["env"], \
-            f"CCACHE_DISABLE must not be set in Pass {1 if call['cc'] is None else 4}"
-        assert "SCCACHE_DISABLE" not in call["env"], \
-            f"SCCACHE_DISABLE must not be set in Pass {1 if call['cc'] is None else 4}"
-
-
-# ---------------------------------------------------------------------------
-# Pass 3 training coverage: non_pgo packages included
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_train_includes_non_pgo_packages(tmp_path):
-    """
-    Pass 3 must build pgo + non_pgo packages (not just pgo) so the training
-    run exercises additional clang code paths: OpenMP pragmas, compiler-rt
-    intrinsics, Polly polyhedral analysis.
-    """
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"])
-
-    p2_pkgbuilds = {c["pkgbuild"] for c in _train_calls(call_log)}
-    # Both pgo and non_pgo packages must appear in Pass 3
-    assert any("llvm" in pb          for pb in p2_pkgbuilds), "pgo pkg missing from Pass 3"
-    assert any("compiler-rt" in pb   for pb in p2_pkgbuilds), "non_pgo pkg missing from Pass 3"
-
-
-def test_pgo_instrument_does_not_include_non_pgo_packages(tmp_path):
-    """
-    Pass 1 builds only pgo packages with -fprofile-generate; non_pgo packages
-    must not be included there (they don't need instrumentation, and building
-    them against the instrumented static libs would fail at link time).
-    """
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"])
-
-    p1_pkgbuilds = {c["pkgbuild"] for c in _instrument_calls(call_log)}
-    assert not any("compiler-rt" in pb for pb in p1_pkgbuilds), \
-        "non_pgo package must not be built in Pass 1"
-
-
-def test_pgo_build_includes_non_pgo_and_lib32(tmp_path):
-    """Pass 4 must build all package groups: pgo, non_pgo, and lib32."""
-    call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"],
-                        non_pgo_pkgs=["compiler-rt"], lib32_pkgs=["lib32-llvm"])
-
-    p3_pkgbuilds = {c["pkgbuild"] for c in _build_calls(call_log)}
-    assert any("llvm" in pb          for pb in p3_pkgbuilds)
-    assert any("compiler-rt" in pb   for pb in p3_pkgbuilds)
-    assert any("lib32-llvm" in pb    for pb in p3_pkgbuilds)
-
-
-# ---------------------------------------------------------------------------
-# Residual instrumented LLVM static libs → linker flag injection
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_profile_runtime_injected_into_bootstrap_and_train(tmp_path):
-    """Phase 2: Pass 2 and Pass 3 build against stage1's instrumented .a
-    archives via find_package(LLVM). Without the clang profile runtime in
-    LDFLAGS, those builds fail to resolve __llvm_profile_* symbols. Pass 1
-    (no external instrumented .a) and Pass 4 (built against stage2's
-    non-instrumented LLVM) must NOT receive the flag."""
-    fake_rt_flag = "-L/usr/lib/clang/18/lib/linux -lclang_rt.profile-x86_64"
-    call_log = _run_pgo(
-        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
-        runtime_flag=fake_rt_flag,
-    )
-
-    p1a = _instrument_calls(call_log)
-    p1b = _bootstrap_calls(call_log)
-    p2 = _train_calls(call_log)
-    p3 = _build_calls(call_log)
-    assert p1a, "Pass 1 must have run"
-    assert p1b, "Pass 2 must have run (non_pgo present)"
-    assert p2, "Pass 3 must have run"
-    assert p3, "Pass 4 must have run"
-
-    for call in p1a:
-        assert call["lfe"] is None, \
-            "Pass 1 builds llvm from scratch — no external instrumented .a to satisfy"
-    for call in p1b:
-        assert call["lfe"] == fake_rt_flag, \
-            "Pass 2 links against stage1's instrumented .a → profile runtime required"
-    for call in p2:
-        assert call["lfe"] == fake_rt_flag, (
-            "Pass 3 non_pgo find_package(LLVM) hits stage1's instrumented .a "
-            "→ profile runtime required")
-    for call in p3:
-        assert call["lfe"] is None, \
-            "Pass 4 uses stage2 (non-instrumented) — profile runtime must NOT leak through"
-
-
-def test_pgo_instrumented_consumer_passes_select_lld(tmp_path):
-    """Pass 2 and Pass 3 link against stage1's *instrumented* archives. They
-    must select lld (toolchain_variant="pgo_llvm") so the [VARIANT_LD] guard in
-    emit_makepkg_conf injects -fuse-ld=lld — otherwise they fall back to the
-    CC=gcc profile's bfd, whose strict left-to-right archive resolution drops
-    the force-loaded profile runtime and __llvm_profile_* dangles (the
-    historical Pass 2 link failure). Regression guard for that omission."""
-    call_log = _run_pgo(
-        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
-    )
-    p1b = _bootstrap_calls(call_log)
-    p2 = _train_calls(call_log)
-    assert p1b, "Pass 2 must have run (non_pgo present)"
-    assert p2, "Pass 3 must have run"
-    for call in p1b:
-        assert call["variant"] == "pgo_llvm", \
-            "Pass 2 must select lld via toolchain_variant=pgo_llvm"
-    for call in p2:
-        assert call["variant"] == "pgo_llvm", \
-            "Pass 3 must select lld via toolchain_variant=pgo_llvm"
-
-
-def test_pgo_profile_runtime_unavailable_no_injection(tmp_path):
-    """If clang --print-runtime-dir returns nothing, _profile_runtime_ldflag()
-    yields None and no LDFLAGS injection happens for any pass."""
-    call_log = _run_pgo(
-        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
-        runtime_flag=None,
-    )
-    for call in call_log:
-        assert call["lfe"] is None, \
-            f"No linker flag when profile runtime is unavailable (cc={call['cc']})"
-
-
-# ---------------------------------------------------------------------------
-# Profdata size quality check
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_warns_when_profdata_suspiciously_small(tmp_path):
-    """
-    A warn is emitted when merged profdata is smaller than _PGO_PROFDATA_MIN_BYTES.
-    This is the canary for cache bypass: if ccache/sccache slipped through, clang
-    never ran, no profraw was generated, and the profdata will be tiny or empty.
-    """
-    warn_calls = []
-    with patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
-        _run_pgo(tmp_path, pgo_pkgs=["llvm"],
-                 profdata_size=_PGO_PROFDATA_MIN_BYTES - 1)
-
-    assert any("unexpectedly small" in str(a) for a in warn_calls), \
-        "Expected a warning about suspiciously small profdata"
-
-
-def test_pgo_no_size_warning_when_profdata_adequate(tmp_path):
-    """No profdata size warning when profdata is large enough to represent real training."""
-    warn_calls = []
-    with patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
-        _run_pgo(tmp_path, pgo_pkgs=["llvm"],
-                 profdata_size=_PGO_PROFDATA_MIN_BYTES + 1)
-
-    assert not any("unexpectedly small" in str(a) for a in warn_calls), \
-        "Unexpected profdata size warning for adequate profdata"
-
-
-# ---------------------------------------------------------------------------
-# Staging directory clean-up on run start
-# ---------------------------------------------------------------------------
-
-
-def test_pgo_stale_staging_purged_at_run_start(tmp_path):
-    """
-    A staging directory left by a prior failed run must be purged at the
-    start of the next run, not accumulated on top of.  Stale Pass 3 binaries
-    from an aborted build could otherwise shadow freshly extracted ones.
-    """
-    toml_path, pkgbuild_dir, staging, pgo_store, state, config, options = \
-        _pgo_setup(tmp_path, pgo_pkgs=["llvm"])
-
-    # Simulate a stale staging dir left by a prior aborted Pass 3
-    staging.mkdir(parents=True)
-    stale_marker = staging / "stale_sentinel"
-    stale_marker.touch()
-
-    call_log = []
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
-               side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
-         patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_stage_instrumented"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
-         patch("subprocess.run", side_effect=_fake_subprocess_factory()), \
-         patch("sys.stdin.isatty", return_value=False), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=False):
-        ToolchainStage().run(config, state, options)
-
-    assert not stale_marker.exists(), \
-        "Stale staging sentinel must be removed before Pass 1 starts"
-
-
-# ---------------------------------------------------------------------------
-# _validate_pgo_environment — pre-flight checks
-# ---------------------------------------------------------------------------
-
-
-def test_validate_pgo_environment_dry_run_skips_all_checks():
-    """dry_run=True must skip all checks — no subprocess calls."""
-    with patch("subprocess.run") as mock_run:
-        _validate_pgo_environment(dry_run=True)
-    mock_run.assert_not_called()
-
-
-def test_validate_pgo_environment_raises_if_clang_missing(tmp_path):
-    """Raises RuntimeError immediately when /usr/bin/clang does not exist."""
-    with patch("pathlib.Path.exists", return_value=False), \
-         patch("shutil.which", return_value="/usr/bin/lld"):
-        with pytest.raises(RuntimeError, match="clang not found"):
-            _validate_pgo_environment(dry_run=False)
-
-
-def test_validate_pgo_environment_raises_if_clang_broken():
-    """Raises RuntimeError when clang compile probe fails (e.g. symbol lookup error
-    in libclang-cpp.so due to mismatched packages from prior aborted PGO runs).
-    Note: --version is intentionally not used because it doesn't load libclang-cpp.so."""
-    broken_stderr = (
-        "/usr/bin/clang: symbol lookup error: /usr/lib/libclang-cpp.so.22.1: "
-        "undefined symbol: _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
-        "9_M_assignERKS4_, version LLVM_22.1"
-    )
-
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        if "/dev/null" in cmd:  # compile probe
-            result.returncode = 127
-            result.stdout = ""
-            result.stderr = broken_stderr
-        else:
-            result.returncode = 0
-            result.stdout = ""
-            result.stderr = ""
-        return result
-
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="not functional"):
-            _validate_pgo_environment(dry_run=False)
-
-
-def test_validate_pgo_environment_raises_if_clang_exits_nonzero():
-    """Raises RuntimeError when clang compile probe exits non-zero for any reason."""
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 1 if "/dev/null" in cmd else 0  # compile probe fails
-        result.stdout = ""
-        result.stderr = "some internal error"
-        return result
-
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="not functional"):
-            _validate_pgo_environment(dry_run=False)
-
-
-def test_validate_pgo_environment_raises_if_lld_missing():
-    """Raises RuntimeError when lld cannot be found on PATH."""
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = "clang version 22.1.1"
-        result.stderr = ""
-        return result
-
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value=None), \
-         patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="lld not found"):
-            _validate_pgo_environment(dry_run=False)
-
-
-def _fake_healthy_clang(_cmd, **_kwargs):
-    """subprocess.run side_effect: clang compile probe succeeds, everything else no-ops."""
-    result = MagicMock()
-    result.returncode = 0
-    result.stdout = ""
-    result.stderr = ""
-    return result
-
-
-def test_validate_pgo_environment_clean_logs_info():
-    """Logs a clean-environment info message when no instrumentation is detected."""
-    info_calls = []
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("pathlib.Path.glob", return_value=[]), \
-         patch("subprocess.run", side_effect=_fake_healthy_clang), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=False), \
-         patch("sysforge.log.info", side_effect=lambda *a: info_calls.append(a)):
-        _validate_pgo_environment(dry_run=False)
-
-    assert any("clean" in str(a) for a in info_calls), \
-        "Expected 'clean' confirmation in info log"
-
-
-def test_validate_pgo_environment_instrumented_shared_lib_warns_then_prompts(tmp_path):
-    """When libLLVM-*.so is instrumented and stdin is a TTY, emits a warning
-    then prompts the user.  Answering 'y' allows the build to continue."""
-    fake_so = tmp_path / "libLLVM-22.so"
-    fake_so.touch()
-
-    warn_calls = []
-
-    def fake_subprocess(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        if "readelf" in cmd:
-            # Simulate instrumented shared lib with __llvm_prf_* sections
-            result.stdout = "  [11] __llvm_prf_names  PROGBITS\n  [12] __llvm_prf_cnts  PROGBITS\n"
-            result.stderr = ""
-        else:
-            result.stdout = ""
-            result.stderr = ""
-        return result
-
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("pathlib.Path.glob", return_value=[fake_so]), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=False), \
-         patch("subprocess.run", side_effect=fake_subprocess), \
-         patch("sys.stdin.isatty", return_value=True), \
-         patch("builtins.input", return_value="y"), \
-         patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
-        _validate_pgo_environment(dry_run=False)   # must not raise
-
-    assert warn_calls, "Expected a warning for instrumented shared lib"
-    assert any("libLLVM-22.so" in str(a) for a in warn_calls)
-
-
-def test_validate_pgo_environment_instrumented_static_libs_warns_then_prompts():
-    """When libLLVMSupport.a is instrumented and stdin is a TTY, emits a warning
-    then prompts.  Answering 'y' allows the build to continue."""
-    warn_calls = []
-
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("pathlib.Path.glob", return_value=[]), \
-         patch("subprocess.run", side_effect=_fake_healthy_clang), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=True), \
-         patch("sys.stdin.isatty", return_value=True), \
-         patch("builtins.input", return_value="y"), \
-         patch("sysforge.log.warn", side_effect=lambda *a: warn_calls.append(a)):
-        _validate_pgo_environment(dry_run=False)   # must not raise
-
-    assert warn_calls
-    assert any("libLLVMSupport.a" in str(a) for a in warn_calls)
-
-
-def test_validate_pgo_environment_instrumented_tty_decline_raises():
-    """User declines the dirty-env prompt → RuntimeError before any build starts."""
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("pathlib.Path.glob", return_value=[]), \
-         patch("subprocess.run", side_effect=_fake_healthy_clang), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=True), \
-         patch("sys.stdin.isatty", return_value=True), \
-         patch("builtins.input", return_value="n"), pytest.raises(RuntimeError, match="Aborted"):
-        _validate_pgo_environment(dry_run=False)
-
-
-def test_validate_pgo_environment_instrumented_non_tty_raises():
-    """In non-interactive mode, residual instrumentation is a hard failure —
-    an unattended build must not silently proceed with a degraded environment."""
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("shutil.which", return_value="/usr/bin/lld"), \
-         patch("pathlib.Path.glob", return_value=[]), \
-         patch("subprocess.run", side_effect=_fake_healthy_clang), \
-         patch("sysforge.pipeline.stages.toolchain._system_llvm_is_instrumented",
-               return_value=True), \
-         patch("sys.stdin.isatty", return_value=False):
-        with pytest.raises(RuntimeError, match="Aborting unattended"):
-            _validate_pgo_environment(dry_run=False)
-
 
 def test_validate_pgo_environment_runs_before_instrument(tmp_path):
     """
@@ -3975,150 +723,15 @@ def test_validate_pgo_environment_runs_before_instrument(tmp_path):
 
     makepkg_calls = []
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
                side_effect=lambda *a, **_: makepkg_calls.append(a)), \
-         patch("sysforge.pipeline.stages.toolchain._validate_pgo_environment",
+         patch("sysforge.pipeline.stages.toolchain.profdata.validate_pgo_environment",
                side_effect=RuntimeError("lld not found")):
         with pytest.raises(RuntimeError, match="lld not found"):
             ToolchainStage().run(config, state, options)
 
     assert not makepkg_calls, "No builds should run when pre-flight check fails"
-
-
-# ---------------------------------------------------------------------------
-# _pgo_confirm — confirmation gate for the fragile PGO sub-flow
-# ---------------------------------------------------------------------------
-
-from sysforge.pipeline.stages.toolchain import _pgo_confirm, _PGOAborted
-
-
-def _confirm_options(*, auto_pgo=False):
-    """Build a minimal RunOptions for _pgo_confirm tests."""
-    return RunOptions(auto_pgo=auto_pgo)
-
-
-def test_pgo_confirm_auto_pgo_skips_prompt():
-    """--auto-pgo bypasses the prompt entirely (no TTY check, no input)."""
-    with patch("sysforge.pipeline.stages.toolchain.is_interactive") as is_int, \
-         patch("sysforge.pipeline.stages.toolchain.prompt_choice") as pc:
-        result = _pgo_confirm(
-            "fake prompt",
-            default="n", eof_default="n",
-            options=_confirm_options(auto_pgo=True),
-            abort_msg="should not abort",
-        )
-    assert result is True
-    is_int.assert_not_called()
-    pc.assert_not_called()
-
-
-def test_pgo_confirm_non_tty_aborts_without_auto_pgo():
-    """No TTY and no --auto-pgo → abort with 'requires --auto-pgo' message."""
-    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
-               return_value=False), \
-         patch("sysforge.pipeline.stages.toolchain.prompt_choice") as pc:
-        with pytest.raises(_PGOAborted, match="non-interactive PGO requires --auto-pgo"):
-            _pgo_confirm(
-                "fake prompt",
-                default="n", eof_default="n",
-                options=_confirm_options(),
-                abort_msg="declined",
-            )
-        pc.assert_not_called()
-
-
-def test_pgo_confirm_tty_yes_returns_true():
-    """User answers 'y' at TTY → returns True."""
-    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
-               return_value=True), \
-         patch("sysforge.pipeline.stages.toolchain.prompt_choice",
-               return_value="y"):
-        result = _pgo_confirm(
-            "fake prompt",
-            default="n", eof_default="n",
-            options=_confirm_options(),
-            abort_msg="declined",
-        )
-    assert result is True
-
-
-def test_pgo_confirm_tty_no_raises():
-    """User answers 'n' at TTY → raises _PGOAborted with the abort_msg."""
-    with patch("sysforge.pipeline.stages.toolchain.is_interactive",
-               return_value=True), \
-         patch("sysforge.pipeline.stages.toolchain.prompt_choice",
-               return_value="n"), pytest.raises(_PGOAborted, match="user declined the build"):
-        _pgo_confirm(
-            "fake prompt",
-            default="n", eof_default="n",
-            options=_confirm_options(),
-            abort_msg="user declined the build",
-        )
-
-
-# ---------------------------------------------------------------------------
-# Gates + build/install split + snapshot rollback (kernel-parity overhaul)
-#
-# These drive ToolchainStage().run() end-to-end with the build mocked. The
-# autouse _toolchain_gates_clean fixture neutralizes the host-dependent facts;
-# each test re-patches the one it targets to inject a finding/behaviour.
-# ---------------------------------------------------------------------------
-
-def _single_pass_setup(tmp_path, pkgs=("llvm", "clang")):
-    """A non-PGO (single-pass) LLVM toolchain config + built package fixtures."""
-    toml_path = tmp_path / "toolchain.toml"
-    import json as _json
-    # Scope every build path (staging dirs + pgo_store, hence the PGO build lock
-    # at <staging1>.parent/sysforge-pgo.lock) into tmp_path. Without this, a test
-    # that drives ToolchainStage.run far enough grabs the real
-    # /var/tmp/sysforge-pgo.lock and collides with a concurrent live
-    # `sysforge run toolchain` (2.5.1-B2 follow-up).
-    build = tmp_path / "pgo"
-    toml_path.write_text(
-        'enabled = true\ncompiler = "llvm"\npgo = false\n'
-        f'pgo_staging1 = "{build / "stage1"}"\n'
-        f'pgo_staging = "{build / "stage2"}"\n'
-        f'pgo_staging3 = "{build / "stage3"}"\n'
-        f'pgo_store = "{build / "store"}"\n'
-        f"[packages]\npgo = {_json.dumps(list(pkgs))}\nnon_pgo = []\nlib32 = []\n"
-    )
-    pkgbuild_dir = tmp_path / "builds"
-    for name in pkgs:
-        pb = make_pkgbuild(pkgbuild_dir, name)
-        (pb.parent / f"{name}-22.1.5-1-x86_64.pkg.tar.zst").touch()
-    state = PipelineState(tmp_path / "state")
-    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False, state_dir=tmp_path / "state")
-    return toml_path, state, config, options
-
-
-def test_single_pass_setup_isolates_build_paths(tmp_path):
-    """Fixture hygiene: the toolchain config must keep the staging dirs, pgo_store,
-    and thus the PGO build lock under tmp_path. Otherwise a test that drives
-    ToolchainStage.run far enough grabs the real /var/tmp/sysforge-pgo.lock and
-    collides with a concurrent live `sysforge run toolchain` (2.5.1-B2 follow-up)."""
-    import tomllib
-
-    from sysforge.pipeline.stages.toolchain import _DEFAULT_STAGING_1, _pgo_lock_path
-    from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-
-    toml_path, *_ = _single_pass_setup(tmp_path)
-    with toml_path.open("rb") as f:
-        tcfg = tomllib.load(f)
-
-    staging1 = Path(tcfg.get("pgo_staging1", _DEFAULT_STAGING_1))
-    assert str(staging1).startswith(str(tmp_path)), "staging1 must be tmp-scoped"
-    assert str(_pgo_lock_path(staging1)).startswith(str(tmp_path)), \
-        "PGO build lock must be tmp-scoped, not /var/tmp"
-    assert str(resolve_pgo_store(tcfg)).startswith(str(tmp_path)), \
-        "pgo_store must be tmp-scoped"
-
-
-def _sentinel_exists(state_dir):
-    from sysforge.primitives.stage_sentinel import StageSentinel
-    return StageSentinel(state_dir).get_active() is not None
-
 
 def test_gate1_version_skew_aborts_before_build(tmp_path, monkeypatch):
     """A Gate-1 pkgver-skew brick raises before any makepkg call, no sentinel."""
@@ -4130,16 +743,15 @@ def test_gate1_version_skew_aborts_before_build(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda pv: skew)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="Gate 1 .pkgver_lockstep."):
             ToolchainStage().run(config, state, options)
 
     makepkg_mock.assert_not_called()
     assert not _sentinel_exists(tmp_path / "state")
-
 
 def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
     """A build-space brick aborts; --skip-build-space-check bypasses it."""
@@ -4151,11 +763,11 @@ def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: short)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="Gate 1 .build_space."):
             ToolchainStage().run(config, state, options)
@@ -4164,7 +776,6 @@ def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
         options.skip_build_space_check = True
         ToolchainStage().run(config, state, options)
     assert state.get_stage_result("toolchain")["variant"] == "stock_llvm"
-
 
 def test_gate1_dry_run_downgrades_brick_to_warning(tmp_path, monkeypatch):
     """In dry-run a Gate-1 brick warns instead of aborting."""
@@ -4177,25 +788,9 @@ def test_gate1_dry_run_downgrades_brick_to_warning(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: short)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"):
         ToolchainStage().run(config, state, options)  # must not raise
-
-
-def _bootstrap_missing(*check_ids):
-    """Build a smoke_test_compilers stub returning bricks for ``check_ids``."""
-    from sysforge.primitives import toolchain_safety as _ts
-
-    msgs = {
-        "smoke:clang_missing": "/usr/bin/clang not found",
-        "smoke:lld_missing": "lld not found on PATH",
-        "smoke:clang_broken": "/usr/bin/clang is not functional",
-    }
-    return [
-        _ts.ToolchainFinding("error", cid, msgs[cid], "install it", is_brick=True)
-        for cid in check_ids
-    ]
-
 
 def test_gate1_auto_installs_missing_bootstrap_clang(tmp_path, monkeypatch):
     """A clean machine with no clang/lld gets the bootstrap suite installed
@@ -4207,18 +802,17 @@ def test_gate1_auto_installs_missing_bootstrap_clang(tmp_path, monkeypatch):
     calls = iter([_bootstrap_missing("smoke:clang_missing", "smoke:lld_missing"), []])
     monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: next(calls))
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)  # must not raise
 
     install_mock.assert_called_once_with(["clang", "lld"])
     assert state.get_stage_result("toolchain")["variant"] == "stock_llvm"
-
 
 def test_gate1_bricks_when_bootstrap_install_does_not_help(tmp_path, monkeypatch):
     """If the re-probe still fails after the install, the brick stands."""
@@ -4231,16 +825,15 @@ def test_gate1_bricks_when_bootstrap_install_does_not_help(tmp_path, monkeypatch
     ])
     monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: next(calls))
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs"), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock, \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs"), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="Gate 1 .smoke:clang_missing."):
             ToolchainStage().run(config, state, options)
 
     makepkg_mock.assert_not_called()
-
 
 def test_gate1_broken_clang_is_not_auto_installed(tmp_path, monkeypatch):
     """A *broken* clang is a mismatched-package problem, not a missing one —
@@ -4252,15 +845,14 @@ def test_gate1_broken_clang_is_not_auto_installed(tmp_path, monkeypatch):
         _ts, "smoke_test_compilers", lambda: _bootstrap_missing("smoke:clang_broken")
     )
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="Gate 1 .smoke:clang_broken."):
             ToolchainStage().run(config, state, options)
 
     install_mock.assert_not_called()
-
 
 def test_gate1_dry_run_previews_bootstrap_install(tmp_path, monkeypatch):
     """Dry-run never mutates: the bootstrap install is previewed, not run."""
@@ -4272,17 +864,16 @@ def test_gate1_dry_run_previews_bootstrap_install(tmp_path, monkeypatch):
         _ts, "smoke_test_compilers", lambda: _bootstrap_missing("smoke:clang_missing")
     )
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.install_repo_pkgs") as install_mock, \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs") as install_mock, \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"):
         ToolchainStage().run(config, state, options)  # must not raise
 
     install_mock.assert_not_called()
 
-
 def test_single_pass_builds_without_install_then_batches(tmp_path, monkeypatch):
     """The non-PGO path builds with install=False, audits (Gate 2), then
-    installs via _pgo_install inside the sentinel — no per-package install."""
+    installs via pgo_install inside the sentinel — no per-package install."""
     toml_path, state, config, options = _single_pass_setup(tmp_path)
 
     build_calls = []
@@ -4294,12 +885,12 @@ def test_single_pass_builds_without_install_then_batches(tmp_path, monkeypatch):
         })
 
     install_calls = []
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run", side_effect=fake_run), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install",
                side_effect=lambda *a, **k: install_calls.append(a)), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install", return_value=[]), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
 
@@ -4310,7 +901,6 @@ def test_single_pass_builds_without_install_then_batches(tmp_path, monkeypatch):
     assert len(install_calls) == 1
     assert not _sentinel_exists(tmp_path / "state")  # cleared on success
 
-
 def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
     """Gate-3 verify failure → snapshot rollback succeeds → sentinel cleared, raise."""
     toml_path, state, config, options = _single_pass_setup(tmp_path)
@@ -4320,18 +910,18 @@ def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
     cached.parent.mkdir(parents=True)
     cached.touch()
     monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
 
     restored = {}
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
                return_value=["clang --version: exit 127"]), \
-         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+         patch("sysforge.primitives.pacman.batch_install_pkgs",
                side_effect=lambda files: restored.setdefault("files", files) or True), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="prior toolchain was restored"):
@@ -4339,7 +929,6 @@ def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
 
     assert restored.get("files")  # rollback ran
     assert not _sentinel_exists(tmp_path / "state")  # system whole → cleared
-
 
 def test_gate3_expected_targets_sourced_from_resolved_set(tmp_path, monkeypatch):
     """Gate 3 verifies against the *resolved* LLVM targets (resolve_or_detect),
@@ -4356,28 +945,27 @@ def test_gate3_expected_targets_sourced_from_resolved_set(tmp_path, monkeypatch)
         seen["targets"] = expected_targets
         return []
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
                side_effect=spy_verify), \
          patch("sys.stdin.isatty", return_value=False):
         ToolchainStage().run(config, state, options)
 
     assert seen["targets"] == ["X86", "NVPTX", "AMDGPU"]
 
-
 def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
     """A post-install graphics-consumer symbol brick is folded into Gate-3
-    issues → snapshot rollback fires even though _verify_llvm_install is clean.
+    issues → snapshot rollback fires even though verify_llvm_install is clean.
     This is the post-install safety net for a target-reduced libLLVM."""
     toml_path, state, config, options = _single_pass_setup(tmp_path)
     cached = tmp_path / "cache" / "llvm-22.1.5-1-x86_64.pkg.tar.zst"
     cached.parent.mkdir(parents=True)
     cached.touch()
     monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
     monkeypatch.setattr(
@@ -4393,13 +981,13 @@ def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
     monkeypatch.setattr(_ts, "check_installed_consumer_symbols", lambda: brick)
 
     restored = {}
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
                return_value=[]), \
-         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+         patch("sysforge.primitives.pacman.batch_install_pkgs",
                side_effect=lambda files: restored.setdefault("files", files) or True), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="prior toolchain was restored"):
@@ -4407,7 +995,6 @@ def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
 
     assert restored.get("files")  # rollback ran because the consumer arm bricked
     assert not _sentinel_exists(tmp_path / "state")
-
 
 def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
     """Gate-3 fails AND rollback fails → sentinel left in place for next-run recovery."""
@@ -4417,17 +1004,17 @@ def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
     cached.parent.mkdir(parents=True)
     cached.touch()
     monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.cached_pkg_files_for",
+        "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run"), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
-         patch("sysforge.pipeline.stages.toolchain._pgo_install"), \
-         patch("sysforge.pipeline.stages.toolchain._verify_llvm_install",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
                return_value=["clang --version: exit 127"]), \
-         patch("sysforge.pipeline.stages.toolchain.batch_install_pkgs",
+         patch("sysforge.primitives.pacman.batch_install_pkgs",
                return_value=False), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="rollback could not complete"):
@@ -4435,21 +1022,19 @@ def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
 
     assert _sentinel_exists(tmp_path / "state")  # kept for recovery
 
-
 def test_build_failure_leaves_no_sentinel(tmp_path, monkeypatch):
     """A build-pass failure raises before the sentinel scope — none left behind."""
     toml_path, state, config, options = _single_pass_setup(tmp_path)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run",
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
                side_effect=RuntimeError("build blew up")), \
-         patch("sysforge.pipeline.stages.toolchain._sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="build blew up"):
             ToolchainStage().run(config, state, options)
 
     assert not _sentinel_exists(tmp_path / "state")
-
 
 def test_gcc_register_only_skips_all_gates(tmp_path, monkeypatch):
     """The gcc path registers paths and returns — no Gate 1, no smoke test, no build."""
@@ -4466,188 +1051,13 @@ def test_gcc_register_only_skips_all_gates(tmp_path, monkeypatch):
     monkeypatch.setattr(_ts, "check_build_space",
                         lambda *a, **k: gate_calls.append("space"))
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path), \
-         patch("sysforge.pipeline.stages.toolchain.makepkg_run") as makepkg_mock:
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run") as makepkg_mock:
         ToolchainStage().run(config, state, options)
 
     assert state.get_stage_result("toolchain")["variant"] == "gcc"
     assert gate_calls == []  # no gate ran on the register-only path
     makepkg_mock.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _gate_soname_consumers — pre-build libLLVM soname gate (policy)
-# ---------------------------------------------------------------------------
-
-def _impact(consumers=("mesa",)):
-    from sysforge.primitives.toolchain_safety import SonameImpact
-    return SonameImpact("libLLVM.so.22.1", "libLLVM.so.23.0", list(consumers))
-
-
-def _gate_map(tmp_path):
-    """A pkgbuild_map whose 'llvm' parses to a real pkgver."""
-    return {"llvm": make_pkgbuild(tmp_path, "llvm")}
-
-
-def test_gate_soname_no_impact_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: None,
-    )
-    opts = make_options(dry_run=False)
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == []
-
-
-def test_gate_soname_dry_run_previews_no_rebuild(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    opts = make_options(dry_run=True)
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == []
-
-
-def test_gate_soname_off_mode_warns_returns_empty(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    opts = make_options(dry_run=False)
-    tcfg = {"rebuild_soname_consumers": "off"}
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == []
-
-
-def test_gate_soname_auto_mode_returns_consumers(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(("mesa", "julia")),
-    )
-    opts = make_options(dry_run=False)
-    tcfg = {"rebuild_soname_consumers": "auto"}
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == ["mesa", "julia"]
-
-
-def test_gate_soname_prompt_non_tty_aborts(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: False)
-    opts = make_options(dry_run=False)
-    with pytest.raises(RuntimeError, match="non-interactive"):
-        _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {})
-
-
-def test_gate_soname_prompt_approve_returns_consumers(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: True)
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.prompt_choice", lambda *a, **k: "y"
-    )
-    opts = make_options(dry_run=False)
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {}) == ["mesa"]
-
-
-def test_gate_soname_prompt_decline_aborts(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.is_interactive", lambda: True)
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.prompt_choice", lambda *a, **k: "n"
-    )
-    opts = make_options(dry_run=False)
-    with pytest.raises(RuntimeError, match="not approved"):
-        _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, {})
-
-
-def test_gate_soname_cli_flag_overrides_config(tmp_path, monkeypatch):
-    # CLI --rebuild-soname-consumers=off beats toolchain.toml auto.
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact",
-        lambda ver, *, exclude: _impact(),
-    )
-    opts = make_options(dry_run=False, rebuild_soname_consumers="off")
-    tcfg = {"rebuild_soname_consumers": "auto"}
-    assert _gate_soname_consumers(_gate_map(tmp_path), ["llvm"], opts, tcfg) == []
-
-
-def test_gate_soname_exclude_passed_to_assessor(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_assess(ver, *, exclude):
-        captured["exclude"] = exclude
-        return None
-
-    monkeypatch.setattr(
-        "sysforge.primitives.toolchain_safety.assess_libllvm_soname_impact", fake_assess
-    )
-    opts = make_options(dry_run=False)
-    _gate_soname_consumers(_gate_map(tmp_path), ["llvm", "lib32-llvm"], opts, {})
-    # LLVM lockstep suite + in-scope build names are all excluded.
-    from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
-    assert set(LLVM_LOCKSTEP_SUITE) <= captured["exclude"]
-    assert {"llvm", "lib32-llvm"} <= captured["exclude"]
-
-
-# ---------------------------------------------------------------------------
-# _rebuild_soname_consumers — post-Gate-3 consumer rebuild (outside sentinel)
-# ---------------------------------------------------------------------------
-
-def _patch_rebuild(monkeypatch, outcome, *, resolve_fail=()):
-    from sysforge import build_core
-
-    def fake_find(pkg, config):
-        if pkg in resolve_fail:
-            raise FileNotFoundError(pkg)
-        return Path(f"/src/{pkg}/PKGBUILD")
-
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.find_pkgbuild", fake_find)
-    monkeypatch.setattr(
-        build_core, "target_from_pkgbuild",
-        lambda p: MagicMock(pkgbase=p.parent.name),
-    )
-    monkeypatch.setattr(build_core, "build_and_install", lambda *a, **k: outcome)
-    monkeypatch.setattr("sysforge.pipeline.state.get_toolchain_variant", lambda s: "pgo_llvm")
-
-
-def test_rebuild_consumers_success(tmp_path, monkeypatch):
-    from sysforge.build_core import BuildOutcome
-    out = BuildOutcome(built_pkgs=["mesa"])
-    _patch_rebuild(monkeypatch, out)
-    state = PipelineState(tmp_path / "state")
-    opts = make_options(state_dir=tmp_path)
-    # No raise == success.
-    _rebuild_soname_consumers(["mesa"], {}, opts, state)
-
-
-def test_rebuild_consumers_build_failure_raises_with_manual_cmd(tmp_path, monkeypatch):
-    from sysforge.build_core import BuildOutcome
-    out = BuildOutcome(built_pkgs=[], failed_pkgs=["mesa"])
-    _patch_rebuild(monkeypatch, out)
-    state = PipelineState(tmp_path / "state")
-    opts = make_options(state_dir=tmp_path)
-    with pytest.raises(RuntimeError, match="sysforge build mesa"):
-        _rebuild_soname_consumers(["mesa"], {}, opts, state)
-
-
-def test_rebuild_consumers_all_unresolved_raises(tmp_path, monkeypatch):
-    from sysforge.build_core import BuildOutcome
-    out = BuildOutcome(built_pkgs=[])
-    _patch_rebuild(monkeypatch, out, resolve_fail=("mesa",))
-    state = PipelineState(tmp_path / "state")
-    opts = make_options(state_dir=tmp_path)
-    with pytest.raises(RuntimeError, match="could be resolved for rebuild"):
-        _rebuild_soname_consumers(["mesa"], {}, opts, state)
-
-
-# ---------------------------------------------------------------------------
-# Dual-toolchain parity: the gcc register-only path never assesses soname
-# ---------------------------------------------------------------------------
 
 def test_toolchain_stage_gcc_never_assesses_soname(tmp_path, monkeypatch):
     toml_path = tmp_path / "toolchain.toml"
@@ -4663,250 +1073,16 @@ def test_toolchain_stage_gcc_never_assesses_soname(tmp_path, monkeypatch):
     config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
     options = make_options(dry_run=False)
 
-    with patch("sysforge.pipeline.stages.toolchain.TOOLCHAIN_PATH", toml_path):
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run(config, state, options)
 
     assert state.get_stage_result("toolchain")["variant"] == "gcc"
-
-
-# ---------------------------------------------------------------------------
-# BOLT Pass 5 — _bolt_config reader + _run_bolt gating
-# ---------------------------------------------------------------------------
-
-def test_bolt_config_defaults():
-    assert _bolt_config({}) == {
-        "enabled": False, "libllvm": False, "training_workload": "",
-    }
-
-
-def test_bolt_config_override():
-    cfg = _bolt_config({"bolt": {
-        "enabled": True, "libllvm": True, "training_workload": "/t/w.cpp",
-    }})
-    assert cfg == {"enabled": True, "libllvm": True, "training_workload": "/t/w.cpp"}
-
-
-def _bolt_opts(dry_run=False):
-    from types import SimpleNamespace
-    return SimpleNamespace(dry_run=dry_run, state_dir=None, no_update=True,
-                           makepkg_flags=[])
-
-
-def test_bolt_disabled_is_noop(monkeypatch):
-    # [bolt] absent → returns before importing/calling any BOLT machinery.
-    called = []
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    _run_bolt({}, {}, _bolt_opts(), "pgo_llvm")
-    assert called == []
-
-
-def test_bolt_dry_run_is_noop(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    _run_bolt({"bolt": {"enabled": True}}, {}, _bolt_opts(dry_run=True), "pgo_llvm")
-    assert called == []
-
-
-def test_bolt_tool_build_fails_skips_rewrite(monkeypatch):
-    # Enabled but the BOLT tools can't be built (Pass 5a fails) → no rewrite, the
-    # verified PGO clang is left untouched (no privileged install).
-    called = []
-    # tools absent, and the build itself raises → _build_bolt_tools returns False.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
-    )
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._query_pacman_versions",
-        lambda names: {"llvm": "22.1.8-4"},
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.materialize_pkgbuild",
-        lambda d, v: __import__("pathlib").Path(d) / "llvm-bolt" / "PKGBUILD",
-    )
-    def _boom(*a, **k):
-        raise RuntimeError("build failed")
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain._build_pkg", _boom)
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
-    _run_bolt({"bolt": {"enabled": True}}, cfg, _bolt_opts(), "pgo_llvm")
-    assert called == []
-
-
-def test_bolt_no_pkgbuild_src_dir_skips(monkeypatch):
-    # Enabled, tools absent, but no pkgbuild_src_dir to materialize into → skip.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
-    )
-    built = []
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._build_pkg",
-        lambda *a, **k: built.append(a),
-    )
-    _run_bolt({"bolt": {"enabled": True}}, {"paths": {}}, _bolt_opts(), "pgo_llvm")
-    assert built == []  # never attempted a build without a source dir
-
-
-def test_bolt_dylib_only_llvm_is_blocked(monkeypatch):
-    # Enabled, tools absent, but the host LLVM is dylib-only → the BLOCKED guard
-    # short-circuits Pass 5 before materializing the PKGBUILD or building anything.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: False,  # no per-component static archives on disk
-    )
-    materialized = []
-    built = []
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.materialize_pkgbuild",
-        lambda d, v: materialized.append((d, v)),
-    )
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain._build_pkg",
-        lambda *a, **k: built.append(a),
-    )
-    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
-    _run_bolt({"bolt": {"enabled": True}}, cfg, _bolt_opts(), "pgo_llvm")
-    assert materialized == [] and built == []  # blocked before any work
-
-
-# ---------------------------------------------------------------------------
-# 2.6.1-F26 — toolchain identity and flag-delta change_extras block
-# ---------------------------------------------------------------------------
-
-
-def _identity(**kw):
-    from sysforge.pipeline.stages.toolchain import ToolchainIdentity
-
-    return ToolchainIdentity(**kw)
-
-
-def test_identity_lines_unchanged_field_prints_once():
-    """A field that did not move renders as a single value, not a transition."""
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    before = _identity(cc="gcc (GCC) 15.1.0", variant="gcc")
-    lines = toolchain_identity_lines(before, before)
-    assert lines == ["cc: gcc (GCC) 15.1.0", "variant: gcc"]
-
-
-def test_identity_lines_gcc_path_reports_no_ld_and_no_fingerprint():
-    """gcc path: _compiler_paths returns ld=None, so the ld row is omitted."""
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    before = _identity(cc="gcc (GCC) 15.1.0", cxx="g++ (GCC) 15.1.0", variant="system")
-    after = _identity(cc="gcc (GCC) 15.1.0", cxx="g++ (GCC) 15.1.0", variant="gcc")
-    lines = toolchain_identity_lines(before, after)
-    assert not any(line.startswith("ld:") for line in lines)
-    assert not any(line.startswith("fingerprint:") for line in lines)
-    assert lines[-1] == "variant: system → gcc"
-
-
-def test_identity_lines_llvm_path_reports_ld_variant_and_fingerprint_moves():
-    """llvm path: ld/variant/fingerprint all move and render as transitions."""
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    before = _identity(cc="clang version 20.1.0", ld="", variant="system", fingerprint=None)
-    after = _identity(
-        cc="clang version 21.1.0", ld="lld", variant="pgo_llvm", fingerprint="abc123"
-    )
-    lines = toolchain_identity_lines(before, after)
-    assert "cc: clang version 20.1.0 → clang version 21.1.0" in lines
-    assert "ld: lld" in lines
-    assert "variant: system → pgo_llvm" in lines
-    assert "fingerprint: abc123" in lines
-
-
-def test_identity_lines_flag_delta_renders_added_and_removed():
-    """Flag deltas come through diff_flags' +added / -removed vocabulary."""
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    before = _identity(flags={"llvm": "CFLAGS=-O2\nLDFLAGS=-fuse-ld=bfd"})
-    after = _identity(flags={"llvm": "CFLAGS=-O3\nRUSTFLAGS=-Ctarget-cpu=native"})
-    lines = toolchain_identity_lines(before, after)
-    assert "flags (llvm):" in lines
-    body = [line for line in lines if line.startswith("  ")]
-    assert any(line.startswith("  CFLAGS:") and "→" in line for line in body)
-    assert any(line.startswith("  -LDFLAGS:") for line in body)
-    assert any(line.startswith("  +RUSTFLAGS:") for line in body)
-
-
-def test_identity_lines_are_empty_when_nothing_is_known():
-    """No identity at all yields no block, rather than a header with no rows."""
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    assert toolchain_identity_lines(_identity(), _identity()) == []
-
-
-def test_identity_lines_degrade_the_arrow_under_the_ascii_gate(monkeypatch):
-    """The transition arrow routes through render.arrow(), not a literal glyph."""
-    from sysforge import log
-    from sysforge.pipeline.stages.toolchain import toolchain_identity_lines
-
-    monkeypatch.setattr(log, "use_unicode", lambda: False)
-    lines = toolchain_identity_lines(_identity(variant="gcc"), _identity(variant="pgo_llvm"))
-    assert lines == ["variant: gcc -> pgo_llvm"]
-
-
-def test_probe_never_raises_when_state_is_broken(tmp_path):
-    """A state object that raises degrades to empty fields, not an exception."""
-    from sysforge.pipeline.stages.toolchain import probe_toolchain_identity
-
-    class Boom:
-        def get_stage_result(self, name):
-            raise RuntimeError("state unreadable")
-
-    options = MagicMock(state_dir=tmp_path)
-    ident = probe_toolchain_identity(Boom(), options)
-    assert ident.cc == "" and ident.variant == "" and ident.flags == {}
-
-
-def test_probe_collects_only_toolchain_owned_flags(tmp_path):
-    """Flags come from build_state, restricted to owner_stage == toolchain."""
-    from sysforge.primitives.build_state import BuildState
-    from sysforge.pipeline.stages.toolchain import probe_toolchain_identity
-
-    bs = BuildState(tmp_path)
-    bs.record("llvm", "21.1.0", "1", "", "llvm", tmp_path,
-              build_mode="source_built", owner_stage="toolchain",
-              flags_string="CFLAGS=-O3")
-    bs.record("mesa", "25.0", "1", "", "mesa", tmp_path,
-              build_mode="source_built", flags_string="CFLAGS=-O2")
-    bs.save()
-
-    state = MagicMock()
-    state.get_stage_result.return_value = {}
-    ident = probe_toolchain_identity(state, MagicMock(state_dir=tmp_path))
-    assert ident.flags == {"llvm": "CFLAGS=-O3"}
-
 
 def test_change_extras_returns_empty_before_run():
     """Without a captured before-state there is nothing honest to report."""
     stage = ToolchainStage()
     stage._identity_before = None
     assert stage.change_extras({}, MagicMock(), MagicMock()) == []
-
 
 def test_change_extras_labels_the_block(tmp_path):
     """The block carries the Toolchain: label the renderer indents under."""

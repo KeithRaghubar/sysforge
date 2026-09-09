@@ -6,7 +6,7 @@
 
 Only writes the auto-managed [package_compiler_overrides] table (pkgbase ->
 inline table of cc/cxx/ld), recovered from interactive build failures. Line-
-level and comment-preserving, mirroring packages_cmd._rewrite_packages_toml:
+level and comment-preserving, mirroring verbs.shared.rewrite_packages_toml:
 never round-trips the whole document through a TOML emitter (which would strip
 comments and reorder the user's hand-authored profiles/rules).
 """

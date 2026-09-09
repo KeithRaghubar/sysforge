@@ -7,9 +7,12 @@ with the correct tag string.  These tests fail until the logging migration
 
 Tag decisions recorded here:
   - cli._log           [CLI]          (was [BUILD] — wrong subsystem)
-  - state._log         [STATE]        (was [CONFIG] — collision with config.py)
+  - pipeline_state._log [STATE]       (was [CONFIG] — collision with config.py;
+                                       module relocated to primitives/ in 3.2.0-F12,
+                                       tag unchanged)
   - pkgbuild_patcher   [PATCH] only   (stray [BUILD] on line 115 fixed to [PATCH])
-  - toolchain._log     [TOOLCHAIN]    ([PGO] appears only in message text, not as tag)
+  - toolchain.*._log   [TOOLCHAIN]    ([PGO] appears only in message text, not as tag;
+                                      every module of the toolchain package shares the tag)
 
 Phase 3 (re-tag to module/verb names; collapse cross-file tag reuse):
   - profile._log       [PROFILE]      (P3.1: collapsed CONF/FLAG/GROUPS/PROFILE → one)
@@ -31,6 +34,8 @@ mirroring the verb-tag convention in verbs/runner.py):
 
 Multi-tag modules use named loggers: _<tag>_log (e.g. _conf_log, _build_log).
 """
+import importlib
+
 import sysforge.build_cmd as build_cmd
 import sysforge.cli as cli
 import sysforge.doctor as doctor
@@ -43,7 +48,7 @@ import sysforge.pipeline.stages.kernel as kernel
 import sysforge.pipeline.stages.packages as packages
 import sysforge.pipeline.stages.reconfigure as reconfigure
 import sysforge.pipeline.stages.toolchain as toolchain
-import sysforge.pipeline.state as state
+import sysforge.primitives.pipeline_state as state
 import sysforge.primitives.abi_check as abi_check
 import sysforge.primitives.aur as aur
 import sysforge.primitives.aur_resolve as aur_resolve
@@ -77,10 +82,36 @@ def test_runner_tag():           assert runner._log._tag           == "[PIPELINE
 def test_state_tag():            assert state._log._tag            == "[STATE]"
 def test_configure_tag():        assert configure._log._tag        == "[CONFIGURE]"
 def test_hardware_tag():         assert hardware._log._tag         == "[HARDWARE]"
-def test_kernel_stage_tag():     assert kernel._log._tag           == "[KERNEL]"
+def test_kernel_stage_tag():
+    """Every module in the kernel package logs under one tag (see above)."""
+    import pkgutil
+
+    seen = {}
+    for m in pkgutil.iter_modules(kernel.__path__):
+        mod = importlib.import_module(f"{kernel.__name__}.{m.name}")
+        if hasattr(mod, "_log"):
+            seen[m.name] = mod._log._tag
+    assert seen, "no kernel submodule exposes a module-level logger"
+    assert set(seen.values()) == {"[KERNEL]"}, seen
 def test_packages_stage_tag():   assert packages._log._tag         == "[PACKAGES]"
 def test_reconfigure_tag():      assert reconfigure._log._tag      == "[RECONFIGURE]"
-def test_toolchain_tag():        assert toolchain._log._tag        == "[TOOLCHAIN]"
+def test_toolchain_tag():
+    """Every module in the toolchain package logs under one tag.
+
+    The stage became a package in 3.2.0-F2. Splitting a module must not
+    split its log tag — a user reading `-vv` output should not be able to
+    tell that the stage is now twelve files, so this asserts across all of
+    them rather than pinning a single `_log` that the package no longer has.
+    """
+    import pkgutil
+
+    seen = {}
+    for m in pkgutil.iter_modules(toolchain.__path__):
+        mod = importlib.import_module(f"{toolchain.__name__}.{m.name}")
+        if hasattr(mod, "_log"):
+            seen[m.name] = mod._log._tag
+    assert seen, "no toolchain submodule exposes a module-level logger"
+    assert set(seen.values()) == {"[TOOLCHAIN]"}, seen
 def test_abi_check_tag():        assert abi_check._log._tag        == "[ABI]"
 def test_cache_probe_tag():      assert cache_probe._log._tag      == "[CACHE]"
 def test_config_tag():           assert config._log._tag           == "[CONFIG]"
