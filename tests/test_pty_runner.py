@@ -434,3 +434,121 @@ def test_raw_dump_failure_never_breaks_the_build(tmp_path, monkeypatch):
     rc = run_with_pty(["printf", "ok\\n"], cwd=tmp_path, env=dict(os.environ),
                       line_callback=lines.append, forward_bytes=False)
     assert rc == 0 and lines == ["ok"]
+
+
+# --- 3.2.0-B17: terminal-query forwarding ---------------------------------
+#
+# A child that queries the terminal (systemd-nspawn asks OSC 11 "what is your
+# background colour?") only gets an answer if it owns the real terminal's
+# stdin. In the sandbox path it does not — run_with_pty hands it our pty slave
+# so the row reservation survives the nested pty (3.2.0-B3). The reply then
+# lands unread on sysforge's fd 0 and the tty line discipline echoes it back
+# with ECHOCTL, printing `^[]11;rgb:1b1b/1b1b/1b1b^[\` into the build output.
+
+
+def _osc_query_cmd() -> list[str]:
+    """Child emitting nspawn's real query packet, then ordinary text."""
+    return [
+        "bash", "-c",
+        r"printf '\033]11;?\033\\\033[22;2t\033]2;Container foo\033\\"
+        r"\033[1;32mbuilding\033[0m\n'",
+    ]
+
+
+def test_terminal_query_not_forwarded_when_child_stdin_is_ours(tmp_path, monkeypatch):
+    sink = _capture_stdout_buffer(monkeypatch)
+    lines: list[str] = []
+    rc = run_with_pty(
+        _osc_query_cmd(),
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append,
+        forward_bytes=True,
+        reserve_bottom_rows=1,
+    )
+    assert rc == 0
+    forwarded = sink.getvalue()
+    # The query the terminal would answer into an fd nobody reads.
+    assert b"]11;?" not in forwarded
+    # Window-manipulation push and the container title that renames the tab.
+    assert b"[22;2t" not in forwarded
+    assert b"Container foo" not in forwarded
+    # Ordinary decoration and text are untouched.
+    assert b"\x1b[1;32m" in forwarded
+    assert b"building" in forwarded
+
+
+def test_terminal_query_is_forwarded_when_child_owns_stdin(tmp_path, monkeypatch):
+    """With no reservation the child keeps the real stdin, so its query works.
+
+    Filtering there would break a legitimate exchange the child *can* complete,
+    so the filter is gated on the same condition that creates the mismatch.
+    """
+    sink = _capture_stdout_buffer(monkeypatch)
+    rc = run_with_pty(
+        _osc_query_cmd(),
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None,
+        forward_bytes=True,
+        reserve_bottom_rows=0,
+    )
+    assert rc == 0
+    assert b"]11;?" in sink.getvalue()
+
+
+def test_line_callback_still_sees_the_raw_query(tmp_path):
+    """Filtering is display-only — classification keeps seeing every byte.
+
+    strip_ansi already removes these on the line path; the two must not become
+    two different notions of "what the child said".
+    """
+    lines: list[str] = []
+    run_with_pty(
+        _osc_query_cmd(),
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append,
+        forward_bytes=False,
+        reserve_bottom_rows=1,
+    )
+    assert any("]11;?" in ln for ln in lines)
+    assert strip_ansi("".join(lines)).strip() == "building"
+
+
+def test_query_filter_handles_a_sequence_split_across_chunks():
+    """os.read() boundaries fall wherever the kernel says — byte-at-a-time is
+    the worst case, and must drop the query just the same."""
+    from sysforge.primitives.pty_runner import _TerminalQueryFilter
+
+    f = _TerminalQueryFilter()
+    payload = b"a\x1b]11;?\x1b\\b\x1b[22;2tc"
+    out = b"".join(f.feed(bytes([byte])) for byte in payload) + f.flush()
+    assert out == b"abc"
+
+
+def test_query_filter_never_loses_bytes():
+    from sysforge.primitives.pty_runner import _TerminalQueryFilter
+
+    f = _TerminalQueryFilter()
+    # Dangling ESC with no continuation: held, then released by flush.
+    assert f.feed(b"tail\x1b") == b"tail"
+    assert f.flush() == b"\x1b"
+
+
+def test_query_filter_releases_an_overlong_pending_run():
+    """A child that opens an OSC and never terminates it must not stall the
+    live byte stream forever."""
+    from sysforge.primitives.pty_runner import _TerminalQueryFilter, _MAX_PENDING
+
+    f = _TerminalQueryFilter()
+    out = f.feed(b"\x1b]0;" + b"x" * (_MAX_PENDING * 2))
+    assert out.endswith(b"x")
+
+
+def test_query_filter_keeps_ordinary_escapes():
+    from sysforge.primitives.pty_runner import _TerminalQueryFilter
+
+    f = _TerminalQueryFilter()
+    seq = b"\x1b[1;32mgreen\x1b[0m\x1b[2K\x1b]8;;http://x\x07link\x1b(B"
+    assert f.feed(seq) + f.flush() == seq

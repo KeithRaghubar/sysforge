@@ -9,8 +9,10 @@ Allocates a pty for the child's stdout+stderr so tools that gate live UI on
 isatty() (cargo, configure scripts with spinners) emit their progress
 animation. Reads raw bytes from the pty master in the parent and:
 
-  - forwards them verbatim to sys.stdout.buffer when forward_bytes=True (so
-    \\r-based progress redraws render live), and
+  - forwards them to sys.stdout.buffer when forward_bytes=True (so \\r-based
+    progress redraws render live) — verbatim, except that terminal queries
+    and title-sets are dropped when the child does not own the real stdin
+    (see _TerminalQueryFilter), and
   - decodes + splits on \\n and delivers each clean line to line_callback,
     regardless of forward_bytes.
 
@@ -78,6 +80,71 @@ def strip_ansi(text: str) -> str:
     ``'-flto='``), so patterns must run against the visible text only.
     """
     return _ANSI_ESCAPE_RE.sub("", text)
+
+
+# Reply-soliciting sequences a child may write toward the terminal, plus the
+# window/icon title sets that ride alongside them (3.2.0-B17).
+#
+# These are only filtered on the forwarded byte stream, and only when we have
+# taken the real stdin away from the child (see ``reserve_bottom_rows`` below).
+# ``systemd-nspawn`` opens every container by asking the terminal for its
+# background colour (``ESC ] 11 ; ? ST``) and pushing a title. Forwarded
+# verbatim, the *real* terminal answers on sysforge's fd 0 — which nobody
+# reads, because the asker was handed our pty slave instead. The reply then
+# sits in the tty input queue until the line discipline echoes it back with
+# ECHOCTL, printing a literal ``^[]11;rgb:1b1b/1b1b/1b1b^[\`` into the build
+# output. Dropping the question is what stops the answer.
+#
+# A terminator is *required* in every branch: a chunk boundary can land
+# mid-sequence, and matching a prefix would drop the head while letting the
+# tail through as garbage. Incomplete sequences are held instead (see
+# ``_PENDING_TAIL_RE``).
+_TERMINAL_QUERY_RE = re.compile(
+    rb"\x1b\][0-9;]*\?(?:\x07|\x1b\\)"          # OSC colour/palette query
+    rb"|\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC window/icon title
+    rb"|\x1b\[[0-9;?>]*[tnc]"                     # CSI window ops, DSR, DA
+)
+
+# A trailing run that could still grow into one of the above: a lone ESC, an
+# OSC whose terminator has not arrived, or a CSI whose final byte has not.
+_PENDING_TAIL_RE = re.compile(
+    rb"\x1b$"
+    rb"|\x1b\][^\x07\x1b]*\x1b?$"
+    rb"|\x1b\[[0-9;?>]*$"
+)
+
+# Ceiling on held-back bytes. Holding is normally sub-millisecond (the next
+# read completes the sequence), but a child that opens an OSC and never
+# terminates it must not stall the live progress animation forever — past this
+# the pending run is released verbatim, unfiltered.
+_MAX_PENDING = 4096
+
+
+class _TerminalQueryFilter:
+    """Drop terminal queries/title-sets from a byte stream, across chunks.
+
+    ``os.read`` boundaries fall wherever the kernel puts them, so a sequence
+    can arrive split at any byte. ``feed`` returns what is safe to forward now
+    and retains any partial trailing sequence; ``flush`` releases whatever is
+    still held, so the filter never loses bytes.
+    """
+
+    def __init__(self) -> None:
+        self._pending = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        data = self._pending + chunk
+        self._pending = b""
+        data = _TERMINAL_QUERY_RE.sub(b"", data)
+        m = _PENDING_TAIL_RE.search(data)
+        if m and len(data) - m.start() <= _MAX_PENDING:
+            self._pending = data[m.start():]
+            data = data[:m.start()]
+        return data
+
+    def flush(self) -> bytes:
+        out, self._pending = self._pending, b""
+        return out
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -217,6 +284,13 @@ def run_with_pty(
         slave_fd = -1
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # 3.2.0-B17: only when the child's stdin is *our* pty rather than the
+        # real terminal. With no reservation the child keeps the real stdin and
+        # can complete a query/reply exchange itself, so filtering there would
+        # break a conversation that actually works.
+        query_filter = (
+            _TerminalQueryFilter() if (forward_bytes and reserve_bottom_rows) else None
+        )
         buf = ""
         last_activity = time.monotonic()
         while True:
@@ -250,16 +324,27 @@ def run_with_pty(
                 with contextlib.suppress(Exception):
                     raw_dump.write(chunk)
             if forward_bytes:
-                try:
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.buffer.flush()
-                except (BrokenPipeError, AttributeError):
-                    pass
+                # Display only — line_callback below still receives every byte,
+                # so classification and the filter can't drift apart.
+                out = query_filter.feed(chunk) if query_filter is not None else chunk
+                if out:
+                    try:
+                        sys.stdout.buffer.write(out)
+                        sys.stdout.buffer.flush()
+                    except (BrokenPipeError, AttributeError):
+                        pass
             buf += decoder.decode(chunk)
             while (idx := buf.find("\n")) != -1:
                 line, buf = buf[:idx], buf[idx + 1:]
                 line_callback(line.rstrip("\r"))
                 last_activity = time.monotonic()
+
+        if query_filter is not None:
+            tail = query_filter.flush()
+            if tail:
+                with contextlib.suppress(BrokenPipeError, AttributeError):
+                    sys.stdout.buffer.write(tail)
+                    sys.stdout.buffer.flush()
 
         buf += decoder.decode(b"", final=True)
         if buf:
