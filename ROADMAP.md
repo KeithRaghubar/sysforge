@@ -106,7 +106,7 @@ canonical ordering.
 | `3.2.0-F10` | nothing verifies that a freshly installed locally-built mesa actually initialises | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
-| `3.2.0-F5` | Fence direct subprocess use behind the run seam | med | large | patch |
+| `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
 | `3.2.0-F11` | the profile store has no inspection or reclamation surface, and the purge path its own docstring promises does not exist | low | small | minor |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -446,33 +446,6 @@ canonical ordering.
 
 ---
 
-- **`3.2.0-F5` — Fence direct `subprocess` use behind the run seam.** Modules call
-  `subprocess.run`/`Popen`/`check_output` directly, although `primitives/run.py`, `pty_runner.py`
-  and the privilege seam (`privilege.run_privileged`, §Privilege-Escalation Seam) exist precisely so
-  that the unified run-log, `--dry-run`, the throttle preexec (`resource_guard.make_child_preexec`)
-  and the sandbox `BUILDENV` scrub apply uniformly. Every raw call is a site where one of those can
-  be bypassed — the accelerator leak fixed as `3.2.0-B2` was exactly such a site.
-
-  **Landed so far:** `run.capture()` — the probe form the seam was missing, which is *why* raw calls
-  kept reappearing: `run_or_raise` raises, and "that tool is not installed" is an answer rather than
-  an error, so every probe author correctly declined the seam. It is argv-list only, forces
-  `check=False`, returns `None` for a missing binary (replacing a hand-written
-  `try/except FileNotFoundError` per site) and logs at debug so probes appear under `-vvv`. The
-  toolchain package's ten probes migrated with it.
-
-  **Remaining:** migrate the other modules in batches, then add a ruff `banned-api` rule (extending
-  the `STD8`-era config) forbidding `subprocess.*` outside an allowlist (`run.py`, `pty_runner.py`,
-  `privilege.py`, `sudo_session.py`) — the rule lands *last*, since it fails until the batches are
-  done. Non-probe calls that legitimately stay raw need naming in the allowlist rather than a blanket
-  exemption: a streaming or privileged invocation, and anything needing its own `preexec_fn`, are the
-  shapes `capture()` deliberately does not cover.
-  *Priority: med · Effort: large · Bump: patch* — large by count, mechanical per site; ship in
-  batches, each independently green.
-  **Standards home on adoption:** new `21-standards.md` row "subprocess goes through `primitives/run`",
-  enforced by the ruff `banned-api` entry plus `tests/test_standards_compliance.py`.
-
----
-
 - **`3.2.0-F7` — Per-verb parser assembly on the `Verb` class.** `cli.py` is 1645 lines of
   argparse construction with thirty distinct sysforge imports; `_add_run_parser` alone is 278
   lines. None of it is logic, but it is the one place completions parity (§CLI Verb Framework,
@@ -601,6 +574,30 @@ canonical ordering.
   **Standards home on adoption:** none new — `/var/cache` as the home for regenerable profile data is
   already the recorded FHS rationale in `makepkg_pgo`, and this adds a surface over that placement
   rather than changing it.
+
+---
+
+- **`3.2.0-F13` — Fence the remaining direct `subprocess` use behind the run seam.** `3.2.0-F5`
+  added the probe form the seam was missing (`run.capture`) and migrated the toolchain package; the
+  rest of the tree still calls `subprocess.run`/`Popen`/`check_output` directly, although
+  `primitives/run.py`, `pty_runner.py` and the privilege seam (`privilege.run_privileged`,
+  §Privilege-Escalation Seam) exist precisely so that the unified run-log, `--dry-run`, the throttle
+  preexec (`resource_guard.make_child_preexec`) and the sandbox `BUILDENV` scrub apply uniformly.
+  Every raw call is a site where one of those can be bypassed — the accelerator leak fixed as
+  `3.2.0-B2` was exactly such a site. Migrate the remaining call sites in batches, each
+  independently green, classifying each as a probe (`run.capture`), a raise-on-failure invocation
+  (`run_or_raise`) or a privileged one (`run_privileged`). Then — **last**, because it fails until
+  the batches are done — add a ruff `banned-api` rule (extending the `STD8`-era config) forbidding
+  `subprocess.*` outside an allowlist (`run.py`, `pty_runner.py`, `privilege.py`,
+  `sudo_session.py`). Calls that legitimately stay raw get named in that allowlist rather than a
+  blanket exemption: streaming invocations, anything needing its own `preexec_fn`, and build
+  invocations rather than probes are the shapes `capture()` deliberately does not cover — the four
+  such calls left in the toolchain package are the worked example.
+  *Priority: med · Effort: large · Bump: patch* — large by count, mechanical per site; ship in
+  batches, each independently green.
+  **Standards home on adoption:** new `21-standards.md` row "subprocess goes through `primitives/run`",
+  enforced by the ruff `banned-api` entry plus `tests/test_standards_compliance.py`.
+
 
 ### Bugs
 
