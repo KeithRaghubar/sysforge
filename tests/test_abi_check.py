@@ -4,7 +4,7 @@ test_abi_check.py — unit tests for the post-build ABI compatibility checker.
 All subprocess calls are mocked; no real ELF binaries or system tools required.
 
 Covers:
-    _list_sos_in_pkg     — bsdtar -t parsing, filter for .so.N entries
+    _list_sos_in_pkg     — bsdtar -tv parsing, regular .so / .so.N files, no links
     _undefined_versioned — nm -D parsing for U sym@VER lines
     needed_sonames       — readelf -d parsing for NEEDED entries
     _build_ldconfig_map  — ldconfig -p parsing
@@ -34,8 +34,11 @@ from sysforge.primitives.abi_check import (
     _parse_verneed,
     needed_sonames,
     _undefined_versioned,
+    AbiFinding,
     check_package_abi,
     check_so_files,
+    find_abi_issues,
+    source_built_skew_findings,
 )
 
 # std::string::_M_assign(std::string const&) — a real mangled name, kept as a
@@ -64,7 +67,6 @@ def test_list_sos_filters_so_files():
         "usr/lib/",
         "usr/lib/libfoo.so.1",
         "usr/lib/libfoo.so.1.2.3",
-        "usr/lib/libfoo.so",          # plain .so — no version, excluded
         "usr/lib/libfoo.a",           # static lib, excluded
         "usr/share/doc/README",
         "usr/lib/libbar.so.2",
@@ -76,9 +78,34 @@ def test_list_sos_filters_so_files():
     assert "usr/lib/libfoo.so.1" in result
     assert "usr/lib/libfoo.so.1.2.3" in result
     assert "usr/lib/libbar.so.2" in result
-    # plain .so and .a must be excluded
-    assert not any(e.endswith(".so") and ".so." not in e for e in result)
     assert not any(e.endswith(".a") for e in result)
+
+
+def _tv(mode, name):
+    return f"{mode}  0 root   root   123456 Sep 11 11:43 {name}"
+
+
+def test_list_sos_includes_unversioned_regular_so_and_skips_links():
+    """3.2.0-B20: mesa's libgallium-<ver>.so and DRI drivers have no soname
+    suffix; the `.so.`-only filter never scanned the library that broke."""
+    listing = "\n".join([
+        _tv("drwxr-xr-x", "usr/lib/"),
+        _tv("-rwxr-xr-x", "usr/lib/libgallium-26.2.2-arch1.1.so"),
+        _tv("-rwxr-xr-x", "usr/lib/dri/libdril_dri.so"),
+        _tv("hrwxr-xr-x", "usr/lib/dri/radeonsi_dri.so link to usr/lib/dri/libdril_dri.so"),
+        _tv("lrwxrwxrwx", "usr/lib/libgbm.so -> libgbm.so.1"),
+        _tv("-rwxr-xr-x", "usr/lib/libgbm.so.1.0.0"),
+        _tv("-rw-r--r--", "usr/share/doc/mesa.so.txt.gz"),
+    ])
+    with patch("sysforge.primitives.abi_check.subprocess.run",
+               return_value=_mock_run(listing)):
+        result = _list_sos_in_pkg(Path("mesa.pkg.tar"))
+
+    assert result == [
+        "usr/lib/libgallium-26.2.2-arch1.1.so",
+        "usr/lib/dri/libdril_dri.so",
+        "usr/lib/libgbm.so.1.0.0",
+    ]
 
 
 def test_list_sos_returns_empty_on_failure():
@@ -747,3 +774,74 @@ def test_check_so_files_genuine_drift_still_flagged(tmp_path):
     assert len(issues) == 1
     assert "MYLIB_2.0" in issues[0]
     assert "_Z3barv" in issues[0]
+
+
+# ---------------------------------------------------------------------------
+# find_abi_issues attribution + source_built_skew_findings (3.2.0-B20)
+# ---------------------------------------------------------------------------
+
+_LLVM = "/usr/lib/libLLVM.so.22.1"
+
+
+def test_find_abi_issues_attributes_a_symbol_to_the_lib_defining_its_version(tmp_path):
+    """The mesa/PGO-libLLVM case: the version node exists in the installed
+    libLLVM but the std:: symbol inside it does not — attribute to libLLVM."""
+    so = tmp_path / "libgallium-26.2.2.so"
+    so.write_bytes(b"\x7fELF")
+
+    def dispatcher(cmd, **_kw):
+        tool = cmd[0]
+        if tool == "nm":
+            if cmd[-1] == _LLVM:
+                return _mock_run("0000001234 T _ZN4llvm5ValueE@@LLVM_22.1\n")
+            return _mock_run(f"                 U {_ASSIGN}@LLVM_22.1\n")
+        if tool == "readelf":
+            return _mock_run(" 0x1 (NEEDED)  Shared library: [libLLVM.so.22.1]\n")
+        if tool == "ldconfig":
+            return _mock_run(f"\tlibLLVM.so.22.1 (libc6,x86-64) => {_LLVM}\n")
+        return _mock_run("")
+
+    with patch("sysforge.primitives.abi_check.subprocess.run", side_effect=dispatcher):
+        findings = find_abi_issues([so])
+
+    assert [(f.kind, f.libs) for f in findings] == [("symbol", (_LLVM,))]
+    assert findings[0].so == so.name
+    assert "LLVM_22.1" in findings[0].message
+
+
+def _symbol_finding(lib=_LLVM):
+    return AbiFinding(so="libgallium.so", kind="symbol",
+                      message="libgallium.so: … @LLVM_22.1", libs=(lib,))
+
+
+def test_skew_gate_blocks_a_finding_against_a_source_built_lib():
+    missing = AbiFinding(so="libgallium.so", kind="missing_needed", message="n")
+    with patch("sysforge.primitives.abi_check.package_abi_findings",
+               return_value=[_symbol_finding(), missing]), \
+         patch("sysforge.primitives.pacman.owners_of",
+               return_value={Path(_LLVM): "llvm-libs"}):
+        got = source_built_skew_findings(
+            [Path("mesa-1-1-x86_64.pkg.tar"), Path("mesa-1-1-x86_64.pkg.tar.sig")],
+            {"llvm-libs"})
+    assert got == [_symbol_finding()]
+
+
+def test_skew_gate_ignores_findings_against_repo_libs():
+    with patch("sysforge.primitives.abi_check.package_abi_findings",
+               return_value=[_symbol_finding("/usr/lib/libz.so.1")]), \
+         patch("sysforge.primitives.pacman.owners_of",
+               return_value={Path("/usr/lib/libz.so.1"): "zlib"}):
+        assert source_built_skew_findings([Path("foo.pkg.tar")], {"llvm-libs"}) == []
+
+
+def test_skew_gate_does_not_block_on_undetermined_ownership():
+    with patch("sysforge.primitives.abi_check.package_abi_findings",
+               return_value=[_symbol_finding()]), \
+         patch("sysforge.primitives.pacman.owners_of", return_value={}):
+        assert source_built_skew_findings([Path("mesa.pkg.tar")], {"llvm-libs"}) == []
+
+
+def test_skew_gate_is_inert_without_source_built_packages():
+    with patch("sysforge.primitives.abi_check.package_abi_findings",
+               side_effect=AssertionError("must not extract")):
+        assert source_built_skew_findings([Path("mesa.pkg.tar")], set()) == []

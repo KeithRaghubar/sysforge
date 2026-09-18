@@ -534,6 +534,44 @@ def resolve_cleanbuild_flags(
     return batch_flags, strip_flags
 
 
+def _source_built_abi_skew(pkg_files: list, state_dir) -> list:
+    """Pre-install ABI skew gate (3.2.0-B20); returns the blocking findings.
+
+    Runs for every build, independent of ``--abi-check`` (which stays the
+    advisory, repo-wide report). Inert when nothing is source-built. A checker
+    that cannot run (missing binutils, unreadable archive) warns and admits the
+    install: the gate exists to stop a known skew, not to make every build
+    depend on the checker's own health.
+    """
+    if not pkg_files:
+        return []
+    from sysforge.primitives import abi_check
+
+    try:
+        source_built = build_sandbox.source_built_packages(state_dir)
+        return abi_check.source_built_skew_findings(pkg_files, source_built)
+    except Exception as exc:
+        _log.warn(f"pre-install ABI skew check could not run: {exc}")
+        return []
+
+
+def _refuse_skewed_install(target, findings: list, state_dir, outcome) -> None:
+    """Record a target whose artifacts failed :func:`_source_built_abi_skew`."""
+    libs = sorted({lib for f in findings for lib in f.libs})
+    msg = (
+        f"refusing to install: {len(findings)} versioned symbol(s) unresolved by "
+        f"source-built {', '.join(libs)} — built against a different build of "
+        f"that library than this host runs; installing it would fail to load"
+    )
+    _log.error(f"{target.pkgbase}: {msg}")
+    for f in findings[:10]:
+        _log.error(f"  {f.message}")
+    if len(findings) > 10:
+        _log.error(f"  … and {len(findings) - 10} more")
+    outcome.failed_pkgs.append(target.pkgbase)
+    _record_build_failure(state_dir, target, msg)
+
+
 def build_and_install(
     targets,
     *,
@@ -852,6 +890,12 @@ def build_and_install(
                         p for p in snapshot_pkg_dir(search_dir)
                         if p.stat().st_mtime >= build_start
                     )
+                    # Before anything can install or re-inject these (the JIT
+                    # path, the final bulk install, the sandbox registry).
+                    skew = _source_built_abi_skew(new_pkgs, state_dir)
+                    if skew:
+                        _refuse_skewed_install(target, skew, state_dir, outcome)
+                        continue
                     outcome.built_pkg_files.extend(new_pkgs)
                     built_files_by_pkgbase[target.pkgbase] = new_pkgs
                     outcome.built_pkgs.append(target.pkgbase)
@@ -886,6 +930,13 @@ def build_and_install(
                     existing = _find_existing_artifacts(
                         search_dir, target.pkgnames, target.pkgbuild_ver,
                     )
+                    # A reused artifact is as exposed as a fresh one: the
+                    # broken build from an earlier run is exactly what sits
+                    # in PKGDEST waiting to be "installed as already built".
+                    skew = _source_built_abi_skew(existing, state_dir)
+                    if skew:
+                        _refuse_skewed_install(target, skew, state_dir, outcome)
+                        continue
                     if existing:
                         _log.info(
                             f"{target.pkgbase}: package already built — "

@@ -118,6 +118,14 @@ class TestCollectBuilddeps:
         assert "pyside6" in collect_builddeps([p])
         assert "pyside6" not in collect_makedeps([p])
 
+    def test_unreadable_pkgbuild_warns_and_is_skipped_by_default(self, tmp_path):
+        assert collect_builddeps([tmp_path / "gone" / "PKGBUILD"]) == []
+
+    def test_strict_reraises_an_unreadable_pkgbuild(self, tmp_path):
+        """3.2.0-B19: the sandbox resolver must tell "no deps" from "unreadable"."""
+        with pytest.raises(OSError):
+            collect_builddeps([tmp_path / "gone" / "PKGBUILD"], strict=True)
+
     def test_strips_versions_and_skips_unresolved(self, tmp_path):
         p = self._write(
             tmp_path, "foo",

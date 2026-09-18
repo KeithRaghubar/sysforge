@@ -1512,3 +1512,87 @@ def test_jit_allowlist_excludes_already_built_earlier_members(tmp_path):
     # JIT before bb-mid: bb-mid (about to be built) and cc-top are still
     # unbuilt; aa-base was just installed, so a pin it holds stays enforced.
     assert allowed[0] == frozenset({"bb-mid", "cc-top"})
+
+
+# ---------------------------------------------------------------------------
+# Pre-install ABI skew gate (3.2.0-B20)
+# ---------------------------------------------------------------------------
+
+def _skew_finding():
+    from sysforge.primitives.abi_check import AbiFinding
+    return AbiFinding(
+        so="libgallium.so", kind="symbol",
+        message="libgallium.so: undefined versioned symbol … @LLVM_22.1",
+        libs=("/usr/lib/libLLVM.so.22.1",),
+    )
+
+
+def _run_with_gate(tmp_path, *, fake_run, findings, existing=None):
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    installs, recorded, gated = [], {}, []
+
+    def gate(pkg_files, source_built):
+        gated.append((list(pkg_files), set(source_built)))
+        return findings
+
+    extra = [
+        patch("sysforge.primitives.build_sandbox.source_built_packages",
+              return_value={"llvm-libs"}),
+        patch("sysforge.primitives.abi_check.source_built_skew_findings",
+              side_effect=gate),
+        patch("sysforge.build_core._record_build_failure",
+              side_effect=lambda sd, t, e: recorded.update(msg=str(e))),
+    ]
+    if existing is not None:
+        extra.append(patch("sysforge.build_core._find_existing_artifacts",
+                           return_value=[artifact]))
+    with _ctx(_patch_build_env(
+        run_side_effect=lambda p, options=None: fake_run(artifact),
+        snapshot_return=frozenset({artifact}),
+        install_capture=lambda paths, **_kw: installs.append(list(paths)) or True,
+    ) + extra):
+        outcome = build_core.build_and_install([target], config={}, sync_source=False)
+    return outcome, artifact, installs, recorded, gated
+
+
+def test_build_and_install_refuses_to_install_on_source_built_abi_skew(tmp_path):
+    outcome, artifact, installs, recorded, gated = _run_with_gate(
+        tmp_path, fake_run=_touch_future, findings=[_skew_finding()])
+    assert gated == [([artifact], {"llvm-libs"})]
+    assert outcome.failed_pkgs == ["foo"]
+    assert outcome.built_pkgs == []
+    assert not any(artifact in batch for batch in installs)
+    assert "libLLVM.so.22.1" in recorded["msg"]
+
+
+def test_build_and_install_installs_when_the_skew_gate_is_clean(tmp_path):
+    outcome, artifact, installs, _rec, gated = _run_with_gate(
+        tmp_path, fake_run=_touch_future, findings=[])
+    assert gated
+    assert outcome.built_pkgs == ["foo"]
+    assert installs == [[artifact]]
+
+
+def test_build_and_install_gates_a_reused_already_built_artifact(tmp_path):
+    """The broken artifact from an earlier run is what "already built" reuses."""
+    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+
+    def already_built(_artifact):
+        raise AlreadyBuilt("foo")
+
+    outcome, artifact, installs, _rec, gated = _run_with_gate(
+        tmp_path, fake_run=already_built, findings=[_skew_finding()], existing=True)
+    assert gated == [([artifact], {"llvm-libs"})]
+    assert outcome.failed_pkgs == ["foo"]
+    assert not any(artifact in batch for batch in installs)
+
+
+def test_skew_gate_checker_failure_admits_the_install(tmp_path):
+    target = _make_target(tmp_path)
+    with patch("sysforge.primitives.build_sandbox.source_built_packages",
+               return_value={"llvm-libs"}), \
+         patch("sysforge.primitives.abi_check.source_built_skew_findings",
+               side_effect=OSError("nm not found")):
+        assert build_core._source_built_abi_skew(
+            [target.pkgbuild_path.parent / "foo.pkg.tar"], None) == []

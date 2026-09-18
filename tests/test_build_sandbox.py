@@ -509,6 +509,47 @@ def test_seam_seeds_artifacts_built_this_run(tmp_path):
     assert str(dep) in cap["cmd"]
 
 
+def test_seam_resolves_deps_before_the_canonical_swap(tmp_path):
+    """3.2.0-B18: the resolver used to be handed the sidecar path *after* the
+    swap had renamed it to ./PKGBUILD, so it read a missing file and injected
+    nothing — mesa then linked the container's repo libLLVM."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    sidecar = pb.parent / "PKGBUILD.sysforge"
+    sidecar.write_text("# patched\n")
+    dep = _artifact(tmp_path, "llvm-libs-22.1.8-2-x86_64.pkg.tar.zst")
+    bs.set_policy(_policy(tmp_path))
+    seen = []
+
+    def fake_resolve(pkgbuild_path, **_kw):
+        seen.append((Path(pkgbuild_path).name, Path(pkgbuild_path).read_text()))
+        return [dep]
+
+    with patch("sysforge.primitives.build_sandbox.resolve_dep_artifacts",
+               side_effect=fake_resolve):
+        cap = _invoke(sidecar, conf, {})
+
+    assert seen == [("PKGBUILD.sysforge", "# patched\n")]
+    assert str(dep) in cap["cmd"]
+
+
+def test_seam_resolver_refusal_leaves_the_checkout_untouched(tmp_path):
+    """3.2.0-B19 raises from the resolver; resolving before the swap and the
+    scratch conf means there is nothing to undo when it does."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    sidecar = pb.parent / "PKGBUILD.sysforge"
+    sidecar.write_text("# patched\n")
+    bs.set_policy(_policy(tmp_path))
+
+    with patch("sysforge.primitives.build_sandbox.resolve_dep_artifacts",
+               side_effect=bs.SandboxUnavailable("cannot resolve deps")):
+        with pytest.raises(bs.SandboxUnavailable):
+            _invoke(sidecar, conf, {})
+
+    assert sorted(p.name for p in pb.parent.iterdir()) == [
+        "PKGBUILD", "PKGBUILD.sysforge"]
+    assert pb.read_text() == "# fake\n"
+
+
 def test_seam_refuses_rather_than_downgrading(tmp_path):
     """No chroot → the build stops. Falling back to a host build would hand
     the user the exact exposure they opted out of."""
@@ -1048,6 +1089,58 @@ def test_resolver_skips_a_dep_that_is_not_installed(tmp_path):
         artifacts=[],
     )
     assert _resolve(pb, dest, {}, {}, set(), ["ghost"]) == []
+
+
+def test_resolver_refuses_when_the_pkgbuild_is_missing(tmp_path):
+    """3.2.0-B19: a missing PKGBUILD used to read as "no source-built deps"."""
+    with patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value={"llvm-libs"}):
+        with pytest.raises(bs.SandboxUnavailable, match="does not exist"):
+            bs.resolve_dep_artifacts(tmp_path / "PKGBUILD.sysforge",
+                                     search_dir=tmp_path)
+
+
+def test_resolver_refuses_when_deps_cannot_be_read(tmp_path):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value={"llvm-libs"}), \
+         patch("sysforge.primitives.pacman.collect_builddeps",
+               side_effect=ValueError("unparseable")):
+        with pytest.raises(bs.SandboxUnavailable, match="unparseable"):
+            bs.resolve_dep_artifacts(pb, search_dir=tmp_path)
+
+
+def test_resolver_refuses_when_the_local_db_cannot_be_read(tmp_path):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value={"llvm-libs"}), \
+         patch("sysforge.primitives.pacman.collect_builddeps",
+               return_value=["llvm-libs"]), \
+         patch("sysforge.primitives.pacman.get_all_package_depends",
+               side_effect=OSError("db locked")):
+        with pytest.raises(bs.SandboxUnavailable, match="db locked"):
+            bs.resolve_dep_artifacts(pb, search_dir=tmp_path)
+
+
+def test_resolver_reads_deps_strictly(tmp_path):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value={"llvm-libs"}), \
+         patch("sysforge.primitives.pacman.collect_builddeps",
+               return_value=[]) as collect:
+        assert bs.resolve_dep_artifacts(pb, search_dir=tmp_path) == []
+    assert collect.call_args.kwargs == {"strict": True}
+
+
+def test_resolver_without_source_built_packages_never_refuses(tmp_path):
+    """Nothing to inject means nothing to lose: a stock host is unaffected."""
+    with patch("sysforge.primitives.build_sandbox._source_built_packages",
+               return_value=set()):
+        assert bs.resolve_dep_artifacts(tmp_path / "missing",
+                                        search_dir=tmp_path) == []
 
 
 def test_install_args_unions_the_session_registry_over_the_resolver(tmp_path):

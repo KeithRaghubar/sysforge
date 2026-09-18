@@ -645,12 +645,17 @@ def batch_install_pkgs(
 _BUILD_DEP_KEYS = ("depends", "makedepends", "checkdepends")
 
 
-def _collect_dep_names(pkgbuild_paths: list, keys) -> list:
+def _collect_dep_names(pkgbuild_paths: list, keys, *, strict: bool = False) -> list:
     """Parse PKGBUILDs and return a sorted unique list of names from ``keys``.
 
     Version constraints are stripped ("cmake>=3.16" → "cmake") and any token the
     static parser left as un-evaluated shell syntax is skipped so it is never
     handed to the repo ``pacman -S`` transaction as a bogus name.
+
+    An unreadable PKGBUILD warns and is skipped by default, which suits the
+    best-effort dep pre-install. ``strict=True`` re-raises instead, for callers
+    to whom an empty result is indistinguishable from "has no deps" and that
+    difference matters (the sandbox's dep injection, 3.2.0-B19).
     """
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
     deps: set = set()
@@ -666,6 +671,8 @@ def _collect_dep_names(pkgbuild_paths: list, keys) -> list:
                         continue
                     deps.add(_strip_version(dep))
         except (OSError, KeyError, ValueError) as e:
+            if strict:
+                raise
             _log.warn(f"deps parse error ({Path(path).parent.name}): {e}")
     return sorted(deps)
 
@@ -675,7 +682,7 @@ def collect_makedeps(pkgbuild_paths: list) -> list:
     return _collect_dep_names(pkgbuild_paths, ("makedepends",))
 
 
-def collect_builddeps(pkgbuild_paths: list) -> list:
+def collect_builddeps(pkgbuild_paths: list, *, strict: bool = False) -> list:
     """Parse PKGBUILDs and return their depends + makedepends + checkdepends.
 
     The full set of packages makepkg requires present before building. Used by
@@ -683,7 +690,7 @@ def collect_builddeps(pkgbuild_paths: list) -> list:
     on a missing repo runtime ``depends`` (makepkg checks those too, not only
     makedepends).
     """
-    return _collect_dep_names(pkgbuild_paths, _BUILD_DEP_KEYS)
+    return _collect_dep_names(pkgbuild_paths, _BUILD_DEP_KEYS, strict=strict)
 
 
 def filter_missing_deps(deps: list) -> list:

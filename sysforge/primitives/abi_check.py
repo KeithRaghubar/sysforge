@@ -35,6 +35,14 @@ Public API:
     check_package_abi(pkg_path: Path) -> list[str]
         Archive wrapper. Extracts .so.* members from a built .pkg.tar.zst
         and calls check_so_files on the extracted files.
+
+    find_abi_issues / package_abi_findings -> list[AbiFinding]
+        Structured forms of the two above; each finding carries the NEEDED
+        libs it binds to.
+
+    source_built_skew_findings(pkg_paths, source_built) -> list[AbiFinding]
+        The blocking pre-install gate: findings against libraries owned by a
+        source-built package (3.2.0-B20).
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
@@ -100,22 +109,51 @@ _RE_LDCONFIG = re.compile(r"^\s+(\S+)\s+\(([^)]+)\)\s+=>\s+(\S+)$", re.MULTILINE
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# `bsdtar -tv` line: mode string, then link count/owner/group/size/date fields,
+# then the member name (and " -> target" / " link to target" for links).
+_RE_TV_LINE = re.compile(r"^([-dlhcbps])[rwxsStT-]{9}\S*\s+(?:\S+\s+){7}(.+)$")
+
+
+# Basename ends in `.so` or `.so.N[.M…]` — anchored, so `foo.so.txt.gz` is not one.
+_RE_SO_NAME = re.compile(r"\.so(?:\.\d+)*$")
+
+
+def _is_shared_object_name(name: str) -> bool:
+    return bool(_RE_SO_NAME.search(name.rsplit("/", 1)[-1]))
+
+
 def _list_sos_in_pkg(pkg_path: Path) -> list[str]:
-    """Return archive member paths for shared libraries in the package."""
+    """Return archive member paths for shared libraries in the package.
+
+    Both ``libfoo.so.N[.M]`` and unversioned ``*.so`` regular files count: mesa
+    ships ``libgallium-<ver>.so`` and its DRI/VA drivers with no soname suffix,
+    and a ``.so.``-only filter never scanned the one library that broke
+    (3.2.0-B20). Symlinks and hardlinks are skipped — a dev ``libfoo.so ->
+    libfoo.so.1`` link, or a hardlinked driver alias, is the same ELF as a
+    member already listed.
+    """
     result = subprocess.run(
-        ["bsdtar", "-t", "-f", str(pkg_path)],
+        ["bsdtar", "-t", "-v", "-f", str(pkg_path)],
         capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         _log.warn(f"bsdtar list failed for {pkg_path.name}: {result.stderr.strip()}")
         return []
-    # Match usr/lib/libfoo.so.N or usr/lib/libfoo.so.N.M etc.
-    # Also plain .so symlinks are excluded — we want the actual ELF files.
     entries = []
-    for line in result.stdout.splitlines():
-        line = line.rstrip("/")
-        if ".so." in line and not line.endswith(".a"):
-            entries.append(line)
+    for raw in result.stdout.splitlines():
+        m = _RE_TV_LINE.match(raw)
+        if m:
+            if m.group(1) != "-":
+                continue  # directory, symlink, hardlink, device
+            name = m.group(2)
+            if " link to " in name:
+                continue  # hardlink rendered with a regular-file mode
+        else:
+            # Non-verbose listing (older bsdtar output / test doubles): names only.
+            name = raw
+        name = name.rstrip("/")
+        if _is_shared_object_name(name):
+            entries.append(name)
     return entries
 
 
@@ -405,8 +443,33 @@ def is_abi_check_skipped_package(pkgname: str) -> bool:
     return pkgname in _ABI_CHECK_SKIP_PACKAGES
 
 
+@dataclass(frozen=True)
+class AbiFinding:
+    """One ABI finding, with the libraries it is attributed to.
+
+    ``kind`` is ``"symbol"`` (a versioned requirement no NEEDED lib satisfies)
+    or ``"missing_needed"`` (a NEEDED soname absent from the ldconfig cache).
+    ``libs`` are the resolved on-disk paths of the NEEDED libraries the
+    requirement binds to — the ones defining its version node, or, when none
+    does, the ones Verneed recorded — so a caller can ask *whose* library is
+    short (3.2.0-B20). Empty for ``missing_needed``.
+    """
+
+    so: str
+    kind: str
+    message: str
+    libs: tuple[str, ...] = ()
+
+
 def check_so_files(so_paths: list[Path], *,
                    benign_sink: list[str] | None = None) -> list[str]:
+    """Message-string view of :func:`find_abi_issues` (doctor and the advisory
+    post-build report consume strings)."""
+    return [f.message for f in find_abi_issues(so_paths, benign_sink=benign_sink)]
+
+
+def find_abi_issues(so_paths: list[Path], *,
+                    benign_sink: list[str] | None = None) -> list[AbiFinding]:
     """
     Check ABI compatibility of a list of on-disk shared libraries.
 
@@ -430,13 +493,13 @@ def check_so_files(so_paths: list[Path], *,
     for the demoted optional-symbol cases so a caller can render a single
     summary line instead of per-symbol noise.
 
-    Returns a list of warning strings describing genuine unsatisfied references
-    or NEEDED libs missing from the ldconfig cache. Empty list if clean.
+    Returns an :class:`AbiFinding` per genuine unsatisfied reference or NEEDED
+    lib missing from the ldconfig cache. Empty list if clean.
     """
     if not so_paths:
         return []
 
-    issues: list[str] = []
+    issues: list[AbiFinding] = []
     ldconfig_map = _build_ldconfig_map()
     export_cache: dict[str, set[tuple[str, str]]] = {}
 
@@ -475,10 +538,12 @@ def check_so_files(so_paths: list[Path], *,
         # "V exists but this one symbol is absent" (optional/conditional).
         union_exports: set[tuple[str, str]] = set()
         union_versions: set[str] = set()
+        lib_versions: dict[str, set[str]] = {}
         for lib_path in needed_paths.values():
             exp = _exported_versioned(lib_path, export_cache)
             union_exports |= exp
-            union_versions |= {ver for _, ver in exp}
+            lib_versions[lib_path] = {ver for _, ver in exp}
+            union_versions |= lib_versions[lib_path]
 
         # Verneed binds each required version to the NEEDED soname(s) the linker
         # recorded. We use it only to (a) skip versions provided by the host /
@@ -528,16 +593,28 @@ def check_so_files(so_paths: list[Path], *,
             for sym, ver in sorted(hard):
                 readable = dm.get(sym, sym)
                 label = f"{readable} ({sym})" if readable != sym else sym
-                issues.append(
-                    f"{so_path.name}: undefined versioned symbol not found in any NEEDED lib: "
-                    f"{label}@{ver}"
-                )
+                # Attribution: the libs defining the version node (the symbol
+                # went missing *within* it), else the Verneed-bound ones.
+                libs = sorted(lp for lp, vers in lib_versions.items() if ver in vers)
+                if not libs:
+                    libs = sorted(needed_paths[sn] for sn in verneed.get(ver, set())
+                                  if sn in needed_paths)
+                issues.append(AbiFinding(
+                    so=so_path.name, kind="symbol", libs=tuple(libs),
+                    message=(
+                        f"{so_path.name}: undefined versioned symbol not found in any "
+                        f"NEEDED lib: {label}@{ver}"
+                    ),
+                ))
 
         for soname in sorted(needed_missing):
-            issues.append(
-                f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache — "
-                "may not be installed or ldconfig not yet run"
-            )
+            issues.append(AbiFinding(
+                so=so_path.name, kind="missing_needed",
+                message=(
+                    f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache — "
+                    "may not be installed or ldconfig not yet run"
+                ),
+            ))
 
     return issues
 
@@ -546,8 +623,16 @@ def check_package_abi(pkg_path: Path) -> list[str]:
     """
     Check ABI compatibility of shared libraries in a built package archive.
 
-    Extracts .so.* members with bsdtar, then calls check_so_files.
+    Message-string view of :func:`package_abi_findings`.
     Returns an empty list if the package has no shared libraries (no-op).
+    """
+    return [f.message for f in package_abi_findings(pkg_path)]
+
+
+def package_abi_findings(pkg_path: Path) -> list[AbiFinding]:
+    """
+    Extract a built package's .so.* members with bsdtar and run
+    :func:`find_abi_issues` on them. Empty if it ships no shared libraries.
     """
     so_members = _list_sos_in_pkg(pkg_path)
     if not so_members:
@@ -561,7 +646,46 @@ def check_package_abi(pkg_path: Path) -> list[str]:
 
     with tempfile.TemporaryDirectory(prefix="sysforge-abi-") as tmpdir:
         extracted = _extract_sos(pkg_path, so_members, Path(tmpdir))
-        return check_so_files(extracted)
+        return find_abi_issues(extracted)
+
+
+def source_built_skew_findings(pkg_paths: list, source_built: set) -> list[AbiFinding]:
+    """Findings that must block installing *pkg_paths* (3.2.0-B20).
+
+    A built package whose versioned requirement is unsatisfied **by a library
+    the user built from source** was linked against a different build of that
+    library than the host runs. The same pkgver says nothing about exports: a
+    PGO libLLVM inlines away weak ``std::`` copies the repo build exports under
+    ``LLVM_<ver>``, so a mesa linked against the repo one (a sandbox container
+    resolving deps from the stock repos) fails to load on the host, and the
+    desktop black-screens on the next boot. Unlike the advisory
+    ``--abi-check`` report this is always on and blocking — but scoped to
+    source-built owners, so repo-vs-repo noise (which pacman's own dependency
+    versioning already governs) never fails a build.
+
+    Only ``"symbol"`` findings with an attributed lib qualify; a missing NEEDED
+    soname is a dependency problem, not skew. Ownership that cannot be
+    determined (``owners_of`` omits the path) does not block.
+    """
+    if not source_built:
+        return []
+    candidates: list[AbiFinding] = []
+    for pkg in pkg_paths:
+        pkg = Path(pkg)
+        if pkg.name.endswith(".sig"):
+            continue
+        candidates.extend(
+            f for f in package_abi_findings(pkg) if f.kind == "symbol" and f.libs)
+    if not candidates:
+        return []
+
+    from sysforge.primitives import pacman
+
+    owners = pacman.owners_of(sorted({Path(lib) for f in candidates for lib in f.libs}))
+    return [
+        f for f in candidates
+        if any(owners.get(Path(lib)) in source_built for lib in f.libs)
+    ]
 
 
 def report_post_build_abi(built_pkgs: list) -> None:

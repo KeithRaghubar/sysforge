@@ -306,6 +306,18 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Raises SandboxUnavailable rather than falling back to a host build:
         # a security opt-in that silently degrades is worse than one that stops.
         build_sandbox.preflight(sandbox, pkgbuild_path)
+        # Seeded from two sources (3.1.0-F9): artifacts built earlier in this
+        # run, plus this target's source-built dep closure read out of
+        # build_state. The container resolves from the stock repos only, so
+        # without this a dep the user built from source is `target not found`
+        # — or silently the repo version. Resolved here, before the canonical
+        # swap below renames the sidecar away (3.2.0-B18: resolving after it
+        # read a path that no longer existed, so injection came back empty),
+        # and before anything that would need undoing if the resolver refuses
+        # (3.2.0-B19 raises SandboxUnavailable).
+        from sysforge.primitives.pacman import get_pkgdest
+        install_pkgs = build_sandbox.install_args(
+            pkgbuild_path, search_dir=get_pkgdest())
         # The chroot is base-devel, which is gcc + binutils; a profile that
         # resolved to LLVM exports CC=clang into it and every C build dies in
         # configure (3.2.0-B4). Both channels the container is handed are
@@ -352,13 +364,6 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # artifacts back where the host path leaves them.
         env = build_sandbox.chroot_env(env)
         env.update(build_sandbox.dest_env_from_conf(conf_path))
-        # Seeded from two sources (3.1.0-F9): artifacts built earlier in this
-        # run, plus this target's source-built dep closure read out of
-        # build_state. The container resolves from the stock repos only, so
-        # without this a dep the user built from source is `target not found`.
-        from sysforge.primitives.pacman import get_pkgdest
-        install_pkgs = build_sandbox.install_args(
-            pkgbuild_path, search_dir=get_pkgdest())
         cmd = prefix + build_sandbox.build_argv(
             sandbox, flags,
             conf_dir_name=conf_dir.name, install_pkgs=install_pkgs,

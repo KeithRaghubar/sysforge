@@ -838,6 +838,14 @@ def _source_built_packages(state_dir) -> set:
     }
 
 
+def source_built_packages(state_dir=None) -> set:
+    """Public view of :func:`_source_built_packages`, for gates outside the
+    sandbox that ask the same "which pkgnames did the user build?" question
+    (the pre-install ABI skew gate, 3.2.0-B20) — one reader of build_state's
+    build_mode for both."""
+    return _source_built_packages(state_dir)
+
+
 def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[Path]:
     """Return locally-built artifacts for *pkgbuild_path*'s source-built deps.
 
@@ -860,6 +868,9 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
       historical build (3.1.0-B1), and injecting its newest would hand the
       container a version the host does not have, recreating the very skew
       this removes.
+    * **An unreadable dependency closure refuses** (3.2.0-B19): a missing
+      PKGBUILD or a failed deps/local-DB read raises ``SandboxUnavailable``
+      rather than returning ``[]``, which would read as "no source-built deps".
     * **A pruned artifact warns and continues.** The container falls back to
       the repo version, which is a build-fidelity mismatch, not a breach of
       the isolation boundary — so unlike the sandbox's own refuse-rather-than-
@@ -879,17 +890,32 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     if not source_built:
         return []
 
+    # Fail closed from here on (3.2.0-B19). Every failure below used to return
+    # [], which is indistinguishable from "this target has no source-built
+    # deps": the container then silently resolved them from the stock repos —
+    # a libLLVM whose exports differ from the host's under the same pkgver —
+    # and the resulting mesa black-screened the desktop on reboot. A pruned
+    # *artifact* still warns and continues (one dep, named); losing the whole
+    # closure is not that case.
+    if not Path(pkgbuild_path).is_file():
+        raise SandboxUnavailable(
+            f"refusing to sandbox: cannot resolve source-built deps — "
+            f"{pkgbuild_path} does not exist, so the container would link "
+            f"against repo versions instead of the ones this host runs"
+        )
     try:
-        roots = pacman.collect_builddeps([pkgbuild_path])
+        roots = pacman.collect_builddeps([pkgbuild_path], strict=True)
+        if not roots:
+            return []
+        # One pass over the local DB rather than a `pacman -Qi` per package: a
+        # whole-system walk the other way is O(N^2) directory reads (2.6.1-B22).
+        graph = pacman.get_all_package_depends()
     except Exception as exc:
-        _log.debug(f"sandbox dep injection: could not read deps: {exc}")
-        return []
-    if not roots:
-        return []
-
-    # One pass over the local DB rather than a `pacman -Qi` per package: a
-    # whole-system walk the other way is O(N^2) directory reads (2.6.1-B22).
-    graph = pacman.get_all_package_depends()
+        raise SandboxUnavailable(
+            f"refusing to sandbox: cannot resolve source-built deps of "
+            f"{pkgbuild_path} ({exc}), so the container would link against "
+            f"repo versions instead of the ones this host runs"
+        ) from exc
 
     seen: set = set()
     queue = list(roots)

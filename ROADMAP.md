@@ -107,6 +107,8 @@ canonical ordering.
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
+| `3.2.0-B21` | installing a libLLVM consumer outside the toolchain stage is never re-verified against the installed libLLVM | low | small | patch |
+| `3.2.0-B22` | the mesa_llvm_symbols remediation misdiagnoses a consumer built against the wrong libLLVM | low | small | patch |
 | `3.2.0-F11` | the profile store has no inspection or reclamation surface, and the purge path its own docstring promises does not exist | low | small | minor |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -357,6 +359,14 @@ canonical ordering.
   `3.1.0-F9` shipped first as planned and closed the more common failure; its artifact selection is
   now `makepkg_artifacts.find_artifacts(..., exact_ver=)`, which is what a `repo-add` pass calls to
   decide *which* build of a package to publish.
+  **Observed break (2026-09-11).** This gap has already caused a broken package, not just a missed
+  optimization. A sandboxed `mesa-sysforge` linked against the repo `llvm-libs 22.1.8-2` while the
+  host ran a PGO `llvm-libs` with **the same pkgver** and different exports. `libgallium` failed to
+  load, and the desktop did not come up after reboot. The immediate cause was injection losing the
+  whole closure (`3.2.0-B18`/`B19`, fixed), and `3.2.0-B20` now blocks the install. That leaves a
+  pkgver-identical skew outside the injection set detected only after a full build. A local repo
+  prevents it at the source, so this entry's "buys reach rather than fixing an active break"
+  rationale is weaker than when it was tagged.
   *Priority: low · Effort: large · Bump: minor* — the sandbox is usable without it and default-off,
   so this buys reach rather than fixing an active break; effort is a new artifact-publishing surface
   plus chroot provisioning and a retention policy, none of which exists today.
@@ -720,6 +730,44 @@ canonical ordering.
   **Standards home on adoption:** none new — `makepkg_pgo`'s module docstring already declares itself
   the home for profile-store resolution and the profdata version sidecar; this makes the second
   tenant of that root obey the contract the first one already follows.
+
+- **`3.2.0-B21` — installing a libLLVM consumer outside the toolchain stage is never re-verified
+  against the installed libLLVM.**
+  `toolchain_safety.check_installed_consumer_symbols` is the post-install fact that every libLLVM
+  consumer still resolves its `LLVM_<ver>` symbols, but only two places ask it: the toolchain stage
+  (after *libLLVM* changes underneath its consumers) and `doctor` (on demand). The reverse direction,
+  where a *consumer* changes on top of an unchanged libLLVM, has no post-install check at all. That is
+  how the 2026-09-11 `mesa-sysforge` 26.2.2 install reached a reboot: `sysforge update` installed it,
+  nothing re-read the result, and the first signal was cosmic-comp failing to find an EGL device. The
+  `doctor` run that named the cause (`mesa_llvm_symbols`) came after the desktop was already down.
+  `3.2.0-B20` now refuses the known shape of this before `pacman -U`, from the package archive. This
+  entry is the post-install backstop for what an archive scan cannot see: a consumer whose break
+  depends on the *installed* file set, such as a split sub-package pulling a different soname or a
+  JIT-installed dep landing mid-batch. **Fix shape:** after `build_core.install_built`, when any
+  installed pkgname links `libLLVM` (or *is* a toolchain-owned package), run
+  `check_installed_consumer_symbols` and surface a finding as an error naming the consumer and the
+  snapshot/`pacman -U` of the prior version to restore. Needs a test that installs a consumer whose
+  symbols are unresolved and asserts the error, plus one clean install that emits nothing.
+  *Priority: low · Effort: small · Bump: patch* — low because `3.2.0-B20` blocks the observed case
+  pre-install; this catches the residue, and the check already exists and only needs a second call
+  site.
+  **Standards home on adoption:** none new — reuses the existing toolchain post-install symbol fact.
+
+- **`3.2.0-B22` — the `mesa_llvm_symbols` remediation misdiagnoses a consumer built against the
+  wrong libLLVM.**
+  `toolchain_safety.check_installed_consumer_symbols` explains every finding one way: "the PGO
+  libLLVM inlined away the weak std:: copies the stock build globbed into the LLVM_<ver> node —
+  rebuilding the consumer re-links them to libstdc++". That fits one cause, a libLLVM rebuilt under
+  an existing consumer. On 2026-09-13 `doctor` said the same about a mesa that had instead been
+  *built* against the repo libLLVM inside a sandbox container, and there "rebuild the consumer" is
+  wrong advice. Before `3.2.0-B18`/`B19` it reproduced the identical broken package. The message
+  should say which of the two happened: compare the consumer's build date with the installed
+  libLLVM's install date from the local DB. If the consumer is newer, it was linked against a
+  different build of libLLVM, so tell the user to check how it was built (sandbox dep injection) and
+  restore the stock package in the meantime. Otherwise keep today's wording. Needs a test per branch.
+  *Priority: low · Effort: small · Bump: patch* — diagnostic accuracy only; the finding itself is
+  already correct and at error severity.
+  **Standards home on adoption:** none.
 
 ### Open questions
 
