@@ -268,6 +268,7 @@ class ToolchainStage(Stage):
             else {n: "lib32" for n in lib32_pkgs}
         )
         pkgbuilds.show_resolution_table(pkgbuild_map, role_map=role_map or None)
+        pkgbuilds.show_version_changes(pkgbuild_map)
 
         # Capture the prior-good install set BEFORE any mutation so it can be
         # restored offline if Gate 3 (post-install verify) fails. Cheap pacman

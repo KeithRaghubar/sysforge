@@ -29,7 +29,11 @@ from sysforge.primitives.source_sync import STATUS_RATE_LIMITED
 from sysforge.primitives.source_sync import SyncRequest
 from sysforge.primitives.source_sync import get_scheduler
 
+from sysforge.primitives import pacman
+from sysforge.primitives import pkgbuild_meta
 from sysforge.primitives import prompt
+from sysforge.primitives import render
+from sysforge.primitives import version
 from sysforge.primitives import config as prim_config
 from sysforge import log
 
@@ -337,6 +341,39 @@ def show_resolution_table(
     for name, path in pkgbuild_map.items():
         role = f"  [{role_map[name]}]" if role_map and name in role_map else ""
         _log.ui(f"  {name:<36}  {path}{role}")
+    _log.ui("─────────────────────────────────────────────────────")
+
+
+def _pkgbuild_version(path: Path) -> str | None:
+    """``[epoch:]pkgver-pkgrel`` from a PKGBUILD, or None when unreadable."""
+    try:
+        globals_ = pkgbuild_meta.parse_pkgbuild(path)["globals"]
+    except (OSError, UnicodeDecodeError, KeyError):
+        return None
+    return version.format_version(globals_) if globals_.get("pkgver") else None
+
+
+def show_version_changes(pkgbuild_map: dict[str, Path]) -> None:
+    """Print installed → PKGBUILD version per suite package, before the build.
+
+    The post-build change report (2.6.1-F24) says what *did* change; this is
+    the pre-build half, shown ahead of the confirm prompt so a multi-hour
+    build is approved knowing what it moves to. Read-only; never raises.
+    """
+    changing = 0
+    rows = []
+    for name, path in pkgbuild_map.items():
+        installed = pacman.get_installed_version(name)
+        target = _pkgbuild_version(path)
+        if installed != target:
+            changing += 1
+        rows.append(f"  {name:<36}  {render.version_pair(installed, target)}")
+    _log.ui(
+        f"─── Version changes ({changing} of {len(rows)} changing) "
+        "─────────────────────"
+    )
+    for row in rows:
+        _log.ui(row)
     _log.ui("─────────────────────────────────────────────────────")
 
 

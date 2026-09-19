@@ -95,6 +95,7 @@ canonical ordering.
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.2.0-B12` | a --pgo=generate build under the sandbox writes its profiles into the container and loses them at teardown | med | small | patch |
 | `3.2.0-B16` | the mesa PGO store has no version sidecar, so an arbitrarily old profile is reused with no compatibility gate | med | small | patch |
+| `3.2.0-B24` | four toolchain stage tests take the host's real PGO build lock | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
@@ -767,6 +768,21 @@ canonical ordering.
   restore the stock package in the meantime. Otherwise keep today's wording. Needs a test per branch.
   *Priority: low · Effort: small · Bump: patch* — diagnostic accuracy only; the finding itself is
   already correct and at error severity.
+  **Standards home on adoption:** none.
+
+- **`3.2.0-B24` — four toolchain stage tests take the host's real PGO build lock.**
+  `pgo.pgo_lock_path` puts the lock in the parent of `staging1`, and `staging1` defaults to
+  `/var/tmp/sysforge-llvm-stage1`. Four tests in `tests/test_stage_toolchain.py` override `staging`
+  and `pgo_store` but not `staging1` (`..._four_passes`, `..._sidecar_persists_after_build_failure`,
+  `..._redirects_dyld_when_clang_staged`, `test_validate_pgo_environment_runs_before_instrument`).
+  So they lock the real `/var/tmp` file. While a real `sysforge run toolchain` was running on
+  2026-09-19, all four failed with "Another sysforge PGO build is running (pid …)". The tests break
+  whenever a real build is running, and a test run could also block a real build from starting.
+  Fix: point `staging1` (and `staging3`) at `tmp_path` in those tests. Better, have the autouse
+  isolation fixture in `tests/toolchain_helpers.py` redirect `pgo_lock_path` so no toolchain test
+  can reach the host path. Add a guard test that fails if a resolved lock path falls outside
+  `tmp_path`.
+  *Priority: med · Effort: small · Bump: patch* — test isolation only; no user-visible change.
   **Standards home on adoption:** none.
 
 ### Open questions

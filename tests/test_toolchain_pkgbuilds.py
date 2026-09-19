@@ -192,3 +192,47 @@ def test_sync_pkgbuild_dirs_skips_rpc_for_repo_only_set(tmp_path):
 
     fake_scheduler._ensure_rpc.assert_not_called()
     assert fake_scheduler.request.call_count == 2
+
+
+# ── show_version_changes: pre-build installed → PKGBUILD versions ──────────
+
+
+def _write_pkgbuild(tmp_path, name, body):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "PKGBUILD").write_text(body)
+    return d / "PKGBUILD"
+
+
+def test_show_version_changes_lists_installed_to_pkgbuild(tmp_path, capsys):
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+
+    pkgbuild_map = {
+        "llvm": _write_pkgbuild(tmp_path, "llvm", "pkgver=21.1.8\npkgrel=1\n"),
+        "clang": _write_pkgbuild(tmp_path, "clang", "pkgver=21.1.6\npkgrel=1\n"),
+        "lld": _write_pkgbuild(tmp_path, "lld", "pkgver=21.1.8\npkgrel=1\nepoch=1\n"),
+    }
+    installed = {"llvm": "21.1.6-1", "clang": "21.1.6-1", "lld": None}
+    with patch.object(
+        pkgbuilds.pacman, "get_installed_version", side_effect=installed.get
+    ):
+        pkgbuilds.show_version_changes(pkgbuild_map)
+
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "2 of 3 changing" in text
+    assert "21.1.6-1" in text and "21.1.8-1" in text
+    assert "21.1.6-1 (=)" in text  # clang unchanged
+    assert "1:21.1.8-1" in text  # epoch carried; not installed renders a dash
+
+
+def test_show_version_changes_tolerates_unreadable_pkgbuild(tmp_path, capsys):
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+
+    with patch.object(
+        pkgbuilds.pacman, "get_installed_version", return_value="21.1.6-1"
+    ):
+        pkgbuilds.show_version_changes({"llvm": tmp_path / "missing" / "PKGBUILD"})
+
+    out = capsys.readouterr()
+    assert "1 of 1 changing" in out.out + out.err

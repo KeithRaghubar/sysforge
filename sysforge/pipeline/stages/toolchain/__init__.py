@@ -169,6 +169,7 @@ from sysforge.pipeline.stages.toolchain.pkgbuilds import (  # noqa: F401
     resolve_all_pkgbuilds,
     run_llvm_preflight,
     show_resolution_table,
+    show_version_changes,
     sync_pkgbuild_dirs,
 )
 from sysforge.pipeline.stages.toolchain.reuse import (  # noqa: F401
@@ -313,6 +314,7 @@ __all__ = [
     "run_bolt",
     "run_llvm_preflight",
     "show_resolution_table",
+    "show_version_changes",
     "snapshot_recovery_cmd",
     "snapshot_suite",
     "stage_env",
