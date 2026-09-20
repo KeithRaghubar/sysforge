@@ -47,6 +47,7 @@ def build_pkg(
     toolchain_variant: str | None = None,
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
+    pgo_reuse: bool = True,
 ) -> None:
     """Build one package via makepkg_wrapper.run().
 
@@ -93,6 +94,7 @@ def build_pkg(
             toolchain_variant=toolchain_variant,
             owner_stage=owner_stage,
             cmake_llvm_dir=cmake_llvm_dir,
+            pgo_reuse=pgo_reuse,
         ))
     except AlreadyBuilt:
         # 2.5.1-F2: previously uncaught — a stale same-version artifact in
@@ -121,6 +123,7 @@ def build_pass(
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
     reuse_ctx: "reuse.ReuseCtx | None" = None,
+    pgo_reuse: bool = True,
 ) -> dict[str, str]:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -142,6 +145,9 @@ def build_pass(
     is *skipped* (the on-disk artifact is reused by the later staging/install).
     Returns ``{pkgbase: fingerprint}`` for the dirs built or skipped this pass —
     the caller chains it into the next sub-pass's ``staged_dep_fps`` (Merkle).
+
+    ``pgo_reuse=False`` stops each package re-applying its own durable
+    ``--pgo=use`` profile (the training-corpus pass: never ``-fprofile-use``).
     """
     extra = ["--install"] if install else []
     if pgo_build:
@@ -203,6 +209,7 @@ def build_pass(
                 toolchain_variant=toolchain_variant,
                 owner_stage=owner_stage,
                 cmake_llvm_dir=cmake_llvm_dir,
+                pgo_reuse=pgo_reuse,
             )
             first = False
 

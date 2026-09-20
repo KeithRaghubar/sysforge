@@ -620,7 +620,19 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         cpe.diagnosis = _suggestions  # pyright: ignore[reportAttributeAccessIssue]
         raise cpe
 
-def _build_failed_error(cause: Exception, message: str | None = None) -> RuntimeError:
+class BuildAborted(RuntimeError):
+    """The user chose 'abort' at a build-failure/install-failure menu.
+
+    A ``RuntimeError`` subclass carrying the same ``[build_failed]`` message and
+    attrs as an ordinary failure, so existing handlers are unchanged — but
+    distinguishable, so best-effort callers that swallow build failures (the
+    toolchain training-corpus pass) re-raise an explicit user abort instead of
+    carrying on."""
+
+
+def _build_failed_error(
+    cause: Exception, message: str | None = None, *, aborted: bool = False,
+) -> RuntimeError:
     """Wrap a build failure in the ``[build_failed]`` RuntimeError, preserving
     the postflight ``diagnosis`` and ``captured_output`` from the underlying
     CalledProcessError so `sysforge update` can persist them to build_state.
@@ -628,7 +640,9 @@ def _build_failed_error(cause: Exception, message: str | None = None) -> Runtime
     ``message`` overrides the default ``[build_failed] <cause>`` text (used by
     the interactive user-abort raises, which keep their own wording but still
     carry the diagnosis recovered from the build's side-car logs)."""
-    err = RuntimeError(message or f"[build_failed] {cause}")
+    err = (BuildAborted if aborted else RuntimeError)(
+        message or f"[build_failed] {cause}"
+    )
     # Deliberate dynamic attrs, mirroring the CalledProcessError/
     # ToolchainMismatchError carriers above; read via getattr by callers.
     err.diagnosis = getattr(cause, "diagnosis", None)  # pyright: ignore[reportAttributeAccessIssue]
@@ -924,10 +938,12 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 raise _build_failed_error(
                                     e,
                                     "[build_failed] Aborted by user after install failure",
+                                    aborted=True,
                                 ) from e
                     elif response == "abort":
                         raise _build_failed_error(
-                            e, "[build_failed] Aborted by user after build failure"
+                            e, "[build_failed] Aborted by user after build failure",
+                            aborted=True,
                         ) from e
                     # anything else: fall through to retry the full build
                     _makepkg_log.info("Retrying build...")
@@ -939,7 +955,8 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                         reemit_conf=reemit_conf, pkgbase=pkgbase)
                     if outcome.action == "abort":
                         raise _build_failed_error(
-                            e, "[build_failed] Aborted by user after build failure"
+                            e, "[build_failed] Aborted by user after build failure",
+                            aborted=True,
                         ) from e
                     # Menu's retry already ran a successful build. This function
                     # returns None, so surface any recovered overrides to the

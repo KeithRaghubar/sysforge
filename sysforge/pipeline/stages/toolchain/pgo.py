@@ -29,6 +29,7 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.pipeline.stages.toolchain import constants, passes, profdata, reuse
 
 from sysforge.primitives import prompt
+from sysforge.primitives.makepkg_invoke import BuildAborted
 from sysforge.primitives import pacman
 from sysforge import log
 
@@ -538,7 +539,17 @@ def build_llvm_pgo_inner(
                 # extras' makedepends must already be installed. Best-effort: a
                 # corpus build failure (missing makedep, mesa configure quirk)
                 # is logged and the PGO run proceeds with the LLVM-only profile
-                # — enrichment must never brick the toolchain build.
+                # — enrichment must never brick the toolchain build. A user
+                # abort at the failure menu is NOT a corpus failure: it
+                # propagates and stops the run.
+                #
+                # No residual_linker_flags: the corpus links stage1's *shared*
+                # instrumented libLLVM (which carries its own profile runtime),
+                # not the static .a archives the force-load exists for. Meson
+                # also repeats LDFLAGS on the link line, and a doubled
+                # --whole-archive of the runtime is a duplicate-symbol link
+                # failure. pgo_reuse=False keeps a target's own prior --pgo=use
+                # profile (e.g. pgo-mesa/mesa.profdata) off the corpus build.
                 if corpus_map:
                     try:
                         passes.build_pass(
@@ -548,12 +559,14 @@ def build_llvm_pgo_inner(
                             cc=pass2_cc,
                             cxx=pass2_cxx,
                             install=False,
-                            linker_flags_extra=residual_linker_flags,
                             pgo_build=True,
                             pgo_env=train_env,
                             staged_deps=True,
                             toolchain_variant="pgo_llvm",
+                            pgo_reuse=False,
                         )
+                    except BuildAborted:
+                        raise
                     except Exception as e:
                         _log.warn(
                             f"[PGO] Training-corpus enrichment build failed "

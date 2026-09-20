@@ -50,6 +50,7 @@ from sysforge.primitives.profile import (
     KERNEL_CLEAN_KEYS,
     SYSFORGE_KEYS,
     apply_preserved_system_tokens,
+    is_llvm_toolchain,
     serialize_flags,
     unquote_conf_value,
 )
@@ -371,7 +372,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     #   - If the effective linker is lld, disable LTO entirely — lld cannot
     #     process GCC LTO bitcode objects (undefined symbol errors at link time)
     effective_cc = cc_override or resolved_profile.get("CC")
-    _profile_is_gcc = effective_cc and not effective_cc.startswith("clang")
+    # Classify by basename: the toolchain passes hand in absolute paths
+    # (/usr/bin/clang, stage1's clang), which a bare startswith("clang") read
+    # as GCC — disabling LTO on every PGO-pass LLVM build.
+    _profile_is_gcc = effective_cc and not is_llvm_toolchain(effective_cc)
     _is_gcc = (
         _profile_is_gcc
         or pkgbuild_has_hardcoded_gcc

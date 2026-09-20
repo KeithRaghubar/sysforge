@@ -453,6 +453,37 @@ def test_emit_clang_lld_keeps_lto(sys_conf_path):
     assert conf["LTOFLAGS"] == "-flto=thin"
 
 
+def test_emit_absolute_clang_path_lld_keeps_lto(sys_conf_path):
+    """3.2.0-B27: an absolute clang path (the toolchain passes' --cc) is clang,
+    not GCC — LTO must survive with lld. Was classified by a bare
+    startswith("clang"), so /usr/bin/clang lost ThinLTO on every PGO pass."""
+    profile = {
+        "CC": "clang",
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "LTOFLAGS": "-flto=thin",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           cc_override="/usr/bin/clang") as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == "-flto=thin"
+    assert "!lto" not in conf.get("OPTIONS", "")
+
+
+def test_emit_absolute_gcc_path_lld_disables_lto(sys_conf_path):
+    """3.2.0-B27 (gcc path): an absolute gcc path is still GCC — GCC LTO
+    bitcode + lld still disables LTO."""
+    profile = {
+        "CC": "clang",
+        "LDFLAGS": "-fuse-ld=lld -Wl,-O1",
+        "LTOFLAGS": "-flto=thin",
+    }
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path,
+                           cc_override="/usr/bin/gcc") as conf_path:
+        conf = read_conf(conf_path)
+    assert conf["LTOFLAGS"] == ""
+    assert "!lto" in conf.get("OPTIONS", "")
+
+
 def test_emit_gcc_bfd_keeps_lto(sys_conf_path):
     """GCC + bfd (no -fuse-ld): LTO is preserved (GNU ld handles GCC LTO)."""
     profile = {

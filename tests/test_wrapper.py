@@ -126,6 +126,24 @@ def test_build_failed_error_carries_diagnosis():
     assert err.captured_output == []
 
 
+def test_build_failed_error_aborted_is_distinguishable():
+    """3.2.0-B26: a user abort at the failure menu raises BuildAborted — still a
+    RuntimeError with the [build_failed] text (existing handlers unchanged), but
+    a distinct type so best-effort callers can re-raise it; a plain failure
+    stays a bare RuntimeError."""
+    import subprocess as _sp
+    from sysforge.primitives.makepkg_invoke import BuildAborted, _build_failed_error
+
+    cause = _sp.CalledProcessError(4, "makepkg")
+    aborted = _build_failed_error(
+        cause, "[build_failed] Aborted by user after build failure", aborted=True,
+    )
+    assert isinstance(aborted, BuildAborted)
+    assert isinstance(aborted, RuntimeError)
+    assert str(aborted).startswith("[build_failed]")
+    assert not isinstance(_build_failed_error(cause), BuildAborted)
+
+
 # ---------------------------------------------------------------------------
 # _maybe_patch_build_linker
 # ---------------------------------------------------------------------------

@@ -1018,6 +1018,10 @@ class BuildOptions:
     cmake_llvm_dir: str | None = None
     # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
     pgo_mode: str | None = None
+    # False suppresses the durable per-package profile reuse (a prior --pgo=use
+    # store re-applied on plain rebuilds). The toolchain training-corpus pass sets
+    # it: corpus targets compile to generate clang profraw, never -fprofile-use.
+    pgo_reuse: bool = True
     # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode →
     # -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
     optimization_build_mode: str | None = None
@@ -1344,7 +1348,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             _build_log.ui(
                 f"PGO ({options.pgo_mode}) {_pgo_pkgbase}: injecting {_pgo_flag!r}"
             )
-        elif _pgo_pkgbase:
+        elif _pgo_pkgbase and options.pgo_reuse:
             # Durability: no explicit --pgo, but a prior `build <pkg> --pgo=use`
             # left a merged profile in the package's store. A source-tracked
             # package is rebuilt every update cycle; reuse the existing profile
