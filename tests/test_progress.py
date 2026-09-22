@@ -535,3 +535,123 @@ def test_heartbeat_survives_a_later_render(tmp_path, monkeypatch):
     progress.render(2, 2, "building · volk")
     last = [e for e in _trace_lines(trace) if e.startswith("paint")][-1]
     assert "volk" in last and "compiling" not in last
+
+
+# --- elapsed / ETA suffix (3.2.0-F14) ---------------------------------------
+
+def _fake_clock(monkeypatch):
+    """Install a controllable monotonic clock; returns an advance() callable."""
+    state = {"t": 1000.0}
+    monkeypatch.setattr(progress, "_monotonic", lambda: state["t"])
+    def advance(seconds):
+        state["t"] += seconds
+    return advance
+
+
+def _plain_lines(monkeypatch):
+    """Capture the text progress emits in plain mode."""
+    lines = []
+    monkeypatch.setattr(log, "ui", lambda tag, msg: lines.append(msg))
+    return lines
+
+
+def test_no_time_suffix_for_a_fast_batch(monkeypatch):
+    """Under the 5s floor there is nothing worth saying, so the line is
+    byte-identical to the pre-F14 shape."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(3, "building") as tick:
+        tick("a")
+        advance(1)
+        tick("b")
+    assert lines[-1] == "[PROGRESS] [2/3] building · b"
+
+
+def test_elapsed_shown_without_eta_after_one_completion(monkeypatch):
+    """One completed item is a single sample — show the clock, never a rate."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(4, "source sync") as tick:
+        tick("a")
+        advance(30)
+        tick("b")
+    assert lines[-1] == "[PROGRESS] [2/4] source sync · b · 30s"
+
+
+def test_eta_shown_after_two_completions(monkeypatch):
+    """Two items in 20s = 10s/item; two items remain (c in flight, plus d)."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(4, "source sync") as tick:
+        tick("a")
+        advance(10)
+        tick("b")
+        advance(10)
+        tick("c")
+    assert lines[-1] == "[PROGRESS] [3/4] source sync · c · 20s · ~20s left"
+
+
+def test_single_item_batch_never_shows_eta(monkeypatch):
+    """total=1 can never reach two completions; the clock still runs."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(1, "building") as tick:
+        advance(90)
+        tick("mesa")
+    assert lines[-1] == "[PROGRESS] [1/1] building · mesa · 1m30s"
+
+
+def test_eta_omitted_once_the_estimate_is_overrun(monkeypatch):
+    """An overrun estimate is stale, not negative — drop it rather than
+    print '~0s left' for the rest of a long item."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(3, "building") as tick:
+        tick("a")
+        advance(10)
+        tick("b")
+        advance(10)
+        tick("c")          # 2 done in 20s → 10s/item, 1 item left → ~10s
+        advance(600)       # c blows straight through it
+        tick.resume()
+    assert lines[-1] == "[PROGRESS] [3/3] building · c · 10m20s"
+
+
+def test_heartbeat_advances_the_clock_mid_item(monkeypatch):
+    """A whole build sits inside one tick; the bar must not freeze."""
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(2, "building") as tick:
+        advance(30)
+        tick("mesa")
+        advance(120)
+        buf.truncate(0)
+        buf.seek(0)
+        progress.heartbeat("cc mesa.c")
+    painted = buf.getvalue()
+    assert "2m30s" in painted
+    assert "cc mesa.c" in painted
+
+
+def test_suffix_cleared_after_tracker_exits(monkeypatch):
+    """A bare render() outside any tracker carries no stale clock."""
+    _fake_plain_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    with progress.tracker(2, "building") as tick:
+        advance(60)
+        tick("a")
+    progress.render(1, 2, "unrelated")
+    assert lines[-1] == "[PROGRESS] [1/2] unrelated"

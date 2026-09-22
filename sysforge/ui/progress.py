@@ -23,6 +23,10 @@ Public API:
                             across tracker() scopes; phase(None) clears it
     clear()                 release the region (call before input())
     tracker(total, prefix)  context manager yielding a tick(label) callable.
+                            While one is open, every painted line carries a
+                            ' · <elapsed>' suffix (once past _ELAPSED_FLOOR_S)
+                            and, after two items have completed, a
+                            ' · ~<eta> left' projected from the measured rate.
                             The callable also carries:
                               tick.note(text)  repaint at the current count
                                                with a one-off label (no
@@ -102,6 +106,54 @@ def _trace(event: str) -> None:
     except Exception:  # noqa: S110 — a trace must never break the run
         pass
 _atexit_installed: bool = False
+
+# ---------------------------------------------------------------------------
+# Elapsed / ETA suffix (3.2.0-F14)
+# ---------------------------------------------------------------------------
+# The counter alone gives position but not pace: at default verbosity a healthy
+# 40-second source sync and a stalled one look identical. The estimate is built
+# from *measured* per-item durations in this very run rather than from the
+# configured per-operation timeouts — a timeout is a worst-case ceiling, so
+# multiplying one by the item count advertises an hour for a run that takes
+# forty seconds. Items already completed here were fetched on this machine,
+# over this link, against this work, which is the best predictor available.
+#
+# Indirection so tests can drive a deterministic clock.
+_monotonic = time.monotonic
+
+# Below this, there is nothing worth saying — and saying nothing keeps short
+# batches rendering byte-identically to the pre-F14 line.
+_ELAPSED_FLOOR_S = 5
+
+# Set by tracker() for the duration of its scope; consulted at *paint* time by
+# render() and heartbeat() so the clock keeps moving inside one long item
+# instead of freezing at whatever the last tick composed.
+_time_suffix_fn = None
+
+
+def _fmt_span(seconds: float) -> str:
+    """Compact duration for a live bar: 42s / 7m03s / 2h05m.
+
+    Finer-grained than ``build_estimate._fmt_hms``'s minute resolution on
+    purpose — that one summarises a batch before it starts, this one is watched
+    while it moves, and a clock that only changes once a minute reads as stuck.
+    """
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _time_suffix() -> str:
+    """Current ' · <elapsed>[ · ~<eta> left]', or '' when outside a tracker."""
+    if _time_suffix_fn is None:
+        return ""
+    try:
+        return _time_suffix_fn()
+    except Exception:  # noqa: S110 — a decoration must never break the bar
+        return ""
 
 
 def _detect_mode() -> str:
@@ -259,14 +311,16 @@ def render(current: int, total: int, label: str) -> None:
     if _mode is None:
         init()
     if _mode == "plain":
-        msg = f"[PROGRESS] [{current}/{total}] {label}"
+        msg = f"[PROGRESS] [{current}/{total}] {label}{_time_suffix()}"
         log.ui("[PROGRESS]", msg)
         _last_status = msg
         return
-    text = f"[SYSFORGE][PROGRESS] [{current}/{total}] {label}"
-    _last_status = text
     global _last_base
-    _last_base = text
+    # _last_base stays suffix-free: heartbeat() re-appends a freshly computed
+    # suffix, so the clock it shows is the clock now, not the clock at the tick.
+    _last_base = f"[SYSFORGE][PROGRESS] [{current}/{total}] {label}"
+    text = f"{_last_base}{_time_suffix()}"
+    _last_status = text
     if not _reserved:
         _establish_region()
     if _reserved:
@@ -297,10 +351,10 @@ def phase(label: Optional[str]) -> None:
             log.ui("[PROGRESS]", msg)
             _last_status = msg
         return
-    text = f"[SYSFORGE][PROGRESS] {label}"
-    _last_status = text
     global _last_base
-    _last_base = text
+    _last_base = f"[SYSFORGE][PROGRESS] {label}"
+    text = f"{_last_base}{_time_suffix()}"
+    _last_status = text
     if not _reserved:
         _establish_region()
     if _reserved:
@@ -334,7 +388,8 @@ def heartbeat(detail: str) -> None:
         init()
     if _mode != "tty" or not _last_base:
         return
-    text = f"{_last_base} · {detail}" if detail else _last_base
+    base = f"{_last_base}{_time_suffix()}"
+    text = f"{base} · {detail}" if detail else base
     _last_status = text
     if not _reserved:
         _establish_region()
@@ -421,14 +476,18 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
     if _mode is None:
         init()
 
+    t0 = _monotonic()
+
     class _Tick:
         def __init__(self) -> None:
             self.i = 0
             self.label = ""
+            self.t_last = t0
 
         def __call__(self, label: str) -> None:
             self.i += 1
             self.label = label
+            self.t_last = _monotonic()
             render(self.i, total, f"{prefix} · {label}")
 
         def note(self, text: str) -> None:
@@ -440,12 +499,36 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
 
     tick = _Tick()
 
+    def _suffix() -> str:
+        now = _monotonic()
+        elapsed = now - t0
+        if elapsed < _ELAPSED_FLOOR_S:
+            return ""
+        out = f" · {_fmt_span(elapsed)}"
+        # Item i is still in flight, so only 1..i-1 have measured durations.
+        completed = tick.i - 1
+        if completed >= 2 and total > completed:
+            rate = (tick.t_last - t0) / completed
+            # Remaining work includes the in-flight item; subtract what it has
+            # already burned so the figure decays between ticks.
+            eta = rate * (total - completed) - (now - tick.t_last)
+            if eta > 0:
+                out += f" · ~{_fmt_span(eta)} left"
+        # eta <= 0 means the estimate is overrun, not that we are done: drop it
+        # rather than pin '~0s left' to the bar for the rest of a long item.
+        return out
+
+    global _time_suffix_fn
+    prev_suffix_fn = _time_suffix_fn
+    _time_suffix_fn = _suffix
+
     if total > 0:
         render(0, total, f"{prefix} · starting...")
 
     try:
         yield tick
     finally:
+        _time_suffix_fn = prev_suffix_fn
         if _phase is not None:
             # An enclosing phase owns the bottom line — hand it back
             # instead of releasing the region between batches.
