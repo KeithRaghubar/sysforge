@@ -98,6 +98,7 @@ canonical ordering.
 | `3.2.0-B24` | four toolchain stage tests take the host's real PGO build lock | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
+| `3.2.0-F15` | a built package can place config where its consumer will never read it, and nothing looks | med | small | minor |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
@@ -608,6 +609,44 @@ canonical ordering.
   batches, each independently green.
   **Standards home on adoption:** new `21-standards.md` row "subprocess goes through `primitives/run`",
   enforced by the ruff `banned-api` entry plus `tests/test_standards_compliance.py`.
+
+---
+
+- **`3.2.0-F15` — a built package can place config where its consumer will never read it, and nothing
+  looks.** `cosmic-greeter-git` at AUR commit `4268a07` installs its PAM file with `install -Dm644
+  … -t "$pkgdir/etc/pam.d/cosmic-greeter/"`, so the payload carries the *directory*
+  `/etc/pam.d/cosmic-greeter/` holding `cosmic-greeter.pam`, where PAM resolves a service name to the
+  flat **file** `/etc/pam.d/<service>`. PAM found a directory, fell through to `/etc/pam.d/other`
+  (bare `pam_unix`, no `pam_systemd`), `XDG_RUNTIME_DIR` was never created for uid 968, and
+  `cosmic-comp` panicked `RuntimeDirNotSet` on every greeter restart until `start-limit-hit` — an
+  unbootable desktop from a one-flag packaging slip. Authentication still *succeeded* the whole time,
+  so nothing in the build, in `pacman -Qkk` (which verifies the payload against its own manifest, not
+  against the consumer's lookup rules) or in the install logged anything.
+  The generalisation is a **payload-layout lint**: a small table of directories whose consumer reads
+  flat files only — `/etc/pam.d`, `/etc/sudoers.d`, `/usr/lib/sysusers.d`, `/usr/lib/tmpfiles.d`,
+  `/etc/ld.so.conf.d` — checked for members nested a level deeper than the consumer will ever look.
+  Deliberately *not* a general `/etc` opinion: the rule fires only where a spec says the directory is
+  non-recursive, which is what keeps it free of false positives on the many config trees that
+  legitimately nest.
+  The seam already exists and wants no new machinery. `report_post_build_abi` is invoked non-fatally
+  at `makepkg_wrapper.py:1519` over `_find_artifacts(...)`, and `abi_check._list_sos_in_pkg` already
+  shells `bsdtar -t -v -f <pkg>` and parses the member table. This is the same listing with a
+  different predicate — no extraction, no ELF work, one archive walk. It belongs beside the ABI check
+  as a second non-fatal post-build report, warning and naming the offending member; it must not fail
+  the build, because a layout the table does not model is a false positive and a build is expensive.
+  Scope note: this catches the defect in *our own* build output before install. It does not and
+  should not attempt to fix upstream — `-git` packages track a maintainer's HEAD, and the standing
+  posture is to report upstream rather than carry a local PKGBUILD delta that conflicts on every
+  push. The value here is that the next such slip is named at build time instead of diagnosed from a
+  panicking compositor.
+  *Priority: med · Effort: small · Bump: minor* — med because it is observability over a class that
+  has now cost a real desktop outage once, not a correctness fix; small because the archive listing,
+  the report seam and the non-fatal convention are all in place, leaving a directory table and a
+  predicate.
+  **Standards home on adoption:** new `21-standards.md` row naming the non-recursive config
+  directories and their specs (`pam.d(5)`, `sudoers.d` via `sudoers(5)`, `sysusers.d(5)`,
+  `tmpfiles.d(5)`, `ld.so.conf(5)`), enforced by the lint's own tests — the row is the table's
+  citation, so it lands with the check rather than ahead of it.
 
 
 ### Bugs
