@@ -402,7 +402,10 @@ def build_resolved_deps(
         run as makepkg_run,
     )
 
-    aur_deps = [d for d in deps if d.source == "aur" and d.pkgbuild_path]
+    aur_deps = [
+        (d, d.pkgbuild_path) for d in deps
+        if d.source == "aur" and d.pkgbuild_path is not None
+    ]
     if not aur_deps:
         return []
 
@@ -411,7 +414,7 @@ def build_resolved_deps(
     from sysforge.primitives import progress_hooks
     built: list[str] = []
     with progress_hooks.hooks().tracker(len(aur_deps), "AUR dep") as _tick:
-        for i, dep in enumerate(aur_deps):
+        for i, (dep, dep_pkgbuild) in enumerate(aur_deps):
             req = ", ".join(dep.required_by)
             _tick(dep.name)
             _log.ui(f"  [{i + 1}/{len(aur_deps)}] {dep.name} (required by {req})")
@@ -428,7 +431,7 @@ def build_resolved_deps(
                 interactive=interactive,
             )
             _dep_start = time.time()
-            makepkg_run(dep.pkgbuild_path, options=opts)
+            makepkg_run(dep_pkgbuild, options=opts)
             built.append(dep.name)
             # Under the build sandbox a dep installed on the host is invisible
             # to the next container; register its artifacts so the seam can
@@ -436,7 +439,7 @@ def build_resolved_deps(
             from sysforge.primitives.build_sandbox import register_artifacts
             from sysforge.primitives.makepkg_artifacts import _find_built_packages
             from sysforge.primitives.pacman import get_pkgdest
-            _dep_dest = get_pkgdest() or dep.pkgbuild_path.parent
+            _dep_dest = get_pkgdest() or dep_pkgbuild.parent
             register_artifacts(
                 p for p in _find_built_packages(_dep_dest)
                 if p.stat().st_mtime >= _dep_start

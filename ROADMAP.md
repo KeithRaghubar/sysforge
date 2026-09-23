@@ -99,6 +99,7 @@ canonical ordering.
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.2.0-F15` | a built package can place config where its consumer will never read it, and nothing looks | med | small | minor |
+| `3.2.0-STD1` | the release preflight does not type-check, so pyright errors accumulate between releases | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
@@ -647,6 +648,34 @@ canonical ordering.
   directories and their specs (`pam.d(5)`, `sudoers.d` via `sudoers(5)`, `sysusers.d(5)`,
   `tmpfiles.d(5)`, `ld.so.conf(5)`), enforced by the lint's own tests — the row is the table's
   citation, so it lands with the check rather than ahead of it.
+
+---
+
+- **`3.2.0-STD1` — the release preflight does not type-check, so pyright errors accumulate between
+  releases.** `typecheck` runs only in `make pre-release`, and `tools/release.sh` preflight never
+  calls it — the gap `docs/RELEASE-CHECKLIST.md`'s gate table already records as `yes | —`. The
+  script is the gate a release cannot skip, and `pre-release` is advisory, so nothing forced the
+  type-checker to be green at a tag. It wasn't: `v3.2.0` shipped carrying four pyright errors, and
+  by the 3.3.0 cycle the count was eighteen. Pinning pyright to the version current at the tag ruled
+  out upstream drift — `1.1.411` and `1.1.414` report the identical set, so every error was the
+  code's own. One of them was a live crash (`3.2.0-B30`: BOLT Pass 5b handed the frozen
+  `ToolchainConfig` to a dict resolver), and the type-checker named it at the exact call site weeks
+  before any test reached it; the rest were annotation and narrowing gaps. That is the case for
+  making the gate unskippable rather than relying on someone remembering `pre-release`. Add `make
+  typecheck` to the `tools/release.sh` preflight beside the five shared checks, failing the release
+  the same way `check-shipped` does, and flip its row in the checklist table. `lint` belongs with it
+  on the same argument and the same cost (both are seconds); the full `test` suite (~2 min) is a
+  separate call, since the checklist deliberately keeps it in the heavier tier. Pinning pyright in
+  the `--with` overlay is a companion question rather than part of this item: an unpinned
+  type-checker can turn a release red with no code change, which is worth a decision once the gate
+  can actually block.
+  *Priority: med · Effort: small · Bump: patch* — med because the gap was active this cycle and hid
+  a real crash; small because the preflight already has the check-and-fail pattern five times over;
+  patch because it changes release tooling only, with no user-facing surface.
+  **Standards home on adoption:** new `21-standards.md` row for release-gate completeness (every
+  static-analysis gate `pre-release` runs is also enforced by `tools/release.sh`), enforced by a
+  `check_standards` group that diffs the two gate sets, so the table in `docs/RELEASE-CHECKLIST.md`
+  cannot silently diverge again.
 
 
 ### Bugs

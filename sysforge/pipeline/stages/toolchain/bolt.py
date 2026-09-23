@@ -171,7 +171,7 @@ def run_bolt(
         _log.warn("[BOLT] Pass 5 skipped — /usr/bin/clang not found")
         return
 
-    store = _bolt.resolve_store(tcfg)
+    store = _bolt.resolve_store(tcfg.raw)
     try:
         _fsp.ensure_writable_dir(store)
     except _fsp.FsProvisionError as e:

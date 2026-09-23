@@ -354,10 +354,12 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         _swap = contextlib.ExitStack()
         _swap.enter_context(build_sandbox.as_canonical_pkgbuild(pkgbuild_path))
 
-        def sandbox_cleanup(_dir=conf_dir, _swap=_swap):
+        def _sandbox_cleanup(_dir=conf_dir, _swap=_swap):
             # Restore the checkout first: the scratch conf lives inside it.
             _swap.close()
             shutil.rmtree(_dir, ignore_errors=True)
+
+        sandbox_cleanup = _sandbox_cleanup
 
         # makechrootpkg escalates itself (devtools' check_root re-exec) and
         # preserves exactly these across that sudo; they are what puts the

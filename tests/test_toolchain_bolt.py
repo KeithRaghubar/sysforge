@@ -5,6 +5,8 @@
 """
 toolchain/bolt.py — BOLT Pass 5 gating.
 """
+import pytest
+
 from sysforge.pipeline.stages.toolchain.bolt import run_bolt
 from sysforge.pipeline.stages.toolchain.config import bolt_config
 
@@ -94,6 +96,37 @@ def test_bolt_no_pkgbuild_src_dir_skips(monkeypatch):
     )
     run_bolt(toolchain_cfg(bolt={"enabled": True}), {"paths": {}}, _bolt_opts(), "pgo_llvm")
     assert built == []  # never attempted a build without a source dir
+
+def test_bolt_store_resolves_from_toolchain_config(monkeypatch, tmp_path):
+    # Pass 5b resolves its profile store from the parsed ToolchainConfig. The
+    # resolver reads toolchain.toml keys (``profile_store``), so it must be handed
+    # the raw table: the frozen dataclass has no ``.get`` and raised
+    # AttributeError here once the tools and clang were present (3.2.0-F6).
+    class _Stop(Exception):
+        pass
+
+    seen = []
+
+    def _stop_at_store(path):
+        seen.append(path)
+        raise _Stop
+
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.bolt.build_bolt_tools",
+        lambda *a, **k: True,
+    )
+    monkeypatch.setattr(
+        "sysforge.primitives.bolt.tools_available",
+        lambda need_perf=False: (True, []),
+    )
+    monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
+    monkeypatch.setattr(
+        "sysforge.primitives.fs_provision.ensure_writable_dir", _stop_at_store,
+    )
+    tcfg = toolchain_cfg(bolt={"enabled": True}, profile_store=str(tmp_path))
+    with pytest.raises(_Stop):
+        run_bolt(tcfg, {}, _bolt_opts(), "pgo_llvm")
+    assert seen == [tmp_path / "bolt"]
 
 def test_bolt_dylib_only_llvm_is_blocked(monkeypatch):
     # Enabled, tools absent, but the host LLVM is dylib-only → the BLOCKED guard

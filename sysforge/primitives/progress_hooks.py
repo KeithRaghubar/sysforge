@@ -42,18 +42,25 @@ class ProgressHooks(Protocol):
 
     def suspend_for_prompt(self) -> None:
         """Release the terminal before reading interactive input."""
+        ...
 
-    def suspended(self):
+    def suspended(self) -> contextlib.AbstractContextManager[None]:
         """Context manager: hand the terminal to a child, then take it back."""
+        ...
 
     def reserved_rows(self) -> int:
         """Rows the display has reserved at the bottom (0 when nothing is)."""
+        ...
 
     def heartbeat(self, detail: str) -> None:
         """Report liveness detail from a long, quiet operation."""
+        ...
 
-    def tracker(self, total: int, prefix: str):
+    def tracker(
+        self, total: int, prefix: str,
+    ) -> contextlib.AbstractContextManager[Any]:
         """Context manager yielding a ``tick(label)`` callable."""
+        ...
 
 
 class _NoOpTick:

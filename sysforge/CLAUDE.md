@@ -168,8 +168,9 @@ Mechanism lives in the cited §DESIGN section.
   flat import paths still resolve. §07.
 - **Stage config is parsed once at entry** into a frozen `ToolchainConfig`/`KernelConfig`
   (`<stage>/config.py::from_toml`) — **never re-read a TOML key at a use site**, and never default
-  one there. `raw` is kept only for `resolve_pgo_store`, `resolve_pkgbuild_src_dir` and the Pass-4
-  `config_digest` (which must keep hashing the raw table or every reuse cache key changes).
+  one there. `raw` is kept only for the store resolvers (`resolve_pgo_store`,
+  `bolt.resolve_store`), `resolve_pkgbuild_src_dir` and the Pass-4 `config_digest` (which must
+  keep hashing the raw table or every reuse cache key changes).
   `KernelConfig.compiler` is `str | None`: unset means "inherit from pipeline state". §Config Layer.
 
 - **Health = exactly two checkers**: `toolchain/verify.py::verify_llvm_install` (`run toolchain`) +

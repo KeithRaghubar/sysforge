@@ -532,7 +532,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
     one of them; ``-Sy`` would fix the lookup and leave a partial upgrade
     behind, breaking the chroot instead of the build (3.2.0-B5).
     """
-    if not policy.enabled:
+    if not policy.enabled or not policy.chroot_dir:
         return
     missing = missing_toolchain(policy, exports, conf_path=conf_path)
     if not missing:

@@ -129,7 +129,7 @@ class Stage:
     # unavailable (...)") until 2.6.1-F27 lands.
     change_root: str | None = None
 
-    def run(self, config, state, options):
+    def run(self, config, state, options, /):
         """
         Execute this stage.
 
@@ -138,13 +138,17 @@ class Stage:
             state:   PipelineState instance
             options: RunOptions instance
 
+        Positional-only: the runner never passes these by name, and an override
+        may rename them — the toolchain and kernel stages call theirs
+        ``sysforge_config`` so it does not shadow their sibling ``config`` module.
+
         Raises RuntimeError on unrecoverable failure.
         Stages should call state.mark_package_* methods themselves for
         intra-stage checkpointing (packages stage only).
         """
         raise NotImplementedError(f"Stage {self.name!r} has not been implemented")
 
-    def change_extras(self, config, state, options):
+    def change_extras(self, config, state, options, /):
         """Return stage-specific ExtraBlocks appended below the version rows.
 
         Called by the runner after run() when reports_changes is set. The

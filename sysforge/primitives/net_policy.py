@@ -169,7 +169,7 @@ def warn_ungated_sources(pkgbuild_dir) -> list[str]:
             entries.extend(val if isinstance(val, list) else [val])
 
     try:
-        srcdest = Path(get_srcdest())
+        srcdest = get_srcdest()
     except Exception:
         srcdest = None
 
