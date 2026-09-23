@@ -216,6 +216,33 @@ def test_artifacts_without_manifest_falls_back_to_pkgname_scope(tmp_path, monkey
     assert got == {mine}
 
 
+def test_post_build_abi_check_scoped_to_this_build(tmp_path, monkeypatch):
+    """3.2.0-B29: the post-build ABI report sees only this build's artifacts.
+    A shared PKGDEST holds every historical build of every package; handing
+    the whole glob to the checker ran nm/readelf over ~1100 unrelated archives
+    after a one-package build."""
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "cosmic-greeter-git"
+    pkgbuild_dir.mkdir()
+    (pkgbuild_dir / "PKGBUILD").write_text(
+        "pkgname=cosmic-greeter-git\npkgver=1.8.0\n")
+    pkgdest = tmp_path / "pkgs"
+    mine = _touch_pkg(
+        pkgdest, "cosmic-greeter-git-1.8.0.r9.gbbf553e-1-x86_64.pkg.tar")
+    _touch_pkg(pkgdest, "cosmic-comp-git-1.3.0.r10.g9b5a2a0-1-x86_64.pkg.tar")
+    _touch_pkg(pkgdest, "dbus-daemon-units-1.16.2-1-x86_64.pkg.tar")
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+
+    seen = []
+    monkeypatch.setattr(
+        "sysforge.primitives.abi_check.report_post_build_abi",
+        lambda pkgs: seen.extend(pkgs))
+
+    makepkg_wrapper._post_build_abi_check(pkgbuild_dir)
+    assert set(seen) == {mine}
+
+
 def test_capture_built_manifest_writes_basenames(tmp_path, monkeypatch):
     """2.1.0-B9: capture records the basenames makepkg --packagelist prints
     (full PKGDEST paths → basenames) against the patched PKGBUILD."""

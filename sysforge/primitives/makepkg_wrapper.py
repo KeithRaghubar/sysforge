@@ -320,6 +320,18 @@ def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     return scoped
 
 
+def _post_build_abi_check(pkgbuild_dir) -> None:
+    """Run the non-fatal post-build ABI report over this build's artifacts.
+
+    Scoped via ``_artifacts_for_pkgbuild``, never the raw ``_find_artifacts``
+    glob: a shared PKGDEST holds every historical build of every package, and
+    the unscoped glob sent ~1100 unrelated archives through nm/readelf after a
+    one-package build (3.2.0-B29).
+    """
+    from sysforge.primitives.abi_check import report_post_build_abi
+    report_post_build_abi(_artifacts_for_pkgbuild(pkgbuild_dir))
+
+
 def _capture_built_manifest(patched_pkgbuild_path) -> None:
     """Record the exact package basenames this build emits into the sidecar.
 
@@ -1517,8 +1529,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
         # Post-build ABI check (non-fatal) — owned by abi_check.py
         if options.abi_check:
-            from sysforge.primitives.abi_check import report_post_build_abi
-            report_post_build_abi(_find_artifacts(pkgbuild_path.resolve().parent))
+            _post_build_abi_check(pkgbuild_path.resolve().parent)
 
         # Record build metadata for `sysforge update` (non-fatal)
         _record_build_state(
