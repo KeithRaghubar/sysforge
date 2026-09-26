@@ -21,6 +21,7 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
 from sysforge.primitives.makepkg_wrapper import install_built_packages
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
 from sysforge.pipeline.stages.kernel import (
@@ -228,8 +229,8 @@ class KernelStage(Stage):
                 kernel_fdo.require_profile(_fdo_store, propeller=fdo_propeller)
                 fdo_env = kernel_fdo.use_env(_fdo_store, propeller=fdo_propeller)
                 fdo_opt_build_mode = kernel_fdo.build_mode(propeller=fdo_propeller)
-                if not pkgname.endswith("-sysforge"):
-                    fdo_eff_pkgname = f"{pkgname}-sysforge"
+                if not pkgname.endswith(f"-{RENAME_SUFFIX}"):
+                    fdo_eff_pkgname = f"{pkgname}-{RENAME_SUFFIX}"
                 _log.ui(
                     f"AutoFDO{' + Propeller' if fdo_propeller else ''} use-build: "
                     f"consuming {_fdo_store} → {fdo_eff_pkgname} "

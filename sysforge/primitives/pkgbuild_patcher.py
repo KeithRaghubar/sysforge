@@ -38,6 +38,11 @@ from sysforge.primitives.profile import CONF_KEY_MAP
 
 _EXTRACTABLE_KEYS = frozenset().union(*CONF_KEY_MAP.values())
 
+# The optimization-provenance rename suffix (``mesa`` → ``mesa-sysforge``) passed
+# to :func:`patch_package_suffix`. Readers that map an installed variant back to
+# its stock name (``search_cmd.installed_markers``) key off the same constant.
+RENAME_SUFFIX = "sysforge"
+
 # Bare/export assignments, including += variants.
 # Groups: export (optional), key, op (= or +=), value (quoted or bare token)
 _ASSIGNMENT_RE = re.compile(

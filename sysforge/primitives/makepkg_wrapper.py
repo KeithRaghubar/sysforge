@@ -101,6 +101,7 @@ from sysforge.primitives.pkgbuild_meta import (
 from sysforge.primitives import kconfig_plan
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.pkgbuild_patcher import (
+    RENAME_SUFFIX,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
     extract_pkgbuild_profile,
@@ -717,7 +718,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # rename_mode_for_build_mode) — kernel FDO coexists with the stock kernel
         # for bootloader fallback; llvm/mesa replace their stock package.
         rename_mode = rename_mode_for_build_mode(optimization_build_mode)
-        rename = patch_package_suffix(pkgbuild_path, "sysforge", mode=rename_mode)
+        rename = patch_package_suffix(pkgbuild_path, RENAME_SUFFIX, mode=rename_mode)
         if rename:
             validate_patched_pkgbuild(
                 original_pkgbuild_path, pkgbuild_path, rename=rename

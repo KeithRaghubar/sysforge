@@ -426,6 +426,26 @@ def read_pkg_replaces_from_file(path) -> set:
     return _read_pkginfo_names(path, ("replaces",))["replaces"]
 
 
+def _bare_name(dep: str) -> str:
+    """Strip a version constraint (``foo<1.0``, ``wayland=1.26``) to the bare name."""
+    return re.split(r"[<>=]", dep, maxsplit=1)[0].strip()
+
+
+def supersedes_names(replaces, conflicts, provides) -> set:
+    """The names a package declares itself a drop-in replacement for.
+
+    ``replaces`` outright, plus every name it both ``conflicts`` with **and**
+    ``provides`` (the AUR ``-git`` idiom). Pure rule over the three relation
+    lists, version constraints ignored — the single home shared by
+    :func:`pkg_supersedes_installed` (a built ``.pkg.tar``) and
+    :func:`get_installed_substitutes` (the local DB).
+    """
+    rep = {_bare_name(d) for d in replaces} - {""}
+    con = {_bare_name(d) for d in conflicts} - {""}
+    prov = {_bare_name(d) for d in provides} - {""}
+    return rep | (con & prov)
+
+
 def pkg_supersedes_installed(path, installed: set) -> set:
     """Return the installed names this built package deliberately displaces.
 
@@ -445,8 +465,9 @@ def pkg_supersedes_installed(path, installed: set) -> set:
     what gets auto-confirmed.
     """
     fields = _read_pkginfo_names(path, ("replaces", "conflict", "provides"))
-    dropin = fields["conflict"] & fields["provides"]
-    return (fields["replaces"] | dropin) & installed
+    return supersedes_names(
+        fields["replaces"], fields["conflict"], fields["provides"],
+    ) & installed
 
 
 def filter_pkgs_to_installed(
@@ -985,6 +1006,70 @@ def _parse_qi_facts(text: str) -> dict[str, tuple[str, int | None]]:
     if name and version:
         facts[name] = (version, isize)
     return facts
+
+
+def get_installed_substitutes() -> dict[str, list[tuple[str, str]]]:
+    """Map each name an installed package stands in for → ``[(pkgname, version)]``.
+
+    Applies :func:`supersedes_names` to every local-DB entry, so
+    ``cosmic-comp-git`` (conflicts + provides ``cosmic-comp``) yields
+    ``{"cosmic-comp": [("cosmic-comp-git", "<ver>")]}``. A package never
+    substitutes for itself. Lists are sorted by pkgname for stable output.
+    Best-effort (read-only display input): ``{}`` when the DB can't be read.
+    """
+    rows: list[tuple[str, str, list, list, list]] = []
+    if _use_pyalpm():
+        try:
+            localdb = _get_alpm_handle().get_localdb()
+            rows = [(p.name, p.version, p.replaces, p.conflicts, p.provides)
+                    for p in localdb.pkgcache]
+        except _alpm().error:
+            rows = []
+    if not rows:
+        result = subprocess.run(
+            ["pacman", "-Qi"], capture_output=True, text=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        if result.returncode != 0:
+            return {}
+        rows = _parse_qi_relations(result.stdout)
+    out: dict[str, list[tuple[str, str]]] = {}
+    for name, version, replaces, conflicts, provides in rows:
+        for stock in supersedes_names(replaces, conflicts, provides) - {name}:
+            out.setdefault(stock, []).append((name, version))
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _parse_qi_relations(text: str) -> list[tuple[str, str, list, list, list]]:
+    """Parse ``LC_ALL=C pacman -Qi`` into ``(name, version, replaces, conflicts, provides)``.
+
+    List fields are double-space separated, ``None`` when empty.
+    """
+    fields = {"Replaces": "replaces", "Conflicts With": "conflicts", "Provides": "provides"}
+    rows = []
+    cur: dict = {}
+
+    def _flush():
+        if cur.get("name") and cur.get("version"):
+            rows.append((cur["name"], cur["version"], cur.get("replaces", []),
+                         cur.get("conflicts", []), cur.get("provides", [])))
+
+    for line in text.splitlines():
+        if not line.strip():
+            _flush()
+            cur = {}
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key == "Name":
+            cur["name"] = value
+        elif key == "Version":
+            cur["version"] = value
+        elif key in fields:
+            cur[fields[key]] = [] if value == "None" else value.split()
+    _flush()
+    return rows
 
 
 def get_foreign_packages() -> dict[str, str]:
