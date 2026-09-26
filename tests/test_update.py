@@ -1953,6 +1953,57 @@ def test_print_summary_verbose_shows_all_lines(capsys):
     assert "run with -v" not in captured
 
 
+def _partial_replacement_result(action="NEEDS_REBUILD"):
+    from sysforge.update import _UpdateResult
+    r = _UpdateResult("adwaita-icon-theme-git", ["adwaita-cursors-git"], action,
+                      "51.beta-1", "51.0-1", Path("/tmp/a/PKGBUILD"))
+    r.via = ["adwaita-cursors-git"]
+    r.replaced_members = {"adwaita-icon-theme-git": "adwaita-icon-theme"}
+    r.stock_for_remaining = {"adwaita-cursors-git": "adwaita-cursors"}
+    return r
+
+
+def test_print_summary_labels_pkgbase_via_tracked_member(capsys, monkeypatch):
+    """3.2.0-B31: a pkgbase whose namesake member is no longer installed is
+    labelled with the member that actually drives the rebuild."""
+    from sysforge.update import _print_summary
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_summary([_partial_replacement_result()], SimpleNamespace(verbose=0))
+    out = capsys.readouterr().out
+    assert "adwaita-icon-theme-git (via adwaita-cursors-git):" in out
+
+
+def test_print_summary_explains_partial_replacement(capsys, monkeypatch):
+    from sysforge.update import _print_summary
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_summary([_partial_replacement_result()], SimpleNamespace(verbose=0))
+    out = capsys.readouterr().out
+    assert "adwaita-icon-theme-git was replaced by stock adwaita-icon-theme" in out
+    assert "sudo pacman -S adwaita-cursors" in out
+
+
+def test_print_summary_partial_replacement_shown_even_when_skipped(capsys, monkeypatch):
+    """The notice is actionable, so a DEVEL (skipped) pkgbase still surfaces
+    it at default verbosity — otherwise the leftover sibling hides until the
+    next ``--devel`` rebuild."""
+    from sysforge.update import _print_summary
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_summary([_partial_replacement_result("DEVEL")], SimpleNamespace(verbose=0))
+    out = capsys.readouterr().out
+    assert "[DEVEL]" in out
+    assert "replaced by stock adwaita-icon-theme" in out
+
+
+def test_print_summary_partial_replacement_without_stock_hints_forget(capsys, monkeypatch):
+    from sysforge.update import _print_summary
+    monkeypatch.setenv("NO_COLOR", "1")
+    r = _partial_replacement_result()
+    r.stock_for_remaining = {}
+    _print_summary([r], SimpleNamespace(verbose=0))
+    out = capsys.readouterr().out
+    assert "sysforge state forget adwaita-cursors-git" in out
+
+
 def test_print_summary_colours_verdicts_by_action(capsys):
     """2.6.1-F29: the action tag carries the verdict's colour so the handful of
     packages actually eligible to rebuild stand out from the wall that are not."""
@@ -2707,3 +2758,19 @@ def test_sysupgrade_report_survives_a_probe_failure(
     assert "system upgrade (pacman resolved the transaction)" in "".join(
         capsys.readouterr()
     )
+
+
+def test_result_summary_carries_via_labels():
+    """3.2.0-B31: _build_result_summary threads the split-member label through."""
+    from sysforge.update import _build_result_summary
+    r = _partial_replacement_result()
+    summary = _build_result_summary(
+        results=[r],
+        built_pkgs=[r.pkgbase], failed_pkgs=[], pacman_upgrade_pkgs=[],
+        installed_deps=[], pgo_skipped_pkgs=[], cleansrc_failures=[],
+        install_only=False, pacman_upgrade_failed=False, skipped=0,
+        stage_owned_updates=[],
+    )
+    assert summary.labels == {
+        "adwaita-icon-theme-git": "adwaita-icon-theme-git (via adwaita-cursors-git)",
+    }

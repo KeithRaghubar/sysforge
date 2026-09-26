@@ -122,10 +122,12 @@ from sysforge.update_assemble import _assemble_package_set
 from sysforge.update_result import _UpdateResult
 from sysforge.update_summary import (
     ResultSummary,
+    _pkgbase_label,
     _print_result_summary,
     _print_summary,
     render_versions_report,
 )
+from sysforge.update_split import annotate_split_members
 from sysforge.update_sync import _sync_sources
 from sysforge.update_version import _check_one_pkgbase
 
@@ -589,6 +591,7 @@ def _build_result_summary(
     versions = {
         r.pkgbase: (r.installed_ver, r.pkgbuild_ver) for r in results
     }
+    labels = {r.pkgbase: _pkgbase_label(r) for r in results if r.via}
     return ResultSummary(
         built_pkgs=list(built_pkgs),
         failed_pkgs=list(failed_pkgs),
@@ -600,6 +603,7 @@ def _build_result_summary(
         pacman_upgrade_failed=pacman_upgrade_failed,
         skipped=skipped,
         versions=versions,
+        labels=labels,
         stage_owned_updates=list(stage_owned_updates),
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=dict(sysupgrade_changes or {}),
@@ -895,6 +899,10 @@ def _cmd_update_body(args) -> int:
                     results.append(result)
 
     results.sort(key=lambda r: r.pkgbase)
+    # 3.2.0-B31: name the members actually driving each split pkgbase and
+    # flag any member a stock repo package displaced, so the summary can say
+    # why a replaced package's pkgbase is still being rebuilt.
+    annotate_split_members(results, pkgbase_entry, all_installed)
     timer.stop()
 
     # ── Phase 4: Summary + dry-run gate ───────────────────────────────────

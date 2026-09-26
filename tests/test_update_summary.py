@@ -259,3 +259,19 @@ def test_system_upgrade_block_is_full_at_verbose(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "pkg024: 24-1 → 24-2" in out
     assert "more" not in out
+
+
+def test_built_line_labels_pkgbase_via_tracked_member(capsys, monkeypatch):
+    """3.2.0-B31: the end-of-run list names the member that drove a split
+    pkgbase whose namesake package is no longer installed."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(
+        built_pkgs=["adwaita-icon-theme-git"],
+        versions={"adwaita-icon-theme-git": ("51.beta-1", "51.0-1")},
+        labels={"adwaita-icon-theme-git":
+                "adwaita-icon-theme-git (via adwaita-cursors-git)"},
+    )
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "adwaita-icon-theme-git (via adwaita-cursors-git): 51.beta-1" in out

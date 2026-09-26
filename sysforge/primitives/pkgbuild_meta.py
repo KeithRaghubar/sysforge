@@ -12,6 +12,7 @@ Public API:
     parse_pkgbuild(path) -> {"globals": {...}, "functions": {...}}
     has_hardcoded_gcc(parsed) -> bool
     is_musl_static_build(parsed) -> bool
+    member_relations(parsed, pkgname) -> set[str]
 """
 import re
 from pathlib import Path
@@ -715,3 +716,58 @@ def parse_pkgbuild(path):
     _expand_array_refs(result["globals"])
     _apply_var_expansion(result["globals"])
     return result
+
+
+# The two relation arrays that name a member's stock counterpart. PKGBUILD(5)
+# PACKAGE SPLITTING: both default to the global value and may be overridden
+# inside ``package_<pkgname>()``.
+_MEMBER_RELATION_KEYS = ("provides", "conflicts")
+
+# ``provides+=(…)`` / ``conflicts+=(…)`` inside a package function appends to
+# the global array rather than replacing it. Rewritten to a sentinel key so the
+# shared ``_extract_arrays`` scanner (which only matches ``key=(``) picks it up.
+_APPEND_PREFIX = "_sf_append_"
+
+
+def _relation_name(item: str) -> str:
+    """Strip a version constraint: ``foo=1.0`` / ``foo>=1`` → ``foo``."""
+    return re.split(r"[<>=]", item, maxsplit=1)[0].strip()
+
+
+def member_relations(parsed, pkgname: str) -> set[str]:
+    """Names split member ``pkgname`` claims via ``provides`` + ``conflicts``.
+
+    Applies the PKGBUILD(5) split-package override rule: an assignment in
+    ``package_<pkgname>()`` replaces the global array, ``+=`` appends to it,
+    and a member with no override (or no function at all) inherits the
+    globals. Arch-suffixed variants merge as they do for globals, ``$var``
+    references expand against the global scalars, and version constraints are
+    stripped so the result is comparable against installed package names.
+    """
+    globals_ = parsed.get("globals", {})
+    body = parsed.get("functions", {}).get(f"package_{pkgname}") or ""
+    # Function bodies are indented; the shared scanner anchors on column 0.
+    flat = re.sub(r"(?m)^[ \t]+", "", body)
+    flat = re.sub(r"(?m)^(\w+)\+=\(", rf"{_APPEND_PREFIX}\1=(", flat)
+    local = _extract_arrays(flat)
+    _merge_arch_arrays(local)
+    appended = {
+        k[len(_APPEND_PREFIX):]: v for k, v in local.items()
+        if k.startswith(_APPEND_PREFIX)
+    }
+    scalars = {k: v for k, v in globals_.items() if isinstance(v, str)}
+
+    names: set[str] = set()
+    for key in _MEMBER_RELATION_KEYS:
+        base = local.get(key)
+        if base is None:
+            base = globals_.get(key) or []
+        if isinstance(base, str):
+            base = [base]
+        for item in [*base, *appended.get(key, [])]:
+            if not isinstance(item, str):
+                continue
+            name = _relation_name(_expand_vars(item, scalars))
+            if name:
+                names.add(name)
+    return names

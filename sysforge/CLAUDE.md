@@ -72,7 +72,8 @@ Mechanism lives in the cited §DESIGN section.
   `pacman -S` via `BuildState.reconcile_external_installs`, which resolves each external name through
   `install_reconcile.resolve_installed_name` (the `-sysforge` rename) and then sweeps its `pkgbase`
   siblings, so a split set demotes as a unit (`3.2.0-B15`) — an exact-pkgname lookup silently misses
-  both. Stop via `state forget`. §update.
+  both. A member displaced by a *differently named* stock package is surfaced, never demoted
+  (`update_split.annotate_split_members`, `3.2.0-B31`). Stop via `state forget`. §update.
 - **`revert-to-stock` branch = rename mode, not a suffix test**: `revert_cmd.plan_revert` classifies
   via `profile.is_optimized_build_mode` then `rename_mode_for_build_mode` — plain `source_built`→
   `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (`pacman -S <origin_pkgbase>` **alone**;

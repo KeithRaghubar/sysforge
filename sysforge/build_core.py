@@ -312,12 +312,34 @@ def prepare_deps(
 # Install
 # ---------------------------------------------------------------------------
 
+def _forget_uninstalled(state_dir: Path, names: list, installed: set) -> None:
+    """Drop build_state records for built-but-not-installed split members.
+
+    Best-effort: a state read/write error never fails the install.
+    """
+    stale = sorted({n for n in names if n and n not in installed})
+    if not stale:
+        return
+    try:
+        bs = BuildState(state_dir)
+        forgotten = [n for n in stale if bs.delete(n)]
+        if forgotten:
+            bs.save()
+            _log.info(
+                "Not tracking uninstalled split sub-package(s): "
+                + ", ".join(forgotten)
+            )
+    except Exception as e:  # noqa: BLE001 — bookkeeping only; never fail the install
+        _log.info(f"build_state cleanup of dropped sub-packages skipped: {e}")
+
+
 def install_built(
     built_pkg_files: list[Path],
     *,
     always_install: "frozenset[str] | set[str]" = frozenset(),
     interactive: bool = False,
     allow_break_deps: "frozenset[str] | set[str]" = frozenset(),
+    state_dir: Path | None = None,
 ) -> tuple[list[Path], bool]:
     """Dedupe, filter to the install keep-set, and bulk ``pacman -U``.
 
@@ -333,6 +355,11 @@ def install_built(
     ``allow_break_deps`` is forwarded verbatim to
     :func:`~sysforge.primitives.pacman.batch_install_pkgs` — see its docstring
     for the intra-batch exact-pin deadlock it licenses (3.1.0-B14).
+
+    With ``state_dir``, a dropped sub-package that is not installed also loses
+    the ``build_state`` record ``makepkg_wrapper`` wrote for it at build time
+    (3.2.0-B31) — the wrapper records every PKGBUILD ``pkgname``, but only this
+    filter knows which ones reach the system.
     """
     seen: set = set()
     deduped: list[Path] = []
@@ -355,6 +382,9 @@ def install_built(
             )
             for path, pn in dropped:
                 _log.info(f"  - {pn} ({path.name})")
+            if state_dir is not None:
+                _forget_uninstalled(state_dir, [pn for _p, pn in dropped],
+                                    keep_names)
 
     if built_pkg_files and not batch_install_pkgs(
         built_pkg_files, interactive=interactive,
@@ -841,6 +871,7 @@ def build_and_install(
                             pending, always_install=requested,
                             interactive=interactive,
                             allow_break_deps=later_pkgnames,
+                            state_dir=state_dir,
                         )
                     _tick.resume()
                     jit_handled.update(pending)
@@ -974,6 +1005,7 @@ def build_and_install(
     with timer.phase("install"):
         installed_now, final_failed = install_built(
             remaining, always_install=requested, interactive=interactive,
+            state_dir=state_dir,
         )
     outcome.built_pkg_files = jit_files + installed_now
     outcome.install_failed = outcome.install_failed or final_failed

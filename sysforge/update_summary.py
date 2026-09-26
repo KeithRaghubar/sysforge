@@ -82,6 +82,42 @@ _ALWAYS_VERBOSE_ACTIONS = frozenset({
 })
 
 
+def _shown_by_default(r: _UpdateResult) -> bool:
+    """Actionable lines print at default verbosity. A partial split
+    replacement (3.2.0-B31) is actionable whatever the verdict — a skipped
+    ``DEVEL`` pkgbase would otherwise hide its leftover sibling."""
+    return r.action in _ALWAYS_VERBOSE_ACTIONS or bool(r.replaced_members)
+
+
+def _pkgbase_label(r: _UpdateResult) -> str:
+    """``pkgbase (via member, …)`` when the pkgbase's namesake member is not
+    installed, so the line never names only a package that is gone."""
+    if r.via:
+        return f"{r.pkgbase} (via {', '.join(r.via)})"
+    return r.pkgbase
+
+
+def _partial_replacement_notes(r: _UpdateResult) -> list[str]:
+    """Explain a split pkgbase kept alive by members left behind after a
+    sibling was replaced by its stock package, and how to finish the switch."""
+    if not r.replaced_members:
+        return []
+    notes = [
+        f"{member} was replaced by stock {stock}; "
+        f"{', '.join(r.pkgnames)} still keeps {r.pkgbase} in the update"
+        for member, stock in sorted(r.replaced_members.items())
+    ]
+    stock = sorted(set(r.stock_for_remaining.values()))
+    if stock:
+        notes.append(f"finish the switch: sudo pacman -S {' '.join(stock)}")
+    leftover = sorted(pn for pn in r.pkgnames if pn not in r.stock_for_remaining)
+    if leftover:
+        notes.append(
+            f"to stop rebuilding it: sysforge state forget {' '.join(leftover)}"
+        )
+    return notes
+
+
 def _print_summary(results: list[_UpdateResult], args) -> None:
     if not results:
         print("[SYSFORGE] No packages to check.")
@@ -109,7 +145,7 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
     print()
 
     for r in results:
-        if not verbose and r.action not in _ALWAYS_VERBOSE_ACTIONS:
+        if not _shown_by_default(r) and not verbose:
             continue
         fmt = _ACTION_FORMATS.get(r.action)
         if fmt is None:
@@ -117,14 +153,16 @@ def _print_summary(results: list[_UpdateResult], args) -> None:
         tag, _label, tmpl = fmt
         star = " *" if not r.has_build_record else ""
         line = tmpl.format(
-            pkgbase=r.pkgbase,
+            pkgbase=_pkgbase_label(r),
             installed_ver=r.installed_ver,
             pkgbuild_ver=r.pkgbuild_ver,
             star=star,
         )
         print(f"{render.tag_header(tag, color=_ACTION_COLORS.get(r.action))}{line}")
+        for note in _partial_replacement_notes(r):
+            print(f"      {note}")
 
-    if not verbose and any(r.action not in _ALWAYS_VERBOSE_ACTIONS for r in results):
+    if not verbose and any(not _shown_by_default(r) for r in results):
         print("  (run with -v to list each skipped/up-to-date package)")
     if no_record_count:
         print("\n  * = no build record")
@@ -171,6 +209,9 @@ class ResultSummary:
     skipped: int = 0
     # pkgbase -> (installed_ver, pkgbuild_ver)
     versions: dict[str, tuple[str | None, str | None]] = field(default_factory=dict)
+    # 3.2.0-B31: pkgbase -> display label, only for split pkgbases whose
+    # namesake member is not installed (``pkgbase (via member)``).
+    labels: dict[str, str] = field(default_factory=dict)
     # (pkgbase, installed_ver, upstream_ver, owner_stage)
     stage_owned_updates: list[tuple[str, str | None, str | None, str]] = field(
         default_factory=list
@@ -179,15 +220,16 @@ class ResultSummary:
 
 def _fmt_pkg(summary: ResultSummary, pkgbase: str) -> str:
     """`pkgbase: old → new` when a version pair is known, else bare name."""
+    name = summary.labels.get(pkgbase, pkgbase)
     pair = summary.versions.get(pkgbase)
     if pair is None:
-        return pkgbase
+        return name
     installed_ver, pkgbuild_ver = pair
     if installed_ver is None or pkgbuild_ver is None:
-        return pkgbase
+        return name
     # equal_marker=False: a built package reports what it was rebuilt to, so an
     # unchanged version still reads as a transition rather than "(=)".
-    return f"{pkgbase}: {render.version_pair(installed_ver, pkgbuild_ver, equal_marker=False)}"
+    return f"{name}: {render.version_pair(installed_ver, pkgbuild_ver, equal_marker=False)}"
 
 
 # 3.0.0-F5: a stock `-Syu` can be hundreds of packages, unlike the bounded

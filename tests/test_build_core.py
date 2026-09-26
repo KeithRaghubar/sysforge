@@ -1004,6 +1004,61 @@ def test_install_built_dedupes_and_filters(tmp_path):
     assert installs == [[a]]
 
 
+def _record(bs, pkgname, pkgbase):
+    bs.record(pkgname=pkgname, pkgver="1", pkgrel="1", epoch="0",
+              pkgbase=pkgbase, pkgbuild_dir=Path("/src") / pkgbase,
+              build_mode="source_built")
+
+
+def test_install_built_forgets_dropped_split_members(tmp_path):
+    """3.2.0-B31: makepkg_wrapper records every PKGBUILD pkgname after a
+    build, but only the installed members get installed. A dropped member
+    must not linger in build_state as a source-built phantom — that phantom is
+    what makes a replaced split member read as still tracked."""
+    from sysforge.primitives.build_state import BuildState
+
+    bs = BuildState(tmp_path)
+    _record(bs, "adwaita-icon-theme-git", "adwaita-icon-theme-git")
+    _record(bs, "adwaita-cursors-git", "adwaita-icon-theme-git")
+    bs.save()
+    theme = tmp_path / "adwaita-icon-theme-git-1-1-any.pkg.tar.zst"
+    cursors = tmp_path / "adwaita-cursors-git-1-1-any.pkg.tar.zst"
+    with (
+        patch("sysforge.build_core.get_all_installed_packages",
+              return_value={"adwaita-cursors-git": "1-1",
+                            "adwaita-icon-theme": "50.0-1"}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: (
+                  [cursors], [(theme, "adwaita-icon-theme-git")])),
+        patch("sysforge.build_core.batch_install_pkgs", return_value=True),
+    ):
+        kept, _ = build_core.install_built([theme, cursors], state_dir=tmp_path)
+    assert kept == [cursors]
+    after = BuildState(tmp_path)
+    assert after.get("adwaita-icon-theme-git") is None
+    assert after.get("adwaita-cursors-git") is not None
+
+
+def test_install_built_keeps_dropped_member_still_installed(tmp_path):
+    """A dropped name that *is* installed (filter kept it out for another
+    reason) keeps its record — only uninstalled phantoms are forgotten."""
+    from sysforge.primitives.build_state import BuildState
+
+    bs = BuildState(tmp_path)
+    _record(bs, "foo-docs", "foo")
+    bs.save()
+    docs = tmp_path / "foo-docs-1-1-any.pkg.tar.zst"
+    with (
+        patch("sysforge.build_core.get_all_installed_packages",
+              return_value={"foo-docs": "1-1"}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: ([], [(docs, "foo-docs")])),
+        patch("sysforge.build_core.batch_install_pkgs", return_value=True),
+    ):
+        build_core.install_built([docs], state_dir=tmp_path)
+    assert BuildState(tmp_path).get("foo-docs") is not None
+
+
 def test_install_built_reports_install_failure(tmp_path):
     a = tmp_path / "a-1-1-x86_64.pkg.tar.zst"
     with (

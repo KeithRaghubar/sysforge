@@ -10,7 +10,7 @@ that produces it, the summary phase that renders it, and the orchestrator that
 collects it. Lives in its own leaf module so producer and consumer both import
 it downward, with no import cycle back through ``update.py``.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -32,3 +32,14 @@ class _UpdateResult:
     # makepkg ``-f`` — a drift rebuild runs at an unchanged pkgver, so the
     # matching artifact is still in PKGDEST and makepkg would skip the build.
     force_rebuild: bool = False
+    # 3.2.0-B31: split-pkgbase membership, filled by
+    # ``update_split.annotate_split_members`` after the version check.
+    # ``via`` lists the tracked members driving the pkgbase when the pkgbase's
+    # namesake member is not installed (so the summary never labels a rebuild
+    # with a package that is gone); ``replaced_members`` maps each member
+    # displaced by an installed stock repo package to that package, and
+    # ``stock_for_remaining`` maps each still-tracked member to the stock repo
+    # package that would finish the switch.
+    via: list = field(default_factory=list)
+    replaced_members: dict = field(default_factory=dict)
+    stock_for_remaining: dict = field(default_factory=dict)
