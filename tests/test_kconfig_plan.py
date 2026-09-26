@@ -71,12 +71,24 @@ class TestContribution:
         # patch_kconfig_targets, which appended the captured trailer once,
         # after the whole joined block ("\n".join(...) + trailer), not once
         # per generated line.
-        step = kp.generate_step(["olddefconfig", "localmodconfig"])
+        step = kp.generate_step(["olddefconfig", "defconfig"])
         assert step.slot == kp.GENERATE
         assert step.lines == (
             "{indent}{make}olddefconfig",
-            "{indent}{make}localmodconfig{trailer}",
+            "{indent}{make}defconfig{trailer}",
         )
+
+    @pytest.mark.parametrize("target", ["localmodconfig", "localyesconfig"])
+    def test_generate_step_minimizer_reads_staged_lsmod(self, target):
+        # 3.2.0-B35: a bare `make localmodconfig` reads live `lsmod`, so the
+        # accumulated snapshot never reached the minimizer. Every minimizer
+        # line must reference the staged $startdir copy via LSMOD, and the
+        # trailer still lands once, on the last line.
+        step = kp.generate_step(["olddefconfig", target])
+        body = "\n".join(step.lines)
+        assert f'LSMOD="$startdir/{kp.LSMOD_FILE}" {{make}}{target}' in body
+        assert body.count("{trailer}") == 1
+        assert step.lines[-1].endswith("{trailer}")
 
     def test_owns_generation_steps_never_set_skip_if_present(self):
         # INVARIANT documented on Step.owns_generation: install()'s
@@ -212,7 +224,13 @@ class TestInstallRendersInSlotOrder:
     def test_var_args_and_trailing_comment_preserved(self, tmp_path):
         p = _write(tmp_path, MINIMIZE_THEN_MENU)
         _full_plan(["localmodconfig"]).install(p, noninteractive=True)
-        assert "make ARCH=x86_64 localmodconfig  # trim" in p.read_text()
+        out = p.read_text()
+        # The minimizer renders as an LSMOD guard block (3.2.0-B35): the make
+        # prefix reaches both branches, the trailer the block's closing line.
+        assert f'LSMOD="$startdir/{kp.LSMOD_FILE}" make ARCH=x86_64 localmodconfig\n' in out
+        assert "  make ARCH=x86_64 localmodconfig\n" in out
+        assert "  fi  # trim\n" in out
+        assert out.count("# trim") == 1
 
     def test_multi_target_trailer_appears_once(self, tmp_path):
         # Old patch_kconfig_targets appended the captured trailer ONCE, after
@@ -467,7 +485,10 @@ class TestNonInteractive:
         p = _write(tmp_path, MINIMIZE_THEN_MENU)
         _full_plan(["localmodconfig"], review=False).install(p, noninteractive=True)
         out = p.read_text()
-        assert out.count("localmodconfig") == 1
+        # Only the configured (LSMOD-guarded) minimizer remains — the
+        # packager's own `localmodconfig  # trim` line is gone.
+        assert out.count(f'if [ -f "$startdir/{kp.LSMOD_FILE}" ]') == 1
+        assert "localmodconfig  # trim" not in out
         assert "menuconfig" not in out
 
 
@@ -863,3 +884,41 @@ class TestVerifyShellBehaviour:
         assert rc == 0
         assert "CONFIG_USB=y is not in the final .config" in err
         assert "resolved to n" in err
+
+
+def _run_minimizer(tmp_path, *, stage_lsmod):
+    """Render generate_step(["localmodconfig"]) with a stub ``make`` that
+    reports the LSMOD it was handed; return (rc, stdout, stderr)."""
+    import subprocess
+
+    startdir = tmp_path / "startdir"
+    startdir.mkdir(exist_ok=True)
+    if stage_lsmod:
+        (startdir / kp.LSMOD_FILE).write_text("Module Size Used by\n")
+    script = (
+        'set -e\nstartdir="%s"\n' % startdir
+        + 'make() { echo "LSMOD=${LSMOD-<unset>} $*"; }\n'
+        + kp._render(kp.generate_step(["localmodconfig"]).lines, indent="")
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path,
+        capture_output=True, text=True, check=False,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+class TestMinimizerShellBehaviour:
+    """3.2.0-B35: streamline_config.pl dies on an LSMOD path that doesn't
+    exist (and treats LSMOD="" as one), so the staged snapshot must be passed
+    when present and LSMOD left unset — live lsmod — when it is not."""
+
+    def test_staged_snapshot_is_passed_as_lsmod(self, tmp_path):
+        rc, out, err = _run_minimizer(tmp_path, stage_lsmod=True)
+        assert rc == 0, err
+        staged = tmp_path / "startdir" / kp.LSMOD_FILE
+        assert out.strip() == f"LSMOD={staged} localmodconfig"
+
+    def test_absent_snapshot_leaves_lsmod_unset(self, tmp_path):
+        rc, out, err = _run_minimizer(tmp_path, stage_lsmod=False)
+        assert rc == 0, err
+        assert out.strip() == "LSMOD=<unset> localmodconfig"

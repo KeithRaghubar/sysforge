@@ -92,7 +92,8 @@ pkgname = "linux-sysforge"
 
 # keep_hotplug_drivers — default: false — re-enable hotplug driver classes
 #   (USB host/gadget, USB4/Thunderbolt, MMC/SD, hot-plug PCI + CardBus/PCMCIA,
-#   hot-plug HID) as loadable modules AFTER config minimization.
+#   hot-plug HID, removable-media filesystems: FAT/exFAT/ISO 9660/UDF/NTFS3)
+#   as loadable modules AFTER config minimization.
 #   localmodconfig strips drivers for hardware not currently plugged in; this
 #   merges a dedicated post-minimization fragment so those classes stay
 #   available for devices attached later. Only meaningful with a minimizing
@@ -135,9 +136,11 @@ pkgname = "linux-sysforge"
 #   building, so a kernel + initramfs install isn't truncated.
 # min_boot_free_mb = 200
 
-# capture_lsmod_snapshot — default: true — capture lsmod for the PKGBUILD's
-#   `make localmodconfig`. Set false if you don't want drivers for
-#   currently-inactive hardware stripped.
+# capture_lsmod_snapshot — default: true — accumulate lsmod output across
+#   builds and hand it to a localmodconfig/localyesconfig named in
+#   kconfig_targets (below). The snapshot alone trims nothing: add
+#   "localmodconfig" to kconfig_targets to minimize the config. Set false to
+#   have localmodconfig read live lsmod instead.
 # capture_lsmod_snapshot = true
 
 # base_config — default: "pkgbuild" — where the build's *starting* .config

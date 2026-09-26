@@ -28,6 +28,7 @@ from sysforge.pipeline.stages.kernel import (
     pkgbuild_path,
     resolve_fdo,
     resolve_keep_hotplug_drivers,
+    stage_lsmod_snapshot,
     validate_manual_kconfig,
     write_hotplug_fragment,
     write_kconfig_fragment,
@@ -1360,6 +1361,40 @@ def test_gate1_warns_when_headers_disabled(monkeypatch):
     joined = "\n".join(_warn_messages(logs))
     assert "-headers subpackage disabled" in joined
     assert "nvidia" in joined
+
+
+def _gate1_quiet(monkeypatch):
+    monkeypatch.setattr(kernel_safety, "find_fallback_kernels", lambda *a, **k: ["linux"])
+    monkeypatch.setattr(kernel_safety, "check_boot_mount_space", lambda *a, **k: None)
+    monkeypatch.setattr(kernel_safety, "detect_root_topology",
+                        lambda *a, **k: kernel_safety.RootTopology())
+    monkeypatch.setattr(kernel_safety, "check_mkinitcpio_hooks", lambda *a, **k: [])
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: [])
+
+
+@pytest.mark.parametrize("targets", [["olddefconfig", "localmodconfig"],
+                                     ["localyesconfig", "nconfig"]])
+def test_gate1_warns_minimizer_strips_when_configured(monkeypatch, tmp_path, targets):
+    from sysforge.pipeline.stages.kernel import gate1_preflight
+    _gate1_quiet(monkeypatch)
+    cfg = kcfg({"kconfig_targets": targets})
+    with _capture_logs() as logs:
+        gate1_preflight(cfg, make_options(state_dir=tmp_path), "linux-custom", dry_run=False)
+    assert any("drivers for hardware never active" in m for m in _warn_messages(logs))
+
+
+@pytest.mark.parametrize("targets", [None, ["olddefconfig", "nconfig"]])
+def test_gate1_no_strip_warning_without_configured_minimizer(monkeypatch, tmp_path, targets):
+    # 3.2.0-B35: the warning fired on every run with capture on, implying a
+    # minimization that never happened — the snapshot only reaches a
+    # configured localmodconfig/localyesconfig.
+    from sysforge.pipeline.stages.kernel import gate1_preflight
+    _gate1_quiet(monkeypatch)
+    cfg = kcfg({"kconfig_targets": targets} if targets else {})
+    with _capture_logs() as logs:
+        gate1_preflight(cfg, make_options(state_dir=tmp_path), "linux-custom", dry_run=False)
+    assert not any("lsmod" in m for m in _warn_messages(logs))
+    assert any("not minimized" in m for m in _info_messages(logs))
 
 
 # ---------------------------------------------------------------------------
@@ -3099,6 +3134,79 @@ def test_merge_lsmod_current_wins_on_conflict():
     assert merged.count("wireguard") == 1
 
 
+# ---------------------------------------------------------------------------
+# stage_lsmod_snapshot — hand the accumulated snapshot to localmodconfig (3.2.0-B35)
+# ---------------------------------------------------------------------------
+
+
+def _lsmod_dirs(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    pb = tmp_path / "src" / "PKGBUILD"
+    pb.parent.mkdir()
+    pb.write_text("pkgbase=linux-custom\n")
+    monkeypatch.setattr(_km.config, "pkgbuild_path", lambda cfg: pb)
+    return state, pb.parent / "sysforge.lsmod"
+
+
+def test_stage_lsmod_snapshot_copies_next_to_pkgbuild(tmp_path, monkeypatch):
+    # prepare() can only reach $startdir, never <state_dir>; without the copy
+    # the minimizer falls back to live lsmod and the accumulation is lost.
+    state, staged = _lsmod_dirs(tmp_path, monkeypatch)
+    (state / "lsmod.snapshot").write_text(LSMOD_HEADER + "wireguard 90112 0\n")
+    assert stage_lsmod_snapshot(kcfg({}), state, dry_run=False) == staged
+    assert "wireguard" in staged.read_text()
+
+
+def test_stage_lsmod_snapshot_removes_stale_when_capture_off(tmp_path, monkeypatch):
+    state, staged = _lsmod_dirs(tmp_path, monkeypatch)
+    (state / "lsmod.snapshot").write_text(LSMOD_HEADER + "wireguard 90112 0\n")
+    staged.write_text(LSMOD_HEADER + "stale 1 0\n")
+    cfg = kcfg({"capture_lsmod_snapshot": False})
+    assert stage_lsmod_snapshot(cfg, state, dry_run=False) is None
+    assert not staged.exists()  # "off" means live lsmod, not last run's copy
+
+
+def test_stage_lsmod_snapshot_removes_stale_when_snapshot_missing(tmp_path, monkeypatch):
+    state, staged = _lsmod_dirs(tmp_path, monkeypatch)
+    staged.write_text(LSMOD_HEADER + "stale 1 0\n")
+    assert stage_lsmod_snapshot(kcfg({}), state, dry_run=False) is None
+    assert not staged.exists()
+
+
+def test_stage_lsmod_snapshot_dry_run_writes_nothing(tmp_path, monkeypatch):
+    state, staged = _lsmod_dirs(tmp_path, monkeypatch)
+    (state / "lsmod.snapshot").write_text(LSMOD_HEADER + "wireguard 90112 0\n")
+    assert stage_lsmod_snapshot(kcfg({}), state, dry_run=True) is None
+    assert not staged.exists()
+
+
+def test_kernel_stage_run_stages_lsmod_snapshot(tmp_path):
+    # End-to-end wiring: a stage run leaves the merged snapshot at
+    # $startdir/sysforge.lsmod, where the rendered minimizer guard reads it.
+    builds = tmp_path / "builds"
+    pb = make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "lsmod.snapshot").write_text(LSMOD_HEADER + "wireguard 90112 0\n")
+
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        # install.subprocess IS the shared module, so this one patch also
+        # answers kconfig's lsmod call; a nested monkeypatch would restore
+        # the mock as the "original" and leak it into later tests.
+        mock_sub.side_effect = lambda argv, *a, **k: MagicMock(
+            returncode=0,
+            stdout=LSMOD_HEADER + "ext4 999424 1\n" if argv == ["lsmod"] else "",
+        )
+        KernelStage().run({}, PipelineState(state_dir), make_options(state_dir=state_dir))
+
+    staged = (pb.parent / "sysforge.lsmod").read_text()
+    assert "wireguard" in staged and "ext4" in staged
+
+
 def _hotplug_opts(**kw):
     ns = types.SimpleNamespace(keep_hotplug_drivers=None, dry_run=False)
     for k, v in kw.items():
@@ -3167,6 +3275,16 @@ def test_hotplug_kconfig_values_are_legal():
     for symbol, value in _km.kconfig.HOTPLUG_KCONFIG.items():
         expected = "y" if symbol in _BOOL_HOTPLUG_SYMBOLS else "m"
         assert value == expected, f"{symbol}={value} (expected {expected})"
+
+
+def test_hotplug_kconfig_keeps_removable_media_filesystems():
+    # 3.2.0-B35: localmodconfig strips a filesystem module nobody mounted
+    # while capturing, so a USB stick / SD card / optical disc stops mounting.
+    # NLS_UTF8 is exFAT's default iocharset — without it the mount fails.
+    for symbol in ("CONFIG_FAT_FS", "CONFIG_VFAT_FS", "CONFIG_EXFAT_FS",
+                   "CONFIG_ISO9660_FS", "CONFIG_UDF_FS", "CONFIG_NTFS3_FS",
+                   "CONFIG_NLS_UTF8", "CONFIG_NLS_ISO8859_1"):
+        assert _km.kconfig.HOTPLUG_KCONFIG.get(symbol) == "m", symbol
 
 
 def test_hotplug_kconfig_has_no_removed_symbols():

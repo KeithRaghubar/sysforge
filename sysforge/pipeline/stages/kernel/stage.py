@@ -404,6 +404,7 @@ class KernelStage(Stage):
             state_dir=state_dir, extra_kconfig=fdo_extra_kconfig,
         )
         kconfig.write_hotplug_fragment(kernel_cfg, options, options.dry_run)
+        kconfig.stage_lsmod_snapshot(kernel_cfg, state_dir, options.dry_run)
 
         if kconfig_targets:
             kconfig_target = f"{' → '.join(kconfig_targets)} (configured)"

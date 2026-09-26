@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sysforge.primitives import device_probe
 from sysforge.primitives import kbuild_map
+from sysforge.primitives import kconfig_plan
 from sysforge.primitives import kernel_safety
 from sysforge.primitives.render import arrow
 from sysforge.primitives.render import ellipsis_glyph
@@ -89,19 +90,29 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
         f"raid={topology.uses_raid}"
     )
 
-    # A2 — localmodconfig strips inactive hardware.
+    # A2 — localmodconfig strips inactive hardware. The snapshot only reaches
+    # a *configured* minimizer (3.2.0-B35), so warn only when one runs.
     if kernel_cfg.capture_lsmod_snapshot:
-        from sysforge.pipeline.state import resolve_state_dir
-
-        state_dir, _ = resolve_state_dir(options.state_dir)
-        snapshot_path = Path(state_dir) / "lsmod.snapshot"
-        _log.warn(
-            "lsmod snapshot captured for `make localmodconfig` — the snapshot "
-            "accumulates across builds so intermittently-loaded modules are "
-            "kept, but drivers for hardware never active while capturing "
-            f"remain excluded. Delete {snapshot_path} to reset the "
-            "accumulated set."
+        minimizers = kconfig_plan.MINIMIZER_TARGETS.intersection(
+            kernel_cfg.kconfig_targets or ()
         )
+        if minimizers:
+            from sysforge.pipeline.state import resolve_state_dir
+
+            state_dir, _ = resolve_state_dir(options.state_dir)
+            snapshot_path = Path(state_dir) / "lsmod.snapshot"
+            _log.warn(
+                f"kconfig_targets runs {'/'.join(sorted(minimizers))} against the "
+                "accumulated lsmod snapshot — modules loaded across past builds "
+                "are kept, but drivers for hardware never active while capturing "
+                f"are stripped. Delete {snapshot_path} to reset the accumulated set."
+            )
+        else:
+            _log.info(
+                "lsmod snapshot captured, but kconfig_targets runs no "
+                "localmodconfig/localyesconfig — the kernel config is not "
+                "minimized to loaded modules."
+            )
 
     # F1 — DKMS modules will need rebuilding against the new kernel.
     build_headers, _ = config.resolve_subpackages(kernel_cfg, options)

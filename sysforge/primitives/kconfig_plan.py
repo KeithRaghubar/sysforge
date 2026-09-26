@@ -64,6 +64,12 @@ SLOT_REGION: dict[str, str] = {
 HOTPLUG_FRAGMENT = "sysforge.hotplug.config"
 DEFAULT_FRAGMENT = "sysforge.config"
 BASE_CONFIG_FILE = "sysforge.base.config"
+#: The accumulated lsmod snapshot, staged next to the PKGBUILD so the
+#: minimizer reads it (via ``LSMOD=``) instead of live ``lsmod`` (3.2.0-B35).
+LSMOD_FILE = "sysforge.lsmod"
+
+#: Targets that trim the config to loaded modules and so honour ``LSMOD``.
+MINIMIZER_TARGETS = frozenset({"localmodconfig", "localyesconfig"})
 
 # The non-interactive kconfig-resolve target every rewrite/seed/merge step
 # settles on. Used by every runtime consumer of the literal (the pass-3
@@ -536,16 +542,27 @@ def generate_step(targets: list[str]) -> Step:
     for kconfig generation, triggering the removal pass in
     :meth:`KconfigPlan.install` even when (paired with a UI-only tail split
     into REVIEW) this step ends up being the only owner of that flag.
+
+    A minimizer target (``localmodconfig``/``localyesconfig``) reads the staged
+    :data:`LSMOD_FILE` when present (3.2.0-B35) — a bare invocation runs live
+    ``lsmod`` and never sees the accumulated snapshot. The guard is required:
+    ``streamline_config.pl`` dies on an ``LSMOD`` path that doesn't exist, so an
+    absent snapshot falls back to the unset (live ``lsmod``) form.
     """
-    last = len(targets) - 1
-    return Step(
-        slot=GENERATE,
-        lines=tuple(
-            f"{{indent}}{{make}}{t}" + ("{trailer}" if i == last else "")
-            for i, t in enumerate(targets)
-        ),
-        owns_generation=True,
-    )
+    lines: list[str] = []
+    for t in targets:
+        if t in MINIMIZER_TARGETS:
+            lines += [
+                f'{{indent}}if [ -f "$startdir/{LSMOD_FILE}" ]; then',
+                f'{{indent}}  LSMOD="$startdir/{LSMOD_FILE}" {{make}}{t}',
+                "{indent}else",
+                f"{{indent}}  {{make}}{t}",
+                "{indent}fi",
+            ]
+        else:
+            lines.append(f"{{indent}}{{make}}{t}")
+    lines[-1] += "{trailer}"
+    return Step(slot=GENERATE, lines=tuple(lines), owns_generation=True)
 
 
 def hotplug_merge_step(fragment: str = HOTPLUG_FRAGMENT) -> Step:

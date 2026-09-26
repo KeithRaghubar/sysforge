@@ -18,6 +18,7 @@ import subprocess
 import tomllib
 
 from sysforge.pipeline.stages.kernel import config
+from sysforge.primitives import kconfig_plan
 
 from sysforge import log
 
@@ -85,6 +86,35 @@ def capture_lsmod_snapshot(state_dir, dry_run):
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot_path.write_text(out)
     _log.info(f"Captured lsmod snapshot: {snapshot_path}")
+
+
+def stage_lsmod_snapshot(kernel_cfg, state_dir, dry_run):
+    """Copy the accumulated snapshot next to the PKGBUILD for the minimizer.
+
+    ``prepare()`` can reach ``$startdir`` but not ``<state_dir>``, so the
+    snapshot is staged as ``kconfig_plan.LSMOD_FILE`` where the rendered
+    ``localmodconfig`` guard passes it as ``LSMOD=`` (3.2.0-B35). Returns the
+    staged path, or ``None`` when capture is off, the snapshot is missing, or
+    on dry-run — in which case any stale copy from a prior run is removed so
+    the minimizer falls back to live ``lsmod`` rather than old data.
+    """
+    staged = config.pkgbuild_path(kernel_cfg).parent / kconfig_plan.LSMOD_FILE
+    snapshot = Path(state_dir) / "lsmod.snapshot"
+
+    if dry_run:
+        return None
+    if not kernel_cfg.capture_lsmod_snapshot or not snapshot.is_file():
+        if staged.exists():
+            try:
+                staged.unlink()
+                _log.info(f"Removed stale staged lsmod snapshot: {staged}")
+            except OSError as exc:
+                _log.warn(f"Could not remove stale staged lsmod snapshot {staged}: {exc}")
+        return None
+
+    staged.write_text(snapshot.read_text())
+    _log.info(f"Staged lsmod snapshot for localmodconfig: {staged}")
+    return staged
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +243,18 @@ HOTPLUG_KCONFIG = {
     "CONFIG_HID_GENERIC": "m",
     "CONFIG_USB_HID": "m",
     "CONFIG_HID_MULTITOUCH": "m",
+    # Removable-media filesystems (3.2.0-B35) — never loaded while capturing
+    # unless media happened to be mounted, so localmodconfig strips them.
+    # NLS_UTF8 is exFAT's default iocharset (the mount fails without it);
+    # NLS_ISO8859_1 backs the common `iocharset=iso8859-1` vfat mount.
+    "CONFIG_FAT_FS": "m",
+    "CONFIG_VFAT_FS": "m",
+    "CONFIG_EXFAT_FS": "m",
+    "CONFIG_ISO9660_FS": "m",
+    "CONFIG_UDF_FS": "m",
+    "CONFIG_NTFS3_FS": "m",
+    "CONFIG_NLS_UTF8": "m",
+    "CONFIG_NLS_ISO8859_1": "m",
 }
 
 
