@@ -189,6 +189,9 @@ def _arrow() -> str:
 class ResultSummary:
     built_pkgs: list[str] = field(default_factory=list)
     failed_pkgs: list[str] = field(default_factory=list)
+    # 3.2.0-B32: pkgbase -> why pacman did not install it. A subset of
+    # ``built_pkgs`` (it built); rendered in its own section, not under Built.
+    not_installed: dict[str, str] = field(default_factory=dict)
     pacman_upgrade_pkgs: list[str] = field(default_factory=list)
     installed_deps: list[str] = field(default_factory=list)
     pgo_skipped_pkgs: list[str] = field(default_factory=list)
@@ -277,10 +280,13 @@ def _print_result_summary(
     is mirrored into the unified log the same way the old inline block was.
     """
     built_label = "installed" if summary.install_only else "built"
+    landed = [pb for pb in summary.built_pkgs if pb not in summary.not_installed]
     header = (
         f"\n[SYSFORGE] Update complete: "
-        f"{len(summary.built_pkgs)} {built_label}, "
-        f"{len(summary.failed_pkgs)} failed, {summary.skipped} skipped"
+        f"{len(landed)} {built_label}, "
+        + (f"{len(summary.not_installed)} NOT installed, "
+           if summary.not_installed else "")
+        + f"{len(summary.failed_pkgs)} failed, {summary.skipped} skipped"
         + (f", {len(summary.pgo_skipped_pkgs)} pgo-skipped"
            if summary.pgo_skipped_pkgs else "")
         + (f", {len(summary.pacman_upgrade_pkgs)} pacman-upgraded"
@@ -300,9 +306,18 @@ def _print_result_summary(
         for line in lines:
             emit(f"    {line}")
 
-    if summary.built_pkgs:
+    if landed:
         label = "Installed:" if summary.install_only else "Built:"
-        _section(label, [_fmt_pkg(summary, pb) for pb in summary.built_pkgs])
+        _section(label, [_fmt_pkg(summary, pb) for pb in landed])
+
+    if summary.not_installed:
+        label = "NOT installed:" if summary.install_only else "Built, NOT installed:"
+        _section(label, [
+            f"{_fmt_pkg(summary, pb)} — {reason}"
+            for pb, reason in summary.not_installed.items()
+        ])
+        emit("    resolve the above, then `sysforge update --install-only` "
+             "installs the built artifacts without rebuilding")
 
     if summary.installed_deps:
         _section("Dependencies:", list(summary.installed_deps))

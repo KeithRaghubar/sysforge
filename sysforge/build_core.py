@@ -28,7 +28,8 @@ Public API:
     prepare_deps(pkgbuild_paths, config, ...)
     build_and_install(targets, ...) -> BuildOutcome
     install_built(built_pkg_files, *, always_install=frozenset(), interactive=False)
-        -> tuple[list[Path], bool]
+        -> tuple[list[Path], dict[Path, str]]   # (installed, {not-installed: reason})
+    not_installed_by_pkgbase(refused, pkgbase_of) -> dict[str, str]
     _find_existing_artifacts(...)        # also consumed by update's install_only scan
     _record_build_failure(state_dir, target, exc)
 """
@@ -52,6 +53,7 @@ from sysforge.primitives.pacman import (
     batch_install_makedeps,
     get_all_installed_packages,
     get_pkgdest,
+    read_pkgname_from_file,
 )
 from sysforge.primitives.aur import repo_packages
 from sysforge.primitives.already_built import resolve_already_built
@@ -100,6 +102,9 @@ class BuildOutcome:
     pgo_skipped_pkgs: list[str] = field(default_factory=list)
     built_pkg_files: list[Path] = field(default_factory=list)
     install_failed: bool = False
+    # 3.2.0-B32: pkgbase -> why pacman did not install its artifact(s). Such a
+    # pkgbase stays in ``built_pkgs`` (it did build); reporters subtract it.
+    not_installed: dict[str, str] = field(default_factory=dict)
     # PKGBUILD review gate results: packages the user dropped at the prompt,
     # and whether the whole run was aborted there (nothing built/installed).
     review_skipped: list[str] = field(default_factory=list)
@@ -333,6 +338,82 @@ def _forget_uninstalled(state_dir: Path, names: list, installed: set) -> None:
         _log.info(f"build_state cleanup of dropped sub-packages skipped: {e}")
 
 
+# Reason recorded for an artifact pacman refused without naming a culprit
+# (dependency, signature or DB-lock failures) — pacman's own error lines
+# precede it in the run log.
+INSTALL_REFUSED_REASON = "pacman -U refused the transaction (see its error above)"
+
+
+def _state_dir_path(state_dir: Path | None) -> Path:
+    """The caller's state dir, else the resolved default — the same fallback
+    makepkg_wrapper applies when it records the build."""
+    if state_dir is not None:
+        return Path(state_dir)
+    from sysforge.primitives.paths import resolve_state_dir
+    return resolve_state_dir(None)[0]
+
+
+def _snapshot_state(state_dir: Path | None, pkgnames) -> dict | None:
+    """``{pkgname: entry-or-None}`` from build_state, for :func:`_revert_uninstalled_state`.
+
+    ``None`` when the state cannot be read — then nothing is reverted, which
+    is the pre-B34 behaviour, never worse.
+    """
+    try:
+        bs = BuildState(_state_dir_path(state_dir))
+        return {
+            pn: (dict(e) if (e := bs.get(pn)) is not None else None)
+            for pn in pkgnames
+        }
+    except Exception as e:  # noqa: BLE001 — bookkeeping only; never fail a build
+        _log.info(f"build_state snapshot skipped: {e}")
+        return None
+
+
+def _revert_uninstalled_state(
+    state_dir: Path | None, files: list[Path], prior: dict | None,
+) -> None:
+    """Point build_state back at what is installed for refused artifacts.
+
+    3.2.0-B34: ``makepkg_wrapper`` records the new version and flags as soon
+    as the build succeeds; when pacman then refuses the artifact, that entry
+    described a package that never reached the system. Best-effort, like
+    :func:`_forget_uninstalled`.
+    """
+    if not prior:
+        return
+    try:
+        bs = BuildState(_state_dir_path(state_dir))
+        reverted = []
+        for path in files:
+            pn = read_pkgname_from_file(path)
+            if pn is not None and pn in prior:
+                bs.revert_record(pn, prior[pn])
+                reverted.append(pn)
+        if reverted:
+            bs.save()
+            _log.info(
+                "build_state left at the installed version for: "
+                + ", ".join(sorted(reverted))
+            )
+    except Exception as e:  # noqa: BLE001 — bookkeeping only; never fail the install
+        _log.info(f"build_state revert of uninstalled packages skipped: {e}")
+
+
+def not_installed_by_pkgbase(
+    refused: dict[Path, str], pkgbase_of: dict[Path, str],
+) -> dict[str, str]:
+    """Fold :func:`install_built`'s per-file reasons into ``{pkgbase: reason}``
+    for the summaries; a split pkgbase's distinct reasons are joined."""
+    out: dict[str, str] = {}
+    for path, reason in refused.items():
+        base = pkgbase_of.get(path, path.name)
+        reasons = out[base].split("; ") if base in out else []
+        if reason not in reasons:
+            out[base] = "; ".join(reasons + [reason])
+    return out
+
+
 def install_built(
     built_pkg_files: list[Path],
     *,
@@ -340,10 +421,12 @@ def install_built(
     interactive: bool = False,
     allow_break_deps: "frozenset[str] | set[str]" = frozenset(),
     state_dir: Path | None = None,
-) -> tuple[list[Path], bool]:
+) -> tuple[list[Path], dict[Path, str]]:
     """Dedupe, filter to the install keep-set, and bulk ``pacman -U``.
 
-    Returns ``(deduped_files, install_failed)``. The currently-installed set is
+    Returns ``(installed_files, not_installed)`` — ``not_installed`` maps each
+    artifact pacman did not install to a one-line reason; empty on success.
+    The currently-installed set is
     re-fetched here because makedep + AUR-dep pre-install may have expanded it
     since the caller last looked. Split-pkgbase safety: makepkg emits one
     .pkg.tar per pkgname in the PKGBUILD, but we only install the sub-packages
@@ -360,6 +443,13 @@ def install_built(
     the ``build_state`` record ``makepkg_wrapper`` wrote for it at build time
     (3.2.0-B31) — the wrapper records every PKGBUILD ``pkgname``, but only this
     filter knows which ones reach the system.
+
+    File conflicts (3.2.0-B33): the install stays one transaction so pacman
+    resolves the batch's inter-dependencies together, which makes it
+    all-or-nothing — one stray untracked file used to strand every artifact.
+    When pacman names the packages whose files conflict, those are set aside
+    and the rest retried as one transaction. A refusal naming no culprit
+    fails everything still pending; a retry is never the identical set.
     """
     seen: set = set()
     deduped: list[Path] = []
@@ -369,7 +459,6 @@ def install_built(
             deduped.append(p)
     built_pkg_files = deduped
 
-    install_failed = False
     if built_pkg_files:
         keep_names = set(get_all_installed_packages().keys()) | set(always_install)
         built_pkg_files, dropped = filter_pkgs_to_installed(
@@ -386,15 +475,43 @@ def install_built(
                 _forget_uninstalled(state_dir, [pn for _p, pn in dropped],
                                     keep_names)
 
-    if built_pkg_files and not batch_install_pkgs(
-        built_pkg_files, interactive=interactive,
-        allow_break_deps=allow_break_deps,
-    ):
-        _log.error("Batch package install failed")
-        _log.error("packages were built but not installed")
-        install_failed = True
-
-    return built_pkg_files, install_failed
+    not_installed: dict[Path, str] = {}
+    pending = list(built_pkg_files)
+    while pending:
+        conflicts: dict = {}
+        if batch_install_pkgs(
+            pending, interactive=interactive,
+            allow_break_deps=allow_break_deps, conflicts_out=conflicts,
+        ):
+            return pending, not_installed
+        culprits: dict[Path, list] = {}
+        if conflicts:
+            for p in pending:
+                pn = read_pkgname_from_file(p)
+                if pn in conflicts:
+                    culprits[p] = conflicts[pn]
+        if not culprits:
+            break
+        for p, details in culprits.items():
+            not_installed[p] = "; ".join(details)
+            _log.warn(
+                f"Not installing {p.name}: {'; '.join(details)} — "
+                "move the file aside (or remove the package owning it) and "
+                "run `sysforge update --install-only`"
+            )
+        pending = [p for p in pending if p not in culprits]
+        if pending:
+            _log.info(
+                f"Retrying the install without {len(culprits)} conflicting "
+                f"package(s): {len(pending)} left"
+            )
+    for p in pending:
+        not_installed[p] = INSTALL_REFUSED_REASON
+    if not_installed:
+        _log.error(
+            f"{len(not_installed)} built package file(s) were not installed"
+        )
+    return [], not_installed
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +890,9 @@ def build_and_install(
     requested = {
         pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
     }
+    # build_state as it stood before any build — makepkg_wrapper records each
+    # target at build time, and a refused install must be able to undo that.
+    prior_state = _snapshot_state(state_dir, requested)
 
     pkgbuild_paths = [t.pkgbuild_path for t in targets if t.pkgbuild_path]
     building_names = {t.pkgbase for t in targets}
@@ -810,6 +930,7 @@ def build_and_install(
     # for outcome reporting).
     jit_handled: set[Path] = set()
     jit_files: list[Path] = []
+    not_installed: dict[Path, str] = {}
 
     with _ui_progress.tracker(len(targets), "building") as _tick:
         for _idx, target in enumerate(targets):
@@ -867,7 +988,7 @@ def build_and_install(
                         pn for t in targets[_idx:] for pn in (t.pkgnames or [])
                     )
                     with timer.phase(f"install deps: {target.pkgbase}"):
-                        installed_files, jit_failed = install_built(
+                        installed_files, jit_refused = install_built(
                             pending, always_install=requested,
                             interactive=interactive,
                             allow_break_deps=later_pkgnames,
@@ -876,8 +997,7 @@ def build_and_install(
                     _tick.resume()
                     jit_handled.update(pending)
                     jit_files.extend(installed_files)
-                    if jit_failed:
-                        outcome.install_failed = True
+                    not_installed.update(jit_refused)
             search_dir = pkgdest if pkgdest else target.pkgbuild_path.parent
             build_start = time.time()
             # 3.0.0-B5: the ungated-source warning moved to
@@ -1003,12 +1123,18 @@ def build_and_install(
     if remaining:
         _ui_progress.phase("installing built packages")
     with timer.phase("install"):
-        installed_now, final_failed = install_built(
+        installed_now, final_refused = install_built(
             remaining, always_install=requested, interactive=interactive,
             state_dir=state_dir,
         )
+    not_installed.update(final_refused)
     outcome.built_pkg_files = jit_files + installed_now
-    outcome.install_failed = outcome.install_failed or final_failed
+    if not_installed:
+        outcome.install_failed = True
+        outcome.not_installed = not_installed_by_pkgbase(not_installed, {
+            f: base for base, files in built_files_by_pkgbase.items() for f in files
+        })
+        _revert_uninstalled_state(state_dir, list(not_installed), prior_state)
     _ui_progress.phase(None)
 
     if cache_report:

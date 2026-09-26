@@ -275,3 +275,44 @@ def test_built_line_labels_pkgbase_via_tracked_member(capsys, monkeypatch):
     _print_result_summary(s)
     out = capsys.readouterr().out
     assert "adwaita-icon-theme-git (via adwaita-cursors-git): 51.beta-1" in out
+
+
+def test_not_installed_leaves_built_section_and_header(capsys, monkeypatch):
+    """3.2.0-B32: a package that built but pacman refused must not be listed
+    under "Built:" with an old → new arrow — that read as installed, and the
+    next run silently queued it again."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    s = _empty(
+        built_pkgs=["cosmic-files-git", "cosmic-greeter-git"],
+        not_installed={
+            "cosmic-greeter-git": "/etc/pam.d/cosmic-greeter exists in filesystem",
+        },
+        versions={"cosmic-files-git": ("1.8", "1.9"),
+                  "cosmic-greeter-git": ("1.8", "1.9")},
+    )
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "1 built, 1 NOT installed," in out
+    built, _, rest = out.partition("Built, NOT installed:")
+    assert "cosmic-files-git: 1.8 → 1.9" in built
+    assert "cosmic-greeter-git" not in built
+    assert ("cosmic-greeter-git: 1.8 → 1.9 — "
+            "/etc/pam.d/cosmic-greeter exists in filesystem") in rest
+    assert "sysforge update --install-only" in rest
+
+
+def test_not_installed_under_install_only(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    s = _empty(built_pkgs=["a"], install_only=True, not_installed={"a": "why"})
+    _print_result_summary(s)
+    out = capsys.readouterr().out
+    assert "0 installed, 1 NOT installed," in out
+    assert "NOT installed:" in out and "Installed:" not in out
+    assert "a — why" in out
+
+
+def test_not_installed_section_omitted_when_empty(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_result_summary(_empty(built_pkgs=["a"]))
+    assert "NOT installed" not in capsys.readouterr().out

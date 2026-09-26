@@ -1266,3 +1266,42 @@ def test_diff_installed_omits_unchanged_and_empty_diff():
     snap = {"a": "1-1", "b": "2-1"}
     assert pacman.diff_installed(snap, snap) == {}
     assert pacman.diff_installed({}, {}) == {}
+
+
+class TestFileConflictCulprits:
+    """3.2.0-B33: pacman's ``conflicting files`` refusal names the package that
+    tripped it, so the caller can retry the batch without only that package
+    instead of losing every built artifact to one stray file."""
+
+    _STDERR = (
+        "\x1b[1;31merror: \x1b[0mfailed to commit transaction (conflicting files)\n"
+        "cosmic-greeter-git: /etc/pam.d/cosmic-greeter exists in filesystem\n"
+        "foo-git: /usr/share/foo/a b.conf exists in filesystem (owned by foo)\n"
+        "Errors occurred, no packages were upgraded.\n"
+    )
+
+    def test_parses_each_culprit_and_path(self):
+        assert pacman.file_conflict_culprits(self._STDERR) == {
+            "cosmic-greeter-git": ["/etc/pam.d/cosmic-greeter exists in filesystem"],
+            "foo-git": ["/usr/share/foo/a b.conf exists in filesystem (owned by foo)"],
+        }
+
+    def test_other_failures_name_no_culprit(self):
+        assert pacman.file_conflict_culprits(
+            "error: failed to prepare transaction (could not satisfy dependencies)\n"
+        ) == {}
+
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed",
+           return_value=set())
+    @patch("sysforge.primitives.pacman.get_all_installed_packages",
+           return_value={})
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_batch_install_reports_conflicts_out(
+        self, mock_run, _inst, _repl, tmp_path
+    ):
+        p = tmp_path / "cosmic-greeter-git-1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"")
+        mock_run.return_value = MagicMock(returncode=1, stderr=self._STDERR)
+        conflicts: dict = {}
+        assert batch_install_pkgs([p], conflicts_out=conflicts) is False
+        assert set(conflicts) == {"cosmic-greeter-git", "foo-git"}

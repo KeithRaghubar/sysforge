@@ -300,6 +300,30 @@ class BuildState:
         # `sysforge state failed` self-heals on the next good build.
         self._failures.pop(pkgbase, None)
 
+    # Fields describing the build or review that happened, not the installed
+    # artifact — kept by revert_record so a refused install does not erase them.
+    _BUILD_FACTS = ("build_seconds", "reviewed_commit")
+
+    def revert_record(self, pkgname: str, prior: dict | None) -> None:
+        """Undo a ``record()`` whose artifact pacman never installed (3.2.0-B34).
+
+        ``makepkg_wrapper`` records at build time, before the install; when
+        that install is refused, the entry would otherwise claim a version and
+        flags that are not on the system. ``prior`` is the entry as it stood
+        before the build (``None`` when there was none, which drops the entry).
+        The build-time ring and the reviewed commit carry forward: the build
+        and the review did happen.
+        """
+        current = self._data.get(pkgname) or {}
+        if prior is None:
+            self._data.pop(pkgname, None)
+            return
+        entry = dict(prior)
+        for key in self._BUILD_FACTS:
+            if key in current:
+                entry[key] = current[key]
+        self._data[pkgname] = entry
+
     def delete(self, pkgname: str) -> bool:
         """Remove an entry by pkgname.  Returns True if it existed."""
         return self._data.pop(pkgname, None) is not None

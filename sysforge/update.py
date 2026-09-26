@@ -581,7 +581,7 @@ def _build_result_summary(
     *, results, built_pkgs, failed_pkgs, pacman_upgrade_pkgs,
     installed_deps, pgo_skipped_pkgs, cleansrc_failures,
     install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
-    system_upgrade_ran=False, sysupgrade_changes=None,
+    system_upgrade_ran=False, sysupgrade_changes=None, not_installed=None,
 ) -> ResultSummary:
     """Assemble a ``ResultSummary`` from ``update``'s per-run state.
 
@@ -595,6 +595,7 @@ def _build_result_summary(
     return ResultSummary(
         built_pkgs=list(built_pkgs),
         failed_pkgs=list(failed_pkgs),
+        not_installed=dict(not_installed or {}),
         pacman_upgrade_pkgs=list(pacman_upgrade_pkgs),
         installed_deps=list(installed_deps),
         pgo_skipped_pkgs=list(pgo_skipped_pkgs),
@@ -1246,6 +1247,7 @@ def _cmd_update_body(args) -> int:
     pgo_skipped_pkgs: list[str] = []
     review_skipped_pkgs: list[str] = []
     install_failed = False
+    not_installed: dict[str, str] = {}  # pkgbase -> reason (3.2.0-B32)
     outcome = None  # only set on the build_and_install path (Task 3: F38)
 
     if not to_build:
@@ -1258,6 +1260,7 @@ def _cmd_update_body(args) -> int:
         # no makepkg invocation. For each result the version-check filter has
         # already proved is newer than installed, look for a matching artifact
         # at exactly that pkgbuild_ver in PKGDEST and queue it for install.
+        pkgbase_of: dict = {}
         with _ui_progress.tracker(len(to_build), "scanning") as _tick:
             for result in to_build:
                 _tick(result.pkgbase)
@@ -1275,14 +1278,17 @@ def _cmd_update_body(args) -> int:
                     )
                     built_pkg_files.extend(existing)
                     built_pkgs.append(result.pkgbase)
+                    pkgbase_of.update((f, result.pkgbase) for f in existing)
                 else:
                     _log.info(
                         f"{result.pkgbase}: [SKIP] no built artifact for "
                         f"{result.pkgbuild_ver} in {search_dir}"
                     )
         # Install the queued pre-built artifacts (no build happened).
-        built_pkg_files, install_failed = build_core.install_built(built_pkg_files)
-        if not built_pkg_files and built_pkgs:
+        built_pkg_files, refused = build_core.install_built(built_pkg_files)
+        install_failed = bool(refused)
+        not_installed = build_core.not_installed_by_pkgbase(refused, pkgbase_of)
+        if not built_pkg_files and built_pkgs and not install_failed:
             _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
     else:
         # ── Phase 4.5: Toolchain pre-flight ───────────────────────────────
@@ -1340,7 +1346,8 @@ def _cmd_update_body(args) -> int:
         review_skipped_pkgs = outcome.review_skipped
         built_pkg_files = outcome.built_pkg_files
         install_failed = outcome.install_failed
-        if not built_pkg_files and built_pkgs:
+        not_installed = outcome.not_installed
+        if not built_pkg_files and built_pkgs and not install_failed:
             _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
     # ── Phase 6.5: Bulk pacman upgrade (pacman-class repo packages) ────────
@@ -1444,6 +1451,7 @@ def _cmd_update_body(args) -> int:
         stage_owned_updates=stage_owned_updates,
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=sysupgrade_changes,
+        not_installed=not_installed,
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.

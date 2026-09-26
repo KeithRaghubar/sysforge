@@ -1000,7 +1000,7 @@ def test_install_built_dedupes_and_filters(tmp_path):
     ):
         kept, failed = build_core.install_built([a, b, a])  # duplicate a
     assert kept == [a]               # b filtered out, a deduped
-    assert failed is False
+    assert failed == {}
     assert installs == [[a]]
 
 
@@ -1067,8 +1067,85 @@ def test_install_built_reports_install_failure(tmp_path):
               side_effect=lambda files, inst: (list(files), [])),
         patch("sysforge.build_core.batch_install_pkgs", return_value=False),
     ):
-        _, failed = build_core.install_built([a])
-    assert failed is True
+        kept, failed = build_core.install_built([a])
+    assert kept == []
+    assert failed == {a: build_core.INSTALL_REFUSED_REASON}
+
+
+def _conflict_install(outcomes):
+    """``batch_install_pkgs`` fake: pop one ``(ok, conflicts)`` per call and
+    record each call's file list."""
+    calls = []
+
+    def fake(paths, *, conflicts_out=None, **_kw):
+        calls.append(list(paths))
+        ok, conflicts = outcomes.pop(0)
+        if conflicts_out is not None:
+            conflicts_out.update(conflicts)
+        return ok
+    return fake, calls
+
+
+def _install_patches(fake, names):
+    return [
+        patch("sysforge.build_core.get_all_installed_packages",
+              return_value={n: "1-1" for n in names.values()}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: (list(files), [])),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake),
+        patch("sysforge.build_core.read_pkgname_from_file",
+              side_effect=lambda path: names.get(path)),
+    ]
+
+
+def test_install_built_retries_without_file_conflict_culprit(tmp_path):
+    """3.2.0-B33: one package tripping a file conflict (an untracked
+    /etc/pam.d file a new build now ships) no longer strands every other
+    artifact in the batch — the transaction is retried without it."""
+    a, b, c = (tmp_path / f"{n}-1-1-x86_64.pkg.tar.zst" for n in "abc")
+    names = {a: "a", b: "b", c: "c"}
+    fake, calls = _conflict_install([
+        (False, {"b": ["/etc/pam.d/b exists in filesystem"]}),
+        (True, {}),
+    ])
+    with _ctx(_install_patches(fake, names)):
+        kept, failed = build_core.install_built([a, b, c])
+    assert calls == [[a, b, c], [a, c]]
+    assert kept == [a, c]
+    assert failed == {b: "/etc/pam.d/b exists in filesystem"}
+
+
+def test_install_built_retry_failure_fails_the_rest(tmp_path):
+    """The retry is still one transaction: if it fails for a reason that
+    names no culprit, everything left is reported not installed."""
+    a, b = (tmp_path / f"{n}-1-1-x86_64.pkg.tar.zst" for n in "ab")
+    names = {a: "a", b: "b"}
+    fake, calls = _conflict_install([
+        (False, {"b": ["/etc/b exists in filesystem"]}),
+        (False, {}),
+    ])
+    with _ctx(_install_patches(fake, names)):
+        kept, failed = build_core.install_built([a, b])
+    assert calls == [[a, b], [a]]
+    assert kept == []
+    assert failed == {
+        b: "/etc/b exists in filesystem",
+        a: build_core.INSTALL_REFUSED_REASON,
+    }
+
+
+def test_install_built_no_retry_when_culprit_not_in_batch(tmp_path):
+    """A conflict pinned on a name no artifact carries gives nothing to drop;
+    retrying the identical transaction would only fail again."""
+    a = tmp_path / "a-1-1-x86_64.pkg.tar.zst"
+    fake, calls = _conflict_install([
+        (False, {"zzz": ["/x exists in filesystem"]}),
+    ])
+    with _ctx(_install_patches(fake, {a: "a"})):
+        kept, failed = build_core.install_built([a])
+    assert calls == [[a]]
+    assert kept == []
+    assert failed == {a: build_core.INSTALL_REFUSED_REASON}
 
 
 def test_install_built_installs_requested_fresh_pkg(tmp_path):
@@ -1651,3 +1728,66 @@ def test_skew_gate_checker_failure_admits_the_install(tmp_path):
                side_effect=OSError("nm not found")):
         assert build_core._source_built_abi_skew(
             [target.pkgbuild_path.parent / "foo.pkg.tar"], None) == []
+
+
+def test_build_and_install_isolates_conflict_and_reverts_its_state(tmp_path):
+    """3.2.0-B32/B33/B34 end to end: two targets build; pacman refuses one on
+    a file conflict. The other still installs, the outcome names the refused
+    pkgbase with pacman's reason, and build_state stops claiming its new
+    version (makepkg_wrapper recorded it at build time)."""
+    from sysforge.primitives.build_state import BuildState
+
+    state = tmp_path / "state"
+    bs = BuildState(state)
+    for base in ("aa", "bb"):
+        bs.record(pkgname=base, pkgver="1", pkgrel="1", epoch="0", pkgbase=base,
+                  pkgbuild_dir=tmp_path / base, build_mode="source_built")
+    bs.save()
+    aa = _write_target(tmp_path, "aa", "pkgname=aa\npkgver=2\npkgrel=1\n")
+    bb = _write_target(tmp_path, "bb", "pkgname=bb\npkgver=2\npkgrel=1\n")
+
+    def fake_run(pkgbuild_path, options=None):
+        base = Path(pkgbuild_path).parent.name
+        _touch_future(Path(pkgbuild_path).parent / f"{base}-2-1-x86_64.pkg.tar.zst")
+        live = BuildState(state)   # what makepkg_wrapper does after a build
+        live.record(pkgname=base, pkgver="2", pkgrel="1", epoch="0",
+                    pkgbase=base, pkgbuild_dir=tmp_path / base,
+                    build_mode="source_built")
+        live.save()
+
+    fake_install, calls = _conflict_install([
+        (False, {"bb": ["/etc/bb.conf exists in filesystem"]}),
+        (True, {}),
+    ])
+    env = [
+        patch("sysforge.build_core.prepare_deps"),
+        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build_core.snapshot_pkg_dir",
+              side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
+        patch("sysforge.build_core.get_all_installed_packages",
+              return_value={"aa": "1-1", "bb": "1-1"}),
+        patch("sysforge.build_core.filter_pkgs_to_installed",
+              side_effect=lambda files, inst: (list(files), [])),
+        patch("sysforge.build_core.batch_install_pkgs", side_effect=fake_install),
+        patch("sysforge.build_core.read_pkgname_from_file",
+              side_effect=lambda p: Path(p).name.split("-")[0]),
+        patch("sysforge.build_core.get_pkgdest", return_value=None),
+        patch("sysforge.primitives.cache_probe.reset_session"),
+        patch("sysforge.primitives.cache_probe.emit_session_report"),
+    ]
+    with _ctx(env):
+        outcome = build_core.build_and_install(
+            [aa, bb], config={}, sync_source=False, state_dir=state,
+            review="off",
+        )
+
+    assert [[p.name.split("-")[0] for p in c] for c in calls] == [
+        ["aa", "bb"], ["aa"],
+    ]
+    assert outcome.built_pkgs == ["aa", "bb"]
+    assert outcome.install_failed is True
+    assert outcome.not_installed == {"bb": "/etc/bb.conf exists in filesystem"}
+    assert [p.name for p in outcome.built_pkg_files] == ["aa-2-1-x86_64.pkg.tar.zst"]
+    after = BuildState(state)
+    assert after.get("aa")["pkgver"] == "2"
+    assert after.get("bb")["pkgver"] == "1"

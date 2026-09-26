@@ -945,3 +945,38 @@ def test_select_built_version_none_when_no_match(tmp_path):
 
     other = _stamp(tmp_path, "htop-3.4.1-1-x86_64.pkg.tar", 1_000_000)
     assert select_built_version("xevd", [other]) is None
+
+
+def _rec(bs, pkgver, *, flags, reviewed, seconds):
+    bs.record(pkgname="foo-git", pkgver=pkgver, pkgrel="1", epoch="0",
+              pkgbase="foo-git", pkgbuild_dir=Path("/src/foo-git"),
+              build_mode="source_built", flags_string=flags,
+              reviewed_commit=reviewed, build_seconds=seconds)
+
+
+def test_revert_record_restores_what_is_installed(tmp_path):
+    """3.2.0-B34: a build whose artifact pacman refused must not leave
+    build_state claiming the new version and flags are on the system. The
+    facts about the build and review that did happen carry forward."""
+    bs = BuildState(tmp_path)
+    _rec(bs, "1.8.0", flags="old", reviewed="aaa", seconds=40)
+    prior = dict(bs.get("foo-git"))
+    _rec(bs, "1.9.0", flags="new", reviewed="bbb", seconds=50)
+
+    bs.revert_record("foo-git", prior)
+    bs.save()
+
+    entry = BuildState(tmp_path).get("foo-git")
+    assert entry["pkgver"] == "1.8.0"
+    assert entry["flags_string"] == "old"
+    assert entry["built_at"] == prior["built_at"]
+    assert entry["reviewed_commit"] == "bbb"
+    assert entry["build_seconds"] == "40,50"
+
+
+def test_revert_record_without_prior_forgets_entry(tmp_path):
+    """A first build that never installed leaves nothing to track."""
+    bs = BuildState(tmp_path)
+    _rec(bs, "1.9.0", flags="new", reviewed="bbb", seconds=50)
+    bs.revert_record("foo-git", None)
+    assert bs.get("foo-git") is None

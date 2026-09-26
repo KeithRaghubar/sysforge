@@ -53,7 +53,9 @@ Mechanism lives in the cited §DESIGN section.
   built, **including the current target** — it is the usual pin holder) so an exact-version
   sibling pin (`lib32-*` VCS) can be broken; `pacman.batch_install_pkgs` re-verifies via
   `deps_broken_by_install` and adds a **single** `--nodeps`, never `-dd`. No second dep/build
-  loop. Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
+  loop. File-conflict isolation (retry without pacman's named culprits) lives only in
+  `install_built`; `batch_install_pkgs` just reports them via `conflicts_out` and never retries
+  (`3.2.0-B33`). Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
 - **PKGBUILD review gate**: `build_and_install(review=…)` → `pkgbuild_review.review_target` (build
   `prompt`, update `auto`); sticky `reviewed_commit`. New build_state fields go in
   `BuildState._serialize`'s key tuple. §primitives-layer.

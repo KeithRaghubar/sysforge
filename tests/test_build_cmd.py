@@ -405,3 +405,17 @@ def test_build_without_rebuild_leaves_target_unforced(monkeypatch, tmp_path):
     targets, _ = _run_build(monkeypatch, tmp_path, "htop", is_repo=False,
                             force=True)
     assert targets[0].force_rebuild is False
+
+
+def test_summary_lists_not_installed_apart_from_built(capsys):
+    """3.2.0-B32: a built package pacman refused is named with the reason,
+    not listed as Built."""
+    outcome = BuildOutcome(
+        built_pkgs=["foo", "bar"],
+        install_failed=True,
+        not_installed={"bar": "/etc/bar exists in filesystem"},
+    )
+    _print_build_summary(outcome)
+    out = capsys.readouterr().err
+    assert "Built:       foo\n" in out
+    assert "Not installed: bar — /etc/bar exists in filesystem" in out

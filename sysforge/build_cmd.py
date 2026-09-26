@@ -104,8 +104,11 @@ def _print_build_summary(outcome) -> None:
         parts.append(f"{len(outcome.pgo_skipped_pkgs)} pgo-skipped")
     suffix = log.red(" (install FAILED)") if outcome.install_failed else ""
     _log.ui(f"\n[SYSFORGE] {log.bold('Build complete')}: {', '.join(parts)}{suffix}.")
-    if outcome.built_pkgs:
-        _log.ui(f"  {log.green('Built:')}       {' '.join(outcome.built_pkgs)}")
+    landed = [pb for pb in outcome.built_pkgs if pb not in outcome.not_installed]
+    if landed:
+        _log.ui(f"  {log.green('Built:')}       {' '.join(landed)}")
+    for pb, reason in outcome.not_installed.items():
+        _log.ui(f"  {log.red('Not installed:')} {pb} — {reason}")
     if outcome.failed_pkgs:
         _log.ui(f"  {log.red('Failed:')}      {' '.join(outcome.failed_pkgs)}")
     if outcome.review_skipped:

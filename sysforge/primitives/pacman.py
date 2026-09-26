@@ -19,7 +19,8 @@ Public API:
     snapshot_pkg_dir(directory)     → frozenset
     get_pacman_cache_dirs()         → list[Path]
     cached_pkg_files_for(names)     → dict[str, Path | None]
-    batch_install_pkgs(pkg_paths, allow_break_deps=…) → bool
+    batch_install_pkgs(pkg_paths, allow_break_deps=…, conflicts_out=…) → bool
+    file_conflict_culprits(text)    → dict[pkgname, list[detail]]
     deps_broken_by_install(pkg_paths) → dict[holder, set[dep-spec]]
     read_pkgname_from_file(path)    → str | None
     read_pkg_replaces_from_file(path) → set
@@ -55,6 +56,7 @@ from sysforge import log
 from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.pty_runner import strip_ansi
 
 _log = log.get_logger("PACMAN")
 
@@ -517,11 +519,33 @@ def deps_broken_by_install(pkg_paths: list) -> dict:
     return broken
 
 
+# pacman's per-file line under "failed to commit transaction (conflicting
+# files)": ``<pkgname>: <path> exists in filesystem`` — with a trailing
+# ``(owned by <pkg>)`` when another package claims the path. The pkgname is
+# the *incoming* package, i.e. the one to leave out of a retry.
+_FILE_CONFLICT_RE = re.compile(
+    r"^(?P<pkg>[^\s:]+): (?P<detail>/.+ exists in filesystem.*)$", re.MULTILINE,
+)
+
+
+def file_conflict_culprits(text: str) -> dict:
+    """Return ``{pkgname: [detail, ...]}`` from a refused ``pacman -U``'s output.
+
+    Empty unless pacman refused on file conflicts — any other refusal (deps,
+    signatures, a locked DB) names no single package to leave out. 3.2.0-B33.
+    """
+    culprits: dict = {}
+    for m in _FILE_CONFLICT_RE.finditer(strip_ansi(text or "")):
+        culprits.setdefault(m.group("pkg"), []).append(m.group("detail").strip())
+    return culprits
+
+
 def batch_install_pkgs(
     pkg_paths: list,
     *,
     interactive: bool = False,
     allow_break_deps: "frozenset[str] | set[str]" = frozenset(),
+    conflicts_out: "dict | None" = None,
 ) -> bool:
     """Install all built packages in one sudo pacman -U call. Returns True on success.
 
@@ -556,6 +580,13 @@ def batch_install_pkgs(
     The relaxation is applied only when :func:`deps_broken_by_install` confirms
     every affected holder is in the set — breakage anywhere else keeps
     dependency enforcement fully on.
+
+    ``conflicts_out``, when given, receives :func:`file_conflict_culprits` of a
+    refused non-interactive transaction, so the caller can retry without the
+    offending packages (3.2.0-B33). This function never retries itself: the
+    toolchain rollback wants all-or-nothing, and which subset is acceptable
+    is the caller's policy. Interactive runs do not capture pacman's output,
+    so it stays empty there.
     """
     missing = [p for p in pkg_paths if not Path(p).exists()]
     if missing:
@@ -612,6 +643,8 @@ def batch_install_pkgs(
         if not interactive and result.stderr:
             for line in result.stderr.splitlines():
                 _log.error(line)
+            if conflicts_out is not None:
+                conflicts_out.update(file_conflict_culprits(result.stderr))
         elif interactive:
             # Interactive runs inherit pacman's streams so the conflict prompt
             # works, which means its diagnostics went to the terminal and not

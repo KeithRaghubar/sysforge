@@ -2774,3 +2774,43 @@ def test_result_summary_carries_via_labels():
     assert summary.labels == {
         "adwaita-icon-theme-git": "adwaita-icon-theme-git (via adwaita-cursors-git)",
     }
+
+
+def test_file_conflict_installs_the_rest_and_reports_the_refusal(
+    update_scenario, capsys,
+):
+    """3.2.0-B32/B33 through the real update verb: one artifact trips a
+    pacman file conflict. The other still installs, the summary names the
+    refused package under "Built, NOT installed" with pacman's reason, and the
+    run exits 1. (The harness's faked build writes no build_state, so B34's
+    revert is covered in test_build_core.)"""
+    update_scenario.use_pkgdest()
+    for base in ("aa", "bb"):
+        update_scenario.add_pkg(base, f"pkgname={base}\npkgver=2\npkgrel=1\n")
+        update_scenario.record(base, "1", "1")
+        update_scenario.build_produces(
+            base, {f"{base}-2-1-x86_64.pkg.tar.zst": base},
+        )
+    bb_file = str(update_scenario.pkgdest / "bb-2-1-x86_64.pkg.tar.zst")
+    update_scenario.fake_run.respond(
+        lambda cmd: "pacman -U" in " ".join(map(str, cmd)) and bb_file in cmd,
+        returncode=1,
+        stderr=("error: failed to commit transaction (conflicting files)\n"
+                "bb: /etc/bb.conf exists in filesystem\n"),
+    )
+
+    update_scenario.run(
+        _make_args(no_toolchain_preflight=True),
+        installed={"aa": "1-1", "bb": "1-1"}, foreign={"aa": "1-1", "bb": "1-1"},
+    )
+
+    calls = update_scenario.installed_pkg_files()
+    assert [sorted(Path(f).name for f in c) for c in calls] == [
+        ["aa-2-1-x86_64.pkg.tar.zst", "bb-2-1-x86_64.pkg.tar.zst"],
+        ["aa-2-1-x86_64.pkg.tar.zst"],
+    ]
+    out = "".join(capsys.readouterr())
+    assert "1 built, 1 NOT installed," in out
+    assert "Built, NOT installed:" in out
+    assert "/etc/bb.conf exists in filesystem" in out
+    assert update_scenario.exit_code == 1
