@@ -99,6 +99,7 @@ canonical ordering.
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.2.0-F15` | a built package can place config where its consumer will never read it, and nothing looks | med | small | minor |
+| `3.2.0-F17` | a non-default base_config replaces the PKGBUILD's config wholesale, so symbols new to this kernel land on kconfig defaults rather than the PKGBUILD's choices | med | small | minor |
 | `3.2.0-STD1` | the release preflight does not type-check, so pyright errors accumulate between releases | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
@@ -648,6 +649,31 @@ canonical ordering.
   directories and their specs (`pam.d(5)`, `sudoers.d` via `sudoers(5)`, `sysusers.d(5)`,
   `tmpfiles.d(5)`, `ld.so.conf(5)`), enforced by the lint's own tests — the row is the table's
   citation, so it lands with the check rather than ahead of it.
+
+---
+
+- **`3.2.0-F17` — a non-default `base_config` replaces the PKGBUILD's config wholesale, so symbols
+  new to this kernel land on kconfig defaults rather than the PKGBUILD's choices.** The seed step
+  (`kconfig_plan.base_seed_step`) runs `cp sysforge.base.config .config` then `make olddefconfig`,
+  spliced after the PKGBUILD's own config setup — so at that point `.config` holds the packager's
+  config, and the `cp` discards it. With `base_config = "running"` across a version bump, every
+  symbol the running kernel's config doesn't mention (anything new in this release) resolves to
+  the upstream Kconfig default instead of the PKGBUILD's value. The workflow this breaks is "keep my
+  config, but adopt the packager's decisions for what's new." Add `base_config_merge = "replace" |
+  "overlay"` (`kernel.toml`, default `"replace"` so `running` keeps meaning *exactly my config*;
+  CLI override alongside `--base-config`). `"overlay"` renders the seed as
+  `./scripts/kconfig/merge_config.sh -m .config "$startdir/sysforge.base.config"` — the same
+  helper `fragment_merge_step` already uses — so the base wins every symbol it names, including
+  explicit `# CONFIG_X is not set` lines, and the PKGBUILD fills the rest before `olddefconfig`.
+  Known semantic edge, to document on the key: a symbol absent from the base because its
+  dependencies were off (not because the operator disabled it) takes the PKGBUILD's value when
+  those dependencies are now on. A cooperating PKGBUILD (one already calling `merge_config.sh`)
+  drops the PRE slots including the seed, so the key is inert there — the resolution summary's
+  `base cfg:` line should say so rather than imply it applied. Tests: seed-step rendering per mode,
+  the drop-rule interaction, and the `kernel.toml`/fixture parity `make check-shipped` enforces.
+  *Priority: med · Effort: small · Bump: minor* — med because it is a live gap in the running-config
+  workflow on every kernel version bump; small because the seam, the merge helper and the
+  config-key plumbing (`resolve_base_config`) all exist, leaving a mode switch on one step builder.
 
 ---
 
