@@ -108,6 +108,7 @@ canonical ordering.
 | `3.2.0-F4` | Relocate makepkg_wrapper out of the leaf layer | med | medium | patch |
 | `3.2.0-F9` | the mesa PGO rebuild suppresses its own staleness diagnostic, so a drifting profile is unobservable | med | medium | minor |
 | `3.2.0-F10` | nothing verifies that a freshly installed locally-built mesa actually initialises | med | medium | minor |
+| `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
@@ -674,6 +675,38 @@ canonical ordering.
   *Priority: med · Effort: small · Bump: minor* — med because it is a live gap in the running-config
   workflow on every kernel version bump; small because the seam, the merge helper and the
   config-key plumbing (`resolve_base_config`) all exist, leaving a mode switch on one step builder.
+
+---
+
+- **`3.2.0-F18` — build inputs applied outside the resolved profile never register as drift, so
+  changing them leaves stale packages installed silently.** Flag drift (Phase 4.3) compares only
+  `serialize_effective_flags`, and `SYSFORGE_KEYS` rightly excludes the scheduling/throttle keys
+  that cannot change output. But several settings *do* change the built artifact and reach the build
+  through seams the profile never sees: `sysforge.toml [build] python` (the interpreter pinned by
+  `makepkg_env.resolve_build_python` — a Python package built against one minor version installs
+  into that version's `site-packages`, so a pin change or a system Python bump breaks it with no
+  signal), `[mesa] filter_drivers`/`gallium`/`vulkan` and `toolchain.toml [llvm] targets` (both
+  patched into the PKGBUILD by `_maybe_patch_mesa_drivers` / `_maybe_patch_llvm_targets`, and both
+  auto-detected from the hardware profile, so a GPU swap changes them too — the hardware stage
+  reports the diff but nothing links it to a rebuild), and the PGO flag spliced in via
+  `effective_flags_extra` (`--pgo=use` / store reuse), which bypasses `flags_string`. Record a
+  second per-package field, `build_inputs`, at `_record_build_state` — the resolved values
+  themselves, not a hash, so `--explain-drift` can render a per-key diff in `flag_drift.diff_flags`'
+  `+added` / `-removed` vocabulary — and re-derive it at drift time through the same resolvers
+  (`resolve_build_python`, `resolve_or_detect_mesa_drivers`, `resolve_or_detect_llvm_targets`), the
+  B11 one-function-both-sides rule. For Python, record the interpreter's `major.minor` rather than
+  its path so a patch-level system update does not drift every package. Surface it as a sub-axis of
+  flag drift (same reporting, same `--rebuild-on-flag-drift` promotion) rather than a fourth CLI
+  axis; a missing field on pre-existing entries reads as "unknown, not drifted" so the upgrade does
+  not flag the whole build_state at once. Out of scope: `kernel.toml` kconfig inputs (stage-owned,
+  rebuilt explicitly by `run kernel`, and already diffed request-vs-result by
+  `_gate2_kconfig_drift`) and the LLVM PGO/BOLT settings the toolchain stage owns; LLVM's `targets`
+  lands only in the build-state-wide fold, reported with the owning-stage hint like any other
+  stage-owned entry. Tests: record/re-derive parity per input, the missing-field no-drift upgrade
+  path, python `major.minor` normalisation, and one gcc-path + one llvm-path case for the PGO input.
+  *Priority: med · Effort: medium · Bump: minor* — med because each case is a silent-stale-artifact
+  class, the python one reachable by an ordinary distro update; medium because four inputs each need
+  a record site and a re-derive site, plus a build_state schema field and the fold/explain plumbing.
 
 ---
 
