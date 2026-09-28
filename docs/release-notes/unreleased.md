@@ -1,6 +1,6 @@
 # sysforge (unreleased)
 
-The build sandbox now carries a real build end to end (the profile's compiler, linker, PGO profiles and source-built dependencies all reach the container), backed by a pre-install ABI gate that refuses a package linked against the wrong build of a source-built library; plus a progress bar that stays live through long builds with elapsed time and an ETA, `artifact review --all`, an itemized `pacman -Syu` summary, and a modularization pass that splits the toolchain and kernel stages into packages.
+The build sandbox now carries a real build end to end (the profile's compiler, linker, PGO profiles and source-built dependencies all reach the container), backed by a pre-install ABI gate that refuses a package linked against the wrong build of a source-built library; plus a progress bar that stays live through long builds with elapsed time and an ETA, in-line installed markers in `search`, `artifact review --all`, an itemized `pacman -Syu` summary, and a modularization pass that splits the toolchain and kernel stages into packages. Installs now isolate a conflicting file to its own package and keep `build_state` honest when pacman refuses one, and `localmodconfig` kernel trimming works unattended.
 
 ## Added
 
