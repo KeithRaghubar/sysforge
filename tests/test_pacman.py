@@ -1305,3 +1305,25 @@ class TestFileConflictCulprits:
         conflicts: dict = {}
         assert batch_install_pkgs([p], conflicts_out=conflicts) is False
         assert set(conflicts) == {"cosmic-greeter-git", "foo-git"}
+
+
+# ---------------------------------------------------------------------------
+# get_package_dates (3.2.0-B22)
+# ---------------------------------------------------------------------------
+
+def test_get_package_dates_reads_build_and_install_dates(tmp_path):
+    from sysforge.primitives.pacman import get_package_dates
+
+    entry = tmp_path / "mesa-1:26.2.2-1"
+    entry.mkdir()
+    (entry / "desc").write_text(
+        "%NAME%\nmesa\n\n%VERSION%\n1:26.2.2-1\n\n"
+        "%BUILDDATE%\n1757000000\n\n%INSTALLDATE%\n1757100000\n"
+    )
+    assert get_package_dates("mesa", root=tmp_path) == (1757000000, 1757100000)
+
+
+def test_get_package_dates_none_when_not_installed(tmp_path):
+    from sysforge.primitives.pacman import get_package_dates
+
+    assert get_package_dates("ghost", root=tmp_path) == (None, None)

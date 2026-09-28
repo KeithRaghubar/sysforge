@@ -62,3 +62,29 @@ def test_execute_removes_then_forgets_and_reconciles(tmp_path, monkeypatch):
     assert res.exit_code == 0
     assert order[0] == ("remove", ["mesa-sysforge"], [])
     assert order[1] == ("forget", ["mesa-sysforge"])  # forget runs after removal
+
+
+def test_execute_names_a_profile_store_the_uninstall_leaves_behind(
+        tmp_path, monkeypatch, capsys):
+    from sysforge import state_cmd
+
+    bs = _bs(tmp_path, {
+        "mesa-sysforge": {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+                          "origin_pkgbase": "mesa"},
+    })
+    bs.save()
+    monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
+                        lambda names, extra_flags=None: None)
+    monkeypatch.setattr(uninstall_cmd, "forget_packages", lambda state_dir, pkgnames: None)
+    monkeypatch.setattr(uninstall_cmd.install_reconcile, "external_install_targets",
+                        lambda: set())
+    seen = []
+    monkeypatch.setattr(state_cmd, "orphaned_profile_lines",
+                        lambda names: seen.append(set(names)) or ["profile store kept: /s"])
+    verb = uninstall_cmd.UninstallVerb()
+    args = SimpleNamespace(packages=["mesa"], pacman_flags=[], state_dir=str(tmp_path))
+    pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, ["mesa"]),
+                              "state_dir": str(tmp_path)})
+    verb.execute(args, pre)
+    assert seen and "mesa" in seen[0]
+    assert "profile store kept: /s" in "".join(capsys.readouterr())

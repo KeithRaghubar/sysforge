@@ -322,3 +322,120 @@ def test_effective_build_dir_falls_back_to_pkgbuild_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("BUILDDIR", raising=False)
     monkeypatch.setattr(config, "parse_system_makepkg_conf", lambda: {})
     assert makepkg_env._effective_build_dir(pkgbuild, {}) == pkgbuild_dir
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B37 — the kernel gates must look where the build actually ran
+# ---------------------------------------------------------------------------
+
+def test_build_root_expands_profile_builddir_and_keys_on_pkgbase(tmp_path, monkeypatch):
+    from sysforge.primitives import makepkg_env
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        config, "parse_system_makepkg_conf", lambda: {"BUILDDIR": "/tmp/makepkg"}
+    )
+    # Profile BUILDDIR wins over the system conf, and the tree is named after
+    # the post-rename pkgbase, never the checkout dir.
+    root = makepkg_env.build_root({"BUILDDIR": "$HOME/builds"}, "linux-sysforge")
+    assert root == tmp_path / "builds" / "linux-sysforge"
+
+
+def test_build_root_falls_back_to_system_conf(tmp_path, monkeypatch):
+    from sysforge.primitives import makepkg_env
+
+    monkeypatch.delenv("BUILDDIR", raising=False)
+    monkeypatch.setattr(
+        config, "parse_system_makepkg_conf", lambda: {"BUILDDIR": str(tmp_path)}
+    )
+    assert makepkg_env.build_root({}, "linux") == tmp_path / "linux"
+
+
+def test_build_root_none_without_any_builddir(monkeypatch, no_conf):
+    from sysforge.primitives import makepkg_env
+
+    monkeypatch.delenv("BUILDDIR", raising=False)
+    assert makepkg_env.build_root({}, "linux") is None
+
+
+def test_kernel_resolve_built_config_prefers_reported_build_dir(tmp_path, monkeypatch):
+    """A renamed pkgbase under a profile BUILDDIR the system conf doesn't know."""
+    from sysforge.pipeline.stages.kernel import gates as kernel
+
+    pkgbuild_dir = tmp_path / "src" / "linux"
+    pkgbuild_dir.mkdir(parents=True)
+    build_dir = tmp_path / "builds" / "linux-sysforge"
+    cfg = build_dir / "src" / "linux-7.1.6" / ".config"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("CONFIG_FOO=y\n")
+
+    monkeypatch.delenv("BUILDDIR", raising=False)
+    monkeypatch.setattr(
+        config, "parse_system_makepkg_conf",
+        lambda: {"BUILDDIR": str(tmp_path / "system-builddir")},
+    )
+    assert kernel.resolve_built_config(pkgbuild_dir) is None
+    assert kernel.resolve_built_config(pkgbuild_dir, build_dir=build_dir) == cfg
+
+
+def test_kernel_gate2_missing_tree_after_fresh_build_is_fatal(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import gates as kernel
+
+    monkeypatch.setattr(kernel, "resolve_built_config", lambda d, **kw: None)
+    with pytest.raises(RuntimeError, match="Gate 2"):
+        kernel.gate2_audit(
+            tmp_path, [], skip_boot_audit=False, build_dir=tmp_path / "gone",
+        )
+
+
+def test_kernel_gate2_missing_tree_without_fresh_build_only_warns(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import gates as kernel
+
+    monkeypatch.setattr(kernel, "resolve_built_config", lambda d, **kw: None)
+    # AlreadyBuilt path: no build dir was reported, so there is no tree to
+    # demand — stays the existing warning.
+    assert kernel.gate2_audit(tmp_path, [], skip_boot_audit=False) is None
+
+
+@pytest.mark.parametrize(("pkgmeta", "rename", "expected"), [
+    # A rename ran: its post-rename pkgbase is what makepkg names the tree.
+    ({"globals": {"pkgbase": "linux"}},
+     {"renamed_pkgbase": "linux-sysforge", "renamed_pkgnames": ["linux-sysforge"]},
+     "linux-sysforge"),
+    # Renamed, but no pkgbase global: makepkg defaults to pkgname[0].
+    ({"globals": {"pkgname": ["mesa"]}},
+     {"renamed_pkgbase": None, "renamed_pkgnames": ["mesa-sysforge"]},
+     "mesa-sysforge"),
+    ({"globals": {"pkgbase": "linux-zen"}}, None, "linux-zen"),
+    ({"globals": {"pkgname": ["foo", "foo-docs"]}}, None, "foo"),
+    ({}, None, "checkout"),
+])
+def test_built_pkgbase_follows_makepkg_naming(tmp_path, pkgmeta, rename, expected):
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild = tmp_path / "checkout" / "PKGBUILD"
+    assert makepkg_wrapper._built_pkgbase(pkgmeta, rename, pkgbuild) == expected
+
+
+def test_post_build_layout_check_scoped_to_this_build(tmp_path, monkeypatch):
+    """3.2.0-F15: the payload-layout lint sees only this build's artifacts,
+    same scoping rule as the ABI report (3.2.0-B29)."""
+    from sysforge.primitives import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "cosmic-greeter-git"
+    pkgbuild_dir.mkdir()
+    (pkgbuild_dir / "PKGBUILD").write_text(
+        "pkgname=cosmic-greeter-git\npkgver=1.8.0\n")
+    pkgdest = tmp_path / "pkgs"
+    mine = _touch_pkg(
+        pkgdest, "cosmic-greeter-git-1.8.0.r9.gbbf553e-1-x86_64.pkg.tar")
+    _touch_pkg(pkgdest, "cosmic-comp-git-1.3.0.r10.g9b5a2a0-1-x86_64.pkg.tar")
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+
+    seen = []
+    monkeypatch.setattr(
+        "sysforge.primitives.payload_layout.report_payload_layout",
+        lambda pkgs: seen.extend(pkgs))
+
+    makepkg_wrapper._post_build_layout_check(pkgbuild_dir)
+    assert set(seen) == {mine}

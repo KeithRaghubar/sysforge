@@ -842,6 +842,22 @@ Skip the y/N prompt when pruning.\& Implies \-\-prune.\&
 Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 .RE
+.SS state profiles
+.PP
+\fBsysforge state profiles\fR [\fIOPTIONS\fR]
+.PP
+List the collected optimization profiles (PGO, AutoFDO, Propeller, BOLT) with size, age and collected version.\& Read\-only unless \-\-purge.\&
+.PP
+\fB\-\-purge\fR \fISTORE\fR
+.RS 4
+Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo\-mesa, pgo/htop); asks for confirmation, refuses without a TTY.\& A later rebuild is then unprofiled until you collect again.\&
+.PP
+.RE
+\fB\-\-no\-pager\fR
+.RS 4
+Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+.PP
+.RE
 .SS state failed
 .PP
 \fBsysforge state failed\fR [\fIOPTIONS\fR]
@@ -856,6 +872,11 @@ Override state directory.\&
 \fB\-\-no\-pager\fR
 .RS 4
 Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+.PP
+.RE
+\fB\-\-names\fR
+.RS 4
+Print only the failed pkgbases, one per line, with no header and no pager (empty when none), for retrying them: sysforge build $(sysforge state failed \-\-names).\&
 .PP
 .RE
 \fB\-\-clear\fR \fIPKGBASE\fR
@@ -1473,6 +1494,11 @@ Override kernel.\&toml bootloader for this invocation (systemd\-boot is the defa
 \fB\-\-base\-config\fR \fISRC\fR
 .RS 4
 Override kernel.\&toml base_config for this run: the starting .\&config before the sysforge.\&config fragment overlay.\& One of '\&pkgbuild'\& (the PKGBUILD'\&s own base), '\&running'\& (the running kernel'\&s config), or a path to a .\&config file.\& Resolution order: this flag > kernel.\&toml base_config > '\&pkgbuild'\& default.\&
+.PP
+.RE
+\fB\-\-base\-config\-merge\fR \fIBASE_CONFIG_MERGE\fR
+.RS 4
+Override kernel.\&toml base_config_merge for this run: '\&replace'\& (default) copies the base over the PKGBUILD'\&s .\&config; '\&overlay'\& merges it on top, so symbols the base does not mention (e.\&g.\& new in this kernel) keep the PKGBUILD'\&s values instead of kconfig defaults.\&
 .PP
 .RE
 \fB\-\-headers\fR, \fB\-\-no\-headers\fR

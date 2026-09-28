@@ -149,6 +149,23 @@ def resolve_env_vars(resolved_profile, active_consumes=None):
     return result
 
 
+def build_root(resolved_profile, pkgbase: str) -> Path | None:
+    """Return ``$BUILDDIR/<pkgbase>`` as the build will actually use it.
+
+    The profile's ``BUILDDIR`` (what ``emit_makepkg_conf`` writes into the temp
+    conf) wins over env / system ``makepkg.conf``. ``pkgbase`` must be the
+    authoritative post-rename name — makepkg names the tree after it, not after
+    the checkout dir (3.2.0-B37). ``None`` when no ``BUILDDIR`` is set anywhere
+    (makepkg then builds in the PKGBUILD dir).
+    """
+    from sysforge.primitives.pacman import get_builddir
+
+    builddir = resolved_profile.get("BUILDDIR") or get_builddir()
+    if not builddir:
+        return None
+    return Path(os.path.expandvars(str(builddir))).expanduser() / pkgbase
+
+
 def _effective_build_dir(pkgbuild_path, resolved_profile) -> Path:
     """Return the directory makepkg actually built in, for side-car diagnosis.
 
@@ -158,17 +175,10 @@ def _effective_build_dir(pkgbuild_path, resolved_profile) -> Path:
     the PKGBUILD dir name as the pkgbase (true for AUR ``-git`` checkouts) and
     falls back to the PKGBUILD dir when that candidate doesn't exist.
     """
-    from sysforge.primitives.pacman import get_builddir
-
     pkgbuild_dir = Path(pkgbuild_path).parent
-    # Per-build profile override wins; otherwise resolve from env/system
-    # makepkg.conf (a user may set BUILDDIR only in /etc/makepkg.conf).
-    builddir = resolved_profile.get("BUILDDIR") or get_builddir()
-    if builddir:
-        expanded = Path(os.path.expandvars(str(builddir))).expanduser()
-        candidate = expanded / pkgbuild_dir.name
-        if (candidate / "src").is_dir():
-            return candidate
+    candidate = build_root(resolved_profile, pkgbuild_dir.name)
+    if candidate is not None and (candidate / "src").is_dir():
+        return candidate
     return pkgbuild_dir
 
 

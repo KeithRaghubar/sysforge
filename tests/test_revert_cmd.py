@@ -208,3 +208,27 @@ def test_execute_dry_run_mutates_nothing(tmp_path, monkeypatch):
         verb.execute(_args(dry_run=True), pre)
     reinstall.assert_not_called()
     forget.assert_not_called()
+
+
+def test_execute_names_a_profile_store_the_revert_leaves_behind(
+        tmp_path, monkeypatch, capsys):
+    """3.2.0-F11: the store is kept (a bisect must not cost the workload) but
+    no longer silently orphaned — keyed on the pre-rename pkgbase."""
+    from sysforge import state_cmd
+
+    verb = revert_cmd.RevertToStockVerb()
+    monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
+    bs = BuildState(tmp_path)
+    bs._data["mesa-sysforge"] = {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+                                 "origin_pkgbase": "mesa"}
+    bs.save()
+    seen = []
+    monkeypatch.setattr(state_cmd, "orphaned_profile_lines",
+                        lambda names: seen.append(set(names)) or ["profile store kept: /s"])
+    with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs"), \
+         patch.object(revert_cmd.pacman, "remove_pkgs"), \
+         patch.object(revert_cmd, "forget_packages"):
+        pre = verb.pre_check(_args(packages=["mesa-sysforge"]))
+        verb.execute(_args(packages=["mesa-sysforge"]), pre)
+    assert seen and "mesa" in seen[0]
+    assert "profile store kept: /s" in "".join(capsys.readouterr())

@@ -16,8 +16,8 @@ Neither is a superset of the other, which is the usual source of confusion.
 
 | Gate | `make pre-release` | `tools/release.sh` preflight |
 | --- | :---: | :---: |
-| `lint` (ruff + shellcheck) | yes | — |
-| `typecheck` (pyright) | yes | — |
+| `lint` (ruff + shellcheck) | yes | yes |
+| `typecheck` (pyright) | yes | yes |
 | `test` (full suite) | yes | — |
 | `check-shipped` | yes | yes |
 | `check-personal` | yes | yes |
@@ -30,8 +30,8 @@ Neither is a superset of the other, which is the usual source of confusion.
 
 `make pre-release` holds the slow, version-*independent* checks so they run on any branch at any
 time. The release script holds the version-*dependent* ones — they need the target version, which
-does not exist until a bump level is chosen — plus the repo and signing preconditions. The five
-shared gates are re-run by the script deliberately: it cannot assume `pre-release` ran recently, and
+does not exist until a bump level is chosen — plus the repo and signing preconditions. The shared
+gates are re-run by the script deliberately: it cannot assume `pre-release` ran recently, and
 stale generated files discovered *after* the tag cost a `release-resume` cycle.
 
 Neither runner covers coverage, CVE audit, or the VM/container tiers. Those are stages 3 and 4
@@ -81,7 +81,7 @@ git status --short      # commit anything that moved
 ## Stage 3 — Static gates
 
 ```bash
-make pre-release        # lint + typecheck + test + the five shared checks
+make pre-release        # lint + typecheck + test + the five shared check-* gates
 make coverage-ratchet   # coverage floor — not in any gate
 make audit              # dependency CVEs — not in any gate
 ```

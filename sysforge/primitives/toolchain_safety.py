@@ -380,6 +380,27 @@ def _llvm_init_target(sym: str) -> str | None:
     return m.group("target") if m else None
 
 
+def _consumer_built_after_libllvm(consumer: Path, libllvm: Path) -> bool:
+    """True when the consumer's package was *built* after the installed
+    libLLVM's package was *installed* (3.2.0-B22).
+
+    Then the consumer cannot have been linked against the libLLVM now on disk
+    and later stranded by it — it was linked against a different build (e.g.
+    the repo libLLVM a sandbox container resolved), and rebuilding it the same
+    way reproduces the break. False whenever a date or owner is unknown, so
+    the caller keeps the long-standing advice.
+    """
+    from sysforge.primitives import pacman
+
+    owners = pacman.owners_of([consumer, libllvm])
+    c_pkg, l_pkg = owners.get(consumer), owners.get(libllvm)
+    if not c_pkg or not l_pkg:
+        return False
+    built, _ = pacman.get_package_dates(c_pkg)
+    _, installed = pacman.get_package_dates(l_pkg)
+    return built is not None and installed is not None and built > installed
+
+
 def _diff_consumers_against_libllvm(
     libllvm_path: Path, *, source_label: str,
 ) -> list[ToolchainFinding]:
@@ -450,6 +471,28 @@ def _diff_consumers_against_libllvm(
                     "automatically — check toolchain.toml [llvm] targets for an "
                     "explicit override that omits them). To recover a system "
                     "already in this state, reinstall the official llvm-libs.",
+                    is_brick=True,
+                ))
+            elif source_label == "installed" and _consumer_built_after_libllvm(
+                consumer, libllvm_path,
+            ):
+                # Same symptom, other cause: the consumer is newer than the
+                # libLLVM it runs against, so it was never linked against this
+                # one. Rebuilding it the same way reproduces the break
+                # (3.2.0-B22).
+                findings.append(ToolchainFinding(
+                    SEV_ERROR, "libllvm_consumer_symbols",
+                    f"{consumer.name} links {new_soname} but imports "
+                    f"{len(missing)} libstdc++ symbol(s) from the LLVM version "
+                    f"namespace that the installed libLLVM does not export: "
+                    f"{shown}{more}. Its package was built after this libLLVM "
+                    "was installed, so it was linked against a different build "
+                    "of libLLVM (e.g. the repo one inside a sandbox container). "
+                    "Until fixed mesa EGL/GL fails to load (desktop black-screens).",
+                    "Do not rebuild it the same way — check how it was built "
+                    "(a sandboxed build must inject the host's libLLVM; see "
+                    "[security] sandbox_builds). Meanwhile restore the stock "
+                    "package: sudo pacman -S <consumer package>.",
                     is_brick=True,
                 ))
             else:

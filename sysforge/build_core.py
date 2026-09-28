@@ -116,6 +116,9 @@ class BuildOutcome:
     # F38: repo + AUR dependency pkgnames installed as a build prerequisite
     # by prepare_deps, surfaced in the end-of-run summary as their own category.
     installed_deps: list[str] = field(default_factory=list)
+    # 3.2.0-F15: payload-layout findings from this run's builds, for the
+    # end-of-run summary (the mid-run warning is -v only).
+    layout_findings: list[str] = field(default_factory=list)
 
 
 def target_from_pkgbuild(pkgbuild_path) -> BuildTarget:
@@ -702,6 +705,57 @@ def _source_built_abi_skew(pkg_files: list, state_dir) -> list:
         return []
 
 
+# The libLLVM package itself and the soname/package deps that mark a consumer.
+_LIBLLVM_PKGNAMES = frozenset({"llvm-libs", "llvm"})
+
+
+def _links_libllvm(pkgname: str) -> bool:
+    """Whether an installed package is libLLVM or declares a dependency on it."""
+    from sysforge.primitives import pacman
+
+    if pkgname in _LIBLLVM_PKGNAMES:
+        return True
+    for dep in pacman.get_package_depends(pkgname):
+        name = dep.split(">", 1)[0].split("<", 1)[0].split("=", 1)[0]
+        if name == "llvm-libs" or name.startswith("libLLVM"):
+            return True
+    return False
+
+
+def _post_install_libllvm_check(installed_files: list) -> list:
+    """Re-verify libLLVM consumers after an install touched libLLVM (3.2.0-B21).
+
+    The pre-install skew gate (3.2.0-B20) reads the package archive; this is the
+    backstop for what only the *installed* file set shows (a split member with
+    another soname, a dep JIT-installed mid-batch). Runs the toolchain stage's
+    own post-install fact, ``check_installed_consumer_symbols``, only when an
+    installed package is libLLVM or depends on it, and reports each finding as
+    an error. Post-install and advisory: the packages are already in place, so
+    it names the rollback rather than undoing anything. Never raises.
+    """
+    from sysforge.primitives import toolchain_safety
+
+    try:
+        names = {read_pkgname_from_file(f) for f in installed_files}
+        if not any(n and _links_libllvm(n) for n in names):
+            return []
+        findings = toolchain_safety.check_installed_consumer_symbols()
+    except Exception as exc:  # noqa: BLE001 — advisory backstop
+        _log.warn(f"post-install libLLVM consumer check could not run: {exc}")
+        return []
+    for f in findings:
+        _log.error(f"post-install: {f.message}")
+    if findings:
+        _log.error(
+            "post-install: a libLLVM consumer no longer resolves its symbols — "
+            "the desktop may fail to start on next login. Restore the prior "
+            "version from the pre-build snapshot or with "
+            "`sudo pacman -U /var/cache/pacman/pkg/<previous package>`, then "
+            "run `sysforge doctor --graphics`."
+        )
+    return findings
+
+
 def _refuse_skewed_install(target, findings: list, state_dir, outcome) -> None:
     """Record a target whose artifacts failed :func:`_source_built_abi_skew`."""
     libs = sorted({lib for f in findings for lib in f.libs})
@@ -789,7 +843,9 @@ def build_and_install(
         AlreadyBuilt,
     )
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
+    from sysforge.primitives import payload_layout
     reset_session()
+    payload_layout.reset_session()
 
     # ── PKGBUILD review gate ──────────────────────────────────────────────
     # For the `build` path (sync_source=True) the wrapper's inline sync hasn't
@@ -1129,6 +1185,8 @@ def build_and_install(
         )
     not_installed.update(final_refused)
     outcome.built_pkg_files = jit_files + installed_now
+    outcome.layout_findings = payload_layout.session_findings()
+    _post_install_libllvm_check(outcome.built_pkg_files)
     if not_installed:
         outcome.install_failed = True
         outcome.not_installed = not_installed_by_pkgbase(not_installed, {

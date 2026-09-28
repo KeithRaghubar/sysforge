@@ -51,6 +51,10 @@ KIND_REPO_CHECKOUT = "repo_checkout"
 KIND_SOURCE_FETCH = "source_fetch"
 KIND_VCS_PEEK = "vcs_peek"
 KIND_VCS_RESOLVE = "vcs_resolve"
+# `gpg --recv-keys` for a PKGBUILD's validpgpkeys (3.1.0-F8). Its own kind: it
+# is not code ingress but it decides which signer makepkg will accept, so the
+# freeze must cover it and a future policy may treat it separately.
+KIND_KEY_FETCH = "key_fetch"
 
 
 @dataclass(frozen=True)

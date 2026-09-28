@@ -168,6 +168,22 @@ pkgname = "linux-sysforge"
 #   so the injected seed is a runtime no-op.
 #base_config = "pkgbuild"
 
+# base_config_merge — default: "replace" — how a "running"/<path> base meets
+#   the PKGBUILD's own config:
+#     "replace" → the base is copied over the PKGBUILD's .config, so
+#                 base_config = "running" means exactly your config; symbols
+#                 new in this kernel land on upstream Kconfig defaults
+#     "overlay" → the base is merged onto the PKGBUILD's .config
+#                 (merge_config.sh -m): the base wins every symbol it names,
+#                 including "# CONFIG_X is not set", and the PKGBUILD's
+#                 choices fill the rest — "keep my config, adopt the
+#                 packager's decisions for what's new"
+#   Edge: a symbol missing from the base only because its dependencies were
+#   off takes the PKGBUILD's value once they are on. Inert for a PKGBUILD that
+#   runs its own merge_config.sh (the resolution summary says so). CLI
+#   override: --base-config-merge.
+#base_config_merge = "replace"
+
 # kconfig_merge — default: true — write the sysforge.config fragment
 #   (device + hardware + manual entries) for the PKGBUILD to merge. Set false
 #   to skip the fragment entirely; this also disables the post-build drift

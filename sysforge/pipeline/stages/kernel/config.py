@@ -299,6 +299,7 @@ class KernelConfig:
 
     # kconfig authoring
     base_config: str = "pkgbuild"
+    base_config_merge: str = "replace"
     kconfig_merge: bool = True
     kconfig_targets: list | None = None
     device_kconfig: bool = True
@@ -334,6 +335,7 @@ class KernelConfig:
             build_headers=bool(data.get("build_headers", True)),
             build_docs=bool(data.get("build_docs", False)),
             base_config=str(data.get("base_config", "pkgbuild")),
+            base_config_merge=str(data.get("base_config_merge", "replace")),
             kconfig_merge=bool(data.get("kconfig_merge", True)),
             kconfig_targets=data.get("kconfig_targets"),
             device_kconfig=bool(data.get("device_kconfig", True)),

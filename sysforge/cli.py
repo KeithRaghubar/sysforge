@@ -63,6 +63,7 @@ from sysforge.state_cmd import (
     StateForgetVerb,
     StateListVerb,
     StateOrphansVerb,
+    StateProfilesVerb,
     StateRepairVerb,
 )
 from sysforge.uninstall_cmd import UninstallVerb
@@ -895,6 +896,17 @@ def _add_state_parser(sub):
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
     p_orphans.set_defaults(verb_cls=StateOrphansVerb)
 
+    p_profiles = state_sub.add_parser("profiles",
+        help="List the collected optimization profiles (PGO, AutoFDO, Propeller, "
+             "BOLT) with size, age and collected version. Read-only unless --purge.")
+    p_profiles.add_argument("--purge", metavar="STORE", dest="purge",
+        help="Delete one profile store, METHOD or METHOD/TARGET as listed "
+             "(e.g. pgo-mesa, pgo/htop); asks for confirmation, refuses without "
+             "a TTY. A later rebuild is then unprofiled until you collect again.")
+    p_profiles.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+    p_profiles.set_defaults(verb_cls=StateProfilesVerb)
+
     p_failed = state_sub.add_parser("failed",
         help="List packages whose last build failed (recorded in build_state.toml), "
              "with any diagnosed fix. Entries auto-clear on the next successful build.")
@@ -902,6 +914,10 @@ def _add_state_parser(sub):
         help="Override state directory.")
     p_failed.add_argument("--no-pager", action="store_true", dest="no_pager",
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+    p_failed.add_argument("--names", action="store_true", dest="names",
+        help="Print only the failed pkgbases, one per line, with no header and no "
+             "pager (empty when none), for retrying them: "
+             "sysforge build $(sysforge state failed --names).")
     p_failed.add_argument("--clear", metavar="PKGBASE", dest="clear",
         help="Clear the recorded failure for PKGBASE and exit.")
     p_failed.add_argument("--clear-all", action="store_true", dest="clear_all",
@@ -1217,6 +1233,13 @@ def _add_run_parser(sub):
              "(the PKGBUILD's own base), 'running' (the running kernel's config), "
              "or a path to a .config file. Resolution order: this flag > "
              "kernel.toml base_config > 'pkgbuild' default.")
+    p_kernel.add_argument("--base-config-merge", choices=["replace", "overlay"],
+        dest="base_config_merge",
+        help="Override kernel.toml base_config_merge for this run: 'replace' "
+             "(default) copies the base over the PKGBUILD's .config; 'overlay' "
+             "merges it on top, so symbols the base does not mention (e.g. new "
+             "in this kernel) keep the PKGBUILD's values instead of kconfig "
+             "defaults.")
     p_kernel.add_argument("--headers",
         action=argparse.BooleanOptionalAction, default=None, dest="build_headers",
         help="Build the kernel -headers subpackage (default: on, per kernel.toml "
@@ -1577,6 +1600,9 @@ def _main():
         set_policy as set_sandbox_policy,
     )
     set_sandbox_policy(resolve_sandbox(_security_cfg))
+    # Keyserver key fetches (3.1.0-F8): confirm by default, fail closed off-TTY.
+    from sysforge.primitives.build_prep import set_key_fetch_policy
+    set_key_fetch_policy(auto=bool(_security_cfg.get("auto_fetch_pgp_keys", False)))
     from sysforge.primitives.build_throttle import set_run_override
     set_run_override(_resolve_throttle_override(args))
     if getattr(args, "dry_run", False):

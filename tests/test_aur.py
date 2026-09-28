@@ -1855,3 +1855,108 @@ def test_fetch_aur_name_cache_creates_parent_dirs(tmp_path):
 
     assert result == cache
     assert cache.exists()
+
+
+# ---------------------------------------------------------------------------
+# 3.1.0-F8 — keyserver fetches: egress kind, echo, consent
+# ---------------------------------------------------------------------------
+
+_FPR = "0123456789ABCDEF0123456789ABCDEF01234567"
+_COLONS = (f"pub:-:4096:1:89ABCDEF01234567:1700000000:::-:::sc::::::23::0:\n"
+           f"fpr:::::::::{_FPR}:\n"
+           "uid:-::::1700000000::HASH::Upstream Maintainer <m@example.org>::::::::::0:\n")
+
+
+def _gpg_double(calls):
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "--list-keys" in cmd and "--with-colons" not in cmd:
+            return subprocess.CompletedProcess(cmd, 2)     # not in the keyring
+        if "--with-colons" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=_COLONS, stderr="")
+        if "--export" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"KEYDATA", stderr=b"")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    return fake_run
+
+
+def _real_keyring_imports(calls):
+    return [c for c in calls if "--import" in c and "--homedir" not in c]
+
+
+@pytest.fixture
+def _key_policy():
+    from sysforge.primitives import build_prep
+    yield build_prep.set_key_fetch_policy
+    build_prep.set_key_fetch_policy(auto=False)
+
+
+def test_key_fetch_is_its_own_egress_kind_and_obeys_the_freeze(tmp_path):
+    from sysforge.primitives import net_policy
+
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    net_policy.set_policy(net_policy.NetPolicy(frozen=True, thawed=frozenset()))
+    try:
+        with patch("subprocess.run", side_effect=_gpg_double(calls)):
+            with pytest.raises(net_policy.NetworkFrozen, match="key_fetch"):
+                import_pgp_keys({"globals": {"pkgbase": "foo",
+                                             "validpgpkeys": [_FPR]}}, pb)
+    finally:
+        net_policy.set_policy(net_policy.NetPolicy(frozen=False, thawed=frozenset()))
+    assert not any("--recv-keys" in c for c in calls)
+    assert net_policy.KIND_KEY_FETCH == "key_fetch"
+
+
+def test_non_interactive_fetch_fails_closed(tmp_path, capsys, _key_policy):
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    with patch("subprocess.run", side_effect=_gpg_double(calls)), \
+            patch("sysforge.primitives.prompt.is_interactive", return_value=False):
+        import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
+    assert _real_keyring_imports(calls) == []
+    text = "".join(capsys.readouterr())
+    assert _FPR in text and "foo" in text and "auto_fetch_pgp_keys" in text
+
+
+def test_interactive_fetch_echoes_the_key_and_imports_on_yes(tmp_path, capsys, _key_policy):
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    with patch("subprocess.run", side_effect=_gpg_double(calls)), \
+            patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
+            patch("sysforge.primitives.prompt.prompt_choice", return_value="y"):
+        import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
+    assert len(_real_keyring_imports(calls)) == 1
+    text = "".join(capsys.readouterr())
+    assert _FPR in text and "Upstream Maintainer" in text and "foo" in text
+
+
+def test_interactive_fetch_declined_imports_nothing(tmp_path, _key_policy):
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    with patch("subprocess.run", side_effect=_gpg_double(calls)), \
+            patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
+            patch("sysforge.primitives.prompt.prompt_choice", return_value="n"):
+        import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
+    assert _real_keyring_imports(calls) == []
+
+
+def test_auto_policy_imports_unattended_but_still_echoes(tmp_path, capsys, _key_policy):
+    _key_policy(auto=True)
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    with patch("subprocess.run", side_effect=_gpg_double(calls)), \
+            patch("sysforge.primitives.prompt.is_interactive", return_value=False):
+        import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
+    assert len(_real_keyring_imports(calls)) == 1
+    assert _FPR in "".join(capsys.readouterr())
+
+
+def test_recv_goes_to_a_throwaway_keyring_first(tmp_path, _key_policy):
+    pb = _fake_pkgbuild(tmp_path)
+    calls = []
+    with patch("subprocess.run", side_effect=_gpg_double(calls)), \
+            patch("sysforge.primitives.prompt.is_interactive", return_value=False):
+        import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
+    [recv] = [c for c in calls if "--recv-keys" in c]
+    assert "--homedir" in recv

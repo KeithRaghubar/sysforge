@@ -215,6 +215,8 @@ class ResultSummary:
     # 3.2.0-B31: pkgbase -> display label, only for split pkgbases whose
     # namesake member is not installed (``pkgbase (via member)``).
     labels: dict[str, str] = field(default_factory=dict)
+    # 3.2.0-F15: "<pkgfile>: <member> is nested…" lines from payload_layout.
+    layout_findings: list[str] = field(default_factory=list)
     # (pkgbase, installed_ver, upstream_ver, owner_stage)
     stage_owned_updates: list[tuple[str, str | None, str | None, str]] = field(
         default_factory=list
@@ -340,6 +342,10 @@ def _print_result_summary(
 
     if summary.failed_pkgs:
         _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])
+
+    if summary.layout_findings:
+        _section("Payload layout (installed, but never read by its consumer):",
+                 list(summary.layout_findings))
 
     if summary.cleansrc_failures:
         emit(

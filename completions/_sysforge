@@ -73,7 +73,7 @@ _sysforge_commands() {
     'resolve:show which profile would apply to a package'
     'env:print the inherited env chain'
     'log:page the unified or per-package sysforge log through $PAGER'
-    'state:inspect or repair build_state.toml (list, repair, orphans)'
+    'state:inspect build_state.toml, failures and profile stores'
     'artifact:inventory user-authored scripts, units, and pacman hooks'
     'setup:configure system integration (IgnoreGroup, pacman hooks)'
     'config:adopt .sfnew/.pacnew config companions (merge)'
@@ -435,6 +435,7 @@ _sysforge_state() {
         list)    _sysforge_state_list    ;;
         repair)  _sysforge_state_repair  ;;
         orphans) _sysforge_state_orphans ;;
+        profiles) _sysforge_state_profiles ;;
         failed)  _sysforge_state_failed  ;;
         forget)  _sysforge_state_forget  ;;
       esac
@@ -447,6 +448,7 @@ _sysforge_state_subcommands() {
     'list:tabulate build_state.toml entries'
     'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
     'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
+    'profiles:list collected optimization profiles (and optionally purge one)'
     'failed:list recorded build failures (with any diagnosed fix)'
     'forget:stop maintaining package(s) — delete their build_state record'
   )
@@ -466,6 +468,12 @@ _sysforge_state_orphans() {
     '--no-pager[do not pipe output through $PAGER]'
 }
 
+_sysforge_state_profiles() {
+  _arguments \
+    '--purge[delete one profile store (METHOD or METHOD/TARGET)]:store:(instr-pgo pgo-mesa pgo autofdo propeller bolt)' \
+    '--no-pager[do not pipe output through $PAGER]'
+}
+
 _sysforge_state_repair() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
@@ -476,6 +484,7 @@ _sysforge_state_failed() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
     '--no-pager[do not pipe output through $PAGER]' \
+    '--names[print only the failed pkgbases, one per line]' \
     '--clear[clear the recorded failure for PKGBASE]:pkgbase:_sysforge_state_names' \
     '--clear-all[clear all recorded failures]'
 }
@@ -618,6 +627,7 @@ _sysforge_run_kernel() {
     '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
     '--base-config[override kernel.toml base_config]:source:(pkgbuild running)' \
+    '--base-config-merge[override kernel.toml base_config_merge]:mode:(replace overlay)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
     '--skip-boot-audit[override the Gate-2 boot audit; dangerous]' \
     '--headers[build the -headers subpackage (default on)]' \

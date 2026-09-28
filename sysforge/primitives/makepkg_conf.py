@@ -75,7 +75,9 @@ def serialize_effective_flags(resolved_profile, *, kernel_build: bool = False,
     the string ``flag_drift`` re-resolves, so the two cannot diverge. Both pass
     the same ``kernel_build`` verdict: kernel builds keep the system conf's
     flag keys verbatim (``KERNEL_CLEAN_KEYS`` never reach ``profile_overrides``),
-    so no restoration happens for them either.
+    so no restoration happens for them either — and those keys are dropped
+    from the serialization, because a profile change to them cannot reach the
+    kernel build (it takes its optimisation from Kconfig; 3.2.0-B39).
 
     Note this makes the recorded flags depend on ``/etc/makepkg.conf``, which is
     outside sysforge's config: a distro update that changes the hardening
@@ -84,7 +86,9 @@ def serialize_effective_flags(resolved_profile, *, kernel_build: bool = False,
     Pure and non-logging; ``preserved_system_tokens={}`` disables the pass.
     """
     if kernel_build:
-        return serialize_flags(resolved_profile)
+        return serialize_flags({
+            k: v for k, v in resolved_profile.items() if k not in KERNEL_CLEAN_KEYS
+        })
     if not resolved_profile.get("preserve_system_tokens", True):
         return serialize_flags(resolved_profile)
     if preserved_system_tokens is None:

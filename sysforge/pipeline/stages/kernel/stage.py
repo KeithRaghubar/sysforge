@@ -522,6 +522,11 @@ class KernelStage(Stage):
             # (stale) package rather than this run's fresh build — the
             # install-failure guidance keys on it to break the re-run loop.
             already_built = False
+            # The tree makepkg actually built in (profile BUILDDIR, post-rename
+            # pkgbase) — the gates must look there, not guess from the system
+            # conf + checkout name (3.2.0-B37). Stays None on the AlreadyBuilt
+            # and dry-run paths: no fresh tree to demand.
+            built_dir = None
             if options.dry_run:
                 _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
             else:
@@ -580,14 +585,14 @@ class KernelStage(Stage):
                     )
 
                 try:
-                    makepkg_run(pkgbuild, options=_kernel_build_options())
+                    built_dir = makepkg_run(pkgbuild, options=_kernel_build_options())
                 except AlreadyBuilt:
                     # B5: makepkg exit 13 skipped the build — and with it the
                     # in-prepare() kconfig review an interactive run promised.
                     # Ask the operator (install as-built / rebuild with -f to
                     # review / abort); unattended runs keep the proceed path.
                     if source.resolve_already_built_action(options, interactive) == "rebuild":
-                        makepkg_run(
+                        built_dir = makepkg_run(
                             pkgbuild,
                             options=_kernel_build_options(extra_flags=["-f"]),
                         )
@@ -598,13 +603,14 @@ class KernelStage(Stage):
                 gates.gate2_audit(
                     pkgbuild.parent, topology,
                     skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                    build_dir=built_dir,
                 )
 
                 # Advisory: warn if any option sysforge merged didn't survive
                 # the build's kconfig resolution (nconfig toggle or olddefconfig
                 # dep drop). Never raises; no-op when no fragment was written.
                 self._kconfig_drift = gates.gate2_kconfig_drift(
-                    pkgbuild.parent, fragment_path
+                    pkgbuild.parent, fragment_path, build_dir=built_dir
                 )
                 self._reported_kconfig_merge = fragment_path is not None
 
@@ -612,7 +618,7 @@ class KernelStage(Stage):
                 # diff against it, and capture the previous one for this run's
                 # summary. Best-effort: never raises, never blocks the install.
                 self._kconfig_diff = gates.record_and_diff_kconfig(
-                    state_dir, pkgname, pkgbuild.parent
+                    state_dir, pkgname, pkgbuild.parent, build_dir=built_dir
                 )
 
             # B4: acquire credentials *before* the sentinel scope. A sudo
@@ -676,6 +682,9 @@ class KernelStage(Stage):
                 # renamed to <pkgname>-sysforge, so /boot/vmlinuz-<that> is what
                 # must exist.
                 if not options.dry_run:
-                    gates.gate3_verify(pkgbuild.parent, fdo_eff_pkgname, bootloader)
+                    gates.gate3_verify(
+                        pkgbuild.parent, fdo_eff_pkgname, bootloader,
+                        build_dir=built_dir,
+                    )
 
         _log.info(f"Kernel stage complete: {fdo_eff_pkgname}")

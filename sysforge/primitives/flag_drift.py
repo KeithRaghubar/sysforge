@@ -33,6 +33,7 @@ from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.pkgbuild_meta import option_disabled, parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
 from sysforge.primitives.profile import (
+    KERNEL_CLEAN_KEYS,
     build_mode_uses_extracted_profile,
     get_build_mode,
     match_rules,
@@ -169,6 +170,13 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
         conflict_groups=conflict_groups,
     )
 
+    if kernel_build:
+        # A record from before 3.2.0-B39 still carries the keys a kernel build
+        # never receives; drop them so it converges without one false drift.
+        stored_flags = "\n".join(
+            line for line in stored_flags.splitlines()
+            if line.partition("=")[0].strip() not in KERNEL_CLEAN_KEYS
+        )
     diffs = diff_flags(stored_flags, current_flags)
     return FlagDriftResult(
         status=STATUS_DRIFTED if diffs else STATUS_IN_SYNC,

@@ -21,7 +21,11 @@ from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman
 from sysforge.primitives.build_state import BuildState
-from sysforge.verbs.shared import forget_packages
+from sysforge.verbs.shared import (
+    emit_orphaned_profiles,
+    forget_packages,
+    profile_store_names,
+)
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("UNINSTALL")
@@ -72,6 +76,7 @@ class UninstallVerb(Verb):
             _log.ui(f"[uninstall] {it.target}{renamed} — {tag}")
 
         names = [it.installed_name for it in items]
+        store_names = profile_store_names(pre.ctx["state_dir"], names)
         try:
             # Interactive: pacman prints its own transaction + confirmation.
             pacman.uninstall_pkgs(names, extra_flags=list(getattr(args, "pacman_flags", []) or []))
@@ -88,4 +93,5 @@ class UninstallVerb(Verb):
             demoted = bs.reconcile_external_installs(install_reconcile.external_install_targets())
             if demoted:
                 bs.save()
+        emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[uninstall] {line}"))
         return ExecResult(exit_code=0)

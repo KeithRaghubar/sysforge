@@ -13,10 +13,15 @@ keeps its collected profile data.
 Every method sysforge grows (instrumentation PGO, AutoFDO, Propeller, BOLT)
 shares one shape: *build-for-profiling → collect a profile from a workload →
 rebuild consuming the profile*. They therefore share one on-disk root
-(``/var/cache/sysforge``) so a single ``fs_provision.ensure_writable_dir`` /
-purge path covers all of them. ``resolve_pgo_store`` stays the (unchanged)
-accessor for the original instrumentation-PGO store; ``resolve_method_store``
-is the general accessor that hands out per-method sibling subdirs.
+(``/var/cache/sysforge``) so a single ``fs_provision.ensure_writable_dir``
+covers all of them, and one reader/reclaimer does too: ``list_profile_stores``,
+``resolve_purge_target`` and ``stores_for_package`` back ``sysforge state
+profiles`` and the orphan notice on revert/uninstall (3.2.0-F11). Deletion is
+always an explicit user decision — a merged profile's existence is the durable
+PGO opt-in (``mesa_pgo.reuse_profdata``), so nothing here purges on its own.
+``resolve_pgo_store`` stays the (unchanged) accessor for the original
+instrumentation-PGO store; ``resolve_method_store`` is the general accessor
+that hands out per-method sibling subdirs.
 
 Reads ``toolchain.toml`` (``pgo_store`` / ``profile_store``) and the profdata
 version sidecar; no subprocess, no logging.  The PGO *emission* sites (``[PGO]``
@@ -30,6 +35,7 @@ provenance check (``llvm_state``); ``PGOBuildSkipped`` is re-raised up through
 import os
 import re
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives.paths import TOOLCHAIN_PATH
@@ -116,6 +122,101 @@ def resolve_method_store(
     if target:
         base = base / target
     return base
+
+
+# Methods whose store is namespaced per package (``<method>/<target>``); the
+# rest keep one profile per method.
+_PER_TARGET_METHODS = frozenset({"pgo", "autofdo", "propeller", "bolt"})
+
+
+@dataclass(frozen=True)
+class StoreEntry:
+    """One non-empty profile store, as ``sysforge state profiles`` lists it."""
+
+    method: str
+    target: str | None
+    path: Path
+    size_bytes: int
+    mtime: float
+    collected_version: str | None
+
+
+def _store_entry(method: str, target: str | None, path: Path) -> StoreEntry | None:
+    files = [p for p in path.rglob("*") if p.is_file()] if path.is_dir() else []
+    if not files:
+        return None
+    stats = [p.stat() for p in files]
+    version = None
+    for sidecar in sorted(path.glob("*.profdata.version")):
+        version = sidecar.read_text(encoding="utf-8").strip() or None
+        break
+    return StoreEntry(
+        method=method, target=target, path=path,
+        size_bytes=sum(s.st_size for s in stats),
+        mtime=max(s.st_mtime for s in stats),
+        collected_version=version,
+    )
+
+
+def list_profile_stores(tcfg: dict | None) -> list[StoreEntry]:
+    """Every non-empty store, per method (and per target where namespaced).
+
+    Read-only; seeded-empty stores are omitted. A per-target method's
+    top-level files (none are written today) would list with ``target=None``.
+    """
+    out: list[StoreEntry] = []
+    for method in sorted(PROFILE_METHODS):
+        base = resolve_method_store(tcfg, method)
+        if method in _PER_TARGET_METHODS and base.is_dir():
+            for sub in sorted(p for p in base.iterdir() if p.is_dir()):
+                entry = _store_entry(method, sub.name, sub)
+                if entry:
+                    out.append(entry)
+            loose = [p for p in base.iterdir() if p.is_file()]
+            if loose:
+                out.append(StoreEntry(
+                    method, None, base, sum(p.stat().st_size for p in loose),
+                    max(p.stat().st_mtime for p in loose), None))
+        else:
+            entry = _store_entry(method, None, base)
+            if entry:
+                out.append(entry)
+    return out
+
+
+def resolve_purge_target(tcfg: dict | None, spec: str) -> Path:
+    """``method[/target]`` → the store dir to reclaim. Pure path math.
+
+    Refuses an unknown method (``resolve_method_store`` raises) rather than
+    guessing, and a target that is not a single plain path component, so a
+    purge can never reach outside its method's store.
+    """
+    method, _, target = spec.partition("/")
+    if target and (target in (".", "..") or "/" in target or not target.strip()):
+        raise ValueError(f"invalid profile store target {target!r}")
+    return resolve_method_store(tcfg, method, target=target or None)
+
+
+def stores_for_package(tcfg: dict | None, names) -> list[Path]:
+    """Non-empty stores that belong to any of ``names`` (pkgbase / pkgnames).
+
+    Instrumentation PGO keys on pkgbase (mesa-family on its back-compat
+    ``pgo-mesa`` store); the kernel sample/post-link methods key on pkgname.
+    """
+    from sysforge.primitives.profile import is_mesa_pkgbase
+
+    found: list[Path] = []
+    for name in dict.fromkeys(n for n in names if n):
+        candidates = [
+            resolve_method_store(tcfg, "pgo-mesa") if is_mesa_pkgbase(name)
+            else resolve_method_store(tcfg, "pgo", target=name),
+            *(resolve_method_store(tcfg, m, target=name)
+              for m in ("autofdo", "propeller", "bolt")),
+        ]
+        for path in candidates:
+            if path not in found and _store_entry("", None, path):
+                found.append(path)
+    return found
 
 
 def _try_load_toml(path: Path) -> dict | None:

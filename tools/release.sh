@@ -311,6 +311,20 @@ preflight_fresh() {
         echo "       Either bump harder, or fix the accumulator if an entry is miscategorised." >&2
         exit 1
     fi
+    # Static-analysis gates (3.2.0-STD1). `make pre-release` is advisory, so a
+    # check only it runs is a check a tag can ship without: v3.2.0 carried four
+    # pyright errors, one a live crash the type-checker had already named.
+    # Both are seconds; the full test suite stays in the heavier tier. The
+    # `release_gates` standards group (row 27) keeps this set equal to
+    # pre-release's.
+    if ! make --no-print-directory lint >&2; then
+        echo "ERROR: lint failed — fix the findings above and re-run." >&2
+        exit 1
+    fi
+    if ! make --no-print-directory typecheck >&2; then
+        echo "ERROR: typecheck (pyright) failed — fix the errors above and re-run." >&2
+        exit 1
+    fi
     # Shipped-file consistency gate. Validates every shipped TOML schema,
     # PKGBUILD install graph, hook->helper parity, completions<->CLI parity,
     # version markers (subsumes the prior README/DESIGN grep checks), and

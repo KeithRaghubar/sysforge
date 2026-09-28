@@ -495,6 +495,8 @@ def _patch_build_env(*, run_side_effect, snapshot_return, install_capture):
         patch("sysforge.build_core.get_pkgdest", return_value=None),
         patch("sysforge.primitives.cache_probe.reset_session"),
         patch("sysforge.primitives.cache_probe.emit_session_report"),
+        # Reads the host's local DB and /usr/lib; exercised by its own tests.
+        patch("sysforge.build_core._post_install_libllvm_check", return_value=[]),
     ]
 
 
@@ -1791,3 +1793,106 @@ def test_build_and_install_isolates_conflict_and_reverts_its_state(tmp_path):
     after = BuildState(state)
     assert after.get("aa")["pkgver"] == "2"
     assert after.get("bb")["pkgver"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B21 — post-install libLLVM consumer re-verification
+# ---------------------------------------------------------------------------
+
+def _libllvm_finding():
+    from sysforge.primitives.toolchain_safety import SEV_ERROR, ToolchainFinding
+    return ToolchainFinding(
+        SEV_ERROR, "libllvm_consumer_symbols",
+        "libgallium-26.2.2.so links libLLVM.so.22.1 but imports 3 symbol(s) …",
+        "rebuild it", is_brick=True,
+    )
+
+
+def _libllvm_env(depends, findings, checked):
+    def check():
+        checked.append(True)
+        return findings
+    return [
+        patch("sysforge.build_core.read_pkgname_from_file",
+              side_effect=lambda f: Path(f).name.rsplit("-", 3)[0]),
+        patch("sysforge.primitives.pacman.get_package_depends",
+              side_effect=lambda name, root=None: depends.get(name, [])),
+        patch("sysforge.primitives.toolchain_safety.check_installed_consumer_symbols",
+              side_effect=check),
+    ]
+
+
+def test_post_install_libllvm_check_errors_on_a_broken_consumer(tmp_path, capsys):
+    checked = []
+    mesa = tmp_path / "mesa-1:26.2.2-1-x86_64.pkg.tar.zst"
+    with _ctx(_libllvm_env({"mesa": ["libLLVM.so=22.1-64", "libdrm"]},
+                           [_libllvm_finding()], checked)):
+        found = build_core._post_install_libllvm_check([mesa])
+    assert checked and len(found) == 1
+    text = "".join(capsys.readouterr())
+    assert "libgallium-26.2.2.so" in text
+    assert "pacman -U" in text
+
+
+def test_post_install_libllvm_check_clean_consumer_is_silent(tmp_path, capsys):
+    checked = []
+    mesa = tmp_path / "mesa-1:26.2.2-1-x86_64.pkg.tar.zst"
+    with _ctx(_libllvm_env({"mesa": ["llvm-libs>=22"]}, [], checked)):
+        assert build_core._post_install_libllvm_check([mesa]) == []
+    assert checked and "post-install" not in "".join(capsys.readouterr())
+
+
+def test_post_install_libllvm_check_skips_unrelated_packages(tmp_path):
+    checked = []
+    htop = tmp_path / "htop-3.4.1-1-x86_64.pkg.tar.zst"
+    with _ctx(_libllvm_env({"htop": ["glibc", "ncurses"]}, [_libllvm_finding()],
+                           checked)):
+        assert build_core._post_install_libllvm_check([htop]) == []
+    assert not checked
+
+
+def test_post_install_libllvm_check_runs_for_libllvm_itself(tmp_path):
+    checked = []
+    libs = tmp_path / "llvm-libs-22.1.8-2-x86_64.pkg.tar.zst"
+    with _ctx(_libllvm_env({}, [], checked)):
+        build_core._post_install_libllvm_check([libs])
+    assert checked
+
+
+def test_build_and_install_rechecks_libllvm_consumers_after_install(tmp_path):
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    seen = []
+    with _ctx(_patch_build_env(
+        run_side_effect=lambda p, options=None: _touch_future(artifact),
+        snapshot_return=frozenset({artifact}),
+        install_capture=lambda paths, **_kw: True,
+    ) + [patch("sysforge.primitives.abi_check.source_built_skew_findings",
+               return_value=[]),
+         patch("sysforge.build_core._post_install_libllvm_check",
+               side_effect=lambda files: seen.append(list(files)) or [])]):
+        build_core.build_and_install([target], config={}, sync_source=False)
+    assert seen == [[artifact]]
+
+
+def test_build_and_install_carries_layout_findings_to_the_outcome(tmp_path):
+    """3.2.0-F15: findings recorded during this run's builds reach the outcome
+    (for the end-of-run summary); a previous run's never do."""
+    from sysforge.primitives import payload_layout
+
+    target = _make_target(tmp_path)
+    artifact = target.pkgbuild_path.parent / "foo-1-1-x86_64.pkg.tar.zst"
+    payload_layout._SESSION.append("stale, from a previous run")
+
+    def fake_run(p, options=None):
+        _touch_future(artifact)
+        payload_layout._SESSION.append("foo.pkg: etc/pam.d/x/y is nested")
+
+    with _ctx(_patch_build_env(
+        run_side_effect=fake_run,
+        snapshot_return=frozenset({artifact}),
+        install_capture=lambda paths, **_kw: True,
+    ) + [patch("sysforge.primitives.abi_check.source_built_skew_findings",
+               return_value=[])]):
+        outcome = build_core.build_and_install([target], config={}, sync_source=False)
+    assert outcome.layout_findings == ["foo.pkg: etc/pam.d/x/y is nested"]

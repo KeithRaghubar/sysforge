@@ -601,28 +601,86 @@ def resolve_base_config(kernel_cfg, options=None):
     return raw, path.read_text()
 
 
+BASE_CONFIG_MERGE_MODES = ("replace", "overlay")
+
+
+def resolve_base_config_merge(kernel_cfg, options=None) -> str:
+    """``--base-config-merge`` > ``kernel.toml base_config_merge`` > ``"replace"``.
+
+    ``replace`` keeps ``base_config = "running"`` meaning *exactly my config*;
+    ``overlay`` (3.2.0-F17) keeps the base's choices but lets the PKGBUILD
+    decide symbols the base never mentions — e.g. ones new in this kernel,
+    which ``replace`` leaves to upstream Kconfig defaults. Known edge: a symbol
+    absent from the base because its dependencies were off (not because it was
+    disabled) takes the PKGBUILD's value once those dependencies are on.
+    """
+    cli = getattr(options, "base_config_merge", None)
+    mode = cli or kernel_cfg.base_config_merge
+    if mode not in BASE_CONFIG_MERGE_MODES:
+        src = "--base-config-merge" if cli else "kernel.toml base_config_merge"
+        raise RuntimeError(
+            f"[KERNEL] invalid {src} {mode!r}: expected "
+            + " or ".join(f'"{m}"' for m in BASE_CONFIG_MERGE_MODES)
+        )
+    return mode
+
+
 def write_base_config(kernel_cfg, dry_run, options=None):
     """Resolve ``base_config`` and, when not ``"pkgbuild"``, write the chosen base
-    ``.config`` to ``<pkgbuild_dir>/sysforge.base.config``.
+    ``.config`` next to the PKGBUILD.
 
-    Mirrors the ``sysforge.config`` fragment contract: sysforge writes the file,
-    the PKGBUILD's ``prepare()`` copies ``sysforge.base.config`` to ``.config``
-    (then runs ``make olddefconfig``) *before* merging ``sysforge.config``. This
-    keeps sysforge from mutating tracked source files. Returns the source label
-    for the resolution summary. ``options`` carries the ``--base-config`` CLI
-    override (see ``resolve_base_config``).
+    Mirrors the ``sysforge.config`` fragment contract: sysforge writes the file
+    and the PKGBUILD's ``prepare()`` consumes it *before* merging
+    ``sysforge.config``, so sysforge never mutates tracked source files. The
+    file name carries ``base_config_merge``: ``sysforge.base.config`` is copied
+    over ``.config`` (``replace``), ``sysforge.base.overlay.config`` is merged
+    onto it (``overlay``); the other one is removed so a stale seed from an
+    earlier run can never apply. Returns the label for the resolution summary,
+    which says when a cooperating PKGBUILD (one running its own
+    ``merge_config.sh``) makes the base inert. ``options`` carries the
+    ``--base-config`` / ``--base-config-merge`` CLI overrides.
     """
     source_label, text = resolve_base_config(kernel_cfg, options)
+    mode = resolve_base_config_merge(kernel_cfg, options)
+    names = {
+        "replace": kconfig_plan.BASE_CONFIG_FILE,
+        "overlay": kconfig_plan.BASE_OVERLAY_FILE,
+    }
     if text is None:
+        # No base this run ("pkgbuild", or "running" with nothing to read):
+        # the file-guarded seed would still apply a seed an earlier run left,
+        # so remove both — the same rule the hotplug fragment follows
+        # (3.3.0-B1). Best-effort: a checkout that cannot be located has no
+        # stale seed to worry about, and must not fail a run that needs none.
+        if not dry_run:
+            try:
+                base_dir = config.pkgbuild_path(kernel_cfg).parent
+            except Exception:  # noqa: BLE001
+                return source_label
+            for name in names.values():
+                stale = base_dir / name
+                if stale.exists():
+                    stale.unlink()
+                    _log.info(f"Removed stale base kernel config: {stale}")
         return source_label
     pkgbuild = config.pkgbuild_path(kernel_cfg)
-    base_path = pkgbuild.parent / "sysforge.base.config"
+    base_path = pkgbuild.parent / names[mode]
+    label = source_label if mode == "replace" else f"{source_label} ({mode})"
+    try:
+        cooperating = kconfig_plan.pkgbuild_applies_own_fragment(pkgbuild.read_text())
+    except OSError:
+        cooperating = False
+    if cooperating:
+        label += " — inert: the PKGBUILD runs its own merge_config.sh"
     if dry_run:
-        _log.ui(f"[dry-run] would write base kernel config ({source_label}): {base_path}")
-        return source_label
+        _log.ui(f"[dry-run] would write base kernel config ({label}): {base_path}")
+        return label
+    for other in names.values():
+        if other != base_path.name:
+            (pkgbuild.parent / other).unlink(missing_ok=True)
     base_path.write_text(text if text.endswith("\n") else text + "\n")
-    _log.info(f"Wrote base kernel config ({source_label}): {base_path}")
-    return source_label
+    _log.info(f"Wrote base kernel config ({label}): {base_path}")
+    return label
 
 
 # ---------------------------------------------------------------------------

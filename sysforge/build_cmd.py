@@ -120,6 +120,18 @@ def _print_build_summary(outcome) -> None:
         )
 
 
+def _print_layout_findings(outcome) -> None:
+    """Payload-layout findings (3.2.0-F15), printed for single-package runs
+    too: the multi-package totals are skippable narration, this is not — the
+    mid-run warning is -v only, and a PAM file nested where PAM never looks
+    has already cost a desktop outage."""
+    if not outcome.layout_findings:
+        return
+    _log.ui(f"  {log.red('Payload layout:')} installed, but never read by its consumer:")
+    for line in outcome.layout_findings:
+        _log.ui(f"    {line}")
+
+
 def _review_config_enabled(config) -> bool:
     """packages.toml ``[build] review`` default for the review gate.
 
@@ -406,6 +418,7 @@ class BuildVerb(Verb):
         )
         if len(targets) > 1 and not outcome.aborted:
             _print_build_summary(outcome)
+        _print_layout_findings(outcome)
         _report_timings(outcome, args)
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate; build_core already

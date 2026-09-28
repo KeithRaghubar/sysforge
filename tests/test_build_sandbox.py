@@ -1358,3 +1358,47 @@ def test_provision_profile_data_failure_is_a_hard_stop(tmp_path):
         with pytest.raises(bs.SandboxUnavailable) as e:
             bs.provision_profile_data(_pol(chroot), None, conf_path=conf)
     assert "p.profdata" in str(e.value)
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B12 — a profile-generate build cannot keep its profiles in the sandbox
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("flag", [
+    "-fprofile-generate", "-fprofile-instr-generate", "-fcs-profile-generate",
+])
+def test_refuse_profile_generate_rejects_the_generate_family(tmp_path, flag):
+    """makechrootpkg -c discards the container's writes, so the .profraw a
+    generate build writes there is gone before anything can merge it. Refuse
+    rather than succeed silently with no profile."""
+    conf = _conf_with(tmp_path, f'CFLAGS="-O2 {flag}=/var/cache/sysforge/pgo-mesa"\n')
+    with pytest.raises(bs.SandboxUnavailable, match="--pgo=record"):
+        bs.refuse_profile_generate(_pol(tmp_path), None, conf_path=conf)
+
+
+def test_refuse_profile_generate_reads_the_exports_too(tmp_path):
+    with pytest.raises(bs.SandboxUnavailable):
+        bs.refuse_profile_generate(
+            _pol(tmp_path), {"CFLAGS": "-fprofile-generate=/x"},
+        )
+
+
+def test_refuse_profile_generate_allows_profile_use(tmp_path):
+    prof = tmp_path / "p.profdata"
+    prof.write_bytes(b"p")
+    conf = _conf_with(tmp_path, f'CFLAGS="-fprofile-use={prof}"\n')
+    bs.refuse_profile_generate(_pol(tmp_path), None, conf_path=conf)
+
+
+def test_refuse_profile_generate_is_a_noop_when_disabled(tmp_path):
+    conf = _conf_with(tmp_path, 'CFLAGS="-fprofile-generate=/x"\n')
+    pol = bs.SandboxPolicy(enabled=False, chroot_dir=tmp_path)
+    bs.refuse_profile_generate(pol, None, conf_path=conf)
+
+
+def test_seam_refuses_a_generate_build_before_makechrootpkg_runs(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    conf.write_text(conf.read_text() + 'CFLAGS="-fprofile-generate=/var/cache/x"\n')
+    bs.set_policy(_policy(tmp_path))
+    with pytest.raises(bs.SandboxUnavailable, match="profile-generate"):
+        _invoke(pb, conf, {})

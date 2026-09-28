@@ -53,7 +53,7 @@ def _make_artifact(d: Path, name: str, ver: str = "1.0-1") -> Path:
     return p
 
 @pytest.fixture(autouse=True)
-def _toolchain_gates_clean(monkeypatch):
+def _toolchain_gates_clean(monkeypatch, tmp_path):
     """Make the host-dependent toolchain-safety facts inert by default.
 
     Gate 1 (build-space / compiler smoke / multilib) and the install-time
@@ -92,6 +92,24 @@ def _toolchain_gates_clean(monkeypatch):
         lambda names: {n: None for n in names},
         raising=True,
     )
+    # The PGO build lock lives beside ``staging1``, which defaults to
+    # ``/var/tmp`` — a test that overrides ``staging`` but not ``staging1``
+    # takes the host's real lock, failing whenever a real ``run toolchain``
+    # holds it and able to block one from starting (3.2.0-B24). Fail such a
+    # test outright, so the leak is deterministic instead of load-dependent.
+    from sysforge.pipeline.stages.toolchain import pgo as _pgo
+
+    real_lock = _pgo.pgo_lock
+
+    def _guarded_lock(lock_path):
+        if not Path(lock_path).is_relative_to(tmp_path):
+            pytest.fail(
+                f"toolchain test took the host PGO lock {lock_path} — point "
+                "pgo_staging1 (and pgo_staging3) at tmp_path"
+            )
+        return real_lock(lock_path)
+
+    monkeypatch.setattr(_pgo, "pgo_lock", _guarded_lock)
 
 def _write_packages_repo_mode(tmp_path: Path, mode: str) -> str:
     """Write a packages.toml with the given [build] repo_mode; return its path."""
@@ -187,7 +205,11 @@ def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
         f'enabled = true\ncompiler = "llvm"\npgo = true\n'
-        f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
+        # staging1/staging3 too: the PGO build lock lives beside staging1, and
+        # its /var/tmp default is the host's real lock (3.2.0-B24).
+        f'pgo_staging1 = "{tmp_path / "staging1"}"\n'
+        f'pgo_staging = "{staging}"\n'
+        f'pgo_staging3 = "{tmp_path / "staging3"}"\npgo_store = "{pgo_store}"\n'
         f"[packages]\n"
         f"pgo = {_json.dumps(pgo_pkgs)}\n"
         f"non_pgo = {_json.dumps(non_pgo_pkgs)}\n"
@@ -284,7 +306,7 @@ def _bootstrap_calls(call_log):
     CMAKE_PREFIX_PATH→stage1 env and the absence of training/profile flags."""
     return [
         c for c in call_log
-        if c["env"].get("CMAKE_PREFIX_PATH", "").startswith("/var/tmp/sysforge-llvm-stage1")
+        if "staging1" in Path(c["env"].get("CMAKE_PREFIX_PATH", "").split(":")[0]).parts
         and "-fprofile-generate" not in (c["cfe"] or "")
         and "-fprofile-use" not in (c["cfe"] or "")
         and c["env"].get("CCACHE_DISABLE") != "1"

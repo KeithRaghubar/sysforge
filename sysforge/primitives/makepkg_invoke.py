@@ -326,6 +326,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # variables actually live — LDFLAGS never travels in extra_env, so
         # probing exports alone missed the profile's linker entirely
         # (3.2.0-B7).
+        # Before any provisioning: a profile-generate build would write its
+        # .profraw into a container that is discarded at teardown (3.2.0-B12).
+        build_sandbox.refuse_profile_generate(sandbox, extra_env, conf_path=conf_path)
         build_sandbox.provision_toolchain(sandbox, extra_env, conf_path=conf_path)
         # A PGO profile is an input *file* at a host path baked into the
         # flags, and clang errors rather than warns when it cannot read one —

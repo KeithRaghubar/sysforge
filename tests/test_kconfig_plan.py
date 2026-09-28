@@ -560,17 +560,17 @@ class TestConfiguredUiTailOwnsGeneration:
         out = p.read_text()
         assert "menuconfig" not in out
         assert "make ARCH=x86_64 olddefconfig  # trim" in out
-        # base_seed + fragment_merge + hotplug_merge each render one
-        # unconditional plain "make olddefconfig" (3, no VAR=/trailer — they
-        # don't reuse the removed line's make_prefix/trailer) regardless of
-        # REVIEW; a 4th "olddefconfig" occurrence — the
+        # base_seed renders one plain "make olddefconfig" per branch (replace
+        # + overlay, 3.2.0-F17) and fragment_merge + hotplug_merge one each
+        # (4, no VAR=/trailer — they don't reuse the removed line's
+        # make_prefix/trailer) regardless of REVIEW; a 5th "olddefconfig"
+        # occurrence — the
         # "ARCH=x86_64 olddefconfig  # trim" one above, reusing the removed
         # line's VAR= prefix and trailing comment — must come from the
         # configured tail's rewrite, or this assertion can't distinguish
         # "rewritten" from "silently dropped" (both leave plain
-        # "make olddefconfig" somewhere in the output via the other three
-        # steps).
-        assert out.count("olddefconfig") == 4
+        # "make olddefconfig" somewhere in the output via the other steps).
+        assert out.count("olddefconfig") == 5
 
 
 class TestFailureModes:
@@ -952,3 +952,31 @@ class TestMinimizerShellBehaviour:
             tmp_path, stage_lsmod=True, shell_opts="-eo pipefail")
         assert rc == 0, err
         assert "answer=[]" in err
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-F17 — base_config_merge = "overlay"
+# ---------------------------------------------------------------------------
+
+def test_base_seed_renders_the_overlay_branch(tmp_path):
+    """The overlay base is merged onto the PKGBUILD's .config (base wins every
+    symbol it names), not copied over it."""
+    p = _write(tmp_path, STOCK)
+    plan = kp.KconfigPlan()
+    plan.contribute(kp.base_seed_step())
+    plan.contribute(kp.fragment_merge_step())
+    plan.install(p, noninteractive=True)
+    out = p.read_text()
+    overlay = (
+        './scripts/kconfig/merge_config.sh -m .config '
+        f'"$startdir/{kp.BASE_OVERLAY_FILE}"'
+    )
+    assert f'elif [ -f "$startdir/{kp.BASE_OVERLAY_FILE}" ]; then' in out
+    assert out.count(overlay) == 1
+    assert out.index(overlay) < out.index('"$startdir/sysforge.config"')
+
+
+def test_pkgbuild_applies_own_fragment_is_the_drop_rule():
+    assert kp.pkgbuild_applies_own_fragment(
+        "prepare() {\n  scripts/kconfig/merge_config.sh -m .config x\n}\n")
+    assert not kp.pkgbuild_applies_own_fragment("prepare() {\n  make olddefconfig\n}\n")

@@ -146,18 +146,22 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
     return topology
 
 
-def resolve_built_config(pkgbuild_dir):
+def resolve_built_config(pkgbuild_dir, *, build_dir=None):
     """Locate the resolved .config left in the kernel build tree.
 
-    The kernel src lives under ``<build>/src/``; ``<build>`` is the makepkg
-    BUILDDIR (``$BUILDDIR/<pkgbase>``, resolved from env or system
-    ``makepkg.conf``) or the PKGBUILD dir itself. Returns the newest matching
+    The kernel src lives under ``<build>/src/``. ``build_dir`` is the tree the
+    build reported it used (``makepkg_wrapper.run``'s return: the profile's
+    ``BUILDDIR`` keyed on the post-rename pkgbase) and is searched first
+    (3.2.0-B37). Without it, falls back to the system ``BUILDDIR`` under the
+    checkout name, then the PKGBUILD dir itself. Returns the newest matching
     ``.config`` or None.
     """
     from sysforge.primitives.pacman import get_builddir
 
     pkgbuild_dir = Path(pkgbuild_dir)
     roots = []
+    if build_dir is not None:
+        roots.append(Path(build_dir))
     builddir = get_builddir()
     if builddir:
         roots.append(builddir / pkgbuild_dir.name)
@@ -186,7 +190,8 @@ def built_kernel_release(config_path):
     return text or None
 
 
-def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
+def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
+                build_dir=None):
     """Audit the resolved .config before install. Raises on brick unless skipped.
 
     Runs *outside* the install sentinel: a brick abort here leaves the system
@@ -200,8 +205,19 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
     fragment write. The parse is best-effort — any failure degrades to the
     curated-only audit, never blocks the gate.
     """
-    config_path = resolve_built_config(pkgbuild_dir)
+    config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
     if config_path is None:
+        # A fresh build reported its tree (``build_dir``) yet left no .config
+        # there: the boot-critical backstop would silently be off, so refuse
+        # (3.2.0-B37). Without a fresh build (AlreadyBuilt) there is no tree
+        # to demand — that stays a warning.
+        if build_dir is not None and not skip_boot_audit:
+            raise RuntimeError(
+                "[KERNEL] Gate 2: resolved kernel .config not found under the "
+                f"fresh build tree {build_dir} — boot-critical config cannot "
+                "be validated, aborting before install. Pass "
+                "--skip-boot-audit to override."
+            )
         _log.warn(
             "Gate 2: resolved kernel .config not found in build tree — "
             "boot-critical config could not be validated before install."
@@ -264,7 +280,7 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None):
         )
 
 
-def gate2_kconfig_drift(pkgbuild_dir, fragment_path):
+def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None):
     """Advisory: warn when options sysforge merged didn't survive into the
     resolved .config.
 
@@ -283,7 +299,7 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path):
     if fragment_path is None:
         return None
 
-    config_path = resolve_built_config(pkgbuild_dir)
+    config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
     if config_path is None:
         # B6: WARN, not INFO — on the AlreadyBuilt path there is no build
         # tree at all, so this advisory audit silently never runs exactly
@@ -328,7 +344,7 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path):
 KCONFIG_DIFF_CAP = 40
 
 
-def record_and_diff_kconfig(state_dir, pkgname, pkgbuild_dir):
+def record_and_diff_kconfig(state_dir, pkgname, pkgbuild_dir, *, build_dir=None):
     """Archive this build's resolved .config and diff it against the previous.
 
     Returns ``(previous_release, changes)`` or ``None`` when there is nothing
@@ -339,7 +355,7 @@ def record_and_diff_kconfig(state_dir, pkgname, pkgbuild_dir):
     from sysforge.primitives import kconfig_history
 
     try:
-        config_path = resolve_built_config(pkgbuild_dir)
+        config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
         if config_path is None:
             return None
         release = built_kernel_release(config_path) or "unknown"
@@ -402,14 +418,16 @@ def kconfig_drift_lines(drifts) -> list[str]:
     ]
 
 
-def gate3_verify(pkgbuild_dir, pkgname, bootloader):
+def gate3_verify(pkgbuild_dir, pkgname, bootloader, *, build_dir=None):
     """Post-install boot-readiness verification. Raises on brick.
 
     Runs inside the sentinel: a failure here leaves the sentinel set so the
     operator is told to resolve boot wiring before the next run.
     """
     findings = list(kernel_safety.verify_boot_artifacts(pkgname, bootloader))
-    kver = built_kernel_release(resolve_built_config(pkgbuild_dir))
+    kver = built_kernel_release(
+        resolve_built_config(pkgbuild_dir, build_dir=build_dir)
+    )
     if kver:
         findings += kernel_safety.check_dkms_for_kernel(kver)
 

@@ -1421,6 +1421,25 @@ def get_package_depends(pkgname: str, root: Path | None = None) -> list[str]:
     return _desc_array(desc_path.read_text(), "%DEPENDS%")
 
 
+def get_package_dates(
+    pkgname: str, root: Path | None = None
+) -> tuple[int | None, int | None]:
+    """Return ``(%BUILDDATE%, %INSTALLDATE%)`` (epoch seconds) for an installed
+    package, each ``None`` when not installed or not recorded.
+    """
+    entry = get_local_db_entry(pkgname, root=root)
+    desc_path = entry / "desc" if entry is not None else None
+    if desc_path is None or not desc_path.is_file():
+        return None, None
+    text = desc_path.read_text()
+
+    def _int(section: str) -> int | None:
+        vals = _desc_array(text, section)
+        return int(vals[0]) if vals and vals[0].isdigit() else None
+
+    return _int("%BUILDDATE%"), _int("%INSTALLDATE%")
+
+
 def _desc_array(text: str, section: str) -> list[str]:
     """Return the entries of a local-db ``desc`` array section (``%DEPENDS%``…).
 

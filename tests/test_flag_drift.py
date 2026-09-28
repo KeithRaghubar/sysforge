@@ -316,11 +316,59 @@ def test_system_conf_hardening_change_is_drift(tmp_path):
 
 def test_kernel_build_skips_the_preservation_pass():
     """Kernel builds keep the system conf's flag keys, so nothing is restored."""
-    profile = {"CFLAGS": "-O2"}
+    profile = {"CC": "clang", "LD": "ld.lld"}
     assert serialize_effective_flags(
         profile, kernel_build=True, system_conf_path=_SYS_CONF,
         preserved_system_tokens=_PTOKENS, conflict_groups={},
     ) == serialize_flags(profile)
+
+
+def test_kernel_serialization_drops_the_keys_a_kernel_never_receives():
+    """3.2.0-B39: KERNEL_CLEAN_KEYS are stripped from the emitted kernel conf,
+    so they must not be recorded (or replayed) as the kernel's flags."""
+    profile = {
+        "CFLAGS": "-O3 -fno-plt", "CXXFLAGS": "-O3", "CPPFLAGS": "-D_X",
+        "LDFLAGS": "-Wl,--icf=all", "DEBUG_CFLAGS": "-g",
+        "DEBUG_CXXFLAGS": "-g", "DEBUG_LDFLAGS": "-g",
+        "CC": "clang", "RUSTC_WRAPPER": "sccache",
+    }
+    assert serialize_effective_flags(profile, kernel_build=True) == serialize_flags(
+        {"CC": "clang", "RUSTC_WRAPPER": "sccache"}
+    )
+
+
+def test_kernel_entry_ignores_a_profile_cflags_change(tmp_path):
+    """3.2.0-B39: the profile's CFLAGS moved; the kernel build would not change.
+
+    The stored string is a pre-fix record that still carries CFLAGS, so this
+    also pins that legacy records do not report one last false drift.
+    """
+    d = _pkgbuild(tmp_path, "linux-custom")
+    entry = {
+        "build_mode": "source_built",
+        "pkgbuild_dir": str(d),
+        "flags_string": serialize_flags({"CFLAGS": "-O3 -fno-plt"}),
+        "owner_stage": "kernel",
+    }
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens={},
+    )
+    assert r.status == STATUS_IN_SYNC, r.diffs
+
+
+def test_non_kernel_entry_still_drifts_on_the_same_cflags_change(tmp_path):
+    d = _pkgbuild(tmp_path, "htop")
+    entry = {
+        "build_mode": "source_built",
+        "pkgbuild_dir": str(d),
+        "flags_string": serialize_flags({"CFLAGS": "-O3 -fno-plt"}),
+    }
+    r = resolve_flag_drift(
+        entry, _MINIMAL_CONFIG, {},
+        system_conf_path=_SYS_CONF, preserved_system_tokens={},
+    )
+    assert r.status == STATUS_DRIFTED
 
 
 def test_profile_optout_skips_the_preservation_pass():
@@ -334,7 +382,9 @@ def test_profile_optout_skips_the_preservation_pass():
 def test_stage_owned_kernel_entry_does_not_drift_against_itself(tmp_path):
     """owner_stage parity: the record site's kernel verdict is replayable."""
     d = _pkgbuild(tmp_path, "linux-custom")
-    stored = serialize_effective_flags({"CFLAGS": "-O2"}, kernel_build=True)
+    profile = {"CFLAGS": "-O2", "CC": "clang"}
+    config = {**_MINIMAL_CONFIG, "profiles": {"bare": profile}}
+    stored = serialize_effective_flags(profile, kernel_build=True)
     entry = {
         "build_mode": "source_built",
         "pkgbuild_dir": str(d),
@@ -342,7 +392,7 @@ def test_stage_owned_kernel_entry_does_not_drift_against_itself(tmp_path):
         "owner_stage": "kernel",
     }
     r = resolve_flag_drift(
-        entry, _MINIMAL_CONFIG, {},
+        entry, config, {},
         system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
     )
     assert r.status == STATUS_IN_SYNC, r.diffs

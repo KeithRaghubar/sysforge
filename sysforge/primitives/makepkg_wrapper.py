@@ -71,7 +71,7 @@ from sysforge.primitives.makepkg_artifacts import (
 )
 from sysforge.primitives.makepkg_conf import emit_makepkg_conf, serialize_effective_flags
 from sysforge.primitives import build_sandbox
-from sysforge.primitives.makepkg_env import resolve_env_vars
+from sysforge.primitives.makepkg_env import build_root, resolve_env_vars
 from sysforge.primitives.makepkg_flags import (
     INSTALL_FLAGS,
     expand_makepkg_flags,  # noqa: F401  (re-export)
@@ -331,6 +331,15 @@ def _post_build_abi_check(pkgbuild_dir) -> None:
     """
     from sysforge.primitives.abi_check import report_post_build_abi
     report_post_build_abi(_artifacts_for_pkgbuild(pkgbuild_dir))
+
+
+def _post_build_layout_check(pkgbuild_dir) -> None:
+    """Run the non-fatal payload-layout lint (3.2.0-F15) over this build's
+    artifacts, scoped exactly like :func:`_post_build_abi_check`. Always on,
+    unlike the ABI report: it is one names-only archive listing per package.
+    """
+    from sysforge.primitives.payload_layout import report_payload_layout
+    report_payload_layout(_artifacts_for_pkgbuild(pkgbuild_dir))
 
 
 def _capture_built_manifest(patched_pkgbuild_path) -> None:
@@ -1148,7 +1157,7 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run(pkgbuild_path, options: BuildOptions | None = None):
+def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
     if options is None:
         options = BuildOptions()
 
@@ -1348,7 +1357,18 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
             elif options.pgo_mode == "use":
                 # Raises MesaPgoError (clean pre-build abort) if nothing was
                 # collected or llvm-profdata is unavailable.
-                _profdata = mesa_pgo.merge_profraw(_store, pkgbase=_pgo_pkgbase)
+                # The installed (instrumented) build produced the .profraw, so
+                # its version is what the profile was collected against — the
+                # sidecar the reuse path grades staleness by (3.2.0-B16).
+                from sysforge.primitives.pacman import get_installed_version
+                _profiled_name = _pgo_names or _pgo_pkgbase
+                _profdata = mesa_pgo.merge_profraw(
+                    _store, pkgbase=_pgo_pkgbase,
+                    collected_version=(
+                        get_installed_version(_profiled_name)
+                        if _profiled_name else None
+                    ),
+                )
                 _pgo_flag = mesa_pgo.use_flags(_profdata)
                 record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
             else:
@@ -1394,10 +1414,12 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
                     if effective_flags_extra
                     else _pgo_flag
                 )
-                _build_log.ui(
-                    f"PGO (reuse) {_pgo_pkgbase}: re-applying {_reuse} from a "
-                    "prior --pgo=use (source rebuild stays profiled)"
+                _ep = _pgo_globals.get("epoch")
+                _target = (
+                    f"{_ep + ':' if _ep and _ep != '0' else ''}"
+                    f"{_pgo_globals.get('pkgver', '')}-{_pgo_globals.get('pkgrel', '1')}"
                 )
+                _build_log.ui(mesa_pgo.reuse_notice(_reuse, _pgo_pkgbase, _target))
 
         extracted_profile = None
         if build_mode_uses_extracted_profile(build_mode):
@@ -1531,6 +1553,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
         # Post-build ABI check (non-fatal) — owned by abi_check.py
         if options.abi_check:
             _post_build_abi_check(pkgbuild_path.resolve().parent)
+        # Payload-layout lint (non-fatal, always) — owned by payload_layout.py
+        _post_build_layout_check(pkgbuild_path.resolve().parent)
 
         # Record build metadata for `sysforge update` (non-fatal)
         _record_build_state(
@@ -1545,6 +1569,32 @@ def run(pkgbuild_path, options: BuildOptions | None = None):
 
     if options.cache_report:
         emit_session_report()
+
+    return build_root(resolved_profile, _built_pkgbase(pkgmeta, rename, pkgbuild_path))
+
+
+def _built_pkgbase(pkgmeta, rename, pkgbuild_path) -> str:
+    """The pkgbase makepkg named the build tree after — post-rename.
+
+    makepkg's own rule (``pkgbase`` defaults to ``pkgname[0]``), applied to the
+    renamed names when a rename ran, else to the parsed globals; the checkout
+    dir name is only the last resort (3.2.0-B37).
+    """
+    if rename:
+        renamed = rename.get("renamed_pkgbase") or next(
+            iter(rename.get("renamed_pkgnames") or ()), None
+        )
+        if renamed:
+            return renamed
+    globals_ = (pkgmeta or {}).get("globals", {})
+    pkgbase = globals_.get("pkgbase")
+    if isinstance(pkgbase, str) and pkgbase:
+        return pkgbase
+    names = globals_.get("pkgname")
+    first_name = names[0] if isinstance(names, list) and names else names
+    if isinstance(first_name, str) and first_name:
+        return first_name
+    return Path(pkgbuild_path).parent.name
 
 
 if __name__ == "__main__":

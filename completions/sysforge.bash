@@ -132,6 +132,10 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "pkgbuild running" -- "$cur") )
             return 0
             ;;
+        --base-config-merge)
+            COMPREPLY=( $(compgen -W "replace overlay" -- "$cur") )
+            return 0
+            ;;
         --source)
             COMPREPLY=( $(compgen -W "repo aur local" -- "$cur") )
             return 0
@@ -333,7 +337,7 @@ _sysforge_packages() {
 _sysforge_state() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "list repair orphans failed forget" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list repair orphans profiles failed forget" -- "$cur") )
         return
     fi
     case "$subverb" in
@@ -343,11 +347,14 @@ _sysforge_state() {
         orphans)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --no-confirm --no-pager" -- "$cur") )
             ;;
+        profiles)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager" -- "$cur") )
+            ;;
         repair)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --dry-run" -- "$cur") )
             ;;
         failed)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --clear --clear-all" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --names --clear --clear-all" -- "$cur") )
             ;;
         forget)
             if [[ $cur == -* ]]; then
@@ -416,6 +423,7 @@ _sysforge_run() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
                 --non-interactive --compiler --bootloader --base-config \
+                --base-config-merge \
                 --allow-no-fallback --skip-boot-audit \
                 --headers --no-headers --docs --no-docs \
                 --keep-hotplug-drivers --no-keep-hotplug-drivers \
@@ -449,7 +457,7 @@ _sysforge_help() {
         doctor)   subs="system pkg" ;;
         packages) subs="list add add-group remove" ;;
         run)      subs="pipeline hardware reconfigure toolchain packages kernel" ;;
-        state)    subs="list repair orphans failed forget" ;;
+        state)    subs="list repair orphans profiles failed forget" ;;
     esac
     COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
 }

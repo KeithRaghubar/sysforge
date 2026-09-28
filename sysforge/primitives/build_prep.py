@@ -23,12 +23,13 @@ leftover before re-cloning.
 import os
 import shutil
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.git_ops import purge_src
-from sysforge.primitives.net_policy import KIND_REPO_CHECKOUT, get_policy
+from sysforge.primitives.net_policy import KIND_KEY_FETCH, KIND_REPO_CHECKOUT, get_policy
 
 # [BUILD_PREP], not [BUILD]: this module does pre-build *acquisition* (clone the
 # packaging repo via pkgctl, import validpgpkeys) — it never compiles anything.
@@ -188,10 +189,120 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         _log.info(f"GPG: all {len(keys)} key(s) present in keyring")
         return
 
-    # Step 3: fetch remaining keys from keyserver
+    # Step 3: fetch remaining keys from a keyserver — consent-gated (3.1.0-F8)
     _log.info(f"GPG: {len(missing)}/{len(keys)} key(s) missing, fetching via keyserver")
-    r = subprocess.run(["gpg", "--recv-keys", *missing], capture_output=True, text=True)
-    if r.returncode != 0:
-        _log.warn(f"GPG: keyserver fetch failed:\n{r.stderr.strip()}")
-    else:
-        _log.info("GPG: keyserver fetch succeeded")
+    fetch_pgp_keys(missing, pkgbase=pkgbase_from_globals(pkgmeta.get("globals", {})))
+
+
+def pkgbase_from_globals(globals_: dict) -> str | None:
+    """makepkg's rule over parsed PKGBUILD globals: ``pkgbase``, else
+    ``pkgname[0]``; ``None`` when neither is a usable string."""
+    pkgbase = globals_.get("pkgbase")
+    if isinstance(pkgbase, str) and pkgbase:
+        return pkgbase
+    names = globals_.get("pkgname")
+    first = names[0] if isinstance(names, list) and names else names
+    return first if isinstance(first, str) and first else None
+
+
+# ``[security] auto_fetch_pgp_keys`` — installed once by cli.main (like the
+# sandbox policy); False means confirm on a TTY and fail closed otherwise.
+_AUTO_FETCH_KEYS = False
+
+
+def set_key_fetch_policy(*, auto: bool) -> None:
+    global _AUTO_FETCH_KEYS
+    _AUTO_FETCH_KEYS = bool(auto)
+
+
+def _describe_keys(homedir: str) -> list[tuple[str, str]]:
+    """``(fingerprint, primary uid)`` for every key in a throwaway keyring."""
+    r = subprocess.run(
+        ["gpg", "--homedir", homedir, "--batch", "--with-colons",
+         "--fingerprint", "--list-keys"],
+        capture_output=True, text=True,
+    )
+    out: list[tuple[str, str]] = []
+    fpr = None
+    for line in (r.stdout or "").splitlines():
+        fields = line.split(":")
+        if fields[0] == "pub":
+            fpr = None
+        elif fields[0] == "fpr" and fpr is None and len(fields) > 9:
+            fpr = fields[9]
+            out.append((fpr, ""))
+        elif fields[0] == "uid" and out and not out[-1][1] and len(fields) > 9:
+            out[-1] = (out[-1][0], fields[9])
+    return out
+
+
+def _consent_to_import(pkgbase: str | None) -> bool:
+    from sysforge.primitives import prompt
+
+    if _AUTO_FETCH_KEYS:
+        return True
+    if not prompt.is_interactive():
+        return False
+    answer = prompt.prompt_choice(
+        f"Trust these key(s) as upstream signers for {pkgbase or 'this package'} "
+        "and import them into your keyring? [y/N] ",
+        ["y", "n"], default="n", retry_on_invalid=False, tag="GPG",
+    )
+    return answer == "y"
+
+
+def fetch_pgp_keys(fingerprints: list[str], *, pkgbase: str | None) -> list[str]:
+    """Fetch ``validpgpkeys`` from a keyserver — only with consent (3.1.0-F8).
+
+    ``validpgpkeys`` exists so a *human* decides who the upstream signer is;
+    importing whatever a PKGBUILD names lets a tampered PKGBUILD ship its own
+    key beside a re-signed tarball and pass makepkg's verification. So:
+
+    * the fetch is its own egress kind (``KIND_KEY_FETCH``), so the source
+      freeze covers it — raises ``NetworkFrozen`` like every other seam;
+    * keys land in a throwaway ``GNUPGHOME`` first, and fingerprint, owner and
+      requesting pkgbase are shown before anything touches the real keyring;
+    * the import needs confirmation on a TTY; a non-interactive run fails
+      closed (nothing imported — makepkg then reports the missing key) unless
+      ``[security] auto_fetch_pgp_keys = true`` opts back into unattended use.
+
+    The one home for keyserver fetches (``auto_repair`` routes through it).
+    Returns the fingerprints actually imported.
+    """
+    get_policy().check(KIND_KEY_FETCH, pkgbase)
+    with tempfile.TemporaryDirectory(prefix="sysforge-gpg-") as home:
+        Path(home).chmod(0o700)
+        r = subprocess.run(
+            ["gpg", "--homedir", home, "--batch", "--recv-keys", *fingerprints],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            _log.warn(f"GPG: keyserver fetch failed:\n{(r.stderr or '').strip()}")
+            return []
+        described = _describe_keys(home) or [(f, "") for f in fingerprints]
+        for fpr, uid in described:
+            _log.ui(
+                f"[GPG] {pkgbase or '<unknown>'} names signer {fpr}"
+                f"{f' ({uid})' if uid else ''} — not in your keyring"
+            )
+        fprs = [fpr for fpr, _ in described]
+        if not _consent_to_import(pkgbase):
+            _log.error(
+                f"GPG: not importing {', '.join(fprs)} for {pkgbase or 'this package'} "
+                "without confirmation. Check the fingerprint against upstream, then "
+                f"`gpg --recv-keys {' '.join(fprs)}`, or set [security] "
+                "auto_fetch_pgp_keys = true for unattended runs."
+            )
+            return []
+        exported = subprocess.run(
+            ["gpg", "--homedir", home, "--batch", "--export", *fprs],
+            capture_output=True,
+        )
+        imported = subprocess.run(
+            ["gpg", "--batch", "--import"], input=exported.stdout, capture_output=True,
+        )
+        if exported.returncode != 0 or imported.returncode != 0:
+            _log.warn(f"GPG: importing {', '.join(fprs)} into the keyring failed")
+            return []
+    _log.info(f"GPG: imported {', '.join(fprs)} for {pkgbase or 'this package'}")
+    return fprs

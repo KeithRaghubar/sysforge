@@ -426,8 +426,9 @@ def missing_toolchain(policy: SandboxPolicy, exports: dict | None,
 
 # Profile-data flags whose value is an *input file* the compiler must read.
 # The ``-fprofile-*generate`` family is deliberately absent: those name an
-# output directory, so there is nothing to carry in (a container that writes
-# profiles and is then torn down is a separate problem, not this one).
+# output directory, so there is nothing to carry in. A container that writes
+# profiles and is then torn down is refused outright instead
+# (:func:`refuse_profile_generate`, 3.2.0-B12).
 _PROFILE_USE_PREFIXES = (
     "-fprofile-use",
     "-fprofile-instr-use",
@@ -436,6 +437,48 @@ _PROFILE_USE_PREFIXES = (
 _PROFILE_USE_RE = re.compile(
     r"(?:^|\s)(?:" + "|".join(re.escape(p) for p in _PROFILE_USE_PREFIXES) + r")=(\S+)"
 )
+
+
+# Instrumentation flags that make the built program *write* profiles at
+# runtime. Matched with or without ``=<dir>``: the bare form writes to the cwd,
+# which inside the container is discarded just the same.
+_PROFILE_GENERATE_RE = re.compile(
+    r"(?:^|\s)(-f(?:cs-)?profile-(?:instr-)?generate)(?:=\S+)?(?=\s|$)"
+)
+
+
+def refuse_profile_generate(policy: SandboxPolicy, exports: dict | None,
+                            conf_path=None) -> None:
+    """Refuse a profile-*generate* build under the sandbox (3.2.0-B12).
+
+    The instrumented binary writes its ``.profraw`` to the store path baked
+    into the flag, which inside the container is the container's path —
+    and ``makechrootpkg -c`` discards the working copy at teardown. Nothing
+    errors: the build succeeds, the profile is simply gone, and the later
+    ``--pgo=use`` finds an empty store or reuses a stale merge. Every other
+    sandbox probe asks "is this input present?", which a generate flag, having
+    no input, always passes — so this one asks for the flag itself.
+
+    Refusing is the recommended of three directions: carrying the profiles out
+    needs a teardown hook that survives a failed build, and a writable
+    bind-mount opens a host write channel inside the isolation boundary, which
+    needs its own justification. Both channels are read, as elsewhere.
+    """
+    if not policy.enabled:
+        return
+    values = [(exports or {}).get(key) for key in _LINKER_FLAG_KEYS]
+    values += _conf_flag_values(conf_path)
+    found = sorted({
+        m for raw in values for m in _PROFILE_GENERATE_RE.findall(str(raw or ""))
+    })
+    if found:
+        raise SandboxUnavailable(
+            f"refusing to sandbox a profile-generate build ({', '.join(found)}): "
+            "the instrumented package would write its profiles inside the "
+            "container, which is discarded at teardown. Run `--pgo=record` "
+            "without the sandbox ([security] sandbox_builds = false for this "
+            "build), then `--pgo=use` may run sandboxed."
+        )
 
 
 def host_profile_data(exports: dict | None, conf_path=None) -> list:

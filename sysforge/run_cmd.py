@@ -199,6 +199,7 @@ class RunKernelVerb(_RunVerbBase):
             bootloader=getattr(args, "bootloader", None),
             compiler=getattr(args, "compiler", None),
             base_config=getattr(args, "base_config", None),
+            base_config_merge=getattr(args, "base_config_merge", None),
             allow_no_fallback=getattr(args, "allow_no_fallback", False),
             skip_boot_audit=getattr(args, "skip_boot_audit", False),
             build_headers=getattr(args, "build_headers", None),

@@ -1473,6 +1473,76 @@ def check_semver_bump(repo: Path,
 # Driver
 # ===========================================================================
 
+# ===========================================================================
+# Group: release_gates  (release-gate completeness, STD row 27)
+# ===========================================================================
+
+# `pre-release` prerequisites deliberately left to the heavier tier: the full
+# suite is minutes, not seconds (docs/RELEASE-CHECKLIST.md "The two gate
+# runners").
+_RELEASE_GATE_EXEMPT = {"test"}
+_PRE_RELEASE_RE = re.compile(r"^pre-release:([^#\n]*)", re.MULTILINE)
+_RELEASE_MAKE_RE = re.compile(r"\bmake\s+(?:--no-print-directory\s+)?([a-z][\w-]*)")
+
+
+def check_release_gates(repo: Path) -> list[Finding]:
+    """Every static-analysis gate `make pre-release` runs must also be run by
+    `tools/release.sh`.
+
+    `pre-release` is advisory — nothing makes anyone run it — while the release
+    script is the gate a release cannot skip. A check only the former runs is a
+    check a tag can ship without: v3.2.0 shipped four pyright errors that way,
+    one a live crash (3.2.0-STD1). Diffing the two sets keeps the checklist's
+    gate table from silently diverging again.
+    """
+    makefile = repo / "Makefile"
+    script = repo / "tools" / "release.sh"
+    if not makefile.is_file() or not script.is_file():
+        return []
+    m = _PRE_RELEASE_RE.search(makefile.read_text(encoding="utf-8"))
+    if m is None:
+        return [Finding("release_gates", "error", "Makefile",
+                        "no `pre-release:` target to compare the release preflight against")]
+    pre = set(m.group(1).split()) - _RELEASE_GATE_EXEMPT
+    called = set(_RELEASE_MAKE_RE.findall(script.read_text(encoding="utf-8")))
+    findings = [
+        Finding("release_gates", "error", "tools/release.sh",
+                f"`make pre-release` runs `{gate}` but the release preflight does "
+                "not — a tag could ship with it failing (STD row 27)")
+        for gate in sorted(pre - called)
+    ]
+    # A gate that can block a release must be deterministic: an unpinned
+    # `uv run --with <tool>` resolves the newest release on every run, so a
+    # tool update alone can turn a release red (3.2.0-STD1).
+    recipes = _make_recipes(makefile.read_text(encoding="utf-8"))
+    for gate in sorted(pre & called):
+        for tool in _UNPINNED_WITH_RE.findall(recipes.get(gate, "")):
+            findings.append(Finding(
+                "release_gates", "error", "Makefile",
+                f"release gate `{gate}` runs an unpinned `--with {tool}` — pin it "
+                f"(`--with {tool}==<version>`) so a tool release cannot change the "
+                "gate's verdict (STD row 27)"))
+    return findings
+
+
+_UNPINNED_WITH_RE = re.compile(r"--with\s+([A-Za-z0-9_.-]+)(?![A-Za-z0-9_.-]*[=<>~])")
+
+
+def _make_recipes(text: str) -> dict[str, str]:
+    """``{target: recipe text}`` for simple ``target:`` rules (tab-led lines)."""
+    recipes: dict[str, str] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("\t") and current:
+            recipes[current] += line + "\n"
+            continue
+        m = re.match(r"^([A-Za-z0-9_.-]+):(?!=)", line)
+        current = m.group(1) if m else None
+        if current:
+            recipes.setdefault(current, "")
+    return recipes
+
+
 GROUPS = {
     "paths":          check_paths,
     "spdx":           check_spdx,
@@ -1485,6 +1555,7 @@ GROUPS = {
     "distro_portability": check_distro_portability,
     "deprecations":   check_deprecations,
     "semver_bump":    check_semver_bump,
+    "release_gates":  check_release_gates,
 }
 
 

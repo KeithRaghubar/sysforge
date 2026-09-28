@@ -116,7 +116,8 @@ _KNOWN_TOP_KEYS: dict[str, set[str]] = {
     # deliberately absent here.
     "kernel.toml":    {"enabled", "compiler", "pkgname", "upstream_pkgname", "srcdir",
                        "bootloader", "interactive", "pkgbuild_src_dir",
-                       "source", "base_config", "require_fallback_kernel",
+                       "source", "base_config", "base_config_merge",
+                       "require_fallback_kernel",
                        "boot_audit", "min_boot_free_mb",
                        "capture_lsmod_snapshot", "device_kconfig",
                        "kconfig_merge", "build_headers", "build_docs",

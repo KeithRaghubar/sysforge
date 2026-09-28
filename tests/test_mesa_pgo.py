@@ -286,3 +286,69 @@ def test_merge_profraw_names_output_per_package(tmp_path, monkeypatch):
     monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
     out = mesa_pgo.merge_profraw(store, pkgbase="foo")
     assert out == store / "foo.profdata"
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B16 — collected-version sidecar next to the merged profile
+# ---------------------------------------------------------------------------
+
+def _fake_merge(monkeypatch):
+    monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
+
+    def fake_run(argv, **kw):
+        Path(argv[argv.index("--output") + 1]).write_text("merged")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+
+
+def test_merge_records_the_collected_version_sidecar(tmp_path, monkeypatch):
+    (tmp_path / "a.profraw").write_text("x")
+    _fake_merge(monkeypatch)
+    out = mesa_pgo.merge_profraw(tmp_path, collected_version="1:26.1.3-2")
+    assert mesa_pgo.version_sidecar(out).read_text().strip() == "1:26.1.3-2"
+
+
+def test_profile_verdict_current_when_sidecar_matches_target(tmp_path):
+    pd = tmp_path / "mesa.profdata"
+    pd.write_text("merged")
+    mesa_pgo.version_sidecar(pd).write_text("1:26.1.7-1\n")
+    status, msg = mesa_pgo.profile_version_verdict(pd, "1:26.1.7-1")
+    assert (status, msg) == ("current", None)
+
+
+def test_profile_verdict_older_names_both_versions(tmp_path):
+    pd = tmp_path / "mesa.profdata"
+    pd.write_text("merged")
+    mesa_pgo.version_sidecar(pd).write_text("1:26.1.3-2\n")
+    status, msg = mesa_pgo.profile_version_verdict(pd, "1:26.1.7-1")
+    assert status == "older"
+    assert "1:26.1.3-2" in msg and "1:26.1.7-1" in msg
+    assert "--pgo=record" in msg
+
+
+def test_profile_verdict_unknown_age_without_sidecar(tmp_path):
+    """A profile collected before the sidecar existed is kept and reused —
+    never discarded, never presented as current."""
+    pd = tmp_path / "mesa.profdata"
+    pd.write_text("merged")
+    status, msg = mesa_pgo.profile_version_verdict(pd, "1:26.1.7-1")
+    assert status == "unknown"
+    assert "unknown" in msg and "--pgo=record" in msg
+
+
+def test_reuse_notice_is_plain_when_profile_is_current(tmp_path):
+    pd = tmp_path / "mesa.profdata"
+    pd.write_text("merged")
+    mesa_pgo.version_sidecar(pd).write_text("1:26.1.7-1\n")
+    line = mesa_pgo.reuse_notice(pd, "mesa", "1:26.1.7-1")
+    assert "re-applying" in line and "collected against" not in line
+
+
+def test_reuse_notice_names_the_staleness(tmp_path):
+    pd = tmp_path / "mesa.profdata"
+    pd.write_text("merged")
+    mesa_pgo.version_sidecar(pd).write_text("1:26.1.3-2\n")
+    line = mesa_pgo.reuse_notice(pd, "mesa", "1:26.1.7-1")
+    assert "re-applying" in line
+    assert "collected against 1:26.1.3-2, building 1:26.1.7-1" in line

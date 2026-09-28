@@ -29,6 +29,8 @@ from sysforge.primitives.build_state import BUILD_MODE_SOURCE
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
 
+_log = log.get_logger("STATE")
+
 # Pre-3.0.0 build_mode tokens that a repair can safely rewrite to their
 # current equivalent. Deliberately a closed, known mapping — NOT "anything
 # unrecognized" — coercing arbitrary garbage to BUILD_MODE_SOURCE would
@@ -443,6 +445,14 @@ def cmd_state_failed(args):
         return
 
     failures = bs.all_failures()
+    if getattr(args, "names", False):
+        # Machine-readable, verb-local (3.1.0-F2): pkgbases only, one per line,
+        # no header, never paged, and nothing at all when the set is empty —
+        # the output is substituted into argv by
+        # `sysforge build $(sysforge state failed --names)`.
+        for pkgbase in sorted(failures):
+            print(pkgbase)
+        return
     use_pager = not getattr(args, "no_pager", False)
 
     with _maybe_pager(use_pager):
@@ -558,6 +568,126 @@ class StateRepairVerb(Verb):
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_state_repair(args)
         return ExecResult()
+
+
+def _load_toolchain_cfg() -> dict | None:
+    """toolchain.toml, for the profile-store resolvers (None when absent)."""
+    from sysforge.primitives.makepkg_pgo import _try_load_toml
+    from sysforge.primitives.paths import TOOLCHAIN_PATH
+
+    return _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
+
+
+def cmd_state_profiles(args) -> int:
+    """List the shared profile store, or reclaim one store (3.2.0-F11).
+
+    Read-only by default: method, target, size, age and — where the
+    ``3.2.0-B16`` sidecar exists — the version a profile was collected against.
+    ``--purge <method>[/<target>]`` deletes one store after a TTY confirmation
+    (default No); a non-interactive run refuses, because a profile costs a
+    workload to regenerate. Nothing is ever purged implicitly: a merged
+    profile's existence is the durable PGO opt-in (``mesa_pgo.reuse_profdata``).
+    """
+    import shutil
+    import time
+
+    from sysforge.primitives import makepkg_pgo, prompt
+    from sysforge.primitives.render import fmt_bytes
+
+    tcfg = _load_toolchain_cfg()
+    spec = getattr(args, "purge", None)
+    if spec:
+        try:
+            target = makepkg_pgo.resolve_purge_target(tcfg, spec)
+        except ValueError as exc:
+            _log.error(f"state profiles --purge: {exc}")
+            return 2
+        if not target.exists():
+            print(f"No profile store at {target} — nothing to purge.")
+            return 0
+        if not prompt.is_interactive():
+            _log.error(
+                f"refusing to purge {target} without a TTY — a collected profile "
+                "needs a workload to regenerate; run it from a terminal"
+            )
+            return 2
+        answer = prompt.prompt_choice(
+            f"Delete the {spec} profile store {target}? A rebuild will no longer "
+            "be profiled until a new workload is collected. [y/N] ",
+            ["y", "n"], default="n", retry_on_invalid=False,
+        )
+        if answer != "y":
+            print("Aborted — nothing deleted.")
+            return 2
+        shutil.rmtree(target)
+        print(f"Purged {target}.")
+        return 0
+
+    rows = makepkg_pgo.list_profile_stores(tcfg)
+    with _maybe_pager(not getattr(args, "no_pager", False)):
+        if not rows:
+            print("No collected profiles in the profile store.")
+            return 0
+        now = time.time()
+        table = [
+            (
+                r.method + (f"/{r.target}" if r.target else ""),
+                fmt_bytes(r.size_bytes),
+                f"{int((now - r.mtime) // 86400)}d",
+                r.collected_version or "-",
+                str(r.path),
+            )
+            for r in rows
+        ]
+        header = ("STORE", "SIZE", "AGE", "COLLECTED", "PATH")
+        widths = [max(len(header[i]), *(len(t[i]) for t in table)) for i in range(4)]
+        fmt = "  ".join(f"{{:<{w}}}" for w in widths) + "  {}"
+        print(fmt.format(*header))
+        for t in table:
+            print(fmt.format(*t))
+        print("\nReclaim one with: sysforge state profiles --purge <STORE>")
+    return 0
+
+
+def orphaned_profile_lines(names) -> list[str]:
+    """One notice per non-empty profile store left behind by a removal.
+
+    The store is deliberately kept (reverting for a bisect must not cost the
+    collected workload); this only makes the orphan visible (3.2.0-F11).
+    """
+    from sysforge.primitives import makepkg_pgo
+
+    tcfg = _load_toolchain_cfg()
+    root = makepkg_pgo.resolve_profile_store_root(tcfg)
+    lines = []
+    for path in makepkg_pgo.stores_for_package(tcfg, names):
+        try:
+            spec = path.relative_to(root).as_posix()
+        except ValueError:
+            spec = path.name
+        lines.append(
+            f"profile store kept: {path} (reclaim with "
+            f"`sysforge state profiles --purge {spec}`)"
+        )
+    return lines
+
+
+class StateProfilesVerb(Verb):
+    """List the profile store; ``--purge`` reclaims one store (3.2.0-F11)."""
+
+    name = "state-profiles"
+    requires_sentinel = False
+
+    def journal_target(self, args) -> str | None:
+        spec = getattr(args, "purge", None)
+        return journal.mode_target(f"profiles-purge:{spec}") if spec else None
+
+    def pre_check(self, args) -> PreCheckResult:
+        self.requires_sentinel = bool(getattr(args, "purge", None))
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_state_profiles(args))
 
 
 class StateOrphansVerb(Verb):

@@ -173,7 +173,10 @@ Only tokens the system conf actually sets are ever restored — the table never 
 distro whose conf omits a token stays as it is (§Distro portability). A pure shell reference
 (`CXXFLAGS = "$CFLAGS"`) is left untouched and inherits by expansion. Kernel builds never reach the
 pass: `KERNEL_CLEAN_KEYS` keeps flag keys out of `profile_overrides` entirely, so the system values
-pass through verbatim. A profile opts out of the whole pass with `preserve_system_tokens = false`
+pass through verbatim. For the same reason `serialize_effective_flags(kernel_build=True)` drops
+those keys from the recorded string, and `flag_drift` drops them from a stored kernel record before
+diffing (legacy records converge without a false drift), so only keys that actually reach the
+kernel build (`CC`, `LD`, `RUSTC_WRAPPER`, …) can report drift (`3.2.0-B39`). A profile opts out of the whole pass with `preserve_system_tokens = false`
 (a `SYSFORGE_KEYS` member — never written to a conf).
 
 User `[preserved_system_tokens]` in `~/.config/sysforge/profiles.toml` follows the same

@@ -300,6 +300,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
         f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging1 = "{tmp_path / "staging1"}"\npgo_staging3 = "{tmp_path / "staging3"}"\n'
         f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
         '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
     )
@@ -389,7 +390,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
 
     # Path B: Pass 3 picks up the staged Pass-1 libLLVM via env injection so
     # the live /usr stays untouched. Pass 4 redirects at the Pass-3 stage2.
-    stage1_lib = "/var/tmp/sysforge-llvm-stage1/usr/lib"
+    stage1_lib = str(tmp_path / "staging1" / "usr" / "lib")
     train_env = call_log[1]["env"]
     assert train_env.get("LLVM_PROFILE_FILE", "").startswith(str(pgo_store)), \
         "Pass 3 must set LLVM_PROFILE_FILE for profraw routing"
@@ -398,7 +399,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
     assert train_env.get("LD_LIBRARY_PATH", "").startswith(stage1_lib), \
         "Pass 3 must redirect dyld at stage1 before /usr"
     assert train_env.get("CMAKE_PREFIX_PATH", "").startswith(
-        "/var/tmp/sysforge-llvm-stage1/usr"
+        str(tmp_path / "staging1" / "usr")
     )
     build_env = call_log[2]["env"]
     assert build_env.get("LLVM_PROFILE_FILE") == "", \
@@ -432,6 +433,7 @@ def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
         f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging1 = "{tmp_path / "staging1"}"\npgo_staging3 = "{tmp_path / "staging3"}"\n'
         f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
         '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
     )
@@ -498,6 +500,7 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
     toml_path = tmp_path / "toolchain.toml"
     toml_path.write_text(
         f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging1 = "{tmp_path / "staging1"}"\npgo_staging3 = "{tmp_path / "staging3"}"\n'
         f'pgo_staging = "{staging}"\npgo_store = "{pgo_store}"\n'
         '[packages]\npgo = ["llvm"]\nnon_pgo = []\nlib32 = []\n'
     )

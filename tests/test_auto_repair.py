@@ -138,15 +138,22 @@ class TestPgpKey:
         a = _accum("nothing to see here\n")
         assert ar.PGP_KEY.detect(a) is None
 
-    def test_repair_invokes_gpg_recv_keys(self, tmp_path):
+    def test_repair_goes_through_the_consent_gated_fetch(self, tmp_path):
+        """3.1.0-F8: the repair must not be a second, unattended keyserver
+        path around the consent gate."""
+        (tmp_path / "PKGBUILD").write_text("pkgbase=foo\npkgname=foo\n")
         info = ar.MatchInfo(detail={"keyid": "DEADBEEFCAFEBABE"})
-        with patch("sysforge.primitives.auto_repair.shutil.which",
-                   return_value="/usr/bin/gpg"), \
-             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+        with patch("sysforge.primitives.build_prep.fetch_pgp_keys",
+                   return_value=["DEADBEEFCAFEBABE"]) as fetch:
             ar.PGP_KEY.repair(tmp_path, info)
-        run.assert_called_once_with(
-            ["/usr/bin/gpg", "--recv-keys", "DEADBEEFCAFEBABE"], check=True,
-        )
+        fetch.assert_called_once_with(["DEADBEEFCAFEBABE"], pkgbase="foo")
+
+    def test_repair_fails_when_the_key_was_not_imported(self, tmp_path):
+        (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+        info = ar.MatchInfo(detail={"keyid": "DEADBEEFCAFEBABE"})
+        with patch("sysforge.primitives.build_prep.fetch_pgp_keys", return_value=[]):
+            with pytest.raises(RuntimeError, match="not imported"):
+                ar.PGP_KEY.repair(tmp_path, info)
 
 
 # ---------------------------------------------------------------------------

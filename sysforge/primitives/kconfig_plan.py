@@ -64,6 +64,10 @@ SLOT_REGION: dict[str, str] = {
 HOTPLUG_FRAGMENT = "sysforge.hotplug.config"
 DEFAULT_FRAGMENT = "sysforge.config"
 BASE_CONFIG_FILE = "sysforge.base.config"
+#: The ``base_config_merge = "overlay"`` seed (3.2.0-F17): merged onto the
+#: PKGBUILD's own ``.config`` instead of copied over it. Which of the two files
+#: the stage writes *is* the mode — ``prepare()`` acts on whichever exists.
+BASE_OVERLAY_FILE = "sysforge.base.overlay.config"
 #: The accumulated lsmod snapshot, staged next to the PKGBUILD so the
 #: minimizer reads it (via ``LSMOD=``) instead of live ``lsmod`` (3.2.0-B35).
 LSMOD_FILE = "sysforge.lsmod"
@@ -311,7 +315,7 @@ class KconfigPlan:
         steps = dict(self._steps)
 
         # --- 1. drop rules
-        if "merge_config.sh" in text:
+        if pkgbuild_applies_own_fragment(text):
             dropped_base = steps.pop(BASE_SEED, None)
             dropped_fragment = steps.pop(FRAGMENT_MERGE, None)
             if dropped_base or dropped_fragment:
@@ -499,11 +503,24 @@ class KconfigPlan:
 
 # --- step builders ---------------------------------------------------------
 
-def base_seed_step() -> Step:
-    """Copy the resolved base config over ``.config``, then re-resolve.
+def pkgbuild_applies_own_fragment(pkgbuild_text: str) -> bool:
+    """The drop rule: a PKGBUILD that already calls ``merge_config.sh`` owns
+    its fragment handling, so the PRE slots (base seed + fragment merge) are
+    not injected. One home, so the kernel stage's summary can say when the
+    base config is inert for the same reason the plan drops it.
+    """
+    return "merge_config.sh" in pkgbuild_text
 
-    File-guarded, so the default ``base_config = "pkgbuild"`` (which writes no
-    file) is a runtime no-op.
+
+def base_seed_step() -> Step:
+    """Seed the resolved base config, then re-resolve.
+
+    ``replace`` (:data:`BASE_CONFIG_FILE`) copies it over ``.config``;
+    ``overlay`` (:data:`BASE_OVERLAY_FILE`, 3.2.0-F17) merges it onto the
+    PKGBUILD's ``.config`` with ``merge_config.sh -m``, so the base wins every
+    symbol it names (``# CONFIG_X is not set`` included) and the PKGBUILD's
+    choices fill the rest before ``olddefconfig``. File-guarded, so the default
+    ``base_config = "pkgbuild"`` (which writes neither file) is a runtime no-op.
     """
     return Step(
         slot=BASE_SEED,
@@ -511,6 +528,10 @@ def base_seed_step() -> Step:
             "{indent}# sysforge: seed the base config (when provided), then merge the fragment",
             f'{{indent}}if [ -f "$startdir/{BASE_CONFIG_FILE}" ]; then',
             f'{{indent}}  cp "$startdir/{BASE_CONFIG_FILE}" .config',
+            f"{{indent}}  make {OLDDEFCONFIG}",
+            f'{{indent}}elif [ -f "$startdir/{BASE_OVERLAY_FILE}" ]; then',
+            "{indent}  ./scripts/kconfig/merge_config.sh -m .config "
+            f'"$startdir/{BASE_OVERLAY_FILE}"',
             f"{{indent}}  make {OLDDEFCONFIG}",
             "{indent}fi",
         ),

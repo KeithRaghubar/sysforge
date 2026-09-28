@@ -15,9 +15,16 @@ slow, version-*independent* checks (lint, typecheck, full suite, and the five sh
 gates) so they can run on any branch at any time. `tools/release.sh` preflight holds the
 version-*dependent* ones (`check-bump`, `check-standards-at`) — they need the target version, which
 does not exist until a bump level is chosen — plus the repo and signing preconditions (on `main`,
-clean tree, chroot present, GPG key usable). The five gates both runners share are re-run by the
-script deliberately: it cannot assume `pre-release` was run recently, and a stale `DESIGN.md`
-discovered *after* the tag is created costs a `make release-resume` cycle.
+clean tree, chroot present, GPG key usable). The gates both runners share — the five `check-*`
+gates plus `lint` and `typecheck` — are re-run by the script deliberately: it cannot assume
+`pre-release` was run recently, and a stale `DESIGN.md` discovered *after* the tag is created costs
+a `make release-resume` cycle. The script must run **every static-analysis gate** `pre-release` does
+(everything but the minutes-long full suite, which stays in the heavier tier): `pre-release` is
+advisory, so a gate only it runs is one a tag can ship without — v3.2.0 shipped four pyright errors,
+one a live crash, that way. The `check_standards` `release_gates` group diffs the two sets (standards
+row 27, `3.2.0-STD1`) and requires every `uv run --with` overlay in a gate recipe to be pinned
+(`PYRIGHT_VERSION`, `REUSE_VERSION`): a gate that can block must not change its verdict because a
+tool released a new version.
 
 Three things sit in **neither** runner and are therefore the ones most easily skipped: coverage
 (`make coverage-ratchet`), the CVE audit (`make audit`), and the runtime tiers — the container tier

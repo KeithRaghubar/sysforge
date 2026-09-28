@@ -41,6 +41,12 @@ import sysforge.pipeline.stages.kernel as _km
 
 
 
+# Stage tests patch the build with return_value=None: makepkg_run returns the
+# build tree it used (3.2.0-B37), and a bare MagicMock would read as a fresh
+# build with no .config, which Gate 2 refuses.
+_MAKEPKG_RUN = "sysforge.pipeline.stages.kernel.stage.makepkg_run"
+
+
 def kcfg(d=None, **kw) -> KernelConfig:
     """Build a :class:`KernelConfig` from kernel.toml-shaped keys.
 
@@ -725,7 +731,7 @@ def test_gate2_kconfig_drift_warns_on_disabled_option(tmp_path, monkeypatch):
     fragment.write_text("# source: hardware\nCONFIG_MZEN3=y\nCONFIG_HZ_1000=y\n")
     resolved = tmp_path / ".config"
     resolved.write_text("# CONFIG_MZEN3 is not set\nCONFIG_HZ_1000=y\n")
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: resolved)
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: resolved)
 
     with _capture_logs() as logs:
         _km.gates.gate2_kconfig_drift(tmp_path, fragment)
@@ -741,7 +747,7 @@ def test_gate2_kconfig_drift_clean_logs_info_no_warn(tmp_path, monkeypatch):
     fragment.write_text("CONFIG_HZ_1000=y\n")
     resolved = tmp_path / ".config"
     resolved.write_text("CONFIG_HZ_1000=y\nCONFIG_EXTRA=y\n")
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: resolved)
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: resolved)
 
     with _capture_logs() as logs:
         _km.gates.gate2_kconfig_drift(tmp_path, fragment)
@@ -753,7 +759,7 @@ def test_gate2_kconfig_drift_no_fragment_is_noop(tmp_path, monkeypatch):
     # fragment_path is None (merge disabled / no entries) → check must not run,
     # not even locate the resolved config.
     called = []
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: called.append(d))
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: called.append(d))
 
     with _capture_logs() as logs:
         _km.gates.gate2_kconfig_drift(tmp_path, None)
@@ -764,7 +770,7 @@ def test_gate2_kconfig_drift_no_fragment_is_noop(tmp_path, monkeypatch):
 def test_gate2_kconfig_drift_no_resolved_config_skips(tmp_path, monkeypatch):
     fragment = tmp_path / "sysforge.config"
     fragment.write_text("CONFIG_HZ_1000=y\n")
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: None)
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: None)
 
     with _capture_logs() as logs:
         _km.gates.gate2_kconfig_drift(tmp_path, fragment)
@@ -1005,7 +1011,7 @@ def test_kernel_stage_noop_when_no_kernel_toml(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", tmp_path / "nonexistent.toml"), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
         mock_build.assert_not_called()
@@ -1030,7 +1036,7 @@ def test_kernel_stage_dry_run_calls_nothing(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         KernelStage().run({}, state, make_options(dry_run=True, state_dir=tmp_path / "state"))
         mock_build.assert_not_called()
@@ -1044,7 +1050,7 @@ def test_kernel_stage_calls_makepkg(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1066,7 +1072,7 @@ def test_kernel_stage_falls_back_to_global_pkgbuild_src_dir(tmp_path):
     config = {"paths": {"pkgbuild_src_dir": str(builds)}}
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
@@ -1082,7 +1088,7 @@ def test_kernel_stage_runs_mkinitcpio(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1098,7 +1104,7 @@ def test_kernel_stage_runs_bootctl_by_default(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1114,7 +1120,7 @@ def test_kernel_stage_runs_grub_when_configured(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1130,7 +1136,7 @@ def test_kernel_stage_skips_bootloader_when_none(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1151,7 +1157,7 @@ def test_kernel_stage_mkinitcpio_failure_raises(tmp_path):
         return MagicMock(returncode=0, stdout="")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run",
                side_effect=fail_mkinitcpio), \
          pytest.raises(RuntimeError, match="mkinitcpio"):
@@ -1167,7 +1173,7 @@ def test_kernel_stage_writes_kconfig_fragment_when_hw_profile_present(tmp_path):
     config = {"hardware_profile": str(hw)}
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run(config, state, make_options(state_dir=tmp_path / "state"))
@@ -1315,7 +1321,7 @@ def test_kernel_stage_threads_subpackages_into_build_options(tmp_path):
 
     opts = make_options(state_dir=tmp_path / "state", build_headers=False, build_docs=True)
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1333,7 +1339,7 @@ def test_kernel_stage_subpackage_defaults_headers_on_docs_off(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1411,7 +1417,7 @@ def test_kernel_stage_passes_interactive_true_by_default(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -1432,7 +1438,7 @@ def test_kernel_stage_non_interactive_flag_flips_to_false(tmp_path):
     opts.non_interactive = True
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1455,7 +1461,7 @@ def test_kernel_stage_kernel_toml_interactive_false(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -1475,7 +1481,7 @@ def test_kernel_stage_cli_compiler_llvm_overrides_pipeline(tmp_path):
     opts.compiler = "llvm"
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1496,7 +1502,7 @@ def test_kernel_stage_cli_compiler_gcc_overrides_pipeline(tmp_path):
     opts.compiler = "gcc"
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1517,7 +1523,7 @@ def test_kernel_stage_cli_bootloader_override_beats_kernel_toml(tmp_path):
     opts.bootloader = "grub"
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1548,7 +1554,7 @@ def test_kernel_stage_no_presync_when_no_update(tmp_path):
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler") as mock_sched, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         # default make_options sets no_update=True
@@ -1572,7 +1578,7 @@ def test_kernel_stage_presyncs_when_update_enabled(tmp_path):
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler",
                return_value=scheduler_mock) as mock_sched, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1600,7 +1606,7 @@ def test_kernel_stage_cleansrc_overrides_no_update(tmp_path):
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler",
                return_value=scheduler_mock) as mock_sched, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1625,7 +1631,7 @@ def test_kernel_stage_cleansrc_force_propagates(tmp_path):
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler",
                return_value=scheduler_mock) as mock_sched, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1653,7 +1659,7 @@ def test_kernel_stage_sync_failure_raises(tmp_path):
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler",
                return_value=scheduler_mock), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run"), \
          pytest.raises(RuntimeError, match="source sync failed"):
         KernelStage().run({}, state, opts)
@@ -1684,7 +1690,7 @@ def _run_kernel_diverged(tmp_path, *, interactive, answer="n"):
          patch("sysforge.primitives.prompt.is_interactive",
                return_value=interactive), \
          patch("sysforge.primitives.prompt.prompt_choice", return_value=answer), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -1710,7 +1716,7 @@ def test_kernel_stage_sync_diverged_aborts_unattended(tmp_path):
          patch("sysforge.primitives.aur.classify_head_vs_upstream",
                return_value=("diverged_upstream", 1, 2)), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run"), \
          pytest.raises(RuntimeError, match="diverged source unattended"):
         KernelStage().run({}, state, opts)
@@ -1765,7 +1771,7 @@ def test_kernel_stage_writes_sentinel_during_install_and_clears_on_success(tmp_p
         return []
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage, "install_built_packages",
                       side_effect=check_sentinel_during_install), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
@@ -1801,7 +1807,7 @@ def test_kernel_stage_auth_failure_aborts_without_writing_a_sentinel(tmp_path):
     auth = MagicMock(side_effect=[True, False])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage.sudo_session, "authenticate", auth), \
          patch.object(_km.stage, "install_built_packages", install_mock), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
@@ -1824,7 +1830,7 @@ def test_kernel_stage_auth_failure_message_names_the_plain_rerun(tmp_path):
     state = PipelineState(state_dir)
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage.sudo_session, "authenticate",
                       MagicMock(side_effect=[True, False])), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
@@ -1849,7 +1855,7 @@ def test_kernel_stage_install_failure_still_retains_the_sentinel(tmp_path):
     state = PipelineState(state_dir)
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage.sudo_session, "authenticate", lambda: True), \
          patch.object(_km.stage, "install_built_packages",
                       side_effect=RuntimeError("pacman -U failed (exit 1)")), \
@@ -1887,7 +1893,7 @@ def test_kernel_stage_runs_a_sudo_keepalive_over_the_build(tmp_path):
         return []
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage.sudo_session, "keepalive", fake_keepalive), \
          patch.object(_km.stage, "install_built_packages", side_effect=note_install), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
@@ -1917,7 +1923,7 @@ def test_kernel_stage_dry_run_skips_sudo_entirely(tmp_path):
         yield
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage.sudo_session, "authenticate", auth), \
          patch.object(_km.stage.sudo_session, "keepalive", fake_keepalive), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
@@ -1942,7 +1948,7 @@ def test_gate1_no_fallback_hard_fails(tmp_path, monkeypatch):
     install_mock = MagicMock(return_value=[])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch.object(_km.stage, "install_built_packages", install_mock), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -1961,7 +1967,7 @@ def test_gate1_allow_no_fallback_proceeds(tmp_path, monkeypatch):
     monkeypatch.setattr(kernel_safety, "find_fallback_kernels", lambda *a, **k: [])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(
@@ -1981,7 +1987,7 @@ def test_gate1_low_boot_space_hard_fails(tmp_path, monkeypatch):
                             "free space", is_brick=True))
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         with pytest.raises(RuntimeError, match="boot"):
@@ -1997,13 +2003,13 @@ def test_gate2_brick_aborts_before_install(tmp_path, monkeypatch):
     state = PipelineState(tmp_path / "state")
     brick = KernelFinding(SEV_ERROR, "boot_kconfig:CONFIG_EXT4_FS",
                           "CONFIG_EXT4_FS is not enabled", "Set it", is_brick=True)
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: tmp_path / ".config")
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: tmp_path / ".config")
     monkeypatch.setattr(kernel_safety, "audit_resolved_config",
                         lambda *a, **k: [brick])
     install_mock = MagicMock(return_value=[])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage, "install_built_packages", install_mock), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -2020,13 +2026,13 @@ def test_gate2_skip_boot_audit_installs_anyway(tmp_path, monkeypatch):
     state = PipelineState(tmp_path / "state")
     brick = KernelFinding(SEV_ERROR, "boot_kconfig:CONFIG_EXT4_FS",
                           "CONFIG_EXT4_FS is not enabled", "Set it", is_brick=True)
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: tmp_path / ".config")
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: tmp_path / ".config")
     monkeypatch.setattr(kernel_safety, "audit_resolved_config",
                         lambda *a, **k: [brick])
     install_mock = MagicMock(return_value=[])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage, "install_built_packages", install_mock), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -2057,10 +2063,10 @@ def test_gate2_harvests_kbuild_map_to_state_dir(tmp_path, monkeypatch):
         captured.update(k)
         return []
     monkeypatch.setattr(device_probe, "enumerate_devices", fake_enumerate)
-    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d: tree / ".config")
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: tree / ".config")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -2088,7 +2094,7 @@ def test_gate3_unbootable_artifacts_raise_after_install(tmp_path, monkeypatch):
     install_mock = MagicMock(return_value=[])
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch.object(_km.stage, "install_built_packages", install_mock), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -2116,7 +2122,7 @@ def test_kernel_stage_preserves_sentinel_on_mkinitcpio_failure(tmp_path):
         return MagicMock(returncode=0, stdout="")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run",
                side_effect=fail_mkinitcpio), pytest.raises(RuntimeError, match="mkinitcpio"):
         KernelStage().run({}, state, make_options(state_dir=state_dir))
@@ -2152,7 +2158,7 @@ def test_kernel_stage_sentinel_records_compiler_metadata_gcc(tmp_path):
     opts.compiler = "gcc"
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run",
                side_effect=fail_mkinitcpio), pytest.raises(RuntimeError):
         KernelStage().run({}, state, opts)
@@ -2186,7 +2192,7 @@ def test_kernel_stage_sentinel_records_compiler_metadata_llvm(tmp_path):
     opts.compiler = "llvm"
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run",
                side_effect=fail_mkinitcpio), pytest.raises(RuntimeError):
         KernelStage().run({}, state, opts)
@@ -2213,7 +2219,7 @@ def test_kernel_stage_passes_source_and_owner_stage_to_makepkg(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_run, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_run, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
@@ -2222,6 +2228,41 @@ def test_kernel_stage_passes_source_and_owner_stage_to_makepkg(tmp_path):
     opts = mock_run.call_args.kwargs["options"]
     assert opts.source == "local"
     assert opts.owner_stage == "kernel"
+
+
+def test_kernel_stage_hands_the_reported_build_dir_to_every_gate(tmp_path):
+    """3.2.0-B37: the tree makepkg_run reports (profile BUILDDIR + post-rename
+    pkgbase) is where Gate 2, the drift check, the kconfig history and Gate 3
+    look — never the system conf keyed on the checkout name."""
+    import sysforge.pipeline.stages.kernel as _km
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-custom")
+    p = tmp_path / "kernel.toml"
+    p.write_text(
+        'enabled = true\n'
+        'pkgname = "linux-custom"\n'
+        f'pkgbuild_src_dir = "{builds}"\n'
+        'bootloader = "none"\n'
+    )
+    state = PipelineState(tmp_path / "state")
+    reported = tmp_path / "profile-builds" / "linux-custom-sysforge"
+    seen = []
+
+    def spy(d, **kw):
+        seen.append(kw.get("build_dir"))
+        return None
+
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch.object(_km.gates, "resolve_built_config", spy), \
+         patch(_MAKEPKG_RUN, return_value=reported), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="Gate 2"):
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    # The fresh build reported a tree with no .config in it → Gate 2 refused.
+    assert seen and all(b == reported for b in seen)
 
 
 def test_kernel_stage_local_source_skips_presync(tmp_path):
@@ -2244,7 +2285,7 @@ def test_kernel_stage_local_source_skips_presync(tmp_path):
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler") as mock_sched, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -2300,7 +2341,7 @@ def _run_kernel_with_state(tmp_path, kernel_cfg_state, opts_override=None):
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          _capture_logs() as logs, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
@@ -2489,7 +2530,7 @@ def test_run_warns_when_bootloader_mismatch(tmp_path):
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          _capture_logs() as logs, \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.primitives.prompt.is_interactive", return_value=True), \
          patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
@@ -2626,7 +2667,7 @@ def test_kconfig_targets_passed_to_makepkg_options_when_configured(tmp_path):
     opts = make_options(state_dir=tmp_path / "state")
     with patch.object(_km.config, "KERNEL_PATH", p), \
          _capture_logs(), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_run, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_run, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
                return_value={"systemd-boot"}):
@@ -2648,7 +2689,7 @@ def test_kconfig_targets_unset_passes_none(tmp_path):
     opts = make_options(state_dir=tmp_path / "state")
     with patch.object(_km.config, "KERNEL_PATH", p), \
          _capture_logs(), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_run, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_run, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
                return_value={"systemd-boot"}):
@@ -2671,7 +2712,7 @@ def test_kconfig_targets_invalid_aborts_before_build(tmp_path):
     opts = make_options(state_dir=tmp_path / "state")
     with patch.object(_km.config, "KERNEL_PATH", p), \
          _capture_logs(), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_run, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_run, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
                return_value={"systemd-boot"}):
@@ -3068,7 +3109,7 @@ def test_kernel_stage_bootstraps_missing_tree_via_sync(tmp_path):
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.source.get_scheduler",
                return_value=scheduler_mock), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
@@ -3192,7 +3233,7 @@ def test_kernel_stage_run_stages_lsmod_snapshot(tmp_path):
     (state_dir / "lsmod.snapshot").write_text(LSMOD_HEADER + "wireguard 90112 0\n")
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         # install.subprocess IS the shared module, so this one patch also
         # answers kconfig's lsmod call; a nested monkeypatch would restore
@@ -3483,7 +3524,7 @@ def _run_stage_tty(tmp_path, *, tty):
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run") as mock_build, \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.primitives.prompt.is_interactive", return_value=tty), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          _capture_logs() as logs:
@@ -3521,7 +3562,7 @@ def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
     opts = make_options(state_dir=tmp_path / "state")
     opts.non_interactive = True
     with patch.object(_km.config, "KERNEL_PATH", p), \
-         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run"), \
+         patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          _capture_logs() as logs:
@@ -3665,7 +3706,7 @@ def test_record_and_diff_kconfig_returns_none_without_a_build_tree(tmp_path, mon
     """The AlreadyBuilt path has no resolved .config — nothing to diff."""
     from sysforge.pipeline.stages import kernel as kernel_mod
 
-    monkeypatch.setattr(kernel_mod.gates, "resolve_built_config", lambda d: None)
+    monkeypatch.setattr(kernel_mod.gates, "resolve_built_config", lambda d, **kw: None)
     assert kernel_mod.gates.record_and_diff_kconfig(tmp_path, "linux-custom", tmp_path) is None
 
 
@@ -3680,7 +3721,7 @@ def test_record_and_diff_kconfig_archives_then_diffs(tmp_path, monkeypatch):
 
     new = tmp_path / "new.config"
     new.write_text("CONFIG_SMP=y\nCONFIG_NUMA=n\n", encoding="utf-8")
-    monkeypatch.setattr(kernel_mod.gates, "resolve_built_config", lambda d: new)
+    monkeypatch.setattr(kernel_mod.gates, "resolve_built_config", lambda d, **kw: new)
     monkeypatch.setattr(kernel_mod.gates, "built_kernel_release", lambda p: "6.15.0")
 
     result = kernel_mod.gates.record_and_diff_kconfig(state, "linux-custom", tmp_path)
@@ -3696,7 +3737,7 @@ def test_record_and_diff_kconfig_never_raises(tmp_path, monkeypatch):
     """Advisory reporting must not be able to break a kernel build."""
     from sysforge.pipeline.stages import kernel as kernel_mod
 
-    def boom(_):
+    def boom(_, **kw):
         raise RuntimeError("build tree vanished")
 
     monkeypatch.setattr(kernel_mod.gates, "resolve_built_config", boom)
@@ -3771,3 +3812,127 @@ def test_kernel_config_manual_kconfig_section_is_carried():
     entries = [{"option": "CONFIG_SMP", "value": "y"}]
     cfg = KernelConfig.from_toml({"kconfig": entries})
     assert list(cfg.manual_kconfig) == entries
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-F17 — base_config_merge
+# ---------------------------------------------------------------------------
+
+def _running_base(tmp_path, monkeypatch, **extra):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text",
+        lambda: "CONFIG_FOO=y")
+    cfg = kcfg({"pkgname": "linux-sysforge", "pkgbuild_src_dir": str(builds),
+                "base_config": "running", **extra})
+    return cfg, builds / "linux-sysforge"
+
+
+def test_base_config_merge_defaults_to_replace(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch)
+    assert write_base_config(cfg, dry_run=False) == "running"
+    assert (d / "sysforge.base.config").is_file()
+    assert not (d / "sysforge.base.overlay.config").exists()
+
+
+def test_base_config_merge_overlay_writes_the_overlay_file(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch, base_config_merge="overlay")
+    (d / "sysforge.base.config").write_text("stale\n")  # a prior replace run
+    label = write_base_config(cfg, dry_run=False)
+    assert label == "running (overlay)"
+    assert (d / "sysforge.base.overlay.config").read_text() == "CONFIG_FOO=y\n"
+    assert not (d / "sysforge.base.config").exists(), "stale replace seed removed"
+
+
+def test_base_config_merge_replace_removes_a_stale_overlay(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch)
+    (d / "sysforge.base.overlay.config").write_text("stale\n")
+    write_base_config(cfg, dry_run=False)
+    assert not (d / "sysforge.base.overlay.config").exists()
+
+
+def test_base_config_merge_cli_overrides_kernel_toml(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch)
+    label = write_base_config(
+        cfg, dry_run=False, options=SimpleNamespace(base_config=None,
+                                                    base_config_merge="overlay"))
+    assert label == "running (overlay)"
+
+
+def test_base_config_merge_rejects_an_unknown_mode(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, _ = _running_base(tmp_path, monkeypatch, base_config_merge="blend")
+    with pytest.raises(RuntimeError, match="base_config_merge"):
+        write_base_config(cfg, dry_run=False)
+
+
+def test_base_config_summary_says_when_a_cooperating_pkgbuild_ignores_it(
+        tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch, base_config_merge="overlay")
+    (d / "PKGBUILD").write_text(
+        (d / "PKGBUILD").read_text()
+        + "\nprepare() {\n  scripts/kconfig/merge_config.sh -m .config x\n}\n")
+    label = write_base_config(cfg, dry_run=False)
+    assert "inert" in label and "merge_config.sh" in label
+
+
+def test_cli_parses_base_config_merge():
+    from sysforge.cli import _build_parser
+
+    args = _build_parser().parse_args(["run", "kernel", "--base-config-merge", "overlay"])
+    assert args.base_config_merge == "overlay"
+
+
+# ---------------------------------------------------------------------------
+# 3.3.0-B1 — a stale base seed must not outlive the base_config that wrote it
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stale", ["sysforge.base.config", "sysforge.base.overlay.config"])
+def test_pkgbuild_base_removes_a_stale_seed(tmp_path, stale):
+    """Switching back to "pkgbuild" must mean the packager's config — the
+    file-guarded seed would otherwise keep applying the old running config."""
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    seed = builds / "linux-sysforge" / stale
+    seed.write_text("CONFIG_OLD=y\n")
+    cfg = kcfg({"pkgname": "linux-sysforge", "pkgbuild_src_dir": str(builds)})
+    assert write_base_config(cfg, dry_run=False) == "pkgbuild"
+    assert not seed.exists()
+
+
+def test_unavailable_running_base_removes_a_stale_seed(tmp_path, monkeypatch):
+    """The fallback warning says "PKGBUILD base" — it must be true."""
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    cfg, d = _running_base(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "sysforge.primitives.dep_analysis.read_running_kconfig_text", lambda: None)
+    (d / "sysforge.base.config").write_text("CONFIG_OLD=y\n")
+    write_base_config(cfg, dry_run=False)
+    assert not (d / "sysforge.base.config").exists()
+
+
+def test_dry_run_leaves_a_stale_seed_alone(tmp_path):
+    from sysforge.pipeline.stages.kernel import write_base_config
+
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-sysforge")
+    seed = builds / "linux-sysforge" / "sysforge.base.config"
+    seed.write_text("CONFIG_OLD=y\n")
+    cfg = kcfg({"pkgname": "linux-sysforge", "pkgbuild_src_dir": str(builds)})
+    write_base_config(cfg, dry_run=True)
+    assert seed.exists()

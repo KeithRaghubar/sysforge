@@ -51,6 +51,8 @@ class RunOptions:
     compiler: str | None = None      # kernel-stage compiler override ("gcc" or "llvm")
     # CLI override for kernel.toml base_config (pkgbuild|running|<path>)
     base_config: str | None = None
+    # CLI override for kernel.toml base_config_merge (replace|overlay)
+    base_config_merge: str | None = None
     allow_no_fallback: bool = False  # kernel: override the fallback-kernel guarantee (Gate 1)
     skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
     # kernel: build -headers subpackage; None → kernel.toml (default on)

@@ -791,3 +791,56 @@ def test_libllvm_soname_consumers_does_not_rescan_db_per_package(monkeypatch, tm
         f"DB enumerations scale with package count: {small} at N=20, "
         f"{large} at N=200 — the walk re-resolves the DB per package"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B22 — the std:: drift remediation names which of two causes happened
+# ---------------------------------------------------------------------------
+
+def _stddrift_setup(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    _mk(usr_lib, "libgallium-26.2.2-arch1.1.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.22.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: {
+        ("_ZNSt6vectorIiSaIiEE17_M_realloc_insertIJRKiEEEvN9__gnu_cxx", "LLVM_22.1"),
+    })
+    monkeypatch.setattr(_AC + "_exported_versioned", lambda path, cache: {
+        ("LLVMInitializeAMDGPUTarget", "LLVM_22.1"),
+    })
+    monkeypatch.setattr("sysforge.primitives.pacman.owners_of", lambda paths: {
+        p: ("mesa" if "gallium" in p.name else "llvm-libs") for p in paths
+    })
+
+
+def _dates(consumer_built, libllvm_installed):
+    return lambda name, root=None: (
+        (consumer_built, 1) if name == "mesa" else (1, libllvm_installed)
+    )
+
+
+def test_stddrift_consumer_built_after_libllvm_names_the_wrong_link(
+        tmp_path, monkeypatch):
+    """2026-09-13: mesa was *built* against the repo libLLVM in a sandbox —
+    "rebuild the consumer" would reproduce the identical broken package."""
+    _stddrift_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr("sysforge.primitives.pacman.get_package_dates",
+                        _dates(consumer_built=2000, libllvm_installed=1000))
+    [f] = ts._diff_consumers_against_libllvm(
+        Path("/usr/lib/libLLVM.so.22.1"), source_label="installed",
+    )
+    assert "built after" in f.message and "different build of libLLVM" in f.message
+    assert "sandbox" in f.remediation
+    assert "sysforge build <consumer" not in f.remediation
+
+
+def test_stddrift_libllvm_changed_under_consumer_keeps_rebuild_advice(
+        tmp_path, monkeypatch):
+    _stddrift_setup(tmp_path, monkeypatch)
+    monkeypatch.setattr("sysforge.primitives.pacman.get_package_dates",
+                        _dates(consumer_built=1000, libllvm_installed=2000))
+    [f] = ts._diff_consumers_against_libllvm(
+        Path("/usr/lib/libLLVM.so.22.1"), source_label="installed",
+    )
+    assert "inlined away" in f.message
+    assert "sysforge build <consumer" in f.remediation

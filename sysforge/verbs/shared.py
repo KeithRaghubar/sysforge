@@ -231,3 +231,32 @@ def forget_packages(state_dir, pkgnames: list[str]) -> tuple[list[str], list[str
     if forgotten:
         bs.save()
     return forgotten, missing
+
+
+def profile_store_names(state_dir, pkgnames) -> list[str]:
+    """Every name a removed package's profile store may be keyed on.
+
+    Read *before* ``forget_packages`` erases the record: the instrumentation
+    store is keyed on the pre-rename pkgbase (``origin_pkgbase`` — mesa's
+    ``pgo-mesa``, not ``mesa-sysforge``), the kernel methods on pkgname
+    (3.2.0-F11).
+    """
+    from sysforge.primitives.build_state import BuildState
+
+    bs = BuildState(state_dir)
+    names: list[str] = []
+    for name in pkgnames:
+        entry = bs.get(name) or {}
+        names += [name, entry.get("pkgbase"), entry.get("origin_pkgbase")]
+    return [n for n in dict.fromkeys(names) if n]
+
+
+def emit_orphaned_profiles(names, emit) -> None:
+    """Name each non-empty profile store a removal left behind. Never raises."""
+    from sysforge import state_cmd
+
+    try:
+        for line in state_cmd.orphaned_profile_lines(names):
+            emit(line)
+    except Exception:  # noqa: BLE001 — advisory notice after a completed removal
+        return

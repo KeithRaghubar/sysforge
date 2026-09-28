@@ -817,3 +817,67 @@ def test_target_version_rejects_malformed_value():
          "--check=deprecations", "--target-version=not-a-version"],
         cwd=repo, capture_output=True, text=True)
     assert r.returncode == 2, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# release_gates group — release-gate completeness (STD row 27, 3.2.0-STD1)
+# ---------------------------------------------------------------------------
+
+def _release_gate_repo(tmp_path, prereqs, release_calls):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "Makefile").write_text(
+        f"pre-release: {' '.join(prereqs)} ## Composite gate\n"
+    )
+    (tmp_path / "tools" / "release.sh").write_text("".join(
+        f"if ! make --no-print-directory {t} >&2; then exit 1; fi\n"
+        for t in release_calls
+    ))
+    return tmp_path
+
+
+def test_release_gates_clean_on_the_real_tree():
+    """Every static-analysis gate `make pre-release` runs is also enforced by
+    the release script — the gap that let v3.2.0 ship four pyright errors."""
+    from pathlib import Path
+    mod = _load_check_standards()
+    assert mod.check_release_gates(Path(__file__).resolve().parent.parent) == []
+
+
+def test_release_gates_flags_a_pre_release_gate_the_script_skips(tmp_path):
+    mod = _load_check_standards()
+    repo = _release_gate_repo(
+        tmp_path, ["lint", "typecheck", "test", "check-design"],
+        ["lint", "check-design"],
+    )
+    findings = mod.check_release_gates(repo)
+    assert [f.severity for f in findings] == ["error"]
+    assert "typecheck" in findings[0].message
+
+
+def test_release_gates_exempts_the_full_test_suite(tmp_path):
+    """`test` is the heavier tier by design (docs/RELEASE-CHECKLIST.md)."""
+    mod = _load_check_standards()
+    repo = _release_gate_repo(tmp_path, ["lint", "test"], ["lint"])
+    assert mod.check_release_gates(repo) == []
+
+
+def test_release_gates_flags_an_unpinned_type_checker(tmp_path):
+    """Row 27: a blocking gate needs a deterministic tool — an unpinned
+    `--with pyright` can turn a release red with no code change."""
+    mod = _load_check_standards()
+    repo = _release_gate_repo(tmp_path, ["typecheck"], ["typecheck"])
+    with (repo / "Makefile").open("a") as f:
+        f.write("typecheck:\n\tuv run --no-sync --with pyright pyright sysforge/\n")
+    findings = mod.check_release_gates(repo)
+    assert [f.severity for f in findings] == ["error"]
+    assert "pin" in findings[0].message
+
+
+def test_release_gates_accepts_a_pinned_type_checker(tmp_path):
+    mod = _load_check_standards()
+    repo = _release_gate_repo(tmp_path, ["typecheck"], ["typecheck"])
+    with (repo / "Makefile").open("a") as f:
+        f.write("PYRIGHT_VERSION := 1.1.414\n"
+                "typecheck:\n"
+                "\tuv run --no-sync --with pyright==$(PYRIGHT_VERSION) pyright sysforge/\n")
+    assert mod.check_release_gates(repo) == []

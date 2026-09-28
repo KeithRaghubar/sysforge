@@ -23,6 +23,14 @@
 # never touch the system or the venv, so there is nothing to install or record.
 # This is also why there is no `[dependency-groups] dev` in pyproject.toml: it
 # would duplicate the overlays while claiming to be the source of truth.
+#
+# Overlays used by a release gate are pinned (standards row 27, 3.2.0-STD1):
+# tools/release.sh blocks on them, and an unpinned `--with` resolves the newest
+# release on every run, so a tool update alone could turn a release red. Bump a
+# pin deliberately, in its own commit, after `make typecheck` / `make
+# check-standards` pass on the new version.
+PYRIGHT_VERSION := 1.1.414
+REUSE_VERSION   := 6.2.0
 # ---------------------------------------------------------------------------
 
 # Suite, lint (Python + shell), manpage, editable install. `make test` / `lint`
@@ -224,7 +232,7 @@ coverage-ratchet-update: coverage ## Re-stamp the coverage floor (TESTS=<n>)
 # `uv run --no-sync` pattern as coverage/check-shipped) so nothing is added to
 # the system or the venv. Pyright config lives in pyproject [tool.pyright].
 typecheck: ## Type-check the package with pyright
-	uv run --no-sync --with pyright pyright sysforge/
+	uv run --no-sync --with pyright==$(PYRIGHT_VERSION) pyright sysforge/
 
 # Pre-release shipped-file validator. Runs the seven check groups in
 # tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
@@ -281,7 +289,7 @@ check-roadmap-table: ## Gate: Planned table fresh and every entry tagged
 # stdout/stderr, RFC 3339, reproducibility) is covered by `make test`
 # (tests/test_standards_compliance.py). Source of truth: docs/design/21-standards.md.
 check-standards: ## Gate: standards compliance (docs/design/21-standards.md)
-	uv run --no-sync --with reuse python tools/check_standards.py
+	uv run --no-sync --with reuse==$(REUSE_VERSION) python tools/check_standards.py
 
 # Allocate the next free ROADMAP ID for the CURRENT release cycle. TYPE is one
 # of F/B/Q/STD; the version prefix is derived from pyproject.toml (counter

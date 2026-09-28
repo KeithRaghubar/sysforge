@@ -1146,7 +1146,7 @@ def test_fold_explain_drift_lists_out_of_walk_entry(update_scenario, capsys):
 
 def test_fold_entry_not_promoted_but_hinted(update_scenario, capsys):
     """--rebuild-on-flag-drift can't queue an out-of-walk entry (no result row
-    to promote); it must say so and point at `sysforge build` instead."""
+    to promote); it must say so and point at the owning stage instead."""
     installed, foreign = _seed_out_of_walk_drift(update_scenario)
     builds = update_scenario.run(
         _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True,
@@ -1155,8 +1155,8 @@ def test_fold_entry_not_promoted_but_hinted(update_scenario, capsys):
     )
     assert builds == []  # never queued — there is no walk entry to promote
     text = (lambda c: c.out + c.err)(capsys.readouterr())
-    assert "outside this run's package walk" in text
-    assert "sysforge build" in text
+    assert "not queued" in text
+    assert "sysforge run toolchain" in text
 
 
 def test_fold_respects_pkgnames_filter(update_scenario, capsys):
@@ -2814,3 +2814,40 @@ def test_file_conflict_installs_the_rest_and_reports_the_refusal(
     assert "Built, NOT installed:" in out
     assert "/etc/bb.conf exists in filesystem" in out
     assert update_scenario.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-B40 — the drift notice states what is rebuilt, not what the flag hopes
+# ---------------------------------------------------------------------------
+
+def test_flag_drift_notice_separates_queued_from_stage_owned(
+        update_scenario, monkeypatch):
+    """At default verbosity the ui() line must not claim a stage-owned drifter
+    is being rebuilt: only the walked package is queued."""
+    installed, foreign = _seed_flag_drift(update_scenario)
+    ow_installed, ow_foreign = _seed_out_of_walk_drift(update_scenario)
+    seen = _ui_lines(monkeypatch)
+    update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed={**installed, **ow_installed},
+        foreign={**foreign, **ow_foreign},
+    )
+    line = next(m for m in seen if m.startswith("flag drift:"))
+    rebuilding, _, rest = line.partition("not queued")
+    assert "rebuilding" in rebuilding and "htop" in rebuilding
+    assert "ripgrep" not in rebuilding
+    assert "ripgrep" in rest and "sysforge run toolchain" in rest
+
+
+def test_flag_drift_notice_never_says_rebuilding_when_nothing_is_queued(
+        update_scenario, monkeypatch):
+    installed, foreign = _seed_out_of_walk_drift(update_scenario)
+    seen = _ui_lines(monkeypatch)
+    builds = update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert builds == []
+    line = next(m for m in seen if m.startswith("flag drift:"))
+    assert "rebuilding" not in line
+    assert "ripgrep" in line and "sysforge run toolchain" in line

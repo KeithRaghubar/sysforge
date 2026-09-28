@@ -153,3 +153,13 @@ sandbox_builds = false
 sandbox_chroot_dir = "~/chroot"
 sandbox_clean = true
 sandbox_update = true
+
+# PGP keys a PKGBUILD names in validpgpkeys but your keyring lacks are fetched
+# from a keyserver only with consent: sysforge shows each key's fingerprint,
+# owner and the package asking for it, then asks before importing. A
+# non-interactive run imports nothing (makepkg then reports the missing key).
+# validpgpkeys exists so a person decides who the upstream signer is —
+# importing whatever a PKGBUILD names lets a tampered PKGBUILD bring its own
+# key. Set true to restore unattended imports for batch runs (still shown).
+# The fetch also obeys freeze_sources.
+auto_fetch_pgp_keys = false

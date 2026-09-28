@@ -155,9 +155,10 @@ Mechanism lives in the cited §DESIGN section.
   stdio and would otherwise prompt from a background thread. The kernel stage also
   probes *before* `sentinel_scope` so a stale prompt can't strand a recovery
   sentinel for a mutation that never began. §22.
-- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at five
-  seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, and both `vcs_pkgver.py`
-  probes — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
+- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at six
+  seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, both `vcs_pkgver.py`
+  probes, and `build_prep.fetch_pgp_keys` (`KIND_KEY_FETCH`, the one keyserver home — consent-gated,
+  `auto_repair` routes through it) — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
   on the **authoritative pkgbase**, threaded explicitly (never the checkout dir name — a rename
   breaks it). A new code-ingress seam gets its own `KIND_*`, never a reuse. `update.py`'s single
   `_raise_if_frozen` is the one home for the non-zero exit. §Config Layer / §primitives-layer.

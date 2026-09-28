@@ -494,6 +494,42 @@ def cmd_update(args) -> int:
                 pass
 
 
+def _sample(names, limit: int = 3) -> str:
+    """``a, b, c (+N more)`` — the capped list the drift notices print."""
+    more = f" (+{len(names) - limit} more)" if len(names) > limit else ""
+    return ", ".join(names[:limit]) + more
+
+
+def _partition_flag_drift(drifted_bases, results, fold_owner):
+    """Split flag-drifted pkgbases into what ``--rebuild-on-flag-drift`` queues
+    and what it cannot (3.2.0-B40).
+
+    Queued: in this run's walk, buildable (a resolvable PKGBUILD) and either
+    ``UP_TO_DATE`` (promoted below) or already ``NEEDS_REBUILD``. Everything
+    else is returned with the command that would rebuild it — the owning
+    stage for a stage-owned fold entry (``fold_owner`` maps pkgbase →
+    ``owner_stage``), otherwise ``sysforge build <pkg>``. Pure; mirrors the
+    promotion loop's predicate so the notice cannot promise what it skips.
+    """
+    by_base = {r.pkgbase: r for r in results}
+    queued: list[str] = []
+    not_queued: list[tuple[str, str]] = []
+    for pb in drifted_bases:
+        r = by_base.get(pb)
+        if (
+            r is not None
+            and r.pkgbuild_path is not None
+            and r.action in ("UP_TO_DATE", "NEEDS_REBUILD")
+        ):
+            queued.append(pb)
+            continue
+        owner = fold_owner.get(pb)
+        not_queued.append(
+            (pb, f"`sysforge run {owner}`" if owner else f"`sysforge build {pb}`")
+        )
+    return queued, not_queued
+
+
 def _detect_stage_owned_updates(
     stage_owned_packages, *, all_installed, sync_failures,
     rpc_version_by_base, pacman_updates_map, skip_sync_check, offline,
@@ -582,6 +618,7 @@ def _build_result_summary(
     installed_deps, pgo_skipped_pkgs, cleansrc_failures,
     install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
     system_upgrade_ran=False, sysupgrade_changes=None, not_installed=None,
+    layout_findings=None,
 ) -> ResultSummary:
     """Assemble a ``ResultSummary`` from ``update``'s per-run state.
 
@@ -608,6 +645,7 @@ def _build_result_summary(
         stage_owned_updates=list(stage_owned_updates),
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=dict(sysupgrade_changes or {}),
+        layout_findings=list(layout_findings or []),
     )
 
 
@@ -1039,7 +1077,7 @@ def _cmd_update_body(args) -> int:
     # an entry in this run's walk, so out-of-walk drifters get a `sysforge
     # build` / owning-stage hint instead.
     _fold_filter = set(getattr(args, "pkgnames", None) or [])
-    fold_drifted: set[str] = set()
+    fold_drifted: dict[str, str | None] = {}  # pkgbase -> owner_stage
     _fold_map, _fold_entry = group_by_pkgbase(bs.all_packages())
     for pkgbase, pkgnames in sorted(_fold_map.items()):
         if pkgbase in _flag_seen:
@@ -1066,21 +1104,39 @@ def _cmd_update_body(args) -> int:
             continue
         if fd.drifted:
             flag_drifted.append((pkgbase, fd.diffs))
-            fold_drifted.add(pkgbase)
+            fold_drifted[pkgbase] = entry.get("owner_stage")
 
     if flag_drifted:
         sample = ", ".join(pb for pb, _ in flag_drifted[:3])
         more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
-        # See the toolchain-drift advisory above: suppress the opt-in hint when
-        # the rebuild is already enabled (3.1.0-B2).
-        _hint = ("rebuilding (--rebuild-on-flag-drift)"
-                 if _rebuild_fl_drift else
-                 "Pass --rebuild-on-flag-drift to rebuild, or "
-                 "--explain-drift to list.")
-        _log.ui(
-            f"flag drift: {len(flag_drifted)} package(s) resolve to different "
-            f"flags than when built: {sample}{more}. {_hint}"
-        )
+        if _rebuild_fl_drift:
+            # State what this run will actually rebuild, and separately what
+            # drifted but needs another command — a hint picked from the flag
+            # alone promised rebuilds the promotion below never queues
+            # (3.2.0-B40). The opt-in hint stays suppressed (3.1.0-B2).
+            queued, not_queued = _partition_flag_drift(
+                [pb for pb, _ in flag_drifted], results, fold_drifted,
+            )
+            _parts = []
+            if queued:
+                _parts.append(
+                    f"rebuilding (--rebuild-on-flag-drift): {_sample(queued)}"
+                )
+            if not_queued:
+                _parts.append(
+                    "not queued: "
+                    + _sample([f"{pb} ({how})" for pb, how in not_queued])
+                )
+            _log.ui(
+                f"flag drift: {len(flag_drifted)} package(s) resolve to "
+                f"different flags than when built. {'; '.join(_parts)}"
+            )
+        else:
+            _log.ui(
+                f"flag drift: {len(flag_drifted)} package(s) resolve to different "
+                f"flags than when built: {sample}{more}. Pass "
+                "--rebuild-on-flag-drift to rebuild, or --explain-drift to list."
+            )
 
     if getattr(args, "versions", False):
         # 3.1.0-F6 — read-only report at the same seam as --explain-drift: the
@@ -1185,15 +1241,6 @@ def _cmd_update_body(args) -> int:
             _log.warn(
                 f"--rebuild-on-flag-drift: {unbuildable} drifted "
                 "package(s) have no resolvable PKGBUILD — skipped"
-            )
-        if fold_drifted:
-            names = ", ".join(sorted(fold_drifted)[:3])
-            more = f" (+{len(fold_drifted) - 3} more)" if len(fold_drifted) > 3 else ""
-            _log.warn(
-                f"--rebuild-on-flag-drift: {len(fold_drifted)} drifted "
-                f"package(s) are outside this run's package walk and were not "
-                f"queued: {names}{more}. Rebuild with `sysforge build <pkg>` "
-                "(or the owning pipeline stage)."
             )
 
     timer.stop()
@@ -1452,6 +1499,7 @@ def _cmd_update_body(args) -> int:
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=sysupgrade_changes,
         not_installed=not_installed,
+        layout_findings=outcome.layout_findings if outcome is not None else [],
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.

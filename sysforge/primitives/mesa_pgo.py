@@ -42,6 +42,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.makepkg_pgo import resolve_method_store
 from sysforge.primitives.paths import TOOLCHAIN_PATH
+from sysforge.primitives.version import vercmp
 
 _log = log.get_logger("MESAPGO")
 
@@ -164,15 +165,71 @@ def reuse_profdata(
     ``record``-instrumented — bare ``.profraw`` is not consumable), so the
     caller falls back to a normal build. No re-merge happens here: once ``use``
     swaps the instrumented mesa for the optimized one, no new ``.profraw``
-    accrues between updates, so the existing merged profile is current. Pure —
-    just a path existence check.
+    accrues between updates. The profile therefore ages as the package moves on;
+    :func:`profile_version_verdict` (via :func:`reuse_notice`) says by how much,
+    without ever refusing it (3.2.0-B16). Pure — just a path existence check.
     """
     pd = profdata_path(tcfg, pkgbase)
     return pd if pd.is_file() else None
 
 
+def version_sidecar(profdata: Path) -> Path:
+    """``<pkgbase>.profdata.version`` — the version the profile was collected
+    against, mirroring the toolchain store's ``clang.profdata.version``."""
+    return profdata.with_name(profdata.name + ".version")
+
+
+def profile_version_verdict(
+    profdata: Path, target_version: str
+) -> tuple[str, str | None]:
+    """How far the package has moved since its profile was collected (3.2.0-B16).
+
+    Returns ``("current", None)`` when the sidecar matches ``target_version``,
+    ``("older"|"newer", msg)`` when it differs, and ``("unknown", msg)`` when
+    there is no sidecar (every profile collected before it existed). Unlike the
+    LLVM store's hard ``mismatch`` — there the profile format tracks the
+    compiler — mesa skew is gradual source drift, so every verdict still reuses
+    the profile; the message only says how stale it is. An unknown-age profile
+    is never discarded: it cost a workload to collect.
+    """
+    refresh = f"`sysforge build {profdata.stem} --pgo=record`"
+    sidecar = version_sidecar(profdata)
+    try:
+        collected = sidecar.read_text(encoding="utf-8").strip()
+    except OSError:
+        collected = ""
+    if not collected:
+        return "unknown", (
+            f"profile age unknown (collected before version tracking); "
+            f"refresh with {refresh}"
+        )
+    cmp = vercmp(collected, target_version)
+    if cmp == 0:
+        return "current", None
+    return ("older" if cmp < 0 else "newer"), (
+        f"profile collected against {collected}, building {target_version}; "
+        f"refresh with {refresh}"
+    )
+
+
+def reuse_notice(profdata: Path, pkgbase: str, target_version: str) -> str:
+    """The ``ui()`` line for the reuse path, carrying the staleness verdict.
+
+    One line so the answer stays at default verbosity: the profile is
+    re-applied either way, and when it is not ``current`` the line says how far
+    the package has moved since collection (3.2.0-B16).
+    """
+    line = (
+        f"PGO (reuse) {pkgbase}: re-applying {profdata} from a prior --pgo=use "
+        "(source rebuild stays profiled)"
+    )
+    _status, detail = profile_version_verdict(profdata, target_version)
+    return f"{line} — {detail}" if detail else line
+
+
 def merge_profraw(
-    store: Path, *, pkgbase: str | None = "mesa", profdata_tool: str = "llvm-profdata"
+    store: Path, *, pkgbase: str | None = "mesa", profdata_tool: str = "llvm-profdata",
+    collected_version: str | None = None,
 ) -> Path:
     """Merge every ``.profraw`` in ``store`` into ``store/<pkgbase>.profdata``.
 
@@ -180,6 +237,11 @@ def merge_profraw(
     profraw was collected (the user ran ``use`` before exercising the
     instrumented mesa) or when ``llvm-profdata`` is missing or fails — all three
     are clean aborts with an actionable hint, never a silent unprofiled build.
+
+    ``collected_version`` — the installed version of the instrumented package
+    that produced the ``.profraw`` — is recorded in :func:`version_sidecar` on a
+    fresh merge, so :func:`profile_version_verdict` can later say how stale a
+    reused profile is (3.2.0-B16). Reusing an existing merge leaves it as is.
     """
     profraw = list_profraw(store)
     out = store / profdata_name(pkgbase)
@@ -221,6 +283,8 @@ def merge_profraw(
             f"{result.stderr.strip() or result.stdout.strip()}"
         )
     tmp.replace(out)
+    if collected_version:
+        version_sidecar(out).write_text(collected_version + "\n", encoding="utf-8")
     # Prune the consumed raw — without this every record→use cycle leaks its
     # .profraw into the store unbounded (Q5). The signal now lives in `out`.
     for p in profraw:

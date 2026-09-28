@@ -40,7 +40,11 @@ from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman, profile, prompt
 from sysforge.primitives.build_state import BuildState
-from sysforge.verbs.shared import forget_packages
+from sysforge.verbs.shared import (
+    emit_orphaned_profiles,
+    forget_packages,
+    profile_store_names,
+)
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("REVERT")
@@ -138,6 +142,8 @@ class RevertToStockVerb(Verb):
                 _log.ui("[revert] aborted")
                 return ExecResult(exit_code=2)
 
+        store_names = profile_store_names(
+            pre.ctx["state_dir"], [p.pkgname for p in actionable if p.pkgname])
         for p in actionable:
             if p.action == "derename":
                 # Coexist rename: remove the renamed build first, then reinstall
@@ -180,6 +186,7 @@ class RevertToStockVerb(Verb):
             install_reconcile.external_install_targets())
         if demoted:
             bs.save()
+        emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[revert] {line}"))
         return ExecResult(exit_code=0)
 
 

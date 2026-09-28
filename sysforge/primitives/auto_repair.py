@@ -210,14 +210,20 @@ def _detect_pgp_key(accum: BuildOutputAccumulator) -> MatchInfo | None:
 
 
 def _repair_pgp_key(pkgbuild_dir: Path, info: MatchInfo) -> None:
+    # Through the one consent-gated keyserver home (3.1.0-F8) — never a second,
+    # unattended `gpg --recv-keys` around it.
+    from sysforge.primitives import build_prep
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
     keyid = info.detail["keyid"]
-    gpg = shutil.which("gpg")
-    if gpg is None:
-        raise RuntimeError("pgp_key_missing repair: gpg binary not on PATH")
-    _log.info(f"repair: gpg --recv-keys {keyid}")
-    # --keyserver lookup uses the user's gpg.conf default; falls back to
-    # keys.openpgp.org via the dirmngr defaults if unset.
-    subprocess.run([gpg, "--recv-keys", keyid], check=True)
+    try:
+        globals_ = parse_pkgbuild(Path(pkgbuild_dir) / "PKGBUILD").get("globals", {})
+    except Exception:  # noqa: BLE001 — pkgbase is for the freeze + echo only
+        globals_ = {}
+    _log.info(f"repair: fetching PGP key {keyid}")
+    pkgbase = build_prep.pkgbase_from_globals(globals_)
+    if not build_prep.fetch_pgp_keys([keyid], pkgbase=pkgbase):
+        raise RuntimeError(f"pgp_key_missing repair: key {keyid} not imported")
 
 
 PGP_KEY = RepairScenario(
