@@ -227,8 +227,9 @@ class TestInstallRendersInSlotOrder:
         out = p.read_text()
         # The minimizer renders as an LSMOD guard block (3.2.0-B35): the make
         # prefix reaches both branches, the trailer the block's closing line.
-        assert f'LSMOD="$startdir/{kp.LSMOD_FILE}" make ARCH=x86_64 localmodconfig\n' in out
-        assert "  make ARCH=x86_64 localmodconfig\n" in out
+        assert (f'LSMOD="$startdir/{kp.LSMOD_FILE}" make ARCH=x86_64 localmodconfig '
+                f"{kp._DEFAULT_ANSWERS}\n") in out
+        assert f"  make ARCH=x86_64 localmodconfig {kp._DEFAULT_ANSWERS}\n" in out
         assert "  fi  # trim\n" in out
         assert out.count("# trim") == 1
 
@@ -242,7 +243,7 @@ class TestInstallRendersInSlotOrder:
             p, noninteractive=True)
         out = p.read_text()
         assert out.count("# trim") == 1
-        assert "make ARCH=x86_64 localmodconfig\n" in out
+        assert f"make ARCH=x86_64 localmodconfig {kp._DEFAULT_ANSWERS}\n" in out
         assert "make ARCH=x86_64 olddefconfig  # trim" in out
 
     def test_trailer_appears_once_with_generate_and_configured_ui_tail(self, tmp_path):
@@ -609,7 +610,10 @@ class TestPortedFromPatcher:
         # Line-oriented, not a summed substring count: a target rendered
         # twice while another renders zero times must not average out.
         for t in targets:
-            assert lines.count(f"make {t}") == 1
+            # A minimizer's fallback (no-LSMOD) branch carries the default-
+            # answer stdin (3.2.0-B36); the line is still unique per target.
+            tail = f" {kp._DEFAULT_ANSWERS}" if t in kp.MINIMIZER_TARGETS else ""
+            assert lines.count(f"make {t}{tail}") == 1
 
     def test_base_seed_is_file_guarded_and_precedes_the_fragment(self, tmp_path):
         p = _write(tmp_path, STOCK)
@@ -886,9 +890,12 @@ class TestVerifyShellBehaviour:
         assert "resolved to n" in err
 
 
-def _run_minimizer(tmp_path, *, stage_lsmod):
+def _run_minimizer(tmp_path, *, stage_lsmod, stdin="", shell_opts="-e"):
     """Render generate_step(["localmodconfig"]) with a stub ``make`` that
-    reports the LSMOD it was handed; return (rc, stdout, stderr)."""
+    reports the LSMOD it was handed on stdout and the first answer it read
+    from stdin on stderr — the stand-in for kconfig's ``conf --oldconfig``
+    prompt. ``stdin`` is what the invoking terminal would type; return
+    (rc, stdout, stderr)."""
     import subprocess
 
     startdir = tmp_path / "startdir"
@@ -896,12 +903,14 @@ def _run_minimizer(tmp_path, *, stage_lsmod):
     if stage_lsmod:
         (startdir / kp.LSMOD_FILE).write_text("Module Size Used by\n")
     script = (
-        'set -e\nstartdir="%s"\n' % startdir
-        + 'make() { echo "LSMOD=${LSMOD-<unset>} $*"; }\n'
+        'set %s\nstartdir="%s"\n' % (shell_opts, startdir)
+        + 'make() { echo "LSMOD=${LSMOD-<unset>} $*"\n'
+        + '  if IFS= read -r _a; then echo "answer=[$_a]" >&2;'
+        + ' else echo "answer=EOF" >&2; fi; }\n'
         + kp._render(kp.generate_step(["localmodconfig"]).lines, indent="")
     )
     proc = subprocess.run(
-        ["bash", "-c", script], cwd=tmp_path,
+        ["bash", "-c", script], cwd=tmp_path, input=stdin,
         capture_output=True, text=True, check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
@@ -922,3 +931,24 @@ class TestMinimizerShellBehaviour:
         rc, out, err = _run_minimizer(tmp_path, stage_lsmod=False)
         assert rc == 0, err
         assert out.strip() == "LSMOD=<unset> localmodconfig"
+
+    @pytest.mark.parametrize("stage_lsmod", [True, False])
+    def test_minimizer_never_prompts_the_terminal(self, tmp_path, stage_lsmod):
+        # 3.2.0-B36: localmodconfig ends in `conf --oldconfig`, which prompts
+        # on stdin for every symbol minimization newly exposes. Inheriting the
+        # interactive stage's TTY stranded the build on an unannounced
+        # `(NEW)` prompt ahead of the nconfig review. Every branch must answer
+        # with the default (an empty line) and never read the terminal.
+        rc, _out, err = _run_minimizer(
+            tmp_path, stage_lsmod=stage_lsmod, stdin="m\n")
+        assert rc == 0, err
+        assert "answer=[]" in err
+        assert "answer=[m]" not in err
+
+    def test_default_answers_survive_pipefail(self, tmp_path):
+        # makepkg toggles pipefail around some calls; a `yes '' | make ...`
+        # pipeline would fail there (yes dies of SIGPIPE → 141 under errexit).
+        rc, _out, err = _run_minimizer(
+            tmp_path, stage_lsmod=True, shell_opts="-eo pipefail")
+        assert rc == 0, err
+        assert "answer=[]" in err

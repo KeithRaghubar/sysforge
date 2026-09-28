@@ -71,6 +71,11 @@ LSMOD_FILE = "sysforge.lsmod"
 #: Targets that trim the config to loaded modules and so honour ``LSMOD``.
 MINIMIZER_TARGETS = frozenset({"localmodconfig", "localyesconfig"})
 
+#: stdin for a minimizer: an endless stream of empty (= default) answers.
+#: A process substitution, not a ``yes '' |`` pipeline — makepkg toggles
+#: ``pipefail``, under which ``yes`` dying of SIGPIPE would fail the build.
+_DEFAULT_ANSWERS = "< <(yes '')"
+
 # The non-interactive kconfig-resolve target every rewrite/seed/merge step
 # settles on. Used by every runtime consumer of the literal (the pass-3
 # rewrite, its log line, and the three static-block step builders below) —
@@ -548,15 +553,22 @@ def generate_step(targets: list[str]) -> Step:
     ``lsmod`` and never sees the accumulated snapshot. The guard is required:
     ``streamline_config.pl`` dies on an ``LSMOD`` path that doesn't exist, so an
     absent snapshot falls back to the unset (live ``lsmod``) form.
+
+    Both branches read :data:`_DEFAULT_ANSWERS` on stdin (3.2.0-B36): the
+    minimizer ends in ``conf --oldconfig``, which prompts for every symbol
+    minimization newly exposes. Inherited from the interactive stage that is
+    the terminal, stranding the build on an unannounced ``(NEW)`` prompt ahead
+    of the REVIEW slot — the one sanctioned human touchpoint. Default answers
+    resolve exactly as the ``olddefconfig`` that follows would.
     """
     lines: list[str] = []
     for t in targets:
         if t in MINIMIZER_TARGETS:
             lines += [
                 f'{{indent}}if [ -f "$startdir/{LSMOD_FILE}" ]; then',
-                f'{{indent}}  LSMOD="$startdir/{LSMOD_FILE}" {{make}}{t}',
+                f'{{indent}}  LSMOD="$startdir/{LSMOD_FILE}" {{make}}{t} {_DEFAULT_ANSWERS}',
                 "{indent}else",
-                f"{{indent}}  {{make}}{t}",
+                f"{{indent}}  {{make}}{t} {_DEFAULT_ANSWERS}",
                 "{indent}fi",
             ]
         else:
