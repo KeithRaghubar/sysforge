@@ -980,3 +980,79 @@ def test_revert_record_without_prior_forgets_entry(tmp_path):
     _rec(bs, "1.9.0", flags="new", reviewed="bbb", seconds=50)
     bs.revert_record("foo-git", None)
     assert bs.get("foo-git") is None
+
+
+# ---------------------------------------------------------------------------
+# save() lost-update detection (3.2.0-B38 instrumentation)
+# ---------------------------------------------------------------------------
+
+def _recorded_at(bs, pkgname, pkgver, built_at):
+    bs.record(pkgname=pkgname, pkgver=pkgver, pkgrel="1", epoch="0",
+              pkgbase=pkgname, pkgbuild_dir=Path("/src") / pkgname,
+              built_at=built_at)
+
+
+def test_save_warns_when_it_would_overwrite_a_newer_record(tmp_path, capsys):
+    """3.2.0-B38: a holder of a stale copy that saves after another writer
+    recorded a newer build silently rolls that build back. The save names
+    the entry it is about to regress."""
+    seed = BuildState(tmp_path)
+    _recorded_at(seed, "linux-sysforge", "7.1.6", "2026-08-08T14:22:28Z")
+    seed.save()
+
+    stale = BuildState(tmp_path)
+    fresh = BuildState(tmp_path)
+    _recorded_at(fresh, "linux-sysforge", "7.2.7", "2026-09-28T16:19:00Z")
+    fresh.save()
+    capsys.readouterr()
+
+    stale.save()
+
+    out = "".join(capsys.readouterr())
+    assert "linux-sysforge" in out
+    assert "2026-09-28T16:19:00Z" in out
+    assert "stale" in out
+
+
+def test_save_warns_when_it_would_drop_an_entry_another_writer_added(tmp_path, capsys):
+    stale = BuildState(tmp_path)
+    fresh = BuildState(tmp_path)
+    _recorded_at(fresh, "htop", "3.4.1", "2026-09-28T16:19:00Z")
+    fresh.save()
+    capsys.readouterr()
+
+    stale.save()
+
+    assert "htop" in "".join(capsys.readouterr())
+
+
+def test_save_is_silent_for_a_sole_writer(tmp_path, capsys):
+    """Repeated saves by one instance, and a deliberate delete, are not lost
+    updates: the on-disk file is exactly what this instance last wrote."""
+    bs = BuildState(tmp_path)
+    _recorded_at(bs, "htop", "3.4.1", "2026-09-28T16:19:00Z")
+    bs.save()
+    _recorded_at(bs, "htop", "3.4.2", "2026-09-28T17:00:00Z")
+    bs.save()
+    bs.delete("htop")
+    capsys.readouterr()
+    bs.save()
+
+    assert "stale" not in "".join(capsys.readouterr())
+
+
+def test_save_is_silent_when_the_disk_copy_is_older(tmp_path, capsys):
+    """Another writer touched the file, but nothing it wrote is newer than
+    this instance's copy, so nothing regresses."""
+    seed = BuildState(tmp_path)
+    _recorded_at(seed, "htop", "3.4.1", "2026-09-01T00:00:00Z")
+    seed.save()
+    mine = BuildState(tmp_path)
+    other = BuildState(tmp_path)
+    other.save()
+    _recorded_at(mine, "htop", "3.4.2", "2026-09-28T17:00:00Z")
+    capsys.readouterr()
+
+    mine.save()
+
+    assert "stale" not in "".join(capsys.readouterr())

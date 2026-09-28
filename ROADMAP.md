@@ -92,11 +92,13 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.2.0-B37` | Gate 2 and the kconfig drift check look for the kernel build tree in the wrong place, so both are silently skipped | high | small | patch |
+| `3.2.0-B38` | a kernel build's record in build_state.toml is lost after it is written, so update judges the kernel against a months-old build | high | medium | patch |
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.2.0-B12` | a --pgo=generate build under the sandbox writes its profiles into the container and loses them at teardown | med | small | patch |
 | `3.2.0-B16` | the mesa PGO store has no version sidecar, so an arbitrarily old profile is reused with no compatibility gate | med | small | patch |
 | `3.2.0-B24` | four toolchain stage tests take the host's real PGO build lock | med | small | patch |
+| `3.2.0-B39` | flag drift compares the keys a kernel build never receives, so any profile change reports the kernel as drifted | med | small | patch |
 | `3.1.0-F2` | no supported way to feed last run's failures back into a retry | med | small | minor |
 | `3.1.0-F8` | missing validpgpkeys are fetched from a keyserver unattended, which turns a trust assertion into a rubber stamp | med | small | minor |
 | `3.2.0-F15` | a built package can place config where its consumer will never read it, and nothing looks | med | small | minor |
@@ -116,6 +118,7 @@ canonical ordering.
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
 | `3.2.0-B21` | installing a libLLVM consumer outside the toolchain stage is never re-verified against the installed libLLVM | low | small | patch |
 | `3.2.0-B22` | the mesa_llvm_symbols remediation misdiagnoses a consumer built against the wrong libLLVM | low | small | patch |
+| `3.2.0-B40` | the flag-drift notice says "rebuilding" for packages it does not queue | low | small | patch |
 | `3.2.0-F11` | the profile store has no inspection or reclamation surface, and the purge path its own docstring promises does not exist | low | small | minor |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -950,6 +953,61 @@ canonical ordering.
   conf.
   *Priority: high · Effort: small · Bump: patch* — a boot-safety gate is silently off for every
   renamed kernel build.
+  **Standards home on adoption:** none.
+
+- **`3.2.0-B38` — a kernel build's record in `build_state.toml` is lost after it is written, so
+  `update` judges the kernel against a months-old build.** `makepkg_wrapper._record_build_state`
+  writes the `linux-sysforge` entry and logs `Recorded build state for 'linux-sysforge'`, but the file
+  never keeps it. On 2026-09-28 the entry still read `pkgver = 7.1.6`, `built_at =
+  2026-08-08T14:22:28Z` while 7.2.7 was installed. The run log shows the same record line after the
+  2026-08-15, 08-22, 09-04, 09-26 and 09-28 kernel runs, and none of them survived: the
+  `build_seconds` ring holds exactly the four builds up to 08-08 and never grew, so the entry was
+  replaced wholesale rather than partly undone (`revert_record` carries the ring forward, which rules
+  it out). Replaying `_record_build_state` against a copy of the state file writes 7.2.7 correctly,
+  so the record seam is sound and some later `save()` of a stale `BuildState` overwrites it. Ruled
+  out so far: the kernel stage (reads only), `build_core._revert_uninstalled_state` (the kernel
+  stage does not go through `build_and_install`), the pacman hooks (sentinels only),
+  `update`'s start-of-run `sync_with_installed` / `reconcile_external_installs` (stage-owned
+  entries are exempt), and a second state dir. The visible symptom is false flag drift (and would be
+  false version drift) against August's flags. `BuildState.save()` now logs the writer on every
+  save and warns when it is about to roll back a newer on-disk record; the next `sysforge run
+  kernel` run log should name the culprit. Fix: once found, make that writer reload before it saves
+  (or merge per entry), and consider making the stale-overwrite warning a hard refusal.
+  *Priority: high · Effort: medium · Bump: patch* — every kernel build since 08-08 is invisible to
+  `update`.
+  **Standards home on adoption:** none.
+
+- **`3.2.0-B39` — flag drift compares the keys a kernel build never receives, so any profile change
+  reports the kernel as drifted.** Kernel builds strip `CFLAGS`/`CXXFLAGS`/`CPPFLAGS`/`LDFLAGS` and
+  the `DEBUG_*` variants from the emitted conf (`profile.KERNEL_CLEAN_KEYS`; the kernel takes its
+  optimisation from Kconfig). `flag_drift.resolve_flag_drift` still diffs the full serialized
+  profile, and `serialize_effective_flags(kernel_build=True)` returns it unfiltered on both the
+  record and the replay side. Changing the `optimized` profile (`-O2` → `-O3 -fno-plt`, `--icf=all`
+  in `LDFLAGS`) therefore reports `linux-sysforge` as drifted even though nothing about the kernel
+  build would change. It is the same false-positive class `3.1.0-F9` closed for
+  `options=('!buildflags')`, where makepkg discards the conf flags. Fix: drop `KERNEL_CLEAN_KEYS`
+  from the kernel serialization in `serialize_effective_flags`, so the record and the drift replay
+  agree and only keys that reach the kernel build (`CC`, `LD`, `RUSTC_WRAPPER`, …) can drift.
+  Existing records converge on the next kernel build. Needs a kernel-path test (profile `CFLAGS`
+  change → `IN_SYNC`) alongside a non-kernel one (same change → `DRIFTED`).
+  *Priority: med · Effort: small · Bump: patch* — a spurious drift notice for the most expensive
+  rebuild in the system.
+  **Standards home on adoption:** none.
+
+- **`3.2.0-B40` — the flag-drift notice says "rebuilding" for packages it does not queue.** With
+  `--rebuild-on-flag-drift` on, the Phase 4.3 `ui()` line picks its hint from the flag alone
+  (`flag drift: N package(s) … . rebuilding (--rebuild-on-flag-drift)`). Only drifted packages that
+  are in the run's package walk get promoted to `NEEDS_REBUILD`. Stage-owned packages (the kernel,
+  the toolchain) are found by the build-state-wide fold, never queued, and reported only in a
+  following `warn()` (`… are outside this run's package walk and were not queued`), which the
+  default verbosity hides. On 2026-09-28 a default-verbosity `update` told the user it was
+  rebuilding `linux-sysforge` and then did nothing. Fix: build the `ui()` line from the promotion
+  result, stating what will be rebuilt and, separately, what drifted but needs `sysforge run
+  <stage>` (or `sysforge build <pkg>`). That answer belongs at `ui()`, since it is what the user
+  asked `update` to do. Test at default verbosity with one walked and one stage-owned drifted
+  package.
+  *Priority: low · Effort: small · Bump: patch* — misleading, not harmful; the rebuild it promises
+  simply does not happen.
   **Standards home on adoption:** none.
 
 ### Open questions

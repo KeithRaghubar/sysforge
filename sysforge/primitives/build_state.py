@@ -43,9 +43,16 @@ Public API:
     group_by_pkgbase(packages)
     parse_pacman_version(ver_str) -> (epoch, pkgver, pkgrel)
 """
+import os
+import sys
 import tomllib
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+
+from sysforge import log
+
+_log = log.get_logger("STATE")
 
 # Reserved top-level key in build_state.toml for the failures namespace. Held
 # apart from the per-package install records so it never leaks into
@@ -150,6 +157,10 @@ class BuildState:
         failures = raw.pop(_FAILURES_KEY, {})
         self._failures = failures if isinstance(failures, dict) else {}
         self._data = raw
+        # Lost-update detection (3.2.0-B38): what the file looked like when this
+        # instance last read or wrote it, and each entry's built_at at load.
+        self._disk_sig = self._stat_sig()
+        self._loaded_built_at = {k: _built_at(v) for k, v in raw.items()}
 
     def _load(self):
         if not self.path.exists():
@@ -466,11 +477,65 @@ class BuildState:
         return dict(self._data)
 
     def save(self) -> None:
-        """Write current state to disk atomically (write + rename)."""
+        """Write current state to disk atomically (write + rename).
+
+        Last writer wins, so an instance holding a stale copy silently rolls
+        back anything another writer recorded since this one loaded. Until the
+        writer behind 3.2.0-B38 is found, every save logs who is writing, and a
+        save that is about to regress a newer on-disk record warns with the
+        entries it would lose. Detection only: the write still goes ahead.
+        """
+        writer = _writer_identity()
+        _log.debug(f"build_state save by {writer}: {len(self._data)} entries")
+        if self._stat_sig() != self._disk_sig:
+            self._warn_lost_updates(writer)
         self._dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".toml.tmp")
         tmp.write_text(self._serialize())
         tmp.rename(self.path)
+        self._disk_sig = self._stat_sig()
+        self._loaded_built_at = {k: _built_at(v) for k, v in self._data.items()}
+
+    def _stat_sig(self) -> tuple[int, int, int] | None:
+        """Identity of the on-disk file; the atomic rename changes the inode."""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+    def _warn_lost_updates(self, writer: str) -> None:
+        """Warn for each on-disk record this save would roll back or drop.
+
+        An entry regresses when the disk copy was built later than the copy
+        about to be written, or was added by another writer since this
+        instance loaded. An entry this instance deleted on purpose compares
+        against its built_at at load, so ``forget`` stays silent.
+        """
+        try:
+            with self.path.open("rb") as f:
+                disk = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            return
+        disk.pop(_FAILURES_KEY, None)
+        lost = []
+        for name, entry in sorted(disk.items()):
+            disk_at = _built_at(entry)
+            if name in self._data:
+                mine = _built_at(self._data[name])
+            elif name in self._loaded_built_at:
+                mine = self._loaded_built_at[name]
+            else:
+                lost.append(f"{name} (added {disk_at or 'by another writer'})")
+                continue
+            if disk_at and (not mine or disk_at > mine):
+                lost.append(f"{name} (on disk {disk_at}, writing {mine or 'none'})")
+        if lost:
+            _log.warn(
+                f"build_state save by {writer} overwrites a stale copy: "
+                f"{self.path} changed since it was loaded, and this write rolls "
+                f"back {len(lost)} newer record(s): {', '.join(lost)}"
+            )
 
     def _serialize(self) -> str:
         lines = [
@@ -515,3 +580,21 @@ class BuildState:
                         lines.append(f'{key} = "{val}"')
                 lines.append("")
         return "\n".join(lines)
+
+
+def _built_at(entry) -> str:
+    """An entry's built_at, or "" (ISO-8601 UTC strings compare in order)."""
+    return entry.get("built_at", "") if isinstance(entry, dict) else ""
+
+
+def _writer_identity() -> str:
+    """``pid=… argv=… at file:line in func`` for the code that called save()."""
+    here = Path(__file__).resolve()
+    site = "?"
+    for frame in reversed(traceback.extract_stack()[:-1]):
+        caller = Path(frame.filename).resolve()
+        if caller != here:
+            site = f"{caller.name}:{frame.lineno} in {frame.name}"
+            break
+    argv = " ".join(sys.argv[1:]) or "-"
+    return f"pid={os.getpid()} argv=[{argv}] at {site}"
