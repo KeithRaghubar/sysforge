@@ -1570,6 +1570,18 @@ def main():
         progress.shutdown()  # release the DECSTBM scroll region
         log.error("[SYSFORGE]", "aborted (Ctrl-C)")
         sys.exit(130)  # 128 + SIGINT, the conventional interrupt exit
+    except BrokenPipeError:
+        # The stdout reader went away (`sysforge state list | head`). Python
+        # ignores SIGPIPE, so the write surfaces here instead of killing us —
+        # and SIG_DFL is not an option: it would also kill a mutating verb
+        # mid-build. Point fd 1 at /dev/null so the interpreter's exit-time
+        # flush of the buffered remainder can't fail a second time. (Quitting
+        # a *pager* early is absorbed in primitives/pager.py instead.)
+        from sysforge.ui import progress
+        progress.shutdown()
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, 1)
+        sys.exit(141)  # 128 + SIGPIPE, what the shell reports for `yes | head`
 
 
 def _main():

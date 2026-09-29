@@ -65,13 +65,9 @@ def cmd_log(args) -> int:
         return 1
 
     use_pager = not getattr(args, "no_pager", False)
-    with maybe_pager(use_pager):
-        try:
-            with path.open(encoding="utf-8") as f:
-                for line in f:
-                    print(line, end="")
-        except BrokenPipeError:
-            pass
+    with maybe_pager(use_pager), path.open(encoding="utf-8") as f:
+        for line in f:
+            print(line, end="")
     return 0
 
 

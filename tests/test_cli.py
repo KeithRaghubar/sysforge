@@ -685,6 +685,37 @@ def test_main_handles_keyboard_interrupt(monkeypatch, capsys):
     assert "Traceback" not in err
 
 
+def test_main_handles_broken_pipe(monkeypatch, capsys):
+    """`sysforge state list | head` closes the pipe early; the next write
+    raises BrokenPipeError. main() must exit 141 (128 + SIGPIPE, what the shell
+    reports for a native tool killed the same way) without a traceback, and
+    point fd 1 at /dev/null so the interpreter's exit-time stdout flush can't
+    fail a second time (3.3.0-B3)."""
+    import pytest
+    import sysforge.cli as cli
+    from sysforge.ui import progress
+
+    def _piping_dispatch(verb_cls, args):
+        raise BrokenPipeError
+
+    dup2_calls = []
+    monkeypatch.setattr(cli, "_dispatch", _piping_dispatch)
+    monkeypatch.setattr(progress, "shutdown", lambda: None)
+    monkeypatch.setattr(cli.os, "dup2", lambda src, dst: dup2_calls.append(dst))
+    monkeypatch.setattr("sys.argv", ["sysforge", "env"])
+    from sysforge import log
+    saved_verbosity = log.get_verbosity()
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+    finally:
+        log.set_verbosity(saved_verbosity)
+        log.set_color_mode("auto")
+    assert exc.value.code == 141
+    assert dup2_calls == [1], "stdout fd must be redirected to /dev/null"
+    assert "Traceback" not in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # Tiered top-level COMMAND help (2.5.0-F1)
 # ---------------------------------------------------------------------------

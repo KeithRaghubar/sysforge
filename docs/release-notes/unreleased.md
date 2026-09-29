@@ -88,7 +88,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.3.0-B3` — quitting the pager early no longer prints a `BrokenPipeError` traceback.** `maybe_pager` points `sys.stdout` at the pager's stdin. If you press `q` before a verb has finished writing, less exits and the verb's next `print()` raises `BrokenPipeError`. Only `sysforge log` caught it, so `state list` (whose untracked-foreign section prints after a slow pacman query), `state failures`, `state orphans`, `state profiles` and `config merge`'s `[v]iew` could all crash with a traceback. The seam now absorbs the error: the rest of the paged output is skipped and the verb exits normally.
+- **`3.3.0-B3` — quitting the pager early, or piping into `head`, no longer prints a `BrokenPipeError` traceback.** `maybe_pager` points `sys.stdout` at the pager's stdin. If you press `q` before a verb has finished writing, less exits and the verb's next `print()` raises `BrokenPipeError`. Only `sysforge log` caught it, so `state list` (whose untracked-foreign section prints after a slow pacman query), `state failed`, `state orphans`, `state profiles` and `config merge`'s `[v]iew` could all crash with a traceback. The seam now absorbs the error: the rest of the paged output is skipped and the verb exits normally. Without a pager, piping any verb into a reader that quits early (`sysforge state list | head`) crashed the same way, and even `sysforge log`'s own guard only moved the failure to an exit-time flush error. `sysforge` now exits quietly with 141 (128 + SIGPIPE), the status the shell reports for any tool cut off by a closed pipe.
 
 ## Security
 
