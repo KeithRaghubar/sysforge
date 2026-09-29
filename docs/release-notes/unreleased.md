@@ -68,6 +68,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.2.0-B38` — kernel builds are recorded in `build_state.toml` again.** Since 2.6.1-F23 added the kconfig VERIFY check to the kernel's `prepare()`, no kernel build had been recorded: the entry stayed at the last build before it (7.1.6, 2026-08-08) while newer kernels were installed, so `update` judged the kernel against August's flags and version. The run log still said `Recorded build state for 'linux-sysforge'`, which read as a record lost after it was written. The record was never written. The static PKGBUILD parser treated every unquoted `#` as a comment, so the check's `${_line#*=}` was cut to `${_line` and `prepare()` never closed. Every global declared after it vanished, the stock kernel's `pkgname` included, and the rename handed the recorder an empty package list. The parser now follows bash's rule: `#` starts a comment only when it begins a word. The same fix corrects other PKGBUILDs it had been misreading: `source=` URLs lost their `#tag=`/`#commit=` pins (one array swallowed the `b2sums=` line after it), and derived names like `${pkgname#python-}` were truncated. A build that resolves no package names now warns that nothing was recorded instead of claiming it was.
+
+---
+
 - **`3.2.0-B39` — a profile flag change no longer reports the kernel as drifted.** Kernel builds strip `CFLAGS`/`CXXFLAGS`/`CPPFLAGS`/`LDFLAGS` and the `DEBUG_*` variants from the emitted conf (`profile.KERNEL_CLEAN_KEYS`; the kernel takes its optimisation from Kconfig), but flag drift still diffed the full serialized profile. Changing the `optimized` profile (`-O2` → `-O3 -fno-plt`, `--icf=all` in `LDFLAGS`) therefore flagged `linux-sysforge`, the most expensive rebuild in the system, although nothing about its build would change. `serialize_effective_flags(kernel_build=True)` now drops those keys on both the record and the replay side, and `flag_drift` strips them from an existing kernel record before diffing, so records written before this fix converge without one last false drift. Only keys that reach the kernel build (`CC`, `LD`, `RUSTC_WRAPPER`, …) can drift; non-kernel packages are unchanged.
 
 ---

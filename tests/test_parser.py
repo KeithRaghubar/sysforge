@@ -137,6 +137,46 @@ def test_parameter_expansion_not_mangled(tmp_path):
     assert "${pkgname%-git}" in flags
 
 
+@pytest.mark.parametrize("body", [
+    "_x=${_line#*=}",
+    "_x=${_line##*/}",
+    r"_x=${_line#\# }",
+    "_n=${#_line}",
+    'echo $#',
+    "_x=a#b",
+])
+def test_mid_word_hash_is_not_a_comment(tmp_path, body):
+    """bash starts a comment only at a word that *begins* with ``#``
+    (3.2.0-B38). An unquoted ``${var#pat}`` inside a function used to read as
+    a comment, cutting the line mid-expansion so the function never closed
+    and every global declared after it vanished."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(
+        "pkgbase=foo\n"
+        "prepare() {\n"
+        f"  {body}\n"
+        "}\n"
+        "pkgname=(foo foo-bar)\n"
+    )
+    result = parse_pkgbuild(pkgbuild)
+    assert result["globals"]["pkgname"] == ["foo", "foo-bar"]
+    assert body in result["functions"]["prepare"]
+
+
+@pytest.mark.parametrize("line", [
+    "# whole-line comment (",
+    "  # indented comment {",
+    "pkgver=1 # trailing comment (",
+    "true;# after an operator {",
+])
+def test_word_start_hash_is_still_a_comment(tmp_path, line):
+    """Comments that begin a word are still stripped — the unbalanced bracket
+    in each would otherwise derail the array/function scanners."""
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(f"pkgbase=foo\n{line}\npkgname=(foo foo-bar)\n")
+    assert parse_pkgbuild(pkgbuild)["globals"]["pkgname"] == ["foo", "foo-bar"]
+
+
 def test_brace_expansion_in_makedepends(tmp_path):
     """Unquoted bash brace lists expand to separate array items, matching how
     makepkg/bash sees them (regression for afdko's python-{build,installer,wheel}

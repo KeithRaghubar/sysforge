@@ -1098,6 +1098,17 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         # Returns None for non-VCS, multi-git-source, or unparseable
         # source URLs — recorded entries simply omit the field and fall
         # through to the full path on the next check.
+        if not pkgnames:
+            # No names means nothing to record. Say so: the success line below
+            # names the pkgbase, which is set even when no pkgname resolved, so
+            # a zero-entry save read as a successful record (3.2.0-B38).
+            _build_log.warn(
+                f"Build state NOT recorded for {pkgbase!r}: no pkgname could be "
+                f"parsed from {pkgbuild_path}, so `sysforge update` will judge "
+                "it against its previous record"
+            )
+            return
+
         upstream_commit = read_built_upstream_commit(pkgbuild_path.parent)
 
         # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames

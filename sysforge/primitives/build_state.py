@@ -157,7 +157,7 @@ class BuildState:
         failures = raw.pop(_FAILURES_KEY, {})
         self._failures = failures if isinstance(failures, dict) else {}
         self._data = raw
-        # Lost-update detection (3.2.0-B38): what the file looked like when this
+        # Lost-update detection: what the file looked like when this
         # instance last read or wrote it, and each entry's built_at at load.
         self._disk_sig = self._stat_sig()
         self._loaded_built_at = {k: _built_at(v) for k, v in raw.items()}
@@ -480,10 +480,11 @@ class BuildState:
         """Write current state to disk atomically (write + rename).
 
         Last writer wins, so an instance holding a stale copy silently rolls
-        back anything another writer recorded since this one loaded. Until the
-        writer behind 3.2.0-B38 is found, every save logs who is writing, and a
-        save that is about to regress a newer on-disk record warns with the
-        entries it would lose. Detection only: the write still goes ahead.
+        back anything another writer recorded since this one loaded. Every save
+        logs who is writing (debug), and a save that is about to regress a newer
+        on-disk record warns with the entries it would lose. Detection only: the
+        write still goes ahead. (Added while chasing 3.2.0-B38, which proved to
+        be a record never written, not one overwritten.)
         """
         writer = _writer_identity()
         _log.debug(f"build_state save by {writer}: {len(self._data)} entries")

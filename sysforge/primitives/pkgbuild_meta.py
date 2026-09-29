@@ -18,8 +18,20 @@ import re
 from pathlib import Path
 
 
+# bash(1) COMMENTS: "a word beginning with # introduces a comment. A word begins
+# at the beginning of a line, after unquoted whitespace, or after an operator."
+_COMMENT_WORD_BREAKS = frozenset(" \t;&|()<>")
+
+
 def _strip_comments(text):
-    """Strip # comments, respecting quoted strings."""
+    """Strip # comments, respecting quoted strings.
+
+    Only a ``#`` that begins a word starts a comment, as in bash. A mid-word
+    ``#`` is an operator or a literal (``${var#pat}``, ``${#var}``, ``$#``,
+    ``a#b``); cutting the line there left ``${var`` unclosed, so the function
+    scanner ran past the function's end and swallowed every later global
+    (3.2.0-B38: the kernel's ``pkgname``, declared after ``prepare()``).
+    """
     result = []
     for line in text.splitlines():
         out = []
@@ -32,7 +44,8 @@ def _strip_comments(text):
                 in_single = not in_single
             elif c == '"' and not in_single:
                 in_double = not in_double
-            elif c == "#" and not in_single and not in_double:
+            elif (c == "#" and not in_single and not in_double
+                  and (i == 0 or line[i - 1] in _COMMENT_WORD_BREAKS)):
                 break
             out.append(c)
             i += 1

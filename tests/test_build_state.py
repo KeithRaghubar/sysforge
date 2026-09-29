@@ -983,7 +983,7 @@ def test_revert_record_without_prior_forgets_entry(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# save() lost-update detection (3.2.0-B38 instrumentation)
+# save() lost-update detection
 # ---------------------------------------------------------------------------
 
 def _recorded_at(bs, pkgname, pkgver, built_at):

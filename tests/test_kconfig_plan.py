@@ -779,6 +779,22 @@ class TestVerifySlot:
             plan.install(p, noninteractive=True)
         assert p.read_text().count(f"{kp.VERIFY_MARKER}()") == 1
 
+    def test_installed_verify_keeps_later_globals_parseable(self, tmp_path):
+        # 3.2.0-B38: the verify body's unquoted ${_line#*=} read as a comment to
+        # the static parser, unbalancing prepare() so it swallowed the rest of
+        # the file. The stock kernel PKGBUILD declares pkgname *after* its
+        # functions, so the rename saw no pkgnames and build_state recorded
+        # nothing for every kernel build from then on.
+        from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+        p = _write(tmp_path, STOCK.replace("pkgname=linux-custom\n", "pkgbase=linux\n")
+                   + 'pkgname=("$pkgbase" "$pkgbase-headers")\n')
+        plan = _full_plan()
+        plan.contribute(kp.verify_step())
+        plan.install(p, noninteractive=True)
+        parsed = parse_pkgbuild(p)
+        assert parsed["globals"]["pkgname"] == ["linux", "linux-headers"]
+        assert kp.VERIFY_MARKER in parsed["functions"]["prepare"]
+
 
 # --- the rendered shell, actually executed ---------------------------------
 # The check's whole value is what it prints at build time, and none of that is

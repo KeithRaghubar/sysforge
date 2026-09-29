@@ -215,6 +215,51 @@ def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
     assert isinstance(captured["build_seconds"], int)
 
 
+def test_record_build_state_warns_when_no_pkgname_resolves(tmp_path, monkeypatch, capsys):
+    """3.2.0-B38: an empty pkgname list recorded nothing, yet the log still
+    said ``Recorded build state for 'linux-sysforge'`` (it names the pkgbase),
+    hiding months of lost kernel records. No names must warn, not claim."""
+    import sysforge.primitives.build_state as bs_mod
+
+    recorded, saved = [], []
+
+    class _SpyState(bs_mod.BuildState):
+        def record(self, *a, **k):
+            recorded.append(k)
+
+        def save(self):
+            saved.append(True)
+
+    monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
+
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgbase=linux\n")
+    from types import SimpleNamespace
+    options = SimpleNamespace(
+        state_dir=None, source=None, owner_stage="kernel",
+        toolchain_variant=None, toolchain_fingerprint=None,
+    )
+    rename = {"origin_pkgbase": "linux", "origin_pkgnames": [],
+              "renamed_pkgbase": "linux-sysforge", "renamed_pkgnames": []}
+
+    from sysforge import log
+    saved_verbosity = log.get_verbosity()
+    try:
+        log.set_verbosity(2)
+        makepkg_wrapper._record_build_state(
+            pkgbuild, {"globals": {"pkgbase": "linux"}}, None, options,
+            rename=rename, record_build_mode=None, build_elapsed=1,
+        )
+    finally:
+        log.set_verbosity(saved_verbosity)
+    err = capsys.readouterr().err
+
+    assert not recorded and not saved
+    assert "Recorded build state" not in err
+    warns = [ln for ln in err.splitlines() if "[WARN]" in ln]
+    assert len(warns) == 1 and "linux-sysforge" in warns[0]
+
+
 def _write_mold_pkgbuild(tmp_path):
     p = tmp_path / "PKGBUILD"
     p.write_text(
