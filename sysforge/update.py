@@ -1332,7 +1332,8 @@ def _cmd_update_body(args) -> int:
                         f"{result.pkgbuild_ver} in {search_dir}"
                     )
         # Install the queued pre-built artifacts (no build happened).
-        built_pkg_files, refused = build_core.install_built(built_pkg_files)
+        built_pkg_files, refused = build_core.install_built(
+            built_pkg_files, state_dir=state_dir)
         install_failed = bool(refused)
         not_installed = build_core.not_installed_by_pkgbase(refused, pkgbase_of)
         if not built_pkg_files and built_pkgs and not install_failed:

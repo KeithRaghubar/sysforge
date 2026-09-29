@@ -60,6 +60,30 @@ _log = log.get_logger("STATE")
 # would collide; none exists in practice.
 _FAILURES_KEY = "failures"
 
+# Reserved top-level key for builds whose record a refused install reverted,
+# keyed by artifact filename (3.3.0-B2). Held apart like _FAILURES_KEY.
+_REVERTED_KEY = "reverted"
+
+# Per-package record fields, in serialization order.
+_ENTRY_KEYS = (
+    "pkgver",
+    "pkgrel",
+    "epoch",
+    "pkgbase",
+    "pkgbuild_dir",
+    "build_mode",
+    "flags_string",
+    "built_at",
+    "built_upstream_commit",
+    "source",
+    "owner_stage",
+    "toolchain_variant",
+    "toolchain_fingerprint",
+    "reviewed_commit",
+    "origin_pkgbase",
+    "build_seconds",
+)
+
 # build_mode values. "source_built" replaced the legacy "profiled" token (which
 # was confusingly overloaded with PGO and repo_mode "profiled"). The legacy
 # read alias was removed in 3.0.0 — a pre-rename file now reads "profiled"
@@ -156,6 +180,8 @@ class BuildState:
         # Split the reserved failures namespace out of the install mirror.
         failures = raw.pop(_FAILURES_KEY, {})
         self._failures = failures if isinstance(failures, dict) else {}
+        reverted = raw.pop(_REVERTED_KEY, {})
+        self._reverted = reverted if isinstance(reverted, dict) else {}
         self._data = raw
         # Lost-update detection: what the file looked like when this
         # instance last read or wrote it, and each entry's built_at at load.
@@ -307,6 +333,9 @@ class BuildState:
         if ring:
             entry["build_seconds"] = ",".join(ring)
         self._data[pkgname] = entry
+        # A newer build supersedes any reverted one for this name: installing
+        # that stale artifact later must not roll the record back to it.
+        self._drop_reverted(pkgname)
         # A successful build clears any recorded failure for this pkgbase so
         # `sysforge state failed` self-heals on the next good build.
         self._failures.pop(pkgbase, None)
@@ -315,7 +344,8 @@ class BuildState:
     # artifact — kept by revert_record so a refused install does not erase them.
     _BUILD_FACTS = ("build_seconds", "reviewed_commit")
 
-    def revert_record(self, pkgname: str, prior: dict | None) -> None:
+    def revert_record(self, pkgname: str, prior: dict | None,
+                      *, artifact: str | None = None) -> None:
         """Undo a ``record()`` whose artifact pacman never installed (3.2.0-B34).
 
         ``makepkg_wrapper`` records at build time, before the install; when
@@ -324,8 +354,19 @@ class BuildState:
         before the build (``None`` when there was none, which drops the entry).
         The build-time ring and the reviewed commit carry forward: the build
         and the review did happen.
+
+        ``artifact`` (the refused file's name) keeps the undone entry, so that
+        when a rerun reuses that artifact and it installs,
+        :meth:`restore_reverted` can put the real build facts back (3.3.0-B2).
+        Only an entry recorded since ``prior`` is kept: a second refusal of the
+        same artifact finds the entry already reverted and must not overwrite
+        what the first one stashed.
         """
         current = self._data.get(pkgname) or {}
+        if artifact and current and (
+            self._sans_build_facts(current) != self._sans_build_facts(prior)
+        ):
+            self._reverted[artifact] = {"pkgname": pkgname, **current}
         if prior is None:
             self._data.pop(pkgname, None)
             return
@@ -334,6 +375,32 @@ class BuildState:
             if key in current:
                 entry[key] = current[key]
         self._data[pkgname] = entry
+
+    @classmethod
+    def _sans_build_facts(cls, entry: dict | None) -> dict:
+        """``entry`` without the fields a revert carries forward, so a reverted
+        entry compares equal to the ``prior`` it was built from."""
+        return {k: v for k, v in (entry or {}).items() if k not in cls._BUILD_FACTS}
+
+    def restore_reverted(self, artifact: str) -> str | None:
+        """Reinstate the entry a refused install of ``artifact`` reverted.
+
+        Called once pacman has installed ``artifact``. Returns the restored
+        pkgname, or None when nothing was stashed for it (the usual case: a
+        fresh build's record was never reverted).
+        """
+        stashed = self._reverted.pop(artifact, None)
+        if not isinstance(stashed, dict) or not stashed.get("pkgname"):
+            return None
+        entry = dict(stashed)
+        pkgname = entry.pop("pkgname")
+        self._data[pkgname] = entry
+        return pkgname
+
+    def _drop_reverted(self, pkgname: str) -> None:
+        for artifact in [a for a, e in self._reverted.items()
+                         if isinstance(e, dict) and e.get("pkgname") == pkgname]:
+            del self._reverted[artifact]
 
     def delete(self, pkgname: str) -> bool:
         """Remove an entry by pkgname.  Returns True if it existed."""
@@ -455,6 +522,7 @@ class BuildState:
         removed_names = existing_names - installed_names
         for name in removed_names:
             del self._data[name]
+            self._drop_reverted(name)
 
         added_names = installed_names - existing_names
         for name in added_names:
@@ -519,6 +587,7 @@ class BuildState:
         except (OSError, tomllib.TOMLDecodeError):
             return
         disk.pop(_FAILURES_KEY, None)
+        disk.pop(_REVERTED_KEY, None)
         lost = []
         for name, entry in sorted(disk.items()):
             disk_at = _built_at(entry)
@@ -547,24 +616,7 @@ class BuildState:
         for pkgname, entry in sorted(self._data.items()):
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
-            for key in (
-                "pkgver",
-                "pkgrel",
-                "epoch",
-                "pkgbase",
-                "pkgbuild_dir",
-                "build_mode",
-                "flags_string",
-                "built_at",
-                "built_upstream_commit",
-                "source",
-                "owner_stage",
-                "toolchain_variant",
-                "toolchain_fingerprint",
-                "reviewed_commit",
-                "origin_pkgbase",
-                "build_seconds",
-            ):
+            for key in _ENTRY_KEYS:
                 if key in entry:
                     val = _toml_escape(entry[key])
                     lines.append(f'{key} = "{val}"')
@@ -576,6 +628,17 @@ class BuildState:
                 escaped = pkgbase.replace("\\", "\\\\").replace('"', '\\"')
                 lines.append(f'[{_FAILURES_KEY}."{escaped}"]')
                 for key in ("failed_at", "pkgver", "signature", "fix_cmd", "error"):
+                    if key in entry:
+                        val = _toml_escape(entry[key])
+                        lines.append(f'{key} = "{val}"')
+                lines.append("")
+        if self._reverted:
+            lines.append("# Builds whose install was refused, restored if the artifact installs.")
+            lines.append("")
+            for artifact, entry in sorted(self._reverted.items()):
+                escaped = artifact.replace("\\", "\\\\").replace('"', '\\"')
+                lines.append(f'[{_REVERTED_KEY}."{escaped}"]')
+                for key in ("pkgname", *_ENTRY_KEYS):
                     if key in entry:
                         val = _toml_escape(entry[key])
                         lines.append(f'{key} = "{val}"')

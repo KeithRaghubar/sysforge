@@ -982,6 +982,74 @@ def test_revert_record_without_prior_forgets_entry(tmp_path):
     assert bs.get("foo-git") is None
 
 
+_ART = "foo-git-1.9.0-1-x86_64.pkg.tar.zst"
+
+
+def _reverted_build(tmp_path):
+    """1.8.0 installed; 1.9.0 built, its install refused, record reverted."""
+    bs = BuildState(tmp_path)
+    _rec(bs, "1.8.0", flags="old", reviewed="aaa", seconds=40)
+    prior = dict(bs.get("foo-git"))
+    _rec(bs, "1.9.0", flags="new", reviewed="bbb", seconds=50)
+    built = dict(bs.get("foo-git"))
+    bs.revert_record("foo-git", prior, artifact=_ART)
+    bs.save()
+    return prior, built
+
+
+def test_reverted_build_restores_when_its_artifact_installs(tmp_path):
+    """3.3.0-B2: the revert keeps the facts of the build it undid, so when a
+    rerun reuses that artifact ("already built") and pacman installs it, the
+    record describes the build that is actually on the system."""
+    _prior, built = _reverted_build(tmp_path)
+
+    bs = BuildState(tmp_path)
+    assert bs.get("foo-git")["pkgver"] == "1.8.0"
+    assert bs.restore_reverted(_ART) == "foo-git"
+    bs.save()
+
+    after = BuildState(tmp_path)
+    assert after.get("foo-git") == built
+    assert after.restore_reverted(_ART) is None  # consumed
+
+
+def test_second_refusal_keeps_the_stashed_build(tmp_path):
+    """The rerun's install can be refused too (the 09-26 run was refused
+    twice). Its revert finds the entry already at the prior version; it must
+    not replace the stashed 1.9.0 facts with 1.8.0's."""
+    prior, built = _reverted_build(tmp_path)
+    bs = BuildState(tmp_path)
+    bs.revert_record("foo-git", prior, artifact=_ART)
+    assert bs.restore_reverted(_ART) == "foo-git"
+    assert bs.get("foo-git") == built
+
+
+def test_a_newer_build_drops_the_stash(tmp_path):
+    """Once a later build is recorded, the stashed one is history: installing
+    the stale artifact must not roll the record back to it."""
+    _reverted_build(tmp_path)
+    bs = BuildState(tmp_path)
+    _rec(bs, "2.0.0", flags="newer", reviewed="ccc", seconds=55)
+    assert bs.restore_reverted(_ART) is None
+    assert bs.get("foo-git")["pkgver"] == "2.0.0"
+
+
+def test_stash_stays_out_of_the_install_mirror(tmp_path):
+    """The stash is its own namespace: never a package, never kept for a
+    package pacman no longer has."""
+    _reverted_build(tmp_path)
+    bs = BuildState(tmp_path)
+    assert set(bs.all_packages()) == {"foo-git"}
+    bs.sync_with_installed({"foo-git": "1.8.0-1"})
+    assert bs.restore_reverted(_ART) == "foo-git"
+
+    _reverted_build(tmp_path)
+    bs = BuildState(tmp_path)
+    bs.sync_with_installed({})
+    bs.save()
+    assert BuildState(tmp_path).restore_reverted(_ART) is None
+
+
 # ---------------------------------------------------------------------------
 # save() lost-update detection
 # ---------------------------------------------------------------------------

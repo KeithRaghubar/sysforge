@@ -356,6 +356,30 @@ def _state_dir_path(state_dir: Path | None) -> Path:
     return resolve_state_dir(None)[0]
 
 
+def _restore_reverted_state(state_dir: Path | None, files: list[Path]) -> None:
+    """Put back the build record of each installed artifact a refused install
+    had reverted (3.3.0-B2).
+
+    A rerun reuses an "already built" artifact without recording it, so once
+    pacman installs that artifact this is the only place its record returns.
+    A no-op for a fresh build, whose record was never reverted. Best-effort,
+    like :func:`_revert_uninstalled_state`.
+    """
+    if not files:
+        return
+    try:
+        bs = BuildState(_state_dir_path(state_dir))
+        restored = [pn for f in files if (pn := bs.restore_reverted(f.name))]
+        if restored:
+            bs.save()
+            _log.info(
+                "build_state restored to the installed build for: "
+                + ", ".join(sorted(restored))
+            )
+    except Exception as e:  # noqa: BLE001 — bookkeeping only; never fail an install
+        _log.info(f"build_state restore skipped: {e}")
+
+
 def _snapshot_state(state_dir: Path | None, pkgnames) -> dict | None:
     """``{pkgname: entry-or-None}`` from build_state, for :func:`_revert_uninstalled_state`.
 
@@ -391,7 +415,7 @@ def _revert_uninstalled_state(
         for path in files:
             pn = read_pkgname_from_file(path)
             if pn is not None and pn in prior:
-                bs.revert_record(pn, prior[pn])
+                bs.revert_record(pn, prior[pn], artifact=path.name)
                 reverted.append(pn)
         if reverted:
             bs.save()
@@ -486,6 +510,8 @@ def install_built(
             pending, interactive=interactive,
             allow_break_deps=allow_break_deps, conflicts_out=conflicts,
         ):
+            if state_dir is not None:
+                _restore_reverted_state(state_dir, pending)
             return pending, not_installed
         culprits: dict[Path, list] = {}
         if conflicts:

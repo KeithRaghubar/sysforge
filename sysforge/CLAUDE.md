@@ -58,7 +58,7 @@ Mechanism lives in the cited §DESIGN section.
   (`3.2.0-B33`). Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
 - **PKGBUILD review gate**: `build_and_install(review=…)` → `pkgbuild_review.review_target` (build
   `prompt`, update `auto`); sticky `reviewed_commit`. New build_state fields go in
-  `BuildState._serialize`'s key tuple. §primitives-layer.
+  `_ENTRY_KEYS` (`primitives/build_state.py`), which `BuildState._serialize` writes. §primitives-layer.
 - **Unified run-log**: `log.open_unified_log`/`close_unified_log`; verbs opt in via
   `Verb.unified_log_basename`. §Logging.
 - **Flag-drift**: `flag_drift.resolve_flag_drift` (pure); sole consumer `update` Phase 4.3. §update.
@@ -115,6 +115,10 @@ Mechanism lives in the cited §DESIGN section.
   `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer). §makepkg-wrapper.
 - **Build failures**: reserved `[failures]` namespace in `build_state.toml`; diagnostics in
   `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §`build_diag`.
+- **Refused-install revert/restore**: `build_core._revert_uninstalled_state` stashes the undone entry
+  in the reserved `[reverted]` namespace (keyed by artifact filename); `install_built` restores it via
+  `_restore_reverted_state` when that file installs. That is the only record a reused (`AlreadyBuilt`)
+  artifact gets, so every `install_built` caller passes `state_dir` (`3.3.0-B2`).
 - **First-install notice**: `init_notice.maybe_emit_init_notice` (reads/deletes only; marker created
   solely by the PKGBUILD `post_install` scriptlet). §`init_notice.py`.
 - **Report-block presentation**: `primitives/render.py` (`arrow`, `version_pair`, `tag_header`) —

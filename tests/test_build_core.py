@@ -1795,6 +1795,67 @@ def test_build_and_install_isolates_conflict_and_reverts_its_state(tmp_path):
     assert after.get("bb")["pkgver"] == "1"
 
 
+def test_reused_artifact_install_restores_its_reverted_record(tmp_path):
+    """3.3.0-B2 end to end, the 09-26 wayland-git run: a fresh build records
+    v2, its install is refused (sudo timed out) and the record reverts to v1.
+    The rerun gets "already built", reuses the v2 artifact, and pacman installs
+    it. The record must say v2 with that build's flags, not stay at v1."""
+    from sysforge.primitives.build_state import BuildState
+    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+
+    state = tmp_path / "state"
+    bs = BuildState(state)
+    bs.record(pkgname="ww", pkgver="1", pkgrel="1", epoch="0", pkgbase="ww",
+              pkgbuild_dir=tmp_path / "ww", build_mode="source_built",
+              flags_string="old")
+    bs.save()
+    ww = _write_target(tmp_path, "ww", "pkgname=ww\npkgver=2\npkgrel=1\n")
+    artifact = tmp_path / "ww" / "ww-2-1-x86_64.pkg.tar.zst"
+
+    def fresh_build(pkgbuild_path, options=None):
+        _touch_future(artifact)
+        live = BuildState(state)
+        live.record(pkgname="ww", pkgver="2", pkgrel="1", epoch="0",
+                    pkgbase="ww", pkgbuild_dir=tmp_path / "ww",
+                    build_mode="source_built", flags_string="new")
+        live.save()
+
+    def already_built(pkgbuild_path, options=None):
+        raise AlreadyBuilt("ww")
+
+    def run(fake_run, install_ok):
+        env = [
+            patch("sysforge.build_core.prepare_deps"),
+            patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+            patch("sysforge.build_core.snapshot_pkg_dir",
+                  side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
+            patch("sysforge.build_core.get_all_installed_packages",
+                  return_value={"ww": "1-1"}),
+            patch("sysforge.build_core.filter_pkgs_to_installed",
+                  side_effect=lambda files, inst: (list(files), [])),
+            patch("sysforge.build_core.batch_install_pkgs", return_value=install_ok),
+            patch("sysforge.build_core.read_pkgname_from_file",
+                  side_effect=lambda p: Path(p).name.split("-")[0]),
+            patch("sysforge.build_core.get_pkgdest", return_value=None),
+            patch("sysforge.primitives.cache_probe.reset_session"),
+            patch("sysforge.primitives.cache_probe.emit_session_report"),
+        ]
+        with _ctx(env):
+            return build_core.build_and_install(
+                [ww], config={}, sync_source=False, state_dir=state, review="off",
+            )
+
+    assert run(fresh_build, install_ok=False).install_failed is True
+    assert BuildState(state).get("ww")["pkgver"] == "1"
+    assert run(already_built, install_ok=False).install_failed is True
+    assert BuildState(state).get("ww")["pkgver"] == "1"
+
+    outcome = run(already_built, install_ok=True)
+    assert outcome.install_failed is False
+    entry = BuildState(state).get("ww")
+    assert (entry["pkgver"], entry["flags_string"]) == ("2", "new")
+
+
 # ---------------------------------------------------------------------------
 # 3.2.0-B21 — post-install libLLVM consumer re-verification
 # ---------------------------------------------------------------------------

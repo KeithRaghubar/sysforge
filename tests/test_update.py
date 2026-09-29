@@ -1718,6 +1718,35 @@ def test_install_only_installs_existing_artifact_without_building(update_scenari
         ["htop-3.4.1-1-x86_64.pkg.tar.zst"]]
 
 
+def test_install_only_restores_the_reverted_record(update_scenario):
+    """3.3.0-B2: `--install-only` is the recovery the refused-install warning
+    points at. Installing the artifact whose record the refusal reverted must
+    bring that build's record back."""
+    from sysforge.primitives.build_state import BuildState
+
+    artifact = "htop-3.4.1-1-x86_64.pkg.tar.zst"
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.use_pkgdest()
+    update_scenario.add_artifact(artifact, "htop")
+    update_scenario.record("htop", "3.3.0", "1", flags_string="old")
+    bs = BuildState(update_scenario.state_dir)
+    prior = dict(bs.get("htop"))
+    bs.record("htop", "3.4.1", "1", "0", "htop", Path("/src/htop"),
+              build_mode="source_built", flags_string="new",
+              built_at="2099-01-01T00:00:00Z")
+    bs.revert_record("htop", prior, artifact=artifact)
+    bs.save()
+
+    update_scenario.run(
+        _make_args(install_only=True),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+
+    assert update_scenario.installed_pkg_files() == [[artifact]]
+    entry = BuildState(update_scenario.state_dir).get("htop")
+    assert (entry["pkgver"], entry["flags_string"]) == ("3.4.1", "new")
+
+
 def test_install_only_skips_when_artifact_missing(update_scenario):
     """--install-only: PKGBUILD newer than installed but no matching artifact in
     PKGDEST → skip, no install."""
