@@ -18,6 +18,7 @@ which is why the same mangling reproduced across both verbs.
 from __future__ import annotations
 
 import contextlib
+import sys
 
 from sysforge.primitives import pager
 from sysforge.ui import progress
@@ -165,3 +166,21 @@ def test_maybe_pager_strips_dash_x_from_less_env(monkeypatch):
     env = captured["env"]
     assert env is not None, "pager must run with an explicit sanitized env"
     assert "X" not in env.get("LESS", ""), env.get("LESS")
+
+
+def test_maybe_pager_absorbs_broken_pipe_when_pager_quits_early(monkeypatch):
+    """Quitting the pager (``q`` in less) before the verb finishes writing
+    closes the pipe; the verb's next ``print()`` raises ``BrokenPipeError``.
+    The seam must absorb it — the user asked to stop reading, which is not an
+    error — rather than every paging verb guarding its own writes (3.3.0-B3,
+    reproduced by ``state list`` whose foreign-package tail prints after a
+    slow pacman query)."""
+    monkeypatch.setenv("PAGER", "true")  # a pager that exits without reading
+    monkeypatch.setattr(pager.sys.stdout, "isatty", lambda: True, raising=False)
+
+    real_stdout = sys.stdout
+    with pager.maybe_pager(True):
+        for i in range(100_000):  # far past any pipe buffer
+            print(f"line {i}")
+
+    assert sys.stdout is real_stdout

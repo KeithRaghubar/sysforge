@@ -143,6 +143,12 @@ def maybe_pager(use_pager: bool):
             try:
                 sys.stdout = proc.stdin  # type: ignore[assignment]
                 yield
+            except BrokenPipeError:
+                # The user quit the pager (``q``) before the verb finished
+                # writing — they chose to stop reading, not an error. The
+                # remainder of the body is skipped; the caller resumes after
+                # its ``with`` block (3.3.0-B3).
+                pass
             finally:
                 sys.stdout = old_stdout
                 try:
