@@ -93,6 +93,7 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
+| `3.3.0-F1` | the building bar's ETA swings because it averages packages of very different sizes | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
@@ -551,6 +552,33 @@ canonical ordering.
   build leaves its last output lines in both logs.
   *Priority: med · Effort: medium · Bump: minor* — diagnosability; every interactive-stage failure
   currently needs forensic reconstruction.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-F1` — the `building` bar's ETA swings because it averages packages of very different sizes.**
+  The live ETA from `3.2.0-F14` (`ui/progress.py`, `tracker()._suffix`) projects
+  `mean(completed item durations) × remaining − in-flight elapsed`. That works for batches whose items
+  are roughly the same size (source sync, fetch, version check), but not for the `building` batch
+  (`build_core.py`, `tracker(len(targets), "building")`), where a 20-minute mesa sits next to
+  30-second libraries. Every time a large package finishes, the mean jumps. Between ticks the figure
+  counts down and then snaps to a new value, and an overrun drops it and brings it back at a
+  different value, so on the batch where the ETA matters most it reads as noise. The information to
+  do better is already there: `build_seconds` records each package's own last-5 durations, and
+  `build_estimate.estimate_seconds` already takes a median per pkgbase for the pre-build line. The
+  tracker can't use it because it only knows a *count*, not which items are coming. Fix: `tracker()`
+  takes optional per-item expected durations supplied by the caller (so `ui/progress` stays generic
+  and no primitive has to import `ui`). `build_and_install` passes the per-pkgbase medians in build
+  order. Remaining time = the expected durations of the items not yet finished, where the in-flight
+  item counts as `max(0, expected − elapsed)`. Items with no history fall back to the in-run mean.
+  With history, the ETA can show from the first item instead of waiting for two completions. Keep
+  the never-overstate rules (5 s floor, drop on overrun) and leave every other batch on the current
+  mean projection. Tests: a mixed-size batch whose ETA stays within its per-item medians across a
+  large package's completion, a no-history batch that behaves exactly as today, and a split package
+  counted once.
+  *Priority: med · Effort: small · Bump: patch* — med because it is the default-verbosity readout
+  on the longest-running batch and currently misleads; small because the medians and the paint-time
+  suffix seam already exist, so this is a new tracker argument plus one caller.
   **Standards home on adoption:** none.
 
 ### Bugs
