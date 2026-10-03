@@ -160,6 +160,9 @@ conf-level `-fuse-ld=` swap (e.g. the clang config's lld) is surfaced, not just 
 profile-level one. Since linker choice (`-fuse-ld=…`, mold/lld swaps) is a frequent
 failure cause, showing it alongside `CC`/`CXX` makes the diagnostic complete; the
 resolver's PATH guard means a declared-but-missing linker degrades to `ld`.
+The banner names the toolchain of the attempt that **just failed**: after a
+failed `[c]` swap it reports the swapped `cc`/`cxx`/`ld`, and `[r]`/`[e]` (which
+re-run the original conf and env) report the original again.
 
 `[c]` is offered only when the caller supplied a `reemit_conf` closure (see
 below) — a caller with no conf-emission seam (e.g. a test harness) degrades
@@ -186,7 +189,14 @@ to `[e]/[r]/[a]`.
   emitter itself — `reemit_conf` is a closure the wrapper builds over its own
   `emit_makepkg_conf(...)` call (same `_conf_kwargs` as the main build), so
   the layering stays one-directional: `makepkg_wrapper` depends on
-  `makepkg_invoke`, never the reverse. A successful swap is reported back as
+  `makepkg_invoke`, never the reverse. The closure delegates to
+  `makepkg_wrapper._reemit_for_swap`, which also reconciles a build()-hardcoded
+  `-fuse-ld=` against the swapped linker (the conf cannot reach a
+  `RUSTFLAGS+=` in build()). It re-parses the **patched** PKGBUILD, because the
+  first attempt already rewrote that token and the upstream `pkgmeta` would
+  gate the rewrite off. A blank `LD` keeps the failed build's linker, CLI
+  `--ld` included. A swap that fails restores the PKGBUILD body, so a later
+  `[r]` stays coherent with its original conf. A successful swap is reported back as
   `RecoveryOutcome(action="retry", overrides={"cc", "cxx", "ld"})`.
 - **`[r]`** retries unchanged; **`[a]`** aborts.
 

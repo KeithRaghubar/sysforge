@@ -7,7 +7,9 @@ boolean annotations declaring whether that rule should match each PKGBUILD.
 This test file reads those annotations and asserts accordingly, so adding a
 new rule to the TOML automatically adds coverage here with no code changes.
 """
+import subprocess
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -327,6 +329,96 @@ def test_maybe_patch_build_linker_none_when_no_hardcode(tmp_path, monkeypatch):
         p, pkgmeta, resolved_profile={"LDFLAGS": "-fuse-ld=lld"}, ld_override=None
     )
     assert res is None
+
+
+# ---------------------------------------------------------------------------
+# _reemit_for_swap — recovery-menu compiler/linker swap retry
+# ---------------------------------------------------------------------------
+
+
+def _first_attempt_patched(tmp_path, monkeypatch):
+    """The state a failed first attempt leaves behind: upstream PKGBUILD pins
+    mold, PKGBUILD.sysforge was rewritten to the profile's lld."""
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+    original = _write_mold_pkgbuild(tmp_path)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(original.read_text())
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    makepkg_wrapper._maybe_patch_build_linker(
+        patched, parse_pkgbuild(patched),
+        resolved_profile={"LDFLAGS": "-fuse-ld=lld"}, ld_override=None,
+    )
+    assert "-fuse-ld=lld" in patched.read_text()
+    return original, patched
+
+
+def _fake_emit(monkeypatch):
+    seen = {}
+
+    @contextmanager
+    def fake(resolved_profile, active_consumes, **kw):
+        seen.update(kw)
+        yield Path("/conf-swap")
+
+    monkeypatch.setattr(makepkg_wrapper, "emit_makepkg_conf", fake)
+    return seen
+
+
+def test_swap_retry_relinks_pkgbuild_to_swapped_linker(tmp_path, monkeypatch):
+    # cosmic-viewer-git regression: the first attempt rewrote the build()
+    # RUSTFLAGS mold -> lld; a recovery swap to LD=mold re-emitted only the
+    # conf, so cargo still linked with lld. The retry must re-reconcile the
+    # patched PKGBUILD against the swapped linker (gcc-path swap).
+    original, patched = _first_attempt_patched(tmp_path, monkeypatch)
+    seen = _fake_emit(monkeypatch)
+    with makepkg_wrapper._reemit_for_swap(
+        patched, original, {"LDFLAGS": "-fuse-ld=lld"}, None, {},
+        cc="gcc", cxx="g++", ld="mold", ld_override=None,
+    ) as conf:
+        assert conf == Path("/conf-swap")
+        assert "-fuse-ld=mold" in patched.read_text()
+        assert "-fuse-ld=lld" not in patched.read_text()
+    assert seen["ld_override"] == "mold"
+    assert (seen["cc_override"], seen["cxx_override"]) == ("gcc", "g++")
+
+
+def test_swap_retry_relinks_pkgbuild_on_clang_swap(tmp_path, monkeypatch):
+    # llvm-path parity: a clang swap picking bfd rewrites the body too.
+    original, patched = _first_attempt_patched(tmp_path, monkeypatch)
+    _fake_emit(monkeypatch)
+    with makepkg_wrapper._reemit_for_swap(
+        patched, original, {"LDFLAGS": "-fuse-ld=lld"}, None, {},
+        cc="clang", cxx="clang++", ld="bfd", ld_override=None,
+    ):
+        assert "-fuse-ld=bfd" in patched.read_text()
+
+
+def test_swap_retry_failure_restores_patched_pkgbuild(tmp_path, monkeypatch):
+    # A failed swap must not leak its linker into a later "retry as-is", which
+    # re-runs with the original conf — the PKGBUILD body goes back with it.
+    original, patched = _first_attempt_patched(tmp_path, monkeypatch)
+    before = patched.read_text()
+    _fake_emit(monkeypatch)
+    with pytest.raises(subprocess.CalledProcessError):
+        with makepkg_wrapper._reemit_for_swap(
+            patched, original, {"LDFLAGS": "-fuse-ld=lld"}, None, {},
+            cc="gcc", cxx="g++", ld="mold", ld_override=None,
+        ):
+            raise subprocess.CalledProcessError(4, "makepkg")
+    assert patched.read_text() == before
+
+
+def test_swap_retry_blank_ld_keeps_cli_ld_override(tmp_path, monkeypatch):
+    # "blank to keep" means the linker the failed build used — including a
+    # CLI --ld — not a silent fallback to the profile's linker.
+    original, patched = _first_attempt_patched(tmp_path, monkeypatch)
+    seen = _fake_emit(monkeypatch)
+    with makepkg_wrapper._reemit_for_swap(
+        patched, original, {"LDFLAGS": "-fuse-ld=lld"}, None, {},
+        cc="gcc", cxx="g++", ld="", ld_override="mold",
+    ):
+        assert "-fuse-ld=mold" in patched.read_text()
+    assert seen["ld_override"] == "mold"
 
 
 def test_cosmic_git_regression_mold_to_lld(tmp_path, monkeypatch):

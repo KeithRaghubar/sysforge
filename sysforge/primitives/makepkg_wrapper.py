@@ -556,6 +556,40 @@ def _maybe_patch_build_linker(pkgbuild_path, pkgmeta, resolved_profile, ld_overr
     return patch_build_linker(pkgbuild_path, effective)
 
 
+@contextmanager
+def _reemit_for_swap(pkgbuild_path, original_pkgbuild_path, resolved_profile,
+                     active_consumes, conf_kwargs, *, cc, cxx, ld, ld_override):
+    """Re-emit the conf for a recovery-menu toolchain swap and reconcile the
+    patched PKGBUILD's build()-hardcoded linker against the swapped one.
+
+    The conf alone cannot carry an LD swap to a ``RUSTFLAGS+= -fuse-ld=`` inside
+    build() (see :func:`_maybe_patch_build_linker`), and the first attempt
+    already rewrote that token to the original effective linker — so this
+    re-parses the *patched* file (the upstream ``pkgmeta`` still names the
+    pre-rewrite linker and would gate the rewrite off). A blank ``ld`` keeps the
+    failed build's linker, CLI ``--ld`` included. On failure the PKGBUILD body
+    is restored so a later "retry as-is" (original conf) stays coherent.
+    """
+    ld = ld or ld_override
+    pkgbuild_path = Path(pkgbuild_path)
+    before = pkgbuild_path.read_text()
+    try:
+        if _maybe_patch_build_linker(pkgbuild_path, parse_pkgbuild(pkgbuild_path),
+                                     resolved_profile, ld):
+            validate_patched_pkgbuild(original_pkgbuild_path, pkgbuild_path)
+        # ld is folded into LDFLAGS by emit via ld_override.
+        with emit_makepkg_conf(
+                resolved_profile, active_consumes,
+                cc_override=cc or None,
+                cxx_override=cxx or None,
+                ld_override=ld or None,
+                **conf_kwargs) as cpath:
+            yield cpath
+    except BaseException:
+        pkgbuild_path.write_text(before)
+        raise
+
+
 def _run_build(pkgbuild_path, resolved_profile, config, groups,
                active_consumes=None, extracted_profile=None, pkgmeta=None,
                extra_flags=None, interactive=False,
@@ -836,16 +870,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     "jobs": resolve_throttle(resolved_profile, config).jobs,
                 }
 
-                @contextmanager
                 def _reemit_conf(cc, cxx, ld, _kw: _ConfKwargs = _conf_kwargs):
-                    # ld is folded into LDFLAGS by emit via ld_override.
-                    with emit_makepkg_conf(
-                            resolved_profile, active_consumes,
-                            cc_override=cc or None,
-                            cxx_override=cxx or None,
-                            ld_override=ld or None,
-                            **_kw) as cpath:
-                        yield cpath
+                    return _reemit_for_swap(
+                        pkgbuild_path, original_pkgbuild_path,
+                        resolved_profile, active_consumes, _kw,
+                        cc=cc, cxx=cxx, ld=ld, ld_override=ld_override)
 
                 with emit_makepkg_conf(
                         resolved_profile, active_consumes,

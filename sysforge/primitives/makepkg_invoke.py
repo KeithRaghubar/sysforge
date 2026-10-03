@@ -784,13 +784,17 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
     cc = resolved_profile.get("CC", "(default)")
     cxx = resolved_profile.get("CXX", "(default)")
     ld = _summary_linker(resolved_profile, conf_path)
+    # The banner names the toolchain the *last* attempt ran with: a failed swap
+    # reports its own cc/cxx/ld, and retry-as-is / edit re-run the original.
+    original = used = (cc, cxx, ld)
     have_swap = reemit_conf is not None
     orig_snapshot = pkgbuild_path.with_suffix(pkgbuild_path.suffix + ".orig")
 
     label = pkgbase or pkgbuild_path.name
     while True:
         _makepkg_log.ui(f"Build failed: {label}")
-        _makepkg_log.ui(f"  Toolchain used:  CC={cc}  CXX={cxx}  LD={ld}")
+        _makepkg_log.ui(
+            f"  Toolchain used:  CC={used[0]}  CXX={used[1]}  LD={used[2]}")
         msg, choices = _recover_menu_choices(have_swap, label)
         choice = prompt_choice(msg, choices, default="r", eof_default="a",
                                tag="MAKEPKG")
@@ -810,6 +814,7 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
                 except OSError as e:
                     _makepkg_log.warn(f"Could not snapshot PKGBUILD.orig: {e}")
             run_tty_argv([editor, str(pkgbuild_path)])
+            used = original
             try:
                 invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                                extra_env, extra_flags, interactive, strip_flags)
@@ -848,9 +853,11 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
             except subprocess.CalledProcessError:
                 _makepkg_log.error(
                     f"Build still failed after compiler swap: {label}")
+                used = (new_cc or cc, new_cxx or cxx, new_ld or ld)
                 continue
 
         # choice == "r": retry as-is.
+        used = original
         try:
             invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                            extra_env, extra_flags, interactive, strip_flags)

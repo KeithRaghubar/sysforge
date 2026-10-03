@@ -225,6 +225,40 @@ def test_swap_applies_new_cc_cxx_to_retry_env(monkeypatch, pkgbuild):
     assert out.overrides == {"cc": "gcc", "cxx": "g++", "ld": "bfd"}
 
 
+def test_summary_after_failed_swap_names_swapped_toolchain(monkeypatch, capsys,
+                                                          pkgbuild):
+    # cosmic-viewer-git regression: after a failed gcc/mold swap the re-shown
+    # banner still read "CC=clang CXX=clang++ LD=lld" — the toolchain captured
+    # before the loop — so the swap looked like it never applied. The banner
+    # must name the toolchain the retry actually ran with; a later "retry
+    # as-is" re-runs the original conf, so it reports the original again.
+    _both_toolchains_installed(monkeypatch)
+    _choice_seq(monkeypatch, "c", "gcc", "r", "a")
+    monkeypatch.setattr(mi, "prompt_text", lambda *a, **k: "mold")
+
+    @contextmanager
+    def fake_reemit(cc, cxx, ld):
+        yield Path("/conf-new")
+
+    def failing_invoke(*a, **k):
+        raise subprocess.CalledProcessError(4, "makepkg")
+
+    monkeypatch.setattr(mi, "invoke_makepkg", failing_invoke)
+    mi._run_recovery_menu(
+        pkgbuild, Path("/conf"),
+        {"CC": "clang", "CXX": "clang++", "LDFLAGS": "-fuse-ld=lld"},
+        extra_env=None, extra_flags=None, interactive=True, strip_flags=None,
+        reemit_conf=fake_reemit, pkgbase="cosmic-viewer-git",
+    )
+    out = capsys.readouterr().err
+    banners = [ln for ln in out.splitlines() if "Toolchain used" in ln]
+    assert len(banners) == 3
+    assert "CC=clang " in banners[0] and "LD=lld" in banners[0]
+    assert "CC=gcc " in banners[1] and "CXX=g++ " in banners[1]
+    assert "LD=mold" in banners[1]
+    assert "CC=clang " in banners[2] and "LD=lld" in banners[2]
+
+
 def test_swap_unavailable_without_reemit(monkeypatch, pkgbuild):
     # reemit_conf=None → [c] is not offered; choosing retry as-is then aborting.
     seq = iter(["r", "a"])
