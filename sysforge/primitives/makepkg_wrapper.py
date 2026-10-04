@@ -89,8 +89,10 @@ from sysforge.primitives.makepkg_pgo import (
     PGOBuildSkipped,
     _resolve_pgo_state,
     _try_load_toml,
+    resolve_pgo_lock_path,
     resolve_pgo_store,
 )
+from sysforge.primitives.build_lock import is_held as _lock_is_held
 from sysforge.primitives.paths import SYSFORGE_TOML_PATH, TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_meta import (
     hardcoded_build_linker,
@@ -1557,10 +1559,21 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # since cleaned up (e.g. reinstalled llvm/llvm-libs); purge them rather
         # than aborting forever.  Only profraw files touched by THIS build signal
         # a still-instrumented system.
+        #
+        # Neither applies while a `sysforge run toolchain` PGO build holds its
+        # lock: the store is then that run's live training data, so "fresh" is
+        # not a leak and "orphan" is data its merge monitor has not read yet
+        # (3.3.0-B8). Defer to the run instead of judging its store.
         if not options.pgo_managed:
             _tcfg = _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
             _pgo_store = resolve_pgo_store(_tcfg)
-            if _pgo_store.is_dir():
+            _pgo_lock = resolve_pgo_lock_path(_tcfg)
+            if _pgo_store.is_dir() and _lock_is_held(_pgo_lock):
+                _build_log.info(
+                    f"Skipping the stale-.profraw check: a toolchain PGO build "
+                    f"holds {_pgo_lock}, so {_pgo_store} is its live training data"
+                )
+            elif _pgo_store.is_dir():
                 _all_profraw = list(_pgo_store.glob("**/*.profraw"))
                 # 1s slack absorbs filesystem mtime rounding on second-granularity fs.
                 _freshness_cutoff = _build_start - 1

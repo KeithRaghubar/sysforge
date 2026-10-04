@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from sysforge.primitives.build_lock import build_lock
+from sysforge.primitives.build_lock import build_lock, is_held
 
 
 def test_acquire_and_release(tmp_path):
@@ -80,3 +80,25 @@ def test_parent_dir_created(tmp_path):
     lock_path = tmp_path / "nested" / "deeper" / "x.lock"
     with build_lock(lock_path, label="kernel", noun="build"):
         assert lock_path.exists()
+
+
+# --- is_held: non-blocking liveness probe (3.3.0-B8) -------------------------
+
+def test_is_held_false_when_lock_file_absent_and_does_not_create_it(tmp_path):
+    lock = tmp_path / "x.lock"
+    assert is_held(lock) is False
+    assert not lock.exists()
+
+
+def test_is_held_false_when_unlocked(tmp_path):
+    lock = tmp_path / "x.lock"
+    lock.write_text("123\n")
+    assert is_held(lock) is False
+
+
+def test_is_held_true_while_held_and_keeps_holder_pid(tmp_path):
+    lock = tmp_path / "x.lock"
+    with build_lock(lock, label="PGO", noun="build"):
+        assert is_held(lock) is True
+        assert lock.read_text().strip() == str(os.getpid())
+    assert is_held(lock) is False

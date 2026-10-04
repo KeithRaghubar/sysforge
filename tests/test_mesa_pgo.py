@@ -15,8 +15,10 @@ from sysforge.primitives import mesa_pgo
 # Store resolution + flag values
 # ---------------------------------------------------------------------------
 
-def test_store_is_pgo_mesa_method_subdir():
-    # Default root, no override: <profile_store_root>/pgo-mesa
+def test_store_is_pgo_mesa_method_subdir(monkeypatch):
+    # Default root, no override: <profile_store_root>/pgo-mesa. Opts out of
+    # conftest's store isolation (path only, no I/O).
+    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
     store = mesa_pgo.resolve_store({})
     assert store.name == "pgo-mesa"
     assert store.parent.name == "sysforge"

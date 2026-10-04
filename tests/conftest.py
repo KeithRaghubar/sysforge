@@ -136,6 +136,35 @@ def _isolate_state_dir(monkeypatch, tmp_path_factory):
                        str(tmp_path_factory.mktemp("sf-state-isolated")))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pgo_stores(monkeypatch, tmp_path_factory):
+    """
+    Point the toolchain PGO store and the shared profile-store root at a
+    throwaway tree for *every* test (3.3.0-B7).
+
+    ``makepkg_wrapper.run`` ends with a post-build check that globs the
+    toolchain ``pgo_store`` for ``.profraw``: files newer than the build are a
+    fatal "instrumented LLVM leaked" error, older ones are deleted as orphans.
+    At the FHS default that is the live ``/var/cache/sysforge/llvm-pgo``, so any
+    test reaching ``run()`` (even with ``_run_build`` patched) failed while a
+    real ``sysforge run toolchain`` Pass 3 was writing training data, and
+    pruned that data when it happened to see none fresh. Same reasoning as
+    ``_isolate_state_dir``: isolation by default, not by opt-in. A test that
+    needs the real default path deletes the variable itself.
+
+    The default Pass-1 staging prefix is redirected too: ``run()`` probes the
+    PGO build lock in its parent (3.3.0-B8), and at ``/var/tmp`` a live
+    ``run toolchain`` holding that lock would change test outcomes again.
+    """
+    from sysforge.primitives import makepkg_pgo
+
+    root = tmp_path_factory.mktemp("sf-profile-stores-isolated")
+    monkeypatch.setenv("SYSFORGE_PGO_STORE", str(root / "llvm-pgo"))
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(root))
+    monkeypatch.setattr(makepkg_pgo, "DEFAULT_PGO_STAGING_1",
+                        str(root / "sysforge-llvm-stage1"))
+
+
 # ---------------------------------------------------------------------------
 # Centralized external-isolation fixtures (Phase 0 — behavior-first testing).
 #

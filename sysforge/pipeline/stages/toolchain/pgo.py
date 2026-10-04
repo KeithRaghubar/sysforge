@@ -23,6 +23,7 @@ import threading
 
 from sysforge.primitives import build_fingerprint
 from sysforge.primitives import fs_provision
+from sysforge.primitives import makepkg_pgo
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_lock import build_lock
 
@@ -141,13 +142,13 @@ def build_llvm_single(
 def pgo_lock_path(staging1: Path) -> Path:
     """Lock-file path guarding the PGO staging dirs + pgo_store.
 
-    Lives in the parent of staging1 (typically ``/var/tmp``) so neither the
-    Pass-1 purge nor the post-build cleanup can delete it. The stage acquires
-    this (via :func:`pgo_lock`) around the whole build → audit → install
-    window, mirroring how the kernel stage wraps its build with
-    ``kernel-build.lock``.
+    The stage acquires this (via :func:`pgo_lock`) around the whole build →
+    audit → install window, mirroring how the kernel stage wraps its build with
+    ``kernel-build.lock``. One home is ``makepkg_pgo.pgo_lock_path``, because
+    ``makepkg_wrapper.run`` probes the same path to leave a running PGO build's
+    store alone (3.3.0-B8).
     """
-    return staging1.parent / "sysforge-pgo.lock"
+    return makepkg_pgo.pgo_lock_path(staging1)
 
 
 def build_llvm_pgo_inner(

@@ -50,6 +50,13 @@ _DEFAULT_PGO_STORE = "/var/cache/sysforge/llvm-pgo"
 # so one provision/purge path covers the lot.
 _DEFAULT_PROFILE_STORE_ROOT = "/var/cache/sysforge"
 
+# Pass-1 staging prefix of the toolchain PGO build. Its *parent* holds the
+# ``sysforge-pgo.lock`` the stage keeps for the whole build, which is how a
+# concurrent build learns that ``pgo_store`` is live training data (3.3.0-B8).
+# Lives here, not in the stage's ``constants.py`` (which re-exports it), because
+# ``primitives/`` cannot import from ``pipeline/``.
+DEFAULT_PGO_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"  # noqa: S108 — stable multi-pass LLVM build path, not a temp file
+
 # Logical method names accepted by ``resolve_method_store``. ``"instr-pgo"``
 # aliases the legacy ``resolve_pgo_store`` location (back-compat with the
 # ``pgo_store`` config key / ``SYSFORGE_PGO_STORE`` env); the rest map to a
@@ -77,6 +84,23 @@ def resolve_pgo_store(tcfg: dict | None) -> Path:
     if env:
         return Path(env)
     return Path(_DEFAULT_PGO_STORE)
+
+
+def pgo_lock_path(staging1: Path) -> Path:
+    """Lock-file path guarding the PGO staging dirs + ``pgo_store``.
+
+    Lives in the parent of staging1 (typically ``/var/tmp``) so neither the
+    Pass-1 purge nor the post-build cleanup can delete it. The toolchain stage
+    holds it (``toolchain.pgo.pgo_lock``) for the whole build → audit → install
+    window; ``makepkg_wrapper.run`` probes it before touching ``pgo_store``.
+    """
+    return Path(staging1).parent / "sysforge-pgo.lock"
+
+
+def resolve_pgo_lock_path(tcfg: dict | None) -> Path:
+    """:func:`pgo_lock_path` for the configured (``toolchain.toml
+    pgo_staging1``) or default Pass-1 staging prefix."""
+    return pgo_lock_path(Path((tcfg or {}).get("pgo_staging1", DEFAULT_PGO_STAGING_1)))
 
 
 def resolve_profile_store_root(tcfg: dict | None) -> Path:

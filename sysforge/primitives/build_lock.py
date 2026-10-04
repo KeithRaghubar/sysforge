@@ -81,3 +81,31 @@ def build_lock(lock_path: Path, *, label: str, noun: str):
     finally:
         with contextlib.suppress(OSError):
             os.close(fd)
+
+
+def is_held(lock_path: Path) -> bool:
+    """Whether another scope currently holds ``lock_path`` (3.3.0-B8).
+
+    A non-blocking probe for code that must *defer* to a running build rather
+    than refuse to start, such as the post-build ``.profraw`` check, which must
+    not touch a ``pgo_store`` a toolchain PGO run is still writing. Opens the
+    file read-only, so it never creates a lock file or overwrites the holder's
+    PID, and releases at once. An absent or unreadable file reads as not held.
+    The holder's own process also reads as held, since ``flock`` locks belong
+    to the open file description rather than the process.
+    """
+    try:
+        fd = os.open(str(lock_path), os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)

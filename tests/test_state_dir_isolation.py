@@ -60,3 +60,41 @@ def test_recording_a_build_cannot_touch_the_live_state_file(tmp_path):
     live = Path.home() / "sf-state"
     if (live / "build_state.toml").exists():
         assert BuildState(live).get("linux-isolation-probe") is None
+
+
+def test_pgo_stores_are_isolated_without_opting_in():
+    """3.3.0-B7: `makepkg_wrapper.run()` ends with a check that globs the
+    toolchain PGO store and deletes `.profraw` it judges orphaned. Left at the
+    FHS default, every test reaching `run()` read and pruned the live
+    `/var/cache/sysforge/llvm-pgo`: it failed whenever a real `run toolchain`
+    Pass 3 was writing training data, and deleted that data when it wasn't."""
+    from sysforge.primitives.makepkg_pgo import (
+        resolve_pgo_store,
+        resolve_profile_store_root,
+    )
+
+    for resolved in (resolve_pgo_store(None), resolve_profile_store_root(None)):
+        assert not resolved.is_relative_to("/var/cache"), (
+            f"{resolved} is a live system store; the autouse PGO-store "
+            "isolation fixture is missing or broken")
+
+
+def test_pgo_lock_path_is_isolated_without_opting_in():
+    """3.3.0-B8: `run()` probes the toolchain's PGO build lock; at the default
+    `/var/tmp/sysforge-pgo.lock` a live `run toolchain` would change test
+    outcomes again."""
+    from sysforge.primitives.makepkg_pgo import resolve_pgo_lock_path
+
+    assert not resolve_pgo_lock_path(None).is_relative_to("/var/tmp")
+
+
+def test_toolchain_stage_lock_path_is_the_primitive_one():
+    """One home: the stage acquires the lock at the path `run()` probes."""
+    from sysforge.pipeline.stages.toolchain import pgo
+    from sysforge.primitives import makepkg_pgo
+
+    staging1 = Path("/x/sysforge-llvm-stage1")
+    assert pgo.pgo_lock_path(staging1) == makepkg_pgo.pgo_lock_path(staging1) \
+        == Path("/x/sysforge-pgo.lock")
+    assert makepkg_pgo.resolve_pgo_lock_path({"pgo_staging1": str(staging1)}) \
+        == Path("/x/sysforge-pgo.lock")

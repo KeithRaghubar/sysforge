@@ -16,6 +16,7 @@ against exactly the artifacts stage N left behind.
 """
 
 from sysforge import log
+from sysforge.primitives import makepkg_pgo
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -44,7 +45,9 @@ DEFAULT_LLVM_NON_PGO = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv
 # ._maybe_patch_llvm_targets) and the lib32 PGO scrub (makepkg_conf) keep that
 # path correct.
 DEFAULT_LLVM_LIB32: list[str] = []
-DEFAULT_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"  # noqa: S108 — stable multi-stage LLVM build path (cross-stage ABI coherence), not a temp file
+# One home: makepkg_pgo (the post-build check in primitives/ resolves the PGO
+# lock from it, and primitives/ cannot import from pipeline/).
+DEFAULT_STAGING_1 = makepkg_pgo.DEFAULT_PGO_STAGING_1
 DEFAULT_STAGING = "/var/tmp/sysforge-llvm-stage2"  # noqa: S108 — stable multi-stage LLVM build path (cross-stage ABI coherence), not a temp file
 # Pass-4 staging prefix. Holds the *final optimized* libLLVM (+ headers + cmake
 # configs) so the non-pgo suite (clang, lld, …) links against the exact libLLVM

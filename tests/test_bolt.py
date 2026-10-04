@@ -15,7 +15,9 @@ from sysforge.primitives import bolt
 # Store + flags + build-mode
 # ---------------------------------------------------------------------------
 
-def test_store_is_bolt_method_subdir():
+def test_store_is_bolt_method_subdir(monkeypatch):
+    # FHS default root: opt out of conftest's store isolation (path only, no I/O).
+    monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
     store = bolt.resolve_store({})
     assert store.name == "bolt"
     assert store.parent.name == "sysforge"
