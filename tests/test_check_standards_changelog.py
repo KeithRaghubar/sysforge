@@ -241,3 +241,20 @@ def test_doc_cross_reference_outside_changed_is_allowed(tmp_path):
     _write_notes(tmp_path,
                  "# t\n\n## Added\n\n- **`1.0.0-F1` — a.** see 1.0.0-DOC1\n")
     assert check_standards.check_changelog(tmp_path) == []
+
+
+# --- DEV type (3.3.0-STD2): contributor-only work never files a release note ---
+# Release notes are user-facing and their sections drive the derived SemVer
+# bump; the squash-commit subject is a DEV item's only record.
+
+def test_dev_entry_in_release_notes_is_error(tmp_path):
+    _write_notes(tmp_path, "# t\n\n## Fixed\n\n- **`1.0.0-DEV1` — test isolation.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("1.0.0-DEV1" in f.message and "release note" in f.message
+               for f in findings), findings
+
+
+def test_dev_cross_reference_in_release_notes_is_allowed(tmp_path):
+    """Only the filing (first) ID decides; a later DEV is a citation."""
+    _write_notes(tmp_path, "# t\n\n## Fixed\n\n- **`1.0.0-B1` — a.** found via 1.0.0-DEV1\n")
+    assert check_standards.check_changelog(tmp_path) == []

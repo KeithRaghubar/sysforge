@@ -293,10 +293,11 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
     re-sort on every add/remove precisely so concurrent entries land
     deterministically instead of accreting in landing order.
 
-    Ordering is (version, type, number), so within a cycle `B` precedes `DOC`
-    precedes `F` precedes `Q` precedes `STD`. An entry with no ID is reported
-    rather than silently sorted last: every entry is required to cite its
-    roadmap ID. A `DOC`-filed entry must sit under `## Changed` (3.3.0-STD1).
+    Ordering is (version, type, number), so within a cycle `B` precedes `DEV`
+    precedes `DOC` precedes `F` precedes `Q` precedes `STD`. An entry with no
+    ID is reported rather than silently sorted last: every entry is required
+    to cite its roadmap ID. A `DOC`-filed entry must sit under `## Changed`
+    (3.3.0-STD1); a `DEV` item files no entry at all (3.3.0-STD2).
     """
     findings: list[Finding] = []
     rel = unreleased.relative_to(repo).as_posix()
@@ -330,6 +331,13 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     "ROADMAP.md entries use",
                 ))
             cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
+            if key[3] == "DEV":
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` is a DEV item filing a release note — "
+                    "contributor-only work (tests, tools, Makefile) gets no "
+                    "release-note entry; its squash-commit subject is the record",
+                ))
             if key[3] == "DOC" and heading != "Changed":
                 findings.append(Finding(
                     "changelog", "error", f"{rel}:{lineno}",
@@ -644,6 +652,26 @@ def _gather_ids(repo: Path) -> tuple[dict[str, str], set[str]]:
     return roadmap, shipped
 
 
+def _commit_subject_ids(repo: Path) -> set[str]:
+    """IDs cited in HEAD's commit subjects (3.3.0-STD2).
+
+    A shipped `DEV` item never files a release note, so its squash-commit
+    subject is its only record. This feeds allocation and the gap check only,
+    never the shipped-collision check: a subject that merely *files* an ID
+    ("docs: file 3.3.0-F1 …") is not a shipment. Empty outside a git checkout.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "log", "--format=%s", "HEAD"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return set()
+    if r.returncode != 0:
+        return set()
+    return {m.group(0) for m in _ID_RE.finditer(r.stdout)}
+
+
 def check_roadmap_ids(repo: Path) -> list[Finding]:
     findings: list[Finding] = []
     roadmap, shipped = _gather_ids(repo)
@@ -693,7 +721,7 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
                     "abandoned entries live in docs/ROADMAP-ABANDONED.md; "
                     "ROADMAP.md carries forward-looking work only",
                 ))
-    # Check 4: a Q-typed ID that shipped without promotion to B/DOC/F/STD. Only the
+    # Check 4: a Q-typed ID that shipped without promotion to B/DEV/DOC/F/STD. Only the
     # mutable accumulator (unreleased.md) is checked — released v*.md files are
     # immutable history and are grandfathered against past-process Q misses.
     unreleased = repo / "docs" / "release-notes" / "unreleased.md"
@@ -706,13 +734,13 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
             findings.append(Finding(
                 "roadmap_ids", "error", "docs/release-notes/",
                 f"{i} is a Q-typed (open-question) ID that appears shipped — "
-                f"a Q must be promoted to B/DOC/F/STD before implementation",
+                f"a Q must be promoted to B/DEV/DOC/F/STD before implementation",
             ))
     # Check 5: sequence gaps, active version prefix only (warn).
     active = _project_version(repo)
     if active:
         by_type: dict[str, set[int]] = {}
-        for i in planned | abandoned | shipped:
+        for i in planned | abandoned | shipped | _commit_subject_ids(repo):
             p = _parse_id(i)
             if p and p[0] == active:
                 by_type.setdefault(p[1], set()).add(p[2])
@@ -728,10 +756,11 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
 
 
 def next_id(repo: Path, prefix: str) -> str:
-    """Next free ID for a roadmap prefix, across all three sources.
+    """Next free ID for a roadmap prefix, across all four sources.
 
     The sources are ROADMAP.md (planned), docs/ROADMAP-ABANDONED.md (spent —
-    an abandoned number is never reissued) and docs/release-notes/ (shipped).
+    an abandoned number is never reissued), docs/release-notes/ (shipped) and
+    HEAD's commit subjects (a shipped `DEV` item's only record, 3.3.0-STD2).
 
     Accepts either a bare ``<TYPE>`` (e.g. ``F``) — the version is derived from
     ``pyproject.toml`` so the caller can't misattribute the cycle, which is the
@@ -754,7 +783,7 @@ def next_id(repo: Path, prefix: str) -> str:
         )
     roadmap, shipped = _gather_ids(repo)
     nums = [
-        p[2] for i in (set(roadmap) | shipped)
+        p[2] for i in (set(roadmap) | shipped | _commit_subject_ids(repo))
         if (p := _parse_id(i)) and p[0] == version and p[1] == typ
     ]
     return f"{version}-{typ}{(max(nums) + 1) if nums else 1}"

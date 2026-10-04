@@ -317,3 +317,38 @@ def test_shipped_doc_id_is_not_an_error(tmp_path):
     )
     assert [f for f in check_standards.check_roadmap_ids(repo)
             if f.severity == "error"] == []
+
+
+# --- DEV type (3.3.0-STD2): contributor-only work, never in release notes ---
+# A shipped DEV ID lives only in its squash-commit subject, so allocation and
+# the gap check read commit subjects as a fourth source. The collision check
+# does not: a subject that merely *files* an ID ("docs: file 2.2.0-F1") would
+# otherwise read as shipped.
+
+def _git_commit(repo: Path, subject: str) -> None:
+    import subprocess
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+           "-c", "commit.gpgsign=false"]
+    if not (repo / ".git").exists():
+        subprocess.run(git + ["init", "-q"], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", subject], check=True)
+
+
+def test_next_id_counts_dev_ids_from_commit_subjects(tmp_path):
+    repo = _mkrepo(tmp_path, "## Planned\n\n_(none)_\n", {})
+    _git_commit(repo, "fix(tests): isolate the scheduler (2.2.0-DEV1)")
+    assert check_standards.next_id(repo, "DEV") == "2.2.0-DEV2"
+
+
+def test_dev_id_shipped_in_a_commit_closes_the_gap(tmp_path):
+    repo = _mkrepo(tmp_path, "## Planned\n\n- **`2.2.0-DEV2`** — open.\n", {})
+    _git_commit(repo, "fix(tests): isolate the scheduler (2.2.0-DEV1)")
+    assert not [f for f in check_standards.check_roadmap_ids(repo)
+                if "DEV1" in f.message], "DEV1 shipped in a commit is no gap"
+
+
+def test_commit_subject_that_files_an_id_is_not_a_collision(tmp_path):
+    repo = _mkrepo(tmp_path, "## Planned\n\n- **`2.2.0-F1`** — open.\n", {})
+    _git_commit(repo, "docs: file 2.2.0-F1 and spec it")
+    assert [f for f in check_standards.check_roadmap_ids(repo)
+            if f.severity == "error"] == []

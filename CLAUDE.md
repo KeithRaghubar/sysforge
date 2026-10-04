@@ -47,7 +47,7 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   (one ID namespace across both — a retired ID is never reissued). Roadmap IDs
   (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset on major/minor bump, not patch) live in
   those two + `docs/release-notes/`, never DESIGN. **Never hand-pick an ID for a new item — run `make
-  next-id TYPE=F` (B/DOC/F/Q/STD)**, which derives the cycle from `pyproject.toml` (open items keep their
+  next-id TYPE=F` (B/DEV/DOC/F/Q/STD)**, which derives the cycle from `pyproject.toml` (open items keep their
   origin-cycle prefixes, so copying a neighbour mis-numbers new items right after a release). Triage
   `notes.txt` into ROADMAP. Implementing an
   item **removes it from ROADMAP in the same commit** (git history is the record — drop the whole
@@ -55,8 +55,8 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   (Keep a Changelog section; entry leads with its roadmap ID in ROADMAP's own shape —
   ``- **`<ID>` — <title>.** <body>`` — and is `---`-separated from its neighbour). Keep
   entries in ascending ID order **within each
-  section** — re-sort on every add/remove; order is (version, type, number), so `B` < `DOC` < `F` <
-  `Q` < `STD` inside a cycle, and the *first* ID in an entry is its filing ID (later ones are
+  section** — re-sort on every add/remove; order is (version, type, number), so `B` < `DEV` < `DOC` <
+  `F` < `Q` < `STD` inside a cycle, and the *first* ID in an entry is its filing ID (later ones are
   cross-references). An ID filing **two or more entries in one section** suffixes each lead
   ``(n/N)`` in document order (``- **`<ID>` (1/2) — …**``) — cross-section repeats carry none.
   `tools/release.sh` Phase 1 renames the accumulator to `vX.Y.Z.md` + reseeds;
@@ -75,6 +75,9 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 - **`DOC` IDs are for user-facing docs only** (`docs/guides/`, README, man page) and file under
   `## Changed` (patch; lint-enforced). Internal docs (design, CLAUDE.md, ROADMAP) get no ID;
   wrong `--help`/man output is a `B`, since it is CLI behaviour.
+- **`DEV` IDs are for contributor-only work** (only `tests/`, `tools/`, `Makefile`, `.claude/`,
+  dev docs) and **file no release-note entry** (lint-enforced) — the squash-commit subject carries
+  the ID and is the record `next-id` reads. Touching `sysforge/` or a shipped file makes it `B`/`F`.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`
   (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Wire via
