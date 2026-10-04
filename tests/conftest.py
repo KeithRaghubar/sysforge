@@ -178,6 +178,27 @@ def _isolate_pgo_stores(monkeypatch, tmp_path_factory):
                         str(root / "sysforge-llvm-stage3"))
 
 
+@pytest.fixture(autouse=True)
+def _reset_source_sync_scheduler():
+    """
+    Give every test a fresh source-sync scheduler (3.3.0-DEV1).
+
+    ``source_sync.get_scheduler()`` is a per-process singleton whose
+    ``request()`` caches each result by pkgbase alone. Across tests that meant
+    the first test to sync ``llvm`` decided every later test's ``llvm`` result,
+    whatever directory it pointed at: a failed sync in one test failed ten
+    unrelated stage tests run after it, and a passing one hid a test that
+    failed on its own. Reset on both sides so a test neither inherits nor
+    leaks one; a test that injects a fake (``monkeypatch.setattr(source_sync,
+    "_scheduler", …)``) is unaffected, since monkeypatch restores ``None``.
+    """
+    from sysforge.primitives import source_sync
+
+    source_sync.reset_scheduler()
+    yield
+    source_sync.reset_scheduler()
+
+
 # ---------------------------------------------------------------------------
 # Centralized external-isolation fixtures (Phase 0 — behavior-first testing).
 #

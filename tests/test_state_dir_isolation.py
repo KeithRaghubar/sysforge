@@ -112,3 +112,27 @@ def test_toolchain_staging_prefixes_are_isolated_without_opting_in():
         assert not prefix.is_relative_to("/var/tmp"), (
             f"{prefix} is a live staging prefix; the autouse staging "
             "isolation fixture is missing or broken")
+
+
+# 3.3.0-DEV1: the source-sync scheduler is a per-process singleton whose
+# request() caches results by pkgbase alone, so the first test to sync `llvm`
+# decided every later test's `llvm` result regardless of directory. The pair
+# below runs in file order: the first leaves a cached result behind, the
+# second must start without it.
+
+def test_scheduler_isolation_probe_leaves_a_cached_result(tmp_path):
+    from sysforge.primitives import source_sync
+
+    sched = source_sync.get_scheduler(state_dir=tmp_path)
+    sched._results["isolation-probe"] = source_sync.SyncResult(
+        pkgbase="isolation-probe", status=source_sync.STATUS_FAILED,
+        error="leaked from the previous test",
+    )
+
+
+def test_scheduler_starts_clean_without_opting_in():
+    from sysforge.primitives import source_sync
+
+    assert source_sync._scheduler is None, (
+        "a source-sync scheduler (and its per-pkgbase result cache) survived "
+        "from an earlier test; the autouse scheduler-reset fixture is missing")

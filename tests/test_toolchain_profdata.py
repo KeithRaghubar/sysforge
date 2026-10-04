@@ -855,7 +855,12 @@ def test_pgo_stale_staging_purged_at_run_start(tmp_path):
     stale_marker.touch()
 
     call_log = []
+    # The global subprocess.run fake below also answers git, so a real
+    # PKGBUILD sync "fetches" and then fails to resolve HEAD; stub the sync
+    # as every stage test does (3.3.0-DEV1: this test passed only on a sync
+    # result cached by an earlier test).
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
                side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
