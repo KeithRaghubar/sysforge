@@ -158,12 +158,21 @@ def test_remove_staging_removes_dir(tmp_path):
     staging = tmp_path / "stage"
     staging.mkdir()
     (staging / "file").touch()
-    remove_staging(staging)
+    remove_staging(staging, dry_run=False)
     assert not staging.exists()
 
 def test_remove_staging_no_dir_noop(tmp_path):
     staging = tmp_path / "nonexistent"
-    remove_staging(staging)  # should not raise
+    remove_staging(staging, dry_run=False)  # should not raise
+
+def test_remove_staging_dry_run_keeps_dir(tmp_path):
+    """3.3.0-B9: a dry run never deletes a staging prefix (a real run may be
+    building against it)."""
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    (staging / "file").touch()
+    remove_staging(staging, dry_run=True)
+    assert (staging / "file").exists()
 
 def test_do_profraw_merge_merges_and_deletes(tmp_path):
     _make_old_profraw(tmp_path / "a.profraw")

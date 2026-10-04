@@ -460,8 +460,8 @@ class ToolchainStage(Stage):
                     # (PGO only). stage3 held the optimized libLLVM that the
                     # non-pgo sub-pass linked against; it is no longer needed.
                     if pgo_enabled:
-                        profdata.remove_staging(staging)
-                        profdata.remove_staging(staging3)
+                        profdata.remove_staging(staging, options.dry_run)
+                        profdata.remove_staging(staging3, options.dry_run)
                         # Pass 5 — BOLT the verified PGO clang (opt-in, gated on
                         # [bolt] enabled). 4a builds the BOLT tools (not in the
                         # Arch repos), 4b rewrites clang. Best-effort and

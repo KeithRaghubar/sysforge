@@ -740,7 +740,7 @@ def build_llvm_pgo_inner(
         # configured targets) — unlike stage2 (training) — so steering clang at
         # it is correct and is the whole point of the split.
         if non_pgo_map or lib32_map:
-            profdata.remove_staging(staging3)
+            profdata.remove_staging(staging3, options.dry_run)
             profdata.extract_built_to_staging(pgo_map, staging3, options.dry_run)
             # Fail fast if the split-package 'llvm' (cmake config + headers) did
             # not reach staging3: without LLVMConfig.cmake, the 4b/4c

@@ -155,14 +155,27 @@ def _isolate_pgo_stores(monkeypatch, tmp_path_factory):
     The default Pass-1 staging prefix is redirected too: ``run()`` probes the
     PGO build lock in its parent (3.3.0-B8), and at ``/var/tmp`` a live
     ``run toolchain`` holding that lock would change test outcomes again.
+
+    All three toolchain staging prefixes are redirected as well (3.3.0-B9): a
+    stage test whose toolchain.toml leaves ``pgo_staging{1,,3}`` unset otherwise
+    resolves the live ``/var/tmp/sysforge-llvm-stage*``, and the PGO dry-run tests
+    deleted a real run's stage3 mid-build. ``constants.DEFAULT_STAGING_1`` copies
+    the makepkg_pgo value at import, so it is patched directly; ``from_toml``
+    reads all three at call time.
     """
+    from sysforge.pipeline.stages.toolchain import constants as tc_constants
     from sysforge.primitives import makepkg_pgo
 
     root = tmp_path_factory.mktemp("sf-profile-stores-isolated")
     monkeypatch.setenv("SYSFORGE_PGO_STORE", str(root / "llvm-pgo"))
     monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(root))
-    monkeypatch.setattr(makepkg_pgo, "DEFAULT_PGO_STAGING_1",
-                        str(root / "sysforge-llvm-stage1"))
+    stage1 = str(root / "sysforge-llvm-stage1")
+    monkeypatch.setattr(makepkg_pgo, "DEFAULT_PGO_STAGING_1", stage1)
+    monkeypatch.setattr(tc_constants, "DEFAULT_STAGING_1", stage1)
+    monkeypatch.setattr(tc_constants, "DEFAULT_STAGING",
+                        str(root / "sysforge-llvm-stage2"))
+    monkeypatch.setattr(tc_constants, "DEFAULT_STAGING_3",
+                        str(root / "sysforge-llvm-stage3"))
 
 
 # ---------------------------------------------------------------------------

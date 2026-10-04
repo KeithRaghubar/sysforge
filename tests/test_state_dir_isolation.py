@@ -98,3 +98,17 @@ def test_toolchain_stage_lock_path_is_the_primitive_one():
         == Path("/x/sysforge-pgo.lock")
     assert makepkg_pgo.resolve_pgo_lock_path({"pgo_staging1": str(staging1)}) \
         == Path("/x/sysforge-pgo.lock")
+
+
+def test_toolchain_staging_prefixes_are_isolated_without_opting_in():
+    """3.3.0-B9: a toolchain.toml that leaves `pgo_staging{1,,3}` unset resolves
+    the live `/var/tmp/sysforge-llvm-stage*` prefixes. The PGO dry-run stage
+    tests did, and a `make test` beside a real `run toolchain` deleted the
+    stage3 that Pass 4b's clang was compiling against mid-build."""
+    from sysforge.pipeline.stages.toolchain.config import ToolchainConfig
+
+    cfg = ToolchainConfig.from_toml({})
+    for prefix in (cfg.staging1, cfg.staging, cfg.staging3):
+        assert not prefix.is_relative_to("/var/tmp"), (
+            f"{prefix} is a live staging prefix; the autouse staging "
+            "isolation fixture is missing or broken")

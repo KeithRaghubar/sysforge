@@ -139,6 +139,33 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     assert result["ld"] == "lld"
     assert result["variant"] == "pgo_llvm"
 
+def test_toolchain_stage_llvm_pgo_dry_run_keeps_staging3(tmp_path):
+    """3.3.0-B9: Pass 4 cleared staging3 before re-extracting even on a dry run.
+    A real `run toolchain` in Pass 4b compiles clang against that prefix, so a
+    concurrent dry run deleted its headers mid-build (clang 23 then fell back
+    to /usr/include's LLVM 22 headers)."""
+    staging3 = tmp_path / "stage3"
+    header = staging3 / "usr" / "include" / "llvm" / "ADT" / "DenseMap.h"
+    header.parent.mkdir(parents=True)
+    header.touch()
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\n'
+        f'pgo_staging = "{tmp_path / "staging"}"\npgo_staging3 = "{staging3}"\n'
+    )
+
+    pkgbuild_dir = tmp_path / "builds"
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
+        make_pkgbuild(pkgbuild_dir, name)
+
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run(config, state, make_options(dry_run=True))
+
+    assert header.exists()
+
 def test_toolchain_stage_llvm_no_pgo_pacman_installs_from_repo(tmp_path):
     """compiler=llvm, pgo=false, repo_mode=pacman → install the LLVM suite from
     the repos via install_repo_pkgs; never resolve PKGBUILDs or build."""

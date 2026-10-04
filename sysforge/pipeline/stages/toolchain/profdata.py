@@ -140,9 +140,16 @@ def assert_staging_has_llvm_cmake(staging: Path) -> None:
         )
 
 
-def remove_staging(staging: Path) -> None:
+def remove_staging(staging: Path, dry_run: bool) -> None:
+    """Delete a staging prefix. ``dry_run`` is required, not defaulted: a real
+    ``run toolchain`` may be compiling against the prefix right now, so a dry
+    run must never delete it (3.3.0-B9) and every caller has to say which it is.
+    """
     import shutil
 
+    if dry_run:
+        _log.ui(f"[dry-run] would remove staging prefix {staging}")
+        return
     if staging.exists():
         _log.info(f"Removing staging prefix: {staging}")
         shutil.rmtree(staging)
