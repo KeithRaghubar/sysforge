@@ -22,6 +22,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     is_llvm_pkgbase,
     patch_llvm_dir,
     patch_llvm_targets,
+    patch_staged_build_rpath,
     validate_patched_pkgbuild,
 )
 
@@ -376,6 +377,100 @@ def test_patch_llvm_dir_not_confused_by_distribution_components(tmp_path):
     assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in new
     # The distribution-components arg is untouched.
     assert '-DLLVM_DISTRIBUTION_COMPONENTS="clang;clang-resource-headers"' in new
+
+
+# ---------------------------------------------------------------------------
+# patch_staged_build_rpath — a staged build runs build-tree tools that load the
+# staged libLLVM (clang's clang-tidy-confusable-chars-gen), so CMAKE_SKIP_RPATH
+# must narrow to CMAKE_SKIP_INSTALL_RPATH: build tree keeps llvm_setup_rpath's
+# ${LLVM_LIBRARY_DIR} entry, installed binaries still ship RPATH-free (3.3.0-B5).
+# ---------------------------------------------------------------------------
+
+_PKGBUILD_SKIP_RPATH_ARRAY = (
+    "pkgname=clang\nbuild() {\n"
+    "  local cmake_args=(\n"
+    "    -G Ninja\n"
+    "    -DCMAKE_INSTALL_PREFIX=/usr\n"
+    "    -DCMAKE_SKIP_RPATH=ON\n"
+    "    -DLLVM_LINK_LLVM_DYLIB=ON\n"
+    "  )\n"
+    '  cmake .. "${cmake_args[@]}"\n'
+    "}\n"
+)
+
+
+def test_patch_staged_build_rpath_narrows_skip_rpath(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_SKIP_RPATH_ARRAY)
+    assert patch_staged_build_rpath(p) is True
+    new = p.read_text()
+    assert "-DCMAKE_SKIP_RPATH" not in new
+    assert "    -DCMAKE_SKIP_INSTALL_RPATH=ON\n" in new
+    assert "-DLLVM_LINK_LLVM_DYLIB=ON" in new
+
+
+@pytest.mark.parametrize("spelling, expected", [
+    ("-D CMAKE_SKIP_RPATH=ON", "-D CMAKE_SKIP_INSTALL_RPATH=ON"),
+    ("-DCMAKE_SKIP_RPATH:BOOL=ON", "-DCMAKE_SKIP_INSTALL_RPATH:BOOL=ON"),
+    ("-DCMAKE_SKIP_RPATH=YES", "-DCMAKE_SKIP_INSTALL_RPATH=YES"),
+])
+def test_patch_staged_build_rpath_spellings(tmp_path, spelling, expected):
+    """The `-D KEY` spaced form (spirv-llvm-translator) and type tags keep their
+    own spacing/tag/value — only the variable name changes."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(f"pkgname=x\nbuild() {{\n  cmake -B build {spelling}\n}}\n")
+    assert patch_staged_build_rpath(p) is True
+    assert expected in p.read_text()
+
+
+def test_patch_staged_build_rpath_leaves_off_value(tmp_path):
+    """CMAKE_SKIP_RPATH=OFF already keeps the build RPATH — nothing to narrow."""
+    text = "pkgname=x\nbuild() {\n  cmake -B build -DCMAKE_SKIP_RPATH=OFF\n}\n"
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(text)
+    assert patch_staged_build_rpath(p) is False
+    assert p.read_text() == text
+
+
+def test_patch_staged_build_rpath_absent_is_noop(tmp_path):
+    """lld-style PKGBUILD that never sets SKIP_RPATH: build RPATH is already on."""
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_NO_TARGETS)
+    assert patch_staged_build_rpath(p) is False
+    assert p.read_text() == _PKGBUILD_NO_TARGETS
+
+
+def test_patch_staged_build_rpath_idempotent_and_validates(tmp_path):
+    original = tmp_path / "PKGBUILD"
+    original.write_text(_PKGBUILD_SKIP_RPATH_ARRAY)
+    patched = tmp_path / "PKGBUILD.sysforge"
+    patched.write_text(_PKGBUILD_SKIP_RPATH_ARRAY)
+    assert patch_staged_build_rpath(patched) is True
+    snapshot = patched.read_text()
+    assert patch_staged_build_rpath(patched) is False
+    assert patched.read_text() == snapshot
+    assert patch_llvm_dir(patched, _STAGED_LLVM_DIR) is True
+    validate_patched_pkgbuild(original, patched)  # must not raise
+
+
+def test_apply_staged_llvm_patches_wires_dir_and_rpath(tmp_path):
+    """The wrapper's staged-pass seam applies both rewrites together."""
+    from sysforge.primitives.makepkg_wrapper import _apply_staged_llvm_patches
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_SKIP_RPATH_ARRAY)
+    assert _apply_staged_llvm_patches(p, _STAGED_LLVM_DIR) is True
+    new = p.read_text()
+    assert f'-DLLVM_DIR="{_STAGED_LLVM_DIR}"' in new
+    assert "-DCMAKE_SKIP_INSTALL_RPATH=ON" in new
+
+
+def test_apply_staged_llvm_patches_unstaged_is_noop(tmp_path):
+    """No staged prefix (ordinary build): SKIP_RPATH stays as the PKGBUILD wrote it."""
+    from sysforge.primitives.makepkg_wrapper import _apply_staged_llvm_patches
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_PKGBUILD_SKIP_RPATH_ARRAY)
+    assert _apply_staged_llvm_patches(p, None) is False
+    assert p.read_text() == _PKGBUILD_SKIP_RPATH_ARRAY
 
 
 # ---------------------------------------------------------------------------

@@ -1586,6 +1586,16 @@ _LLVM_DIR_RE = re.compile(
     r'-DLLVM_DIR(?::[A-Z]+)?=(?:"[^"]*"|\'[^\']*\'|\S+)'
 )
 
+# Matches a *truthy* `-DCMAKE_SKIP_RPATH=…` in either the `-DKEY` or the spaced
+# `-D KEY` form (spirv-llvm-translator), with an optional type tag. Group 1 keeps
+# the `-D`/`-D ` prefix and group 2 the tag + value, so a rename preserves the
+# PKGBUILD's own spelling. `(?!\w)` stops `=ON` from matching `=ONLY…`.
+_SKIP_RPATH_RE = re.compile(
+    r'(-D[ \t]?)CMAKE_SKIP_RPATH'
+    r'((?::[A-Za-z]+)?=["\']?(?:ON|TRUE|YES|Y|1)["\']?)(?!\w)',
+    re.IGNORECASE,
+)
+
 # --- mesa meson driver options ----------------------------------------------
 #
 # Mesa is a meson build: drivers are array elements of `meson_options=( … )`,
@@ -1790,6 +1800,35 @@ def patch_llvm_dir(patched_path, llvm_dir: str) -> bool:
     new_text = text[:line_end] + insertion + text[line_end:]
     patched_path.write_text(new_text)
     _log.info(f"Injected {replacement} after cmake invocation")
+    return True
+
+
+def patch_staged_build_rpath(patched_path) -> bool:
+    """Narrow ``CMAKE_SKIP_RPATH=ON`` to ``CMAKE_SKIP_INSTALL_RPATH=ON`` in an
+    already-written PKGBUILD.sysforge (3.3.0-B5).
+
+    Companion to :func:`patch_llvm_dir` on the staged toolchain passes. A
+    standalone clang build *runs* tools it just linked against the staged libLLVM
+    (``clang-tidy-confusable-chars-gen``); ``llvm_setup_rpath`` gives them a build
+    RPATH of ``${LLVM_LIBRARY_DIR}`` — the staged ``usr/lib`` — but
+    ``CMAKE_SKIP_RPATH`` strips it, so the loader only searches ``/usr/lib``. That
+    works by accident while the staged and live sonames match and fails exit 127
+    on a major bump (``libLLVM.so.23.1`` vs the live ``.so.22.1``).
+    ``CMAKE_SKIP_INSTALL_RPATH`` keeps the build-tree RPATH and still ships
+    RPATH-free binaries, and unlike ``LD_LIBRARY_PATH`` it never steers the host
+    compiler at the staged libLLVM.
+
+    A no-op when the PKGBUILD never sets it (or sets it falsy) — the build RPATH
+    is already on. Idempotent. Returns True when modified.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+    new_text, count = _SKIP_RPATH_RE.subn(r"\1CMAKE_SKIP_INSTALL_RPATH\2", text)
+    if not count:
+        return False
+    patched_path.write_text(new_text)
+    _log.info("Narrowed CMAKE_SKIP_RPATH → CMAKE_SKIP_INSTALL_RPATH so build-tree "
+              "tools resolve the staged libLLVM")
     return True
 
 

@@ -118,6 +118,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_package_suffix,
     patch_pkgbase_rename,
     patch_pkgbuild_groups,
+    patch_staged_build_rpath,
     patch_subshell_env_reset,
     validate_patched_meson_pkgbuild,
     validate_patched_pkgbuild,
@@ -429,6 +430,22 @@ def _pkgname_from_meta(pkgmeta: dict | None) -> str:
     return name or "unknown"
 
 
+def _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir: str | None) -> bool:
+    """Steer a staged toolchain pass (1b/3b/3c) at the staged libLLVM prefix.
+
+    -DLLVM_DIR forces find_package(LLVM CONFIG) there — CMAKE_PREFIX_PATH alone
+    (set in the build env) silently loses to /usr, so clang/lld link the live
+    libLLVM instead of the one that ships → Gate-3 _ZNSt*@LLVM_* brick. And the
+    build-tree tools that *run* during the build (linked against that staged
+    libLLVM) need their build RPATH back, which CMAKE_SKIP_RPATH strips
+    (3.3.0-B5). Returns True when the PKGBUILD changed; a no-op when unstaged.
+    """
+    if not cmake_llvm_dir:
+        return False
+    changed = patch_llvm_dir(pkgbuild_path, cmake_llvm_dir)
+    return patch_staged_build_rpath(pkgbuild_path) or changed
+
+
 def _maybe_patch_llvm_targets(
     pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
 ) -> bool:
@@ -639,13 +656,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         pkgbuild_path, pkgmeta, state_dir_override=state_dir
     )
 
-    # Force find_package(LLVM CONFIG) at the staged libLLVM prefix for the
-    # toolchain stage's staged PGO passes (1b/3b/3c). CMAKE_PREFIX_PATH alone
-    # (set in the build env) is silently losing to /usr, so clang/lld link the
-    # live libLLVM instead of the one that ships → Gate-3 _ZNSt*@LLVM_* brick.
-    # -DLLVM_DIR is the highest-precedence config-mode override.
-    if cmake_llvm_dir:
-        cmake_injected = patch_llvm_dir(pkgbuild_path, cmake_llvm_dir) or cmake_injected
+    cmake_injected = (
+        _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir) or cmake_injected
+    )
 
     # Mesa (meson, not cmake): trim gallium/vulkan drivers to this host. Opt-in —
     # a no-op unless [mesa] filter_drivers = true. Returns the resolved driver
