@@ -293,9 +293,10 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
     re-sort on every add/remove precisely so concurrent entries land
     deterministically instead of accreting in landing order.
 
-    Ordering is (version, type, number), so within a cycle `B` precedes `F`
-    precedes `Q` precedes `STD`. An entry with no ID is reported rather than
-    silently sorted last: every entry is required to cite its roadmap ID.
+    Ordering is (version, type, number), so within a cycle `B` precedes `DOC`
+    precedes `F` precedes `Q` precedes `STD`. An entry with no ID is reported
+    rather than silently sorted last: every entry is required to cite its
+    roadmap ID. A `DOC`-filed entry must sit under `## Changed` (3.3.0-STD1).
     """
     findings: list[Finding] = []
     rel = unreleased.relative_to(repo).as_posix()
@@ -329,6 +330,14 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     "ROADMAP.md entries use",
                 ))
             cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
+            if key[3] == "DOC" and heading != "Changed":
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` is a DOC entry under `## {heading}` — "
+                    "user-facing doc changes file under `## Changed` only "
+                    "(the section drives the derived SemVer bump, and docs "
+                    "change no API)",
+                ))
             parsed.append((lineno, cur_id, key, lead))
 
         counts = Counter(cur_id for _, cur_id, _, _ in parsed)
@@ -684,7 +693,7 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
                     "abandoned entries live in docs/ROADMAP-ABANDONED.md; "
                     "ROADMAP.md carries forward-looking work only",
                 ))
-    # Check 4: a Q-typed ID that shipped without promotion to F/B/STD. Only the
+    # Check 4: a Q-typed ID that shipped without promotion to B/DOC/F/STD. Only the
     # mutable accumulator (unreleased.md) is checked — released v*.md files are
     # immutable history and are grandfathered against past-process Q misses.
     unreleased = repo / "docs" / "release-notes" / "unreleased.md"
@@ -697,7 +706,7 @@ def check_roadmap_ids(repo: Path) -> list[Finding]:
             findings.append(Finding(
                 "roadmap_ids", "error", "docs/release-notes/",
                 f"{i} is a Q-typed (open-question) ID that appears shipped — "
-                f"a Q must be promoted to F/B/STD before implementation",
+                f"a Q must be promoted to B/DOC/F/STD before implementation",
             ))
     # Check 5: sequence gaps, active version prefix only (warn).
     active = _project_version(repo)

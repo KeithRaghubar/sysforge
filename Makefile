@@ -296,7 +296,7 @@ check-standards: ## Gate: standards compliance (docs/design/21-standards.md)
 # resets on a minor/major bump), so a new item can't be misattributed to a
 # stale cycle. Always run this before adding a ROADMAP entry.
 #   make next-id TYPE=F   ->  e.g. 2.4.0-F1
-next-id: ## Print the next free ROADMAP ID (TYPE=F|B|Q|STD)
+next-id: ## Print the next free ROADMAP ID (TYPE=B|DOC|F|Q|STD)
 	@uv run --no-sync python tools/check_standards.py --next-id $(TYPE)
 
 # Print the bump the accumulated release notes require (standards row 3).

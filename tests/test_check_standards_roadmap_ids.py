@@ -305,3 +305,15 @@ def test_next_id_rejects_lowercase_bare_type(tmp_path):
     repo = _mkrepo(tmp_path, "## Planned\n\n_(none)_\n", {}, version="2.4.0")
     with pytest.raises(ValueError):
         check_standards.next_id(repo, "f")
+
+
+def test_shipped_doc_id_is_not_an_error(tmp_path):
+    """DOC is a shippable type (3.3.0-STD1), unlike Q."""
+    repo = _mkrepo(
+        tmp_path,
+        "## Planned\n\n_(none)_\n",
+        {"unreleased.md":
+         "# sysforge (unreleased)\n\n## Changed\n\n- **`2.2.0-DOC1` — a guide.** x\n"},
+    )
+    assert [f for f in check_standards.check_roadmap_ids(repo)
+            if f.severity == "error"] == []

@@ -216,3 +216,28 @@ def test_cross_section_repeat_needs_no_suffix(tmp_path):
     _write_notes(tmp_path, "# t\n\n## Changed\n\n- **`1.0.0-F1` — a.** x\n\n"
                            "## Removed\n\n- **`1.0.0-F1` — b.** x\n")
     assert check_standards.check_changelog(tmp_path) == []
+
+
+# --- DOC type (3.3.0-STD1): user-facing docs file under `## Changed` only ---
+# Section drives the derived SemVer bump (row 3), so a guide filed under
+# `## Added` would demand a minor release for a change no API consumer sees.
+
+def test_doc_entry_under_changed_passes_and_sorts_between_b_and_f(tmp_path):
+    _write_notes(tmp_path,
+                 "# t\n\n## Changed\n\n- **`1.0.0-B1` — a.** x\n\n"
+                 "- **`1.0.0-DOC1` — b.** x\n\n- **`1.0.0-F1` — c.** x\n")
+    assert check_standards.check_changelog(tmp_path) == []
+
+
+def test_doc_entry_outside_changed_is_error(tmp_path):
+    _write_notes(tmp_path, "# t\n\n## Added\n\n- **`1.0.0-DOC1` — a guide.** x\n")
+    findings = check_standards.check_changelog(tmp_path)
+    assert any("1.0.0-DOC1" in f.message and "`## Changed`" in f.message
+               for f in findings), findings
+
+
+def test_doc_cross_reference_outside_changed_is_allowed(tmp_path):
+    """Only the filing (first) ID decides the section; a later DOC is a citation."""
+    _write_notes(tmp_path,
+                 "# t\n\n## Added\n\n- **`1.0.0-F1` — a.** see 1.0.0-DOC1\n")
+    assert check_standards.check_changelog(tmp_path) == []

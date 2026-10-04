@@ -15,7 +15,8 @@ history (the commit that lands an item is its record).
 ## ID scheme
 
 IDs are `<version>-<TYPE><n>`, e.g. `1.2.0-F1` (feature), `1.2.0-B1` (bug),
-`1.2.0-Q1` (open question), `1.2.0-STD1` (standards). The version prefix is the
+`1.2.0-Q1` (open question), `1.2.0-STD1` (standards), `1.2.0-DOC1` (user-facing
+documentation). The version prefix is the
 current `pyproject.toml` version. The per-type counter **resets to 1 only on a
 major or minor version bump** (`X.Y.Z` → `(X+1).0.0` / `X.(Y+1).0`), never on a
 patch bump — i.e. the counter is scoped to the minor-release cycle and stays
@@ -31,7 +32,7 @@ rejects an ID listed both here and in `docs/ROADMAP-ABANDONED.md`.
 
 **Never hand-pick an ID — derive it.** The open items above keep their origin-cycle
 prefixes, so eyeballing a neighbour gives the wrong cycle (and the wrong counter)
-right after a release. Run `make next-id TYPE=F` (or `B`/`Q`/`STD`) — it reads the
+right after a release. Run `make next-id TYPE=F` (or `B`/`DOC`/`Q`/`STD`) — it reads the
 current `pyproject.toml` version, scopes to that cycle's counter, and prints the next
 free ID (e.g. `2.4.0-F1`). `make check-standards` also flags collisions and
 active-cycle sequence gaps.
@@ -42,10 +43,18 @@ entry opens `- **`<ID>` — <title sentence>.**` and is separated from its
 neighbour by a `---` rule, so a single item is readable on its own rather than
 running into the next one. `docs/release-notes/` entries use the same two rules.
 
+**`DOC` covers user-facing documentation only** — guides under `docs/guides/`,
+`README.md`, the man page — so doc work stays visible in release notes without
+being forced into `F` or `B`. A `DOC` entry always lands under `## Changed`: the
+section drives the derived SemVer bump, and documentation changes no API (a
+`DOC` under `## Added` would demand a minor release). `make check-standards`
+enforces this. Internal docs (`docs/design/`, `CLAUDE.md`, this file) get no ID,
+and wrong `--help`/man output is a `B`, since it is CLI behaviour.
+
 **Open questions (`Q`) must be resolved before any implementation.** A `Q`
 entry is undecided by definition; investigation/spikes to inform the decision
 are fine, but before writing production code the question must first be either
-**promoted** to a proper `F`/`B`/`STD` entry (which then follows the normal
+**promoted** to a proper `F`/`B`/`STD`/`DOC` entry (which then follows the normal
 landing flow) or moved to `docs/ROADMAP-ABANDONED.md` with a rationale. Never
 implement straight off a `Q`.
 

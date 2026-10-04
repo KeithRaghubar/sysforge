@@ -192,7 +192,11 @@ them. Sandboxing is therefore a good fit for **untrusted AUR leaf packages whose
 all come from repos** — which is the threat it exists for — and a poor fit for a self-built
 stack. Leave it off (the default) or scope it to a profile that matches those packages.
 
-That is the everyday surface. For the rest — PGO/`--pgo`, `--cleansrc`, `--install-only`,
+New to profile-guided optimization? [docs/guides/pgo.md](docs/guides/pgo.md) walks through
+package PGO (mesa), toolchain PGO, and kernel AutoFDO/Propeller step by step, including how
+to collect a profile that actually helps.
+
+That is the everyday surface. For the rest — `--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics — see `sysforge --help`, the [man page](man/sysforge.1), and
 [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned features live in

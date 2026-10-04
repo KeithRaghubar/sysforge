@@ -3884,7 +3884,7 @@ Standards defined outside sysforge, which the project conforms to.
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
 | 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions; **also** the on-disk shape (`.hook` sections/keys) of *user-authored* pacman hooks that the artifact inventory discovers, adopts, and deploys — sysforge inventories these, not only ships its own | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups; `primitives/artifacts.py` (`CLASS_HOOK` discovery/deploy); `primitives/makepkg_conf.py` + `[preserved_system_tokens]` keep the distro's compiler hardening baseline (`FORTIFY_SOURCE`, stack protector, `format-security`) across a wholesale profile flag override, tested in `tests/test_hardening_preservation.py`; `check_shipped` `config_comments` group extends this to the shipped configs' *prose*: no comment may name a `*.toml` or a `[section]` that does not exist, and a key whose validator accepts multiple surface forms must show every form (`_GRAMMAR_DOCS`, a hand-maintained table — widening a `_coerce_*` grammar updates it in the same commit, since no static signal distinguishes an accepted-form branch from any other conditional) |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
-| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary; `check_standards` `changelog` group |
+| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary, plus `DOC`-filed entries confined to `## Changed` (`3.3.0-STD1`); `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
 | 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
@@ -3947,7 +3947,11 @@ that completes a ROADMAP item appends its entry to the running accumulator
 `# ` title with the version + ISO date, and reseeds a fresh accumulator; the
 `release-notes` skill only reconciles/lints the accumulated entries. The
 `changelog` check lints `unreleased.md` under the same vocabulary so entries are
-validated as they land, not just at release.
+validated as they land, not just at release. A `DOC`-filed entry (user-facing
+documentation: `docs/guides/`, README, man page) must sit under `## Changed`:
+documentation changes no API, so it may only ever imply a patch bump (row 3), and
+filing a guide under `## Added` would otherwise demand a minor release
+(`3.3.0-STD1`).
 
 **REUSE / SPDX (14).** SysForge is MIT-licensed (`LICENSE`). First-party source
 files carry per-file SPDX headers (a copyright tag plus the `MIT` license
@@ -4011,7 +4015,7 @@ cross-checks the three homes of one ID namespace: `ROADMAP.md` (open items),
 reissued) and `docs/release-notes/` (shipped items). Errors: an open ID reusing
 a shipped number, an ID listed both as Planned and as Abandoned (a cross-file
 check since `2.5.1-F4` split the sections), an `## Abandoned` heading back in
-`ROADMAP.md`, a shipped `Q`-typed ID. Warn: sequence gaps within the active
+`ROADMAP.md`, a shipped `Q`-typed ID (a `Q` is promoted to `B`/`DOC`/`F`/`STD` first). Warn: sequence gaps within the active
 `pyproject.toml` version prefix. Allocate the next ID with
 `python tools/check_standards.py --next-id <version>-<TYPE>`. Known limitation:
 a release-note that mentions a still-Planned ID in prose (a forward or "see
