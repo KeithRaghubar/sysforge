@@ -78,9 +78,10 @@ Mechanism lives in the cited §DESIGN section.
   (`update_split.annotate_split_members`, `3.2.0-B31`). Stop via `state forget`. §update.
 - **`revert-to-stock` branch = rename mode, not a suffix test**: `revert_cmd.plan_revert` classifies
   via `profile.is_optimized_build_mode` then `rename_mode_for_build_mode` — plain `source_built`→
-  `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (`pacman -S <origin_pkgbase>` **alone**;
-  the `-sysforge` build's `provides`/`conflicts` mean a pre-`-R` breaks reverse deps — pacman does the
-  atomic swap), `coexist` (kernel FDO only)→`derename` (`-R` renamed then `-S` stock). Never collapse
+  `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (**one** `pacman -S` of every
+  *installed* split member's stock name via `_conflict_members`, with `reinstall_repo_pkgs(replace=True)`
+  → `--ask=4`, since `--noconfirm` answers the conflict prompt N; no pre-`-R` — it breaks reverse deps,
+  pacman does the atomic swap; `3.3.0-B6`), `coexist` (kernel FDO only)→`derename` (`-R` renamed then `-S` stock). Never collapse
   conflict+coexist. Demotion reuses `cmd_state_forget` + `reconcile_external_installs`. §CLI Verb.
 - **`build` repo-pkg opt-in gate**: `build_cmd` prompts on TTY (writes via `packages_cmd`) or aborts
   non-interactive; `--force` builds this run only, never writes. One packages.toml writer. §CLI Verb.

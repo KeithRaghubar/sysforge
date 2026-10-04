@@ -112,7 +112,7 @@ def test_execute_conflict_replace_reinstalls_only(tmp_path, monkeypatch):
          patch.object(revert_cmd, "forget_packages"):
         pre = verb.pre_check(_args(packages=["llvm-sysforge"]))
         verb.execute(_args(packages=["llvm-sysforge"]), pre)
-    reinstall.assert_called_once_with(["llvm"])
+    reinstall.assert_called_once_with(["llvm"], replace=True)
     remove.assert_not_called()
 
 
@@ -232,3 +232,55 @@ def test_execute_names_a_profile_store_the_revert_leaves_behind(
         verb.execute(_args(packages=["mesa-sysforge"]), pre)
     assert seen and "mesa" in seen[0]
     assert "profile store kept: /s" in "".join(capsys.readouterr())
+
+
+# --- 3.3.0-B6: conflict-mode split packages revert as a unit -----------------
+# Every member of a renamed split build records the same `origin_pkgbase`, so
+# `resolve_installed_name("mesa")` lands on the lowest key (mesa-docs-sysforge)
+# and the old plan reverted one entry to the stock *pkgbase*, leaving the other
+# installed -sysforge members (vulkan-radeon-sysforge, …) behind, untracked.
+
+def _mesa_split():
+    common = {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+              "origin_pkgbase": "mesa"}
+    return {n: dict(common) for n in (
+        "mesa-docs-sysforge", "mesa-sysforge", "vulkan-broadcom-sysforge",
+        "vulkan-radeon-sysforge")}
+
+
+_MESA_INSTALLED = {"mesa-docs-sysforge", "mesa-sysforge", "vulkan-radeon-sysforge"}
+
+
+def test_plan_conflict_split_replaces_every_installed_member(tmp_path):
+    bs = _bs(tmp_path, _mesa_split())
+    (plan,) = revert_cmd.plan_revert(bs, ["mesa"], installed=_MESA_INSTALLED)
+    assert plan.action == "replace"
+    # primary member is the one whose stock name is the pkgbase, not the
+    # lowest-sorted sibling
+    assert plan.pkgname == "mesa-sysforge"
+    assert plan.stock_pkg == "mesa"
+    # installed members only (vulkan-broadcom-sysforge was built, not installed)
+    assert plan.members == [("mesa-docs-sysforge", "mesa-docs"),
+                            ("mesa-sysforge", "mesa"),
+                            ("vulkan-radeon-sysforge", "vulkan-radeon")]
+    assert "vulkan-radeon-sysforge" in plan.reason
+
+
+def test_execute_conflict_split_one_transaction_and_forgets_all(tmp_path, monkeypatch):
+    verb = revert_cmd.RevertToStockVerb()
+    monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
+    monkeypatch.setattr(revert_cmd.pacman, "get_all_installed_packages",
+                        lambda: {n: "1:26.2.3-1" for n in _MESA_INSTALLED})
+    bs = BuildState(tmp_path)
+    bs._data.update(_mesa_split())
+    bs.save()
+    with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall, \
+         patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
+         patch.object(revert_cmd, "forget_packages") as forget:
+        pre = verb.pre_check(_args(packages=["mesa"]))
+        verb.execute(_args(packages=["mesa"]), pre)
+    reinstall.assert_called_once_with(
+        ["mesa-docs", "mesa", "vulkan-radeon"], replace=True)
+    remove.assert_not_called()
+    forget.assert_called_once_with(
+        tmp_path, ["mesa-docs-sysforge", "mesa-sysforge", "vulkan-radeon-sysforge"])

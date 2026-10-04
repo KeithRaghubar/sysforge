@@ -808,17 +808,24 @@ def remove_pkgs(names: list) -> None:
     )
 
 
-def reinstall_repo_pkgs(names: list) -> None:
+def reinstall_repo_pkgs(names: list, *, replace: bool = False) -> None:
     """(Re)install repo packages via ``sudo pacman -S --noconfirm`` (no
     ``--needed``), so a source-built package at the repo version is replaced
     by the repo binary. Used by ``revert-to-stock``. No-op on empty list.
+
+    ``replace`` marks an intended swap over installed conflict-mode
+    ``-sysforge`` builds. ``--noconfirm`` answers pacman's conflict question
+    (``Remove mesa-sysforge? [y/N]``) with its default N, aborting the
+    transaction, so ``replace`` adds ``--ask=4`` (``ALPM_QUESTION_CONFLICT_PKG``)
+    to auto-confirm it, the same answer :func:`batch_install_pkgs` gives an
+    intended drop-in (3.3.0-B6). Without it the safe default stands.
     """
     if not names:
         return
-    subprocess.run(
-        privileged_argv(["pacman", "-S", "--noconfirm", "--", *names]),
-        check=True,
-    )
+    argv = ["pacman", "-S", "--noconfirm"]
+    if replace:
+        argv.append("--ask=4")
+    subprocess.run(privileged_argv([*argv, "--", *names]), check=True)
 
 
 def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
