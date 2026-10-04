@@ -27,6 +27,12 @@ _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "check_standards.py"
 
 
 def _load():
+    # tools/ on sys.path first: check_standards imports its sibling
+    # `_semver_vocab`, which fails in a single-file run where no other test
+    # module has done this insert (3.3.0-DEV2; the changelog test's loader
+    # already carried this guard).
+    if str(_SCRIPT.parent) not in sys.path:
+        sys.path.insert(0, str(_SCRIPT.parent))
     spec = importlib.util.spec_from_file_location("check_standards", _SCRIPT)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
