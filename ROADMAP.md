@@ -112,6 +112,7 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
+| `3.3.0-B11` | on an unchanged kernel, every run says the merge-drift check and Gate 2 "did not run", although the tree that built the installed package is still on disk | med | small | patch |
 | `3.3.0-F1` | the building bar's ETA swings because it averages packages of very different sizes | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
@@ -125,6 +126,7 @@ canonical ordering.
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
+| `3.3.0-B12` | the toolchain PGO counters reset partway through a pass, so the final pass reads [1/1] and then [1/6] under the same PGO 4/4 label | low | small | patch |
 | `3.3.0-F3` | a sudo password prompt sysforge raises itself does not pause or hide the progress bar | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -675,6 +677,66 @@ canonical ordering.
   **Standards home on adoption:** none new — the toolchain-identity contract already lives with
   `get_toolchain_fingerprint` as its single canonical computation site; this constrains *when* it is
   read, not what it means.
+
+---
+
+- **`3.3.0-B11` — on an unchanged kernel, every run says the merge-drift check and Gate 2 "did not
+  run", although the tree that built the installed package is still on disk.**
+  When the kernel has not changed, makepkg exits 13 and the stage takes the AlreadyBuilt path with
+  `built_dir = None` (`kernel/stage.py`, the `except AlreadyBuilt` branch). `resolve_built_config`
+  (`kernel/gates.py:149`) then falls back to the **system** `BUILDDIR` keyed on the **checkout**
+  name, which is exactly the guess `3.2.0-B37` removed from the fresh-build path. On the live
+  workstation that guess is `/tmp/makepkg/linux`. The tree is really at the profile's `BUILDDIR`
+  under the post-rename pkgbase, `~/builds/linux-sysforge/src/linux-7.2.7/.config`, and its
+  `include/config/kernel.release` (`7.2.7-arch1-1-sysforge`) matches both the PKGDEST artifact and
+  the running kernel. Two checks miss it on every no-change run: the advisory drift check prints
+  the "Kconfig merge drift: check did NOT run" block, and Gate 2's boot audit warns that the config
+  "could not be validated before install". `sysforge-run-kernel.log` shows the pair on 11 runs and
+  no Gate 2 pass at all. The "did NOT run" wording from `2.6.1-B6` is correct when no tree exists.
+  Here it is reported for a tree that sysforge could have found, and it shows up every run, so the
+  warning becomes noise.
+  A related gap: `<state_dir>/kconfig-history/` does not exist on the live system, because no fresh
+  build in the logged history reached the archive step. The `2.6.1-F25` archive therefore can't
+  serve as the only fallback.
+  Fix: on AlreadyBuilt, derive the tree the same way the fresh path does
+  (`makepkg_env.build_root(resolved_profile, pkgbase)`, post-rename pkgbase). Use it only if its
+  `kernel.release` matches the release the PKGDEST artifact ships (`usr/lib/modules/<release>/`),
+  because a later aborted build can leave a different `.config` in the same tree. When they match,
+  run Gate 2 and the drift check against that tree, without the fresh-build hard-failure. When they
+  don't match, use the `kconfig-history` archive for that release if one exists. Keep the "did NOT
+  run" block only when neither source is available, and name which source was checked when it does
+  run. Tests: matching tree → both checks run; mismatched release → falls through to the archive;
+  no tree and no archive → the `B6` block unchanged; the fresh-build path is untouched.
+  *Priority: med · Effort: small · Bump: patch* — med because Gate 2 is the brick backstop and is
+  currently off on every no-change install on a real system; small because `build_root` and
+  `built_kernel_release` already exist, so this is mostly a release match plus a fallback order.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B12` — the toolchain PGO counters reset partway through a pass, so the final pass reads
+  `[1/1]` and then `[1/6]` under the same `PGO 4/4` label.**
+  `passes.build_pass` opens its own `progress.tracker(total, label)` (`toolchain/passes.py:164`)
+  with `total` set to that call's PKGBUILD-dir count. The pipeline splits one logical pass across
+  several calls. Pass 4 is three of them: `PGO optimize · llvm/llvm-libs (PGO 4/4)`
+  (`toolchain/pgo.py:716`), then `… clang/lld/... (PGO 4/4)` (`:762`), then `… lib32 (PGO 4/4)`
+  (`:796`). Each one starts a fresh counter, so the operator sees `[1/1]` for llvm, then `[1/6]` for
+  the rest of the suite, under one pass number. Pass 3 has the same shape (`train` and `corpus
+  enrich` are both `3/4`, `:515`/`:557`), and the `reusing profdata` variant drops the pass number
+  entirely (`:644`). Nothing is built wrong. The pass number and the item counter both look like
+  overall progress, but they are scoped differently.
+  Fix direction (pick one when implementing): **(a)** one tracker per logical pass, totalled over
+  the union of its sub-maps, passed into `build_pass` as an optional `tick`. The sub-pass names
+  become header lines, and the counter runs `[1/7]…[7/7]`. This needs care with
+  `require_no_tracker` from `3.3.0-F2`, because `build_pass` must reuse the open tracker, not nest
+  one. **(b)** keep the per-call trackers and label sub-passes `PGO 4/4 · 1/3 llvm`, `· 2/3
+  clang/lld/...`, so the reset is explained instead of removed. (a) matches what the operator
+  expects, and the ETA work in `3.3.0-F1` will want a per-pass total anyway. (b) is cheaper.
+  Tests: a split Pass 4 produces one monotonic counter (or explicit sub-pass labels), and the
+  dry-run pass headers are unchanged.
+  *Priority: low · Effort: small · Bump: patch* — cosmetic, the build itself is correct; small
+  because the sub-maps are already in hand at each call site.
+  **Standards home on adoption:** none.
 
 ### Open questions
 
