@@ -36,7 +36,7 @@ def run_tty_argv(argv: list[str]) -> int:
     without ever drawing. Works for both single-file editors (``$EDITOR file``)
     and two-file diff/merge tools (``vimdiff a b``).
 
-    The child also runs inside :func:`progress_hooks.hooks().suspended`. A verb
+    The child also runs inside ``progress_hooks.hooks().yield_terminal("child")``. A verb
     may hold an active progress bar when it reaches an edit prompt — the
     recovery menu in ``makepkg_invoke`` opens ``[e]`` from inside `update`'s
     ``"building"`` tracker — and the bar reserves the bottom row with a DECSTBM
@@ -58,7 +58,7 @@ def run_tty_argv(argv: list[str]) -> int:
         tty_fd = None
 
     try:
-        with progress_hooks.hooks().suspended():
+        with progress_hooks.hooks().yield_terminal("child"):
             if tty_fd is not None:
                 result = subprocess.run(
                     argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)

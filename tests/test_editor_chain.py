@@ -114,7 +114,7 @@ def test_detected_rung_lists_all_candidates_in_detail(monkeypatch):
 
 
 def test_run_tty_argv_releases_progress_region_around_child(monkeypatch):
-    """A TUI editor must run inside ``progress.suspended()``.
+    """A TUI editor must run inside ``progress.yield_terminal("child")``.
 
     ``update``'s build loop holds a ``"building"`` tracker, so the recovery
     menu's ``[e]`` opens the editor while the bar still owns the bottom row
@@ -131,8 +131,8 @@ def test_run_tty_argv_releases_progress_region_around_child(monkeypatch):
     events: list[str] = []
 
     @contextlib.contextmanager
-    def _spy_suspended():
-        events.append("suspend-enter")
+    def _spy_suspended(kind="prompt"):
+        events.append(f"suspend-enter:{kind}")
         try:
             yield
         finally:
@@ -142,9 +142,9 @@ def test_run_tty_argv_releases_progress_region_around_child(monkeypatch):
         events.append("child")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr(progress, "suspended", _spy_suspended)
+    monkeypatch.setattr(progress, "yield_terminal", _spy_suspended)
     monkeypatch.setattr(editor_mod.subprocess, "run", _fake_run)
     monkeypatch.setattr(editor_mod.os, "open", lambda *a: (_ for _ in ()).throw(OSError))
 
     assert editor_mod.run_tty_argv(["nvim", "PKGBUILD"]) == 0
-    assert events == ["suspend-enter", "child", "suspend-exit"]
+    assert events == ["suspend-enter:child", "child", "suspend-exit"]

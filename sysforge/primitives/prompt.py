@@ -20,12 +20,14 @@ Three functions are provided:
 
 Plus :func:`is_interactive` for stages that need to gate prompts on a TTY.
 
-Every helper blanks the bottom-anchored progress bar
-(``progress_hooks.hooks().suspend_for_prompt()``) before reading input, so an interactive
-prompt never collides with stale status text. Call sites no longer manage this
-themselves — this is the single home for that guarantee. The scroll region
-survives (the prompt prints in the normal content flow); the next
-``render()``/``phase()``/tick repaints the bar once the caller resumes.
+Every helper reads its input inside
+``progress_hooks.hooks().yield_terminal("prompt")``, so an interactive prompt
+never collides with stale status text. Call sites no longer manage this
+themselves — this is the single home for that guarantee, and since all
+interactive input comes through here, it is also what pauses an open
+tracker's clock while the user decides (3.3.0-F2). The scroll region survives
+(the prompt prints in the normal content flow) and the bar repaints as soon
+as the answer is in.
 """
 from __future__ import annotations
 
@@ -67,11 +69,11 @@ def prompt_text(
     and any other unreadable-stdin scenario should fall back gracefully too.
     """
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
-    progress_hooks.hooks().suspend_for_prompt()
-    try:
-        raw = input(full).strip()
-    except (EOFError, OSError):
-        return default if eof_default is None else eof_default
+    with progress_hooks.hooks().yield_terminal("prompt"):
+        try:
+            raw = input(full).strip()
+        except (EOFError, OSError):
+            return default if eof_default is None else eof_default
     return raw or default
 
 
@@ -102,24 +104,24 @@ def prompt_choice(
     """
     choices_t = tuple(c.lower() for c in choices)
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
-    progress_hooks.hooks().suspend_for_prompt()
-    while True:
-        try:
-            raw = input(full).strip().lower()
-        except (EOFError, OSError):
-            # OSError covers pytest's captured-stdin and any other unreadable
-            # stdin scenario; treat it the same as EOF.
-            return default if eof_default is None else eof_default
-        if not raw:
-            return default
-        if raw in choices_t:
-            return raw
-        if not retry_on_invalid:
-            return default
-        _log.warn(
-            f"Unrecognized input {raw!r}. "
-            f"Valid: {'/'.join(choices_t)} (or Enter for default)."
-        )
+    with progress_hooks.hooks().yield_terminal("prompt"):
+        while True:
+            try:
+                raw = input(full).strip().lower()
+            except (EOFError, OSError):
+                # OSError covers pytest's captured-stdin and any other unreadable
+                # stdin scenario; treat it the same as EOF.
+                return default if eof_default is None else eof_default
+            if not raw:
+                return default
+            if raw in choices_t:
+                return raw
+            if not retry_on_invalid:
+                return default
+            _log.warn(
+                f"Unrecognized input {raw!r}. "
+                f"Valid: {'/'.join(choices_t)} (or Enter for default)."
+            )
 
 
 def prompt_key(
@@ -146,7 +148,12 @@ def prompt_key(
     answer", distinct from EOF — so callers can re-prompt.
     """
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
-    progress_hooks.hooks().suspend_for_prompt()
+    with progress_hooks.hooks().yield_terminal("prompt"):
+        return _read_key(full)
+
+
+def _read_key(full: str) -> str:
+    """prompt_key's body, run with the terminal yielded."""
 
     def _fallback(prompt: str) -> str:
         try:

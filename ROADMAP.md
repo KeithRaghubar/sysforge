@@ -125,9 +125,11 @@ canonical ordering.
 | `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
+| `3.3.0-F3` | a sudo password prompt sysforge raises itself does not pause or hide the progress bar | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
 | `3.2.0-F7` | Per-verb parser assembly on the Verb class | low | medium | patch |
+| `3.3.0-F4` | a sudo prompt inside forwarded build output leaves the progress bar's clock running | low | medium | patch |
 | `3.2.0-Q1` | should the container's config be an allowlist of what may cross, rather than a copy of the host's with known-bad keys subtracted? | low | medium | minor |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
 | `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
@@ -594,10 +596,42 @@ canonical ordering.
   the never-overstate rules (5 s floor, drop on overrun) and leave every other batch on the current
   mean projection. Tests: a mixed-size batch whose ETA stays within its per-item medians across a
   large package's completion, a no-history batch that behaves exactly as today, and a split package
-  counted once.
+  counted once. **Depends on `3.3.0-F2`** (landed): the tracker is now a `_Tracker` record whose
+  `expected` field is reserved for these per-item durations, and its clock is an *active* clock that
+  stops while the terminal is yielded. The recorded `build_seconds` should subtract yielded time the
+  same way, or a build that sat at a recovery prompt records the wait as build time and skews every
+  later median.
   *Priority: med · Effort: small · Bump: patch* — med because it is the default-verbosity readout
   on the longest-running batch and currently misleads; small because the medians and the paint-time
   suffix seam already exist, so this is a new tracker argument plus one caller.
+
+- **`3.3.0-F3` — a sudo password prompt sysforge raises itself does not pause or hide the progress bar.**
+  `3.3.0-F2` pauses an open tracker's clock and yields the terminal for every prompt that goes
+  through `primitives/prompt.py`, but sudo prompts are not among them. `sudo_session.authenticate()`
+  (`sudo -v`, inherited stdio) and `privilege.run_privileged`/`privileged_argv` (the `pacman -U/-S`
+  from `install_built`, including the just-in-time install inside the `building` tracker) prompt
+  for a password whenever the cached credentials have lapsed, with the bar still painted and its
+  clock still running. Fix, in the privilege seam: probe `sudo -n true` (an auth probe, which the
+  privilege-escalation guardrail permits); if credentials are not cached, run `sudo -v` inside
+  `progress_hooks.hooks().yield_terminal("prompt")` before the real command. Tests: an uncached
+  probe yields around the `sudo -v` and pauses an open tracker; a cached probe yields nothing.
+  *Priority: low · Effort: small · Bump: patch* — low because `keepalive` keeps credentials warm
+  through the long stages, so the prompt is rare; small because it is one probe-then-yield at one
+  seam.
+
+- **`3.3.0-F4` — a sudo prompt inside forwarded build output leaves the progress bar's clock running.**
+  `makepkg --install`/`--syncdeps` (toolchain passes use `--install`) run sudo *inside* the child
+  whose output `pty_runner` forwards, so the password prompt arrives as bytes in the stream, where
+  `3.3.0-F2` cannot yield. The bar keeps counting while the build waits on the user. Fix: set a
+  `SUDO_PROMPT` sentinel in the child's environment, detect it in `pty_runner`'s partial-line
+  buffer, and pause the tracker clock without yielding (`ui/progress.py` already has a depth-counted
+  `_pause()`/`_unpause()` independent of yielding; expose it on `ProgressHooks`) until the next
+  output. Caveat: a sudoers `passprompt_override` defeats `SUDO_PROMPT`. The alternative, pointing
+  `PACMAN_AUTH` at `sudo -n` so the build never prompts and relies on `keepalive`, trades a
+  prompt for a hard failure on lapsed credentials; the item must choose. Tests: a fake child
+  printing the sentinel pauses the clock until its next output; a child without it never pauses.
+  *Priority: low · Effort: medium · Bump: patch* — low for the same reason as `3.3.0-F3`; medium
+  because detection has to survive chunk boundaries and the `PACMAN_AUTH` trade-off needs a decision.
   **Standards home on adoption:** none.
 
 ### Bugs

@@ -6,13 +6,14 @@
 progress_hooks.py — the small progress surface primitives actually need.
 
 Seven primitives (``prompt``, ``pager``, ``editor``, ``makepkg_invoke``,
-``aur_resolve``, …) used the same five names out of ``sysforge.ui.progress``:
-``suspend_for_prompt``, ``suspended``, ``reserved_rows``, ``heartbeat`` and
-``tracker``. None of them wants *the bar* — they want "tell the display I am
-about to take the terminal" and "count these items if anyone is counting".
-That is a protocol, not a dependency (3.2.0-F1b): the leaf layer declares the
-shape and a no-op default, and ``ui.progress`` registers itself as the
-implementation when it is imported.
+``pty_runner``, ``aur_resolve``, …) need a handful of things from the display
+in ``sysforge.ui.progress``: hand it the terminal (``yield_terminal``), size a
+child around it (``reserved_rows``), report liveness (``heartbeat``), repaint
+it while forwarding a raw byte stream (``forwarding_output``/``refresh``), and
+count items if anyone is counting (``tracker``/``require_no_tracker``). None
+of them wants *the bar*. That is a protocol, not a dependency (3.2.0-F1b): the
+leaf layer declares the shape and a no-op default, and ``ui.progress``
+registers itself as the implementation when it is imported.
 
 The payoff is that a primitive keeps working with no UI layer present at all —
 in a test, a subprocess helper, or any future non-terminal front end — instead
@@ -23,7 +24,7 @@ Usage from a primitive::
 
     from sysforge.primitives import progress_hooks
 
-    with progress_hooks.hooks().suspended():
+    with progress_hooks.hooks().yield_terminal("child"):
         ...
 
 Always go through :func:`hooks` at call time — never bind the object once at
@@ -40,14 +41,6 @@ from typing import Any, Iterator, Protocol, runtime_checkable
 class ProgressHooks(Protocol):
     """The progress surface the leaf layer is allowed to know about."""
 
-    def suspend_for_prompt(self) -> None:
-        """Release the terminal before reading interactive input."""
-        ...
-
-    def suspended(self) -> contextlib.AbstractContextManager[None]:
-        """Context manager: hand the terminal to a child, then take it back."""
-        ...
-
     def reserved_rows(self) -> int:
         """Rows the display has reserved at the bottom (0 when nothing is)."""
         ...
@@ -60,6 +53,24 @@ class ProgressHooks(Protocol):
         self, total: int, prefix: str,
     ) -> contextlib.AbstractContextManager[Any]:
         """Context manager yielding a ``tick(label)`` callable."""
+        ...
+
+    def yield_terminal(
+        self, kind: str = "prompt",
+    ) -> contextlib.AbstractContextManager[None]:
+        """Context manager: hand the terminal to a ``"prompt"`` or a ``"child"``."""
+        ...
+
+    def refresh(self) -> None:
+        """Repaint now if what the display shows has changed."""
+        ...
+
+    def forwarding_output(self) -> contextlib.AbstractContextManager[None]:
+        """Context manager: a raw byte stream is being forwarded to the terminal."""
+        ...
+
+    def require_no_tracker(self, owner: str) -> None:
+        """Refuse to start *owner*, which opens a tracker, inside one."""
         ...
 
 
@@ -79,13 +90,6 @@ class _NoOpTick:
 class _NoOpHooks:
     """The default: correct behaviour with no display attached."""
 
-    def suspend_for_prompt(self) -> None:
-        pass
-
-    @contextlib.contextmanager
-    def suspended(self) -> Iterator[None]:
-        yield
-
     def reserved_rows(self) -> int:
         return 0
 
@@ -95,6 +99,20 @@ class _NoOpHooks:
     @contextlib.contextmanager
     def tracker(self, total: int, prefix: str) -> Iterator[_NoOpTick]:
         yield _NoOpTick()
+
+    @contextlib.contextmanager
+    def yield_terminal(self, kind: str = "prompt") -> Iterator[None]:
+        yield
+
+    def refresh(self) -> None:
+        pass
+
+    @contextlib.contextmanager
+    def forwarding_output(self) -> Iterator[None]:
+        yield
+
+    def require_no_tracker(self, owner: str) -> None:
+        pass
 
 
 _NO_OP: Any = _NoOpHooks()
@@ -106,7 +124,7 @@ def register(impl: Any) -> None:
 
     The module object satisfies the protocol structurally, so registration is a
     single call at the bottom of ``ui/progress.py`` and every lookup still goes
-    through the module — patching ``ui.progress.suspended`` in a test keeps
+    through the module — patching ``ui.progress.yield_terminal`` in a test keeps
     working exactly as before.
     """
     global _impl

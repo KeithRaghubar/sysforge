@@ -512,8 +512,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # holds a single "building · <pkg>" line for the build's entire length
         # — six minutes, on the run this was found on (3.2.0-B13). The idle
         # callback already knows what the child is compiling; this is the
-        # channel that was missing. Repainting also makes the reserved row
-        # self-healing rather than corrupt for the rest of the build.
+        # channel that was missing. It only sets the detail: the bar's
+        # scheduled repaint shows it — run_with_pty itself while it forwards
+        # output, the display's ticker otherwise (3.3.0-F2).
         progress_hooks.hooks().heartbeat(detail)
 
     forward_bytes = (not verbose_log) and sys.stdout.isatty()

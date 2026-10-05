@@ -552,3 +552,179 @@ def test_query_filter_keeps_ordinary_escapes():
     f = _TerminalQueryFilter()
     seq = b"\x1b[1;32mgreen\x1b[0m\x1b[2K\x1b]8;;http://x\x07link\x1b(B"
     assert f.feed(seq) + f.flush() == seq
+
+
+# --- Repaint at stream boundaries while forwarding (3.3.0-F2) ---------------
+#
+# While a raw byte stream is forwarded the terminal can be mid-escape or
+# mid-UTF-8 at any moment, and a bar frame written there would corrupt both.
+# _StreamBoundary tracks whether the forwarded stream sits between sequences;
+# run_with_pty only asks the display to repaint when it does.
+
+import contextlib  # noqa: E402
+import itertools  # noqa: E402
+import time  # noqa: E402
+
+import pytest  # noqa: E402
+
+from sysforge.primitives import progress_hooks, pty_runner  # noqa: E402
+from sysforge.primitives.pty_runner import _StreamBoundary  # noqa: E402
+
+_COMPLETE_SEQUENCES = [
+    pytest.param(b"\x1b[31m", id="csi-sgr"),
+    pytest.param(b"\x1b[?25l", id="csi-private"),
+    pytest.param(b"\x1b]8;;https://example.org\x07", id="osc-bel"),
+    pytest.param(b"\x1b]0;title\x1b\\", id="osc-st"),
+    pytest.param(b"\x1bP1$r0m\x1b\\", id="dcs"),
+    pytest.param(b"\x1b_payload\x1b\\", id="apc"),
+    pytest.param(b"\x1b(B", id="nf-charset"),
+    pytest.param(b"\x1b7", id="two-byte-esc"),
+    pytest.param("é".encode(), id="utf8-2"),
+    pytest.param("€".encode(), id="utf8-3"),
+    pytest.param("😀".encode(), id="utf8-4"),
+]
+
+
+def test_plain_text_is_at_a_boundary():
+    b = _StreamBoundary()
+    assert b.at_boundary
+    b.feed(b"hello\r\nworld [1/9] ninja")
+    assert b.at_boundary
+
+
+@pytest.mark.parametrize("seq", _COMPLETE_SEQUENCES)
+def test_a_sequence_split_at_every_byte_is_mid_sequence(seq):
+    for k in range(1, len(seq)):
+        b = _StreamBoundary()
+        b.feed(b"x" + seq[:k])
+        assert not b.at_boundary, (seq, k)
+        b.feed(seq[k:] + b"y")
+        assert b.at_boundary, (seq, k)
+
+
+@pytest.mark.parametrize("seq", _COMPLETE_SEQUENCES)
+def test_byte_at_a_time_reaches_a_boundary_only_at_the_end(seq):
+    b = _StreamBoundary()
+    for i, byte in enumerate(seq):
+        b.feed(bytes([byte]))
+        assert b.at_boundary == (i == len(seq) - 1), (seq, i)
+
+
+def test_an_escape_inside_a_csi_starts_a_new_sequence():
+    b = _StreamBoundary()
+    b.feed(b"\x1b[3\x1b[0m")
+    assert b.at_boundary
+
+
+class _RecordingHooks:
+    """A display that records when it is asked to repaint, and what the
+    forwarded stream held at that moment."""
+
+    def __init__(self, sink: io.BytesIO) -> None:
+        self.sink = sink
+        self.events: list[str] = []
+        self.refreshes: list[tuple[float, bytes]] = []
+
+    @contextlib.contextmanager
+    def forwarding_output(self):
+        self.events.append("forwarding-enter")
+        try:
+            yield
+        finally:
+            self.events.append("forwarding-exit")
+
+    def refresh(self) -> None:
+        self.events.append("refresh")
+        self.refreshes.append((time.monotonic(), self.sink.getvalue()))
+
+    def reserved_rows(self) -> int:
+        return 0
+
+
+@pytest.fixture
+def recording_hooks(monkeypatch):
+    # The stdout sink is installed by each test body, not here: pytest puts
+    # its own sys.stdout back between fixture setup and the test call.
+    rec = _RecordingHooks(io.BytesIO())
+    prior = progress_hooks.hooks()
+    progress_hooks.register(rec)
+    monkeypatch.setattr(pty_runner, "_REFRESH_S", 0.05)
+    yield rec
+    progress_hooks.register(prior)
+
+
+_SPLIT_CHILD = (
+    "import os, time\n"
+    "os.write(1, b'A\\x1b[3'); time.sleep(0.3)\n"          # mid-CSI
+    "os.write(1, b'1mB\\xe2\\x82'); time.sleep(0.3)\n"     # mid-codepoint
+    "os.write(1, b'\\xacC\\n'); time.sleep(0.3)\n"         # at a boundary
+)
+
+
+def test_refresh_happens_only_at_stream_boundaries(tmp_path, recording_hooks, monkeypatch):
+    rec = recording_hooks
+    rec.sink = _capture_stdout_buffer(monkeypatch)
+    rc = run_with_pty(
+        [sys.executable, "-c", _SPLIT_CHILD],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None, forward_bytes=True,
+    )
+    assert rc == 0
+    assert rec.refreshes, rec.events
+    for _when, forwarded in rec.refreshes:
+        b = _StreamBoundary()
+        b.feed(forwarded)
+        assert b.at_boundary, forwarded
+    # The stream did reach a boundary, and a refresh followed it.
+    assert any(f.endswith(b"C\r\n") for _w, f in rec.refreshes), rec.refreshes[-3:]
+    times = [w for w, _f in rec.refreshes]
+    assert all(b - a >= 0.045 for a, b in itertools.pairwise(times))
+    assert rec.events[0] == "forwarding-enter"
+    assert rec.events[-1] == "forwarding-exit"
+
+
+def test_no_forwarding_hooks_without_forward_bytes(tmp_path, recording_hooks, monkeypatch):
+    recording_hooks.sink = _capture_stdout_buffer(monkeypatch)
+    rc = run_with_pty(
+        [sys.executable, "-c", _SPLIT_CHILD],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None, forward_bytes=False,
+    )
+    assert rc == 0
+    assert recording_hooks.events == []
+
+
+def test_a_child_stuck_mid_escape_does_not_spin(tmp_path, recording_hooks, monkeypatch):
+    """Refresh is deferred, never forced — and deferring must not turn the
+    select loop into a busy wait while the stream sits mid-sequence."""
+    calls = []
+    real_select = pty_runner.select.select
+
+    def counting_select(*args, **kwargs):
+        calls.append(1)
+        return real_select(*args, **kwargs)
+
+    monkeypatch.setattr(pty_runner.select, "select", counting_select)
+    recording_hooks.sink = _capture_stdout_buffer(monkeypatch)
+    rc = run_with_pty(
+        [sys.executable, "-c", "import os, time; os.write(1, b'\\x1b[3'); time.sleep(0.5)"],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None, forward_bytes=True,
+    )
+    assert rc == 0
+    assert len(calls) < 50, len(calls)
+    assert all(not f.endswith(b"\x1b[3") for _w, f in recording_hooks.refreshes)
+
+
+def test_a_failing_refresh_never_breaks_the_build(tmp_path, recording_hooks, monkeypatch):
+    def boom():
+        raise RuntimeError("display gone")
+
+    monkeypatch.setattr(recording_hooks, "refresh", boom)
+    recording_hooks.sink = _capture_stdout_buffer(monkeypatch)
+    rc = run_with_pty(
+        [sys.executable, "-c", "import time; print('a', flush=True); time.sleep(0.2); print('b')"],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None, forward_bytes=True,
+    )
+    assert rc == 0

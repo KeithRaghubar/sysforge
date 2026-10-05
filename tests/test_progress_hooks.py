@@ -27,14 +27,35 @@ def no_display():
 def test_noop_default_satisfies_the_whole_surface(no_display):
     h = progress_hooks.hooks()
     assert h.reserved_rows() == 0
-    assert h.suspend_for_prompt() is None
     assert h.heartbeat("still going") is None
-    with h.suspended():
-        pass
     with h.tracker(3, "pkg") as tick:
         tick("one")
         tick.note("sub-step")
         tick.resume()
+
+
+def test_noop_default_covers_the_redesigned_surface(no_display):
+    """3.3.0-F2: terminal handover, scheduled repaint and the nesting guard
+    are all part of the protocol, so each needs a working no-op."""
+    h = progress_hooks.hooks()
+    with h.yield_terminal("prompt"):
+        pass
+    with h.yield_terminal("child"):
+        pass
+    with h.forwarding_output():
+        pass
+    assert h.refresh() is None
+    assert h.require_no_tracker("build_and_install") is None
+
+
+def test_the_superseded_handover_names_are_gone():
+    """3.3.0-F2: yield_terminal is the one terminal-handover API."""
+    from sysforge.ui import progress
+
+    for name in ("suspend_for_prompt", "suspended"):
+        assert not hasattr(progress_hooks.ProgressHooks, name)
+        assert not hasattr(progress_hooks._NoOpHooks, name)
+        assert not hasattr(progress, name)
 
 
 def test_noop_default_is_protocol_conformant(no_display):
@@ -55,25 +76,29 @@ def test_register_is_seen_by_later_lookups(no_display):
     calls = []
 
     class Recorder:
-        def suspend_for_prompt(self):
-            calls.append("suspend")
+        def refresh(self):
+            calls.append("refresh")
 
     progress_hooks.register(Recorder())
-    progress_hooks.hooks().suspend_for_prompt()
-    assert calls == ["suspend"]
+    progress_hooks.hooks().refresh()
+    assert calls == ["refresh"]
 
 
 def test_prompt_suspends_through_the_hook(no_display, monkeypatch):
-    """prompt_text blanks the bar via the protocol, not via a ui/ import."""
+    """prompt_text yields the terminal via the protocol, not via a ui/ import."""
+    import contextlib
+
     from sysforge.primitives import prompt
 
     calls = []
 
     class Recorder:
-        def suspend_for_prompt(self):
-            calls.append("suspend")
+        @contextlib.contextmanager
+        def yield_terminal(self, kind="prompt"):
+            calls.append(f"yield:{kind}")
+            yield
 
     progress_hooks.register(Recorder())
     monkeypatch.setattr("builtins.input", lambda _p: "value")
     assert prompt.prompt_text("pick", default="d") == "value"
-    assert calls == ["suspend"]
+    assert calls == ["yield:prompt"]

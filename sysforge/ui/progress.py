@@ -9,41 +9,48 @@ Dual-mode renderer, picked once at init():
   TTY mode   — DECSTBM scroll region reserves the bottom row; other
                output (including subprocess output that inherits the
                TTY, e.g. makepkg / git / pacman) scrolls above it.
-               Survives SIGWINCH and interactive input() via clear().
-  Plain mode — non-TTY / dry-run / TERM=dumb / CI / NO_COLOR. Emits
+  Plain mode — non-TTY / TERM=dumb / CI / NO_COLOR. Emits
                '[PROGRESS] [i/n] label' through log.ui() so the same
                data still reaches the user and the log file without
                ANSI garbage in pipes or journald.
 
+One owner per concern (3.3.0-F2):
+  What the line says — one state object (``_bar``); ``_compose()`` derives
+      the line from it, so nothing stores the rendered text twice.
+  How the terminal is handed away — ``yield_terminal(kind)``, nothing else.
+      Interactive input goes through ``primitives/prompt.py``, which yields
+      for you; never call ``clear()`` before ``input()``.
+  When the bar repaints — ``_draw()`` is the only writer, one write per
+      frame. Events (tick, phase, yield exit) draw immediately; a ticker
+      thread redraws ~1/s so the clock keeps moving, except while
+      ``pty_runner`` forwards a raw byte stream, when it owns repaint
+      (``forwarding_output()`` / ``refresh()``).
+  Lifecycle — ``cli.main`` wraps the run in ``session()``; atexit is only
+      the backstop for other importers.
+
 Public API:
-    init()                  once at CLI entry, after log.set_verbosity
+    init()                  once at CLI entry, after verbosity/colour/dry-run
+    session()               context manager; releases the terminal on exit
     shutdown()              release the terminal; idempotent; atexit-registered
-    render(i, n, label)     paint a status (reserves region on first call)
-    phase(label)            paint an uncounted phase status that persists
-                            across tracker() scopes; phase(None) clears it
-    clear()                 release the region (call before input())
+    phase(label)            uncounted status, a single slot; phase(None) clears
     tracker(total, prefix)  context manager yielding a tick(label) callable.
-                            While one is open, every painted line carries a
-                            ' · <elapsed>' suffix (once past _ELAPSED_FLOOR_S)
-                            and, after two items have completed, a
-                            ' · ~<eta> left' projected from the measured rate.
-                            The callable also carries:
-                              tick.note(text)  repaint at the current count
-                                               with a one-off label (no
-                                               increment) — for a transient
-                                               sub-step overlay
-                              tick.resume()    repaint the last tick state,
-                                               undoing a prior note()
-
-Reservation is lazy: entering tracker() alone touches nothing; the first
-tick() establishes the region. Short-running invocations that never tick
-leave the terminal untouched.
-
-A phase set via phase() outlives any nested tracker(): when the tracker
-exits it repaints the phase instead of releasing the region, so the bottom
-line stays populated between counted batches. clear() still releases the
-region unconditionally (the call-before-input() safety valve); the next
-render()/phase() re-establishes it.
+                            While open its line wins over the phase and carries
+                            ' · <elapsed>' (past _ELAPSED_FLOOR_S) and, after
+                            two completions, ' · ~<eta> left'. The callable
+                            also carries:
+                              tick.note(text)  show '[i/n] <text>' instead of
+                                               the label (no increment)
+                              tick.resume()    drop the note
+                            One tracker at a time: a tracker opened inside
+                            another is a no-op (RuntimeError under tests).
+    heartbeat(detail)       live detail appended to the line; does not paint
+    yield_terminal(kind)    hand the terminal to a "prompt" (blank the row,
+                            keep the region) or a "child" (release it); the
+                            tracker clock pauses for the duration
+    clear()                 teardown: release the region, keep the state
+    reserved_rows()         0/1 — rows a pty child must not use
+    refresh() / forwarding_output() / require_no_tracker(owner)
+                            see ``primitives/progress_hooks.py``
 """
 import atexit
 import contextlib
@@ -51,10 +58,15 @@ import os
 import shutil
 import signal
 import sys
+import threading
 import time
+from dataclasses import dataclass
 from typing import Iterator, Optional, Protocol
 
 from sysforge import log
+from sysforge.primitives import progress_hooks as _progress_hooks
+
+_log = log.get_logger("PROGRESS")
 
 
 class Tick(Protocol):
@@ -76,14 +88,66 @@ _INDEX = _ESC + "D"
 _RESET_REGION = _ESC + "[r"
 _CLEAR_LINE = _ESC + "[2K"
 
-_mode: Optional[str] = None
-_reserved: bool = False
-_last_status: Optional[str] = None
-_last_base: Optional[str] = None
-_phase: Optional[str] = None
-_rows: int = 0
-_cols: int = 0
+_TTY_PREFIX = "[SYSFORGE][PROGRESS] "
+_PLAIN_PREFIX = "[PROGRESS] "
+
+# yield_terminal kinds, by strength: a child yield (region released) subsumes
+# a prompt yield (row blanked, region kept).
+_YIELD_STRENGTH = {"prompt": 1, "child": 2}
+
+
+# ---------------------------------------------------------------------------
+# State (3.3.0-F2)
+# ---------------------------------------------------------------------------
+# Everything the bar says, and everything known about the terminal, lives
+# here. The rendered line is derived by _compose() at paint time and never
+# stored except as `drawn` — the exact text last written, kept only so an
+# unchanged frame writes nothing.
+
+@dataclass
+class _Tracker:
+    total: int
+    prefix: str
+    started: float                     # active-clock time at entry
+    index: int = 0                     # items ticked; item `index` is in flight
+    label: str = ""                    # in-flight item's label
+    note: Optional[str] = None         # tick.note() overlay; None → show label
+    last_tick: float = 0.0             # active-clock time the in-flight item started
+    expected: Optional[list[int]] = None  # per-item seconds; reserved for 3.3.0-F1
+    paused_total: float = 0.0          # wall seconds spent paused since entry
+    paused_since: Optional[float] = None  # set while paused
+
+
+@dataclass
+class _Bar:
+    mode: Optional[str] = None         # "tty" | "plain" | None (uninitialised)
+    phase: Optional[str] = None        # single slot: phase(x) replaces, phase(None) clears
+    tracker: Optional[_Tracker] = None  # at most one
+    detail: Optional[str] = None       # heartbeat detail; cleared by tick/note/resume/phase
+    yielded: Optional[str] = None      # None | "prompt" | "child"
+    yield_depth: int = 0
+    pause_depth: int = 0               # yields + bare pauses; the clock stops while > 0
+    forwarding: int = 0                # pty_runner forwarding a raw stream; ticker stands down
+    reserved: bool = False
+    resize_pending: bool = False
+    rows: int = 0
+    cols: int = 0
+    drawn: Optional[str] = None        # exact text last written to the bar row
+
+
+_bar = _Bar()
+
+# Guards mutate-then-draw in every public entry point and the ticker. Never
+# held across a blocking call or a yield_terminal body; never taken by the
+# signal handler. Re-entrant so a helper that calls back in cannot deadlock.
+_lock = threading.RLock()
+
+# One tracker at a time. Production logs and ignores a nested tracker; the
+# test suite flips this on (tests/conftest.py) so nesting fails loudly.
+_strict_nesting = False
+
 _sigwinch_installed: bool = False
+_atexit_installed: bool = False
 
 # Opt-in region-transition trace for diagnosing a vanishing bar (3.2.0-B11).
 # Set SYSFORGE_PROGRESS_TRACE=<path> to append a timestamped record of every
@@ -105,10 +169,9 @@ def _trace(event: str) -> None:
             fh.write(f"{time.time():.3f} {event}\n")
     except Exception:  # noqa: S110 — a trace must never break the run
         pass
-_atexit_installed: bool = False
 
 # ---------------------------------------------------------------------------
-# Elapsed / ETA suffix (3.2.0-F14)
+# Elapsed / ETA suffix (3.2.0-F14), on a pausable clock (3.3.0-F2)
 # ---------------------------------------------------------------------------
 # The counter alone gives position but not pace: at default verbosity a healthy
 # 40-second source sync and a stalled one look identical. The estimate is built
@@ -118,17 +181,16 @@ _atexit_installed: bool = False
 # forty seconds. Items already completed here were fetched on this machine,
 # over this link, against this work, which is the best predictor available.
 #
+# Time spent with the terminal yielded (a prompt waiting on the user) is not
+# work, so the tracker measures an *active* clock that stops while paused —
+# otherwise one slow answer would inflate the rate for the rest of the batch.
+#
 # Indirection so tests can drive a deterministic clock.
 _monotonic = time.monotonic
 
 # Below this, there is nothing worth saying — and saying nothing keeps short
 # batches rendering byte-identically to the pre-F14 line.
 _ELAPSED_FLOOR_S = 5
-
-# Set by tracker() for the duration of its scope; consulted at *paint* time by
-# render() and heartbeat() so the clock keeps moving inside one long item
-# instead of freezing at whatever the last tick composed.
-_time_suffix_fn = None
 
 
 def _fmt_span(seconds: float) -> str:
@@ -146,15 +208,61 @@ def _fmt_span(seconds: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def _time_suffix() -> str:
-    """Current ' · <elapsed>[ · ~<eta> left]', or '' when outside a tracker."""
-    if _time_suffix_fn is None:
-        return ""
-    try:
-        return _time_suffix_fn()
-    except Exception:  # noqa: S110 — a decoration must never break the bar
-        return ""
+def _active(t: _Tracker, now: float) -> float:
+    """*now* on the tracker's active clock: wall time minus time paused."""
+    paused = t.paused_total
+    if t.paused_since is not None:
+        paused += now - t.paused_since
+    return now - paused
 
+
+def _time_suffix(t: _Tracker, now: float) -> str:
+    """' · <elapsed>[ · ~<eta> left]' for an open tracker, or ''."""
+    active = _active(t, now)
+    elapsed = active - t.started
+    if elapsed < _ELAPSED_FLOOR_S:
+        return ""
+    out = f" · {_fmt_span(elapsed)}"
+    # Item `index` is still in flight, so only 1..index-1 have measured durations.
+    completed = t.index - 1
+    if completed >= 2 and t.total > completed:
+        rate = (t.last_tick - t.started) / completed
+        # Remaining work includes the in-flight item; subtract what it has
+        # already burned so the figure decays between ticks.
+        eta = rate * (t.total - completed) - (active - t.last_tick)
+        if eta > 0:
+            out += f" · ~{_fmt_span(eta)} left"
+    # eta <= 0 means the estimate is overrun, not that we are done: drop it
+    # rather than pin '~0s left' to the bar for the rest of a long item.
+    return out
+
+
+def _compose(bar: _Bar, now: float) -> Optional[str]:
+    """The only line constructor: what the bar says right now, or None."""
+    t = bar.tracker
+    if t is not None and t.total > 0:
+        if t.note is not None:
+            body = t.note
+        else:
+            body = f"{t.prefix} · {t.label if t.index else 'starting...'}"
+        try:
+            suffix = _time_suffix(t, now)
+        except Exception:  # a decoration must never break the bar
+            suffix = ""
+        text = f"[{t.index}/{t.total}] {body}{suffix}"
+    elif bar.phase is not None:
+        text = bar.phase
+    else:
+        return None
+    if bar.detail:
+        text = f"{text} · {bar.detail}"
+    prefix = _PLAIN_PREFIX if bar.mode == "plain" else _TTY_PREFIX
+    return prefix + text
+
+
+# ---------------------------------------------------------------------------
+# Terminal primitives — each returns the bytes for its part of a frame
+# ---------------------------------------------------------------------------
 
 def _detect_mode() -> str:
     # 3.1.0-B7: dry-run is deliberately NOT a rung here. The other half of
@@ -192,19 +300,18 @@ def _write(seq: str) -> None:
 
 
 def _refresh_size() -> None:
-    global _rows, _cols
     sz = shutil.get_terminal_size(fallback=(80, 24))
-    _cols, _rows = sz.columns, sz.lines
+    _bar.cols, _bar.rows = sz.columns, sz.lines
 
 
-def _establish_region() -> None:
-    global _reserved
-    if _reserved:
-        return
+def _establish_seq() -> str:
+    if _bar.reserved:
+        return ""
     _refresh_size()
-    if _rows < 3:
-        _trace(f"establish-skipped rows={_rows} (terminal too short)")
-        return
+    rows = _bar.rows
+    if rows < 3:
+        _trace(f"establish-skipped rows={rows} (terminal too short)")
+        return ""
     # Reserve the bar's row (N) and guarantee the cursor ends up INSIDE the
     # scroll region regardless of where the shell prompt started. A DECSTBM
     # region only scrolls for a cursor within [1, N-1]: if the prompt began at
@@ -220,55 +327,250 @@ def _establish_region() -> None:
     #      the scroll — landing the cursor back on its content, now inside the
     #      region.
     # This also avoids the fresh-shell blank-line gap the old cursor-park caused.
-    _write(_SAVE)
-    _write(f"{_ESC}[{_rows};1H")
-    _write(_INDEX)
-    _write(f"{_ESC}[1;{_rows - 1}r")
-    _write(_RESTORE)
-    _write(f"{_ESC}[1A")
-    _reserved = True
-    _trace(f"establish rows={_rows} cols={_cols} region=[1,{_rows - 1}]")
+    _bar.reserved = True
+    _trace(f"establish rows={rows} cols={_bar.cols} region=[1,{rows - 1}]")
+    return (f"{_SAVE}{_ESC}[{rows};1H{_INDEX}{_ESC}[1;{rows - 1}r"
+            f"{_RESTORE}{_ESC}[1A")
 
 
-def _release_region() -> None:
-    global _reserved
-    if not _reserved:
-        return
+def _release_seq() -> str:
+    _bar.drawn = None
+    if not _bar.reserved:
+        return ""
     # Resetting the region also homes the cursor, and clearing the bar drives it
     # to the absolute bottom row — bracket both with save/restore so the shell
     # resumes from the real content row, not the bottom of an otherwise-empty
     # screen (the stranded-blank-lines bug).
-    _write(_SAVE)
-    _write(_RESET_REGION)
-    _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
-    _write(_RESTORE)
-    _reserved = False
-    _trace(f"release rows={_rows}")
+    _bar.reserved = False
+    _trace(f"release rows={_bar.rows}")
+    return f"{_SAVE}{_RESET_REGION}{_ESC}[{_bar.rows};1H{_CLEAR_LINE}{_RESTORE}"
 
 
-def _paint(text: str) -> None:
-    if _cols <= 0:
+def _blank_seq() -> str:
+    """Blank the bar row in place, keeping the region (a prompt yield)."""
+    _bar.drawn = None
+    if not _bar.reserved:
+        return ""
+    return f"{_SAVE}{_ESC}[{_bar.rows};1H{_CLEAR_LINE}{_RESTORE}"
+
+
+def _paint_seq(text: str) -> str:
+    if _bar.cols <= 0:
         _refresh_size()
     # Downgrade decorative glyphs (·, block-bar fills) before width-truncating —
     # ASCII fallbacks change length, so this must precede the column clamp.
-    text = log.downgrade_glyphs(text)
-    truncated = text[: max(0, _cols - 1)]
-    _write(_SAVE)
-    _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
-    _write(truncated)
-    _write(_RESTORE)
-    _trace(f"paint row={_rows} text={truncated!r}")
+    truncated = log.downgrade_glyphs(text)[: max(0, _bar.cols - 1)]
+    _trace(f"paint row={_bar.rows} text={truncated!r}")
+    return f"{_SAVE}{_ESC}[{_bar.rows};1H{_CLEAR_LINE}{truncated}{_RESTORE}"
+
+
+def _draw() -> None:
+    """Sole bar writer (TTY). Caller holds ``_lock``.
+
+    Builds the whole frame — any resize, region establishment or release and
+    the painted row — as one string and emits it with a single write, so a
+    log line from another thread can land before or after a frame but never
+    inside one.
+    """
+    bar = _bar
+    if bar.mode != "tty" or bar.yielded is not None:
+        return
+    frame = ""
+    if bar.resize_pending:
+        bar.resize_pending = False
+        _trace("resize")
+        frame += _release_seq()
+        _refresh_size()
+    text = _compose(bar, _monotonic())
+    if text is None:
+        frame += _release_seq()
+        if frame:
+            _write(frame)
+        return
+    if text == bar.drawn:
+        return
+    frame += _establish_seq()
+    if bar.reserved:
+        frame += _paint_seq(text)
+        bar.drawn = text
+        _ensure_ticker()
+    if frame:
+        _write(frame)
+
+
+def _emit_plain() -> None:
+    """Plain-mode counterpart of _draw(): one log line per change of text."""
+    text = _compose(_bar, _monotonic())
+    if text is None:
+        _bar.drawn = None
+        return
+    if text != _bar.drawn:
+        log.ui("[PROGRESS]", text)
+        _bar.drawn = text
+
+
+def _changed() -> None:
+    """Show a state change made by an event (tick, phase). Caller holds ``_lock``."""
+    if _bar.mode == "plain":
+        _emit_plain()
+    else:
+        _draw()
+
+
+def _ensure_init() -> None:
+    if _bar.mode is None:
+        init()
 
 
 def _on_sigwinch(*_args) -> None:
-    if _mode != "tty" or not _reserved:
-        _trace(f"sigwinch-ignored mode={_mode} reserved={_reserved}")
+    # Flag only: no I/O and no lock from a signal handler, which may have
+    # interrupted a paint holding both. The scheduled owner applies it.
+    _bar.resize_pending = True
+
+
+# ---------------------------------------------------------------------------
+# Scheduled repaint (3.3.0-F2)
+# ---------------------------------------------------------------------------
+# Exactly one painter on a schedule at a time. By default that is this ticker
+# thread; while pty_runner forwards a raw byte stream (which can be mid-escape
+# or mid-UTF-8 at any moment) it stands down and pty_runner calls refresh() at
+# stream boundaries instead. Frame dedup means it writes nothing until the
+# composed text changes — in practice once a second while a tracker's clock is
+# showing.
+
+_ticker_enabled = True        # tests/conftest.py turns this off
+_TICK_S = 1.0
+_ticker_thread: Optional[threading.Thread] = None
+_ticker_stop = threading.Event()
+
+
+def _ticker_step() -> None:
+    with _lock:
+        if _bar.mode != "tty" or _bar.yielded is not None or _bar.forwarding:
+            return
+        _draw()
+
+
+def _ticker_loop(stop: threading.Event) -> None:
+    while not stop.wait(_TICK_S):
+        try:
+            _ticker_step()
+        except Exception as e:  # noqa: BLE001 — a repaint must never kill the run
+            _trace(f"ticker-error {e!r}")
+
+
+def _ensure_ticker() -> None:
+    global _ticker_thread, _ticker_stop
+    if not _ticker_enabled:
         return
-    _trace("sigwinch")
-    _release_region()
-    _establish_region()
-    if _last_status is not None:
-        _paint(_last_status)
+    if _ticker_thread is not None and _ticker_thread.is_alive():
+        return
+    _ticker_stop = threading.Event()
+    _ticker_thread = threading.Thread(
+        target=_ticker_loop, args=(_ticker_stop,),
+        name="sysforge-progress", daemon=True,
+    )
+    _ticker_thread.start()
+
+
+def _stop_ticker() -> None:
+    """Stop and join the ticker. Must not be called holding ``_lock``."""
+    global _ticker_thread
+    thread = _ticker_thread
+    if thread is None:
+        return
+    _ticker_stop.set()
+    if thread is not threading.current_thread():
+        thread.join(timeout=1.0)
+    _ticker_thread = None
+
+
+def refresh() -> None:
+    """Repaint now if the composed text changed (the forwarding owner's call)."""
+    with _lock:
+        if _bar.mode == "tty":
+            _draw()
+
+
+@contextlib.contextmanager
+def forwarding_output() -> Iterator[None]:
+    """Mark a raw byte stream as being forwarded; the ticker stands down."""
+    with _lock:
+        _bar.forwarding += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            _bar.forwarding -= 1
+
+
+# ---------------------------------------------------------------------------
+# Pause and terminal handover
+# ---------------------------------------------------------------------------
+
+def _pause() -> None:
+    """Stop the tracker clock. Depth-counted; independent of yielding."""
+    with _lock:
+        _bar.pause_depth += 1
+        t = _bar.tracker
+        if _bar.pause_depth == 1 and t is not None:
+            t.paused_since = _monotonic()
+
+
+def _unpause() -> None:
+    with _lock:
+        if _bar.pause_depth == 0:
+            return
+        _bar.pause_depth -= 1
+        t = _bar.tracker
+        if _bar.pause_depth == 0 and t is not None and t.paused_since is not None:
+            t.paused_total += _monotonic() - t.paused_since
+            t.paused_since = None
+
+
+@contextlib.contextmanager
+def yield_terminal(kind: str = "prompt") -> Iterator[None]:
+    """Hand the terminal to someone else for the body, then take it back.
+
+    ``"prompt"`` blanks the bar row in place and keeps the scroll region, so
+    the prompt prints in the normal content flow — a full release resets the
+    region (``ESC[r``), and the cursor-restore across that reset is unreliable
+    on some terminals; it left prompts rendering off-view. ``"child"`` releases
+    the region entirely, for a TTY-inheriting child that addresses the whole
+    screen (a pager, a full-screen editor), which the region would otherwise
+    clamp into the reserved band.
+
+    While yielded, state keeps updating but nothing draws, and an open
+    tracker's clock is paused. Yields nest; the strongest kind applies, and
+    the outermost exit restores the region if it was released and repaints
+    immediately. No-op in plain mode.
+    """
+    if kind not in _YIELD_STRENGTH:
+        raise ValueError(f"unknown yield kind {kind!r}")
+    with _lock:
+        _ensure_init()
+        active = _bar.mode == "tty"
+        if active:
+            _bar.yield_depth += 1
+            _pause()
+            prev = _bar.yielded
+            if prev is None or _YIELD_STRENGTH[kind] > _YIELD_STRENGTH[prev]:
+                _bar.yielded = kind
+                frame = _release_seq() if kind == "child" else _blank_seq()
+                if frame:
+                    _write(frame)
+    if not active:
+        yield
+        return
+    try:
+        yield
+    finally:
+        with _lock:
+            _bar.yield_depth -= 1
+            _unpause()
+            if _bar.yield_depth == 0:
+                _bar.yielded = None
+                _draw()
 
 
 def reserved_rows() -> int:
@@ -279,19 +581,26 @@ def reserved_rows() -> int:
     DECSTBM region (``[1, N-1]``) and never touch the bar row. This keeps the
     bar permanently visible *during* a subprocess build instead of having it
     collapse output onto the reserved row. See ``pty_runner.run_with_pty``'s
-    ``reserve_bottom_rows`` argument.
+    ``reserve_bottom_rows`` argument. 1 while prompt-yielded (the region is
+    kept), 0 while child-yielded (it is released).
     """
-    return 1 if (_mode == "tty" and _reserved) else 0
+    return 1 if (_bar.mode == "tty" and _bar.reserved) else 0
 
+
+# ---------------------------------------------------------------------------
+# Lifecycle
+# ---------------------------------------------------------------------------
 
 def init() -> None:
     """Detect mode and install lifecycle hooks. Safe to call repeatedly."""
-    global _mode, _sigwinch_installed, _atexit_installed
-    _mode = _detect_mode()
+    global _sigwinch_installed, _atexit_installed
+    with _lock:
+        _bar.mode = _detect_mode()
     if not _atexit_installed:
+        # The backstop for importers that don't go through cli.main's session().
         atexit.register(shutdown)
         _atexit_installed = True
-    if _mode == "tty" and not _sigwinch_installed:
+    if _bar.mode == "tty" and not _sigwinch_installed:
         try:
             signal.signal(signal.SIGWINCH, _on_sigwinch)
             _sigwinch_installed = True
@@ -300,163 +609,126 @@ def init() -> None:
 
 
 def shutdown() -> None:
-    """Restore the terminal. Idempotent. Registered atexit."""
-    if _mode == "tty":
-        _release_region()
-
-
-def render(current: int, total: int, label: str) -> None:
-    """Paint a status line 'current/total label'."""
-    global _last_status
-    if _mode is None:
-        init()
-    if _mode == "plain":
-        msg = f"[PROGRESS] [{current}/{total}] {label}{_time_suffix()}"
-        log.ui("[PROGRESS]", msg)
-        _last_status = msg
-        return
-    global _last_base
-    # _last_base stays suffix-free: heartbeat() re-appends a freshly computed
-    # suffix, so the clock it shows is the clock now, not the clock at the tick.
-    _last_base = f"[SYSFORGE][PROGRESS] [{current}/{total}] {label}"
-    text = f"{_last_base}{_time_suffix()}"
-    _last_status = text
-    if not _reserved:
-        _establish_region()
-    if _reserved:
-        _paint(text)
-
-
-def phase(label: Optional[str]) -> None:
-    """Paint an uncounted phase status; ``phase(None)`` clears it.
-
-    The phase persists across nested tracker() scopes — tracker exit
-    repaints it instead of releasing the region. Repeated calls with the
-    same label are deduped in plain mode so log output stays one line per
-    phase change.
-    """
-    global _phase, _last_status
-    if _mode is None:
-        init()
-    if label is None:
-        _phase = None
-        _last_status = None
-        clear()
-        return
-    deduped = label == _phase
-    _phase = label
-    if _mode == "plain":
-        if not deduped:
-            msg = f"[PROGRESS] {label}"
-            log.ui("[PROGRESS]", msg)
-            _last_status = msg
-        return
-    global _last_base
-    _last_base = f"[SYSFORGE][PROGRESS] {label}"
-    text = f"{_last_base}{_time_suffix()}"
-    _last_status = text
-    if not _reserved:
-        _establish_region()
-    if _reserved:
-        _paint(text)
-
-
-
-def heartbeat(detail: str) -> None:
-    """Repaint the current status with live *detail*, advancing nothing.
-
-    A whole package build sits inside a single ``tick()``, so the bar was
-    painted once and then left untouched for the build's entire duration — a
-    trace of one real run showed a 379-second gap between paints against a
-    4-second runner-up, which is a bar that is stale for six minutes rather
-    than one that is working (3.2.0-B13). ``pty_runner``'s idle callback
-    already knows the child is alive and what it is compiling every
-    ``MAKEPKG_HEARTBEAT_S``; this is the channel that was missing between the
-    two. The periodic repaint also makes the reserved row self-healing, since
-    anything that corrupts it is now overwritten within the heartbeat interval
-    rather than persisting for the rest of the build.
-
-    Detail replaces rather than appends — it fires for the length of a build,
-    so appending would grow the line without bound — and the next ``render()``
-    or ``phase()`` overwrites it, since those set a new base. No-op before any
-    status exists, and in plain mode, where painting goes through ``log.ui()``
-    and a 30-second repaint would append to the log forever (the per-package
-    log already receives the same heartbeat from ``makepkg_invoke``).
-    """
-    global _last_status
-    if _mode is None:
-        init()
-    if _mode != "tty" or not _last_base:
-        return
-    base = f"{_last_base}{_time_suffix()}"
-    text = f"{base} · {detail}" if detail else base
-    _last_status = text
-    if not _reserved:
-        _establish_region()
-    if _reserved:
-        _paint(text)
-
-
-def clear() -> None:
-    """Release the reserved region. Safe to call unconditionally."""
-    if _mode == "tty":
-        _release_region()
-
-
-def suspend_for_prompt() -> None:
-    """Make the bottom bar safe for an interactive prompt without releasing
-    the region. Safe to call unconditionally.
-
-    Blanks the reserved status row *in place* — the same
-    save → goto-bottom → clear → restore dance ``_paint`` uses every frame —
-    but does **not** reset the DECSTBM region and does **not** move the
-    logical cursor. The prompt is therefore printed in the normal content
-    flow (where it is visible) with no stale bar text to collide with.
-
-    This is deliberately *not* :func:`clear`: a full release resets the
-    scroll region (``ESC[r``), and the cursor-restore across that reset is
-    unreliable on some terminals — it left prompts rendering off-view. The
-    region survives, so the next ``render()``/``phase()``/tick simply repaints
-    the bar; nothing needs to re-establish it.
-    """
-    global _last_status
-    if _mode != "tty" or not _reserved:
-        return
-    _write(_SAVE)
-    _write(f"{_ESC}[{_rows};1H{_CLEAR_LINE}")
-    _write(_RESTORE)
-    _last_status = None
+    """Stop the ticker and restore the terminal. Idempotent. Registered atexit."""
+    _stop_ticker()
+    with _lock:
+        if _bar.mode == "tty":
+            frame = _release_seq()
+            if frame:
+                _write(frame)
 
 
 @contextlib.contextmanager
-def suspended() -> Iterator[None]:
-    """Fully release the region for the body, then restore the bar.
-
-    Wrap a TTY-inheriting subprocess that forwards its **own** cursor-addressed
-    output (``makepkg`` → cargo/ninja/cmake live progress) — the scroll region
-    would otherwise clamp the child's full-screen redraws into the reserved
-    band and collapse its output onto the bar row. Releasing the region hands
-    the child a clean, unconstrained terminal; on exit the bar is re-established
-    and repainted (lazily anyway on the next ``render()``/``phase()``/tick).
-
-    No-op outside TTY mode. Safe to nest / call when nothing is reserved.
-    """
-    was_reserved = _reserved
-    status = _last_status
-    if _mode == "tty":
-        _release_region()
+def session() -> Iterator[None]:
+    """The run's lifetime: the terminal is released however the body exits."""
     try:
         yield
     finally:
-        if _mode == "tty" and was_reserved and status is not None:
-            _establish_region()
-            if _reserved:
-                _paint(status)
+        shutdown()
+
+
+def clear() -> None:
+    """Release the reserved region; the bar's state is untouched (teardown only)."""
+    _stop_ticker()
+    with _lock:
+        if _bar.mode == "tty":
+            frame = _release_seq()
+            if frame:
+                _write(frame)
+        _bar.drawn = None
+
+
+# ---------------------------------------------------------------------------
+# What the bar says
+# ---------------------------------------------------------------------------
+
+def phase(label: Optional[str]) -> None:
+    """Set the uncounted phase status; ``phase(None)`` clears it.
+
+    A single slot, not a stack: ``run_verb`` paints ``<verb>: starting…`` and
+    ``update`` deliberately overrides it, and a stack would leave stale labels
+    beneath. While a tracker is open its line wins; the phase shows again once
+    it exits, so the bottom line stays populated between counted batches. In
+    plain mode a repeated phase is not logged twice.
+    """
+    with _lock:
+        _ensure_init()
+        _bar.phase = label
+        _bar.detail = None
+        _changed()
+
+
+def heartbeat(detail: str) -> None:
+    """Attach live *detail* to the current line, advancing nothing.
+
+    A whole package build sits inside a single ``tick()``; ``pty_runner``'s
+    idle callback knows the child is alive and what it is compiling every
+    ``MAKEPKG_HEARTBEAT_S`` (3.2.0-B13). The detail replaces rather than
+    appends, and the next tick/note/resume/phase clears it. This only sets
+    state — the scheduled repaint (the ticker, or ``pty_runner`` while it
+    forwards output) puts it on screen. Never shown in plain mode, where a
+    30-second line would append to the log forever.
+    """
+    with _lock:
+        _ensure_init()
+        _bar.detail = detail or None
+
+
+def require_no_tracker(owner: str) -> None:
+    """Refuse to start *owner* (which opens its own tracker) inside a tracker.
+
+    Called first thing by the functions that open trackers, so a mis-nested
+    caller fails before any sync/resolution side effects rather than when the
+    inner tracker opens. Raises under tests; logs at debug in production.
+    """
+    with _lock:
+        t = _bar.tracker
+    if t is None:
+        return
+    msg = f"{owner} called inside tracker '{t.prefix}'"
+    if _strict_nesting:
+        raise RuntimeError(msg)
+    _log.debug(msg)
+
+
+class _TrackerTick:
+    """The ``tick`` a tracker yields; a no-op once its tracker has closed."""
+
+    def __init__(self, t: _Tracker) -> None:
+        self._t = t
+
+    def __call__(self, label: str) -> None:
+        with _lock:
+            t = self._t
+            if _bar.tracker is not t:
+                return
+            t.index += 1
+            t.label = label
+            t.note = None
+            t.last_tick = _active(t, _monotonic())
+            _bar.detail = None
+            _changed()
+
+    def note(self, text: str) -> None:
+        with _lock:
+            if _bar.tracker is not self._t:
+                return
+            self._t.note = text
+            _bar.detail = None
+            _changed()
+
+    def resume(self) -> None:
+        with _lock:
+            if _bar.tracker is not self._t:
+                return
+            self._t.note = None
+            _bar.detail = None
+            _changed()
 
 
 @contextlib.contextmanager
 def tracker(total: int, prefix: str) -> Iterator[Tick]:
-    """Yield a tick(label) callable. Releases the region on exit.
+    """Yield a tick(label) callable counting *total* items.
 
         with progress.tracker(len(items), "building") as tick:
             for item in items:
@@ -466,81 +738,45 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
     Paints a 0/total placeholder on entry so users see immediate feedback
     even when the first tick is far away (e.g. a batch of slow git pulls).
 
-    The yielded ``tick`` also carries ``tick.note(text)`` (repaint at the
-    current count with a one-off label, no increment) and ``tick.resume()``
-    (repaint the last ``tick`` state) so a caller can overlay a transient
-    sub-step — e.g. a just-in-time dep install between two counted builds —
-    onto the same ``[i/total]`` counter without advancing it.
+    One tracker at a time. For a sub-step inside an item use the yielded
+    ``tick.note(text)`` / ``tick.resume()`` — e.g. a just-in-time dep install
+    between two counted builds — never a nested tracker. A tracker opened
+    inside another is a no-op here (debug-logged) and a ``RuntimeError``
+    under tests.
     """
-    global _last_status
-    if _mode is None:
-        init()
-
-    t0 = _monotonic()
-
-    class _Tick:
-        def __init__(self) -> None:
-            self.i = 0
-            self.label = ""
-            self.t_last = t0
-
-        def __call__(self, label: str) -> None:
-            self.i += 1
-            self.label = label
-            self.t_last = _monotonic()
-            render(self.i, total, f"{prefix} · {label}")
-
-        def note(self, text: str) -> None:
-            render(self.i, total, text)
-
-        def resume(self) -> None:
-            if self.i:
-                render(self.i, total, f"{prefix} · {self.label}")
-
-    tick = _Tick()
-
-    def _suffix() -> str:
-        now = _monotonic()
-        elapsed = now - t0
-        if elapsed < _ELAPSED_FLOOR_S:
-            return ""
-        out = f" · {_fmt_span(elapsed)}"
-        # Item i is still in flight, so only 1..i-1 have measured durations.
-        completed = tick.i - 1
-        if completed >= 2 and total > completed:
-            rate = (tick.t_last - t0) / completed
-            # Remaining work includes the in-flight item; subtract what it has
-            # already burned so the figure decays between ticks.
-            eta = rate * (total - completed) - (now - tick.t_last)
-            if eta > 0:
-                out += f" · ~{_fmt_span(eta)} left"
-        # eta <= 0 means the estimate is overrun, not that we are done: drop it
-        # rather than pin '~0s left' to the bar for the rest of a long item.
-        return out
-
-    global _time_suffix_fn
-    prev_suffix_fn = _time_suffix_fn
-    _time_suffix_fn = _suffix
-
-    if total > 0:
-        render(0, total, f"{prefix} · starting...")
-
+    t: Optional[_Tracker] = None
+    with _lock:
+        _ensure_init()
+        outer = _bar.tracker
+        if outer is None:
+            now = _monotonic()
+            t = _Tracker(total=total, prefix=prefix, started=now, last_tick=now)
+            if _bar.pause_depth:
+                t.paused_since = now   # opened while yielded: starts paused
+            _bar.tracker = t
+            _bar.detail = None
+            if total > 0:
+                _changed()
+    if outer is not None:
+        msg = f"tracker '{prefix}' opened inside '{outer.prefix}'"
+        if _strict_nesting:
+            raise RuntimeError(msg)
+        _log.debug(msg)
+        yield _progress_hooks._NoOpTick()
+        return
+    assert t is not None  # noqa: S101 — set above whenever outer is None
     try:
-        yield tick
+        yield _TrackerTick(t)
     finally:
-        _time_suffix_fn = prev_suffix_fn
-        if _phase is not None:
-            # An enclosing phase owns the bottom line — hand it back
-            # instead of releasing the region between batches.
-            label = _phase
-            if _mode == "tty":
-                _last_status = f"[SYSFORGE][PROGRESS] {label}"
-                if _reserved:
-                    _paint(_last_status)
-            # Plain mode: the phase line was already logged; don't repeat it.
-        else:
-            clear()
-            _last_status = None
+        with _lock:
+            if _bar.tracker is t:
+                _bar.tracker = None
+                _bar.detail = None
+                if _bar.mode == "plain":
+                    # Whatever shows now (the phase) was already logged.
+                    _bar.drawn = _compose(_bar, _monotonic())
+                else:
+                    _draw()
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +786,4 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
 # of importing upward into ui/. The module object satisfies the protocol as-is,
 # so every call still resolves through this module's globals — monkeypatching a
 # name here behaves exactly as it did before.
-from sysforge.primitives import progress_hooks as _progress_hooks  # noqa: E402
-
 _progress_hooks.register(sys.modules[__name__])

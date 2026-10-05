@@ -199,6 +199,28 @@ def _reset_source_sync_scheduler():
     source_sync.reset_scheduler()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_progress_bar(monkeypatch):
+    """
+    Give every test a fresh progress bar with strict nesting and no ticker
+    thread (3.3.0-F2).
+
+    The bar's state lives in one module object, so a tracker a failing test
+    left open would otherwise be "open" in the next one. Strict nesting turns
+    the one-tracker rule into a ``RuntimeError`` so a nested tracker fails the
+    test that opened it instead of being silently dropped as in production.
+    The ticker is off so no test spawns a background painter; scheduled
+    paints are driven by calling ``progress._ticker_step()`` directly.
+    """
+    from sysforge.ui import progress
+
+    monkeypatch.setattr(progress, "_bar", progress._Bar())
+    monkeypatch.setattr(progress, "_strict_nesting", True)
+    monkeypatch.setattr(progress, "_ticker_enabled", False)
+    yield
+    progress._stop_ticker()
+
+
 # ---------------------------------------------------------------------------
 # Centralized external-isolation fixtures (Phase 0 — behavior-first testing).
 #

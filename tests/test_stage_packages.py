@@ -245,12 +245,15 @@ def test_packages_stage_progress_verb_matches_action(tmp_path):
     state = PipelineState(tmp_path / "state")
     labels = []
 
-    def capture(current, total, label):
-        labels.append(label)
+    def capture(tag, msg):
+        # Under pytest stderr is not a TTY, so the bar runs in plain mode and
+        # every tick reaches log.ui() as one "[PROGRESS] [i/n] …" line.
+        if tag == "[PROGRESS]":
+            labels.append(msg)
 
     with patch("sysforge.pipeline.stages.packages.makepkg_run"), \
          patch("sysforge.pipeline.stages.packages.subprocess.run") as mock_pacman, \
-         patch("sysforge.ui.progress.render", side_effect=capture):
+         patch("sysforge.log.ui", side_effect=capture):
         mock_pacman.return_value = MagicMock(returncode=0)
         PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
 

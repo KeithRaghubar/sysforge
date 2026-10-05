@@ -329,9 +329,6 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
     Close the unified log. Truncates on success unless persist=True.
     """
     global _unified_log_fh
-    with contextlib.suppress(Exception):
-        from sysforge.ui import progress as _progress
-        _progress.shutdown()
     if _unified_log_fh is None:
         return
     if success and not persist:
@@ -452,10 +449,11 @@ def ui(tag: str, message: str) -> None:
 
 
 def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
-    """Print an error message, write to log files, and terminate the process."""
-    with contextlib.suppress(Exception):
-        from sysforge.ui import progress as _progress
-        _progress.shutdown()
+    """Print an error message, write to log files, and terminate the process.
+
+    The ``SystemExit`` unwinds through ``cli.main``'s ``progress.session()``,
+    which releases the progress bar on the way out (3.3.0-F2).
+    """
     error(tag, message)
     sys.exit(exit_code)
 

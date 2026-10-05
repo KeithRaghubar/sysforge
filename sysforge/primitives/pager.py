@@ -126,8 +126,8 @@ def maybe_pager(use_pager: bool):
     # pager launched *inside* that region is clamped to ``[1, N-1]``: less
     # can't own the bottom row, so its alternate-screen redraws desync into
     # the blank-open / scroll-up-only / looping-top corruption (B5). Release
-    # the region for the pager's lifetime — the same contract `suspended()`
-    # already provides for makepkg's TTY-inheriting child. Writes to stderr,
+    # the region for the pager's lifetime — a "child" yield, the same one a
+    # full-screen editor gets. Writes to stderr,
     # so it's unaffected by the stdout swap below; no-op outside TTY mode.
     from sysforge.primitives import progress_hooks
 
@@ -139,7 +139,7 @@ def maybe_pager(use_pager: bool):
         except (FileNotFoundError, OSError):
             continue
         old_stdout = sys.stdout
-        with progress_hooks.hooks().suspended():
+        with progress_hooks.hooks().yield_terminal("child"):
             try:
                 sys.stdout = proc.stdin  # type: ignore[assignment]
                 yield

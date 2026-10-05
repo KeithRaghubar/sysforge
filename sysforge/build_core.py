@@ -235,6 +235,8 @@ def prepare_deps(
     genuinely missing dep surfaces as a per-package build failure with a
     diagnosis, rather than aborting the whole batch up front).
     """
+    # It reaches build_resolved_deps' "AUR dep" tracker (3.3.0-F2).
+    _ui_progress.require_no_tracker("prepare_deps")
     if not pkgbuild_paths:
         return True
 
@@ -279,10 +281,6 @@ def prepare_deps(
             else:
                 _dep_state_dir = state_dir
             bs_deps = BuildState(_dep_state_dir)
-            if review == "prompt":
-                # Hand the bottom row back to the terminal before the
-                # single-keypress prompt (mirrors the target gate).
-                _ui_progress.clear()
             def _review_row(d):
                 # buildable was filtered to pkgbuild_path is not None above.
                 assert d.pkgbuild_path is not None  # noqa: S101 — buildable filter above guarantees this, not input validation
@@ -852,6 +850,9 @@ def build_and_install(
     mixed batch only profiles the mesa target. ``use`` earns the ``-sysforge``
     rename (``build_mode = "pgo_mesa"``).
     """
+    # Opens the "building" tracker; refuse before any sync side effect rather
+    # than when the nested tracker would open (3.3.0-F2).
+    _ui_progress.require_no_tracker("build_and_install")
     outcome = BuildOutcome()
     if timer is None:
         timer = PhaseTimer()
@@ -901,10 +902,6 @@ def build_and_install(
         else:
             _review_state_dir = state_dir
         bs_review = BuildState(_review_state_dir)
-        if review == "prompt":
-            # The prompt reads single keypresses — hand the bottom row back
-            # to the terminal first (mirrors makepkg_wrapper's prompts).
-            _ui_progress.clear()
         kept = []
         for t in targets:
             entry = None

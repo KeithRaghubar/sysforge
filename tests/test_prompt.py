@@ -311,22 +311,30 @@ def test_prompt_key_tty_raw_mode_setup_failure_falls_back(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Progress-bar suspend before prompting
+# Progress-bar yield around prompting
 #
-# Every helper must blank the bottom-anchored progress bar before reading
-# input, so a prompt never collides with stale status text (the
-# `sysforge run toolchain` overlap bug). It uses suspend_for_prompt() (blank
-# in place, keep the region) rather than clear() (full release), because the
-# region-reset cursor-restore left prompts rendering off-view on some
-# terminals. The suspend must happen *before* input is read.
+# Every helper must hand the terminal to the prompt before reading input, so a
+# prompt never collides with stale status text (the `sysforge run toolchain`
+# overlap bug). It yields as a "prompt" (blank in place, keep the region)
+# rather than releasing the region, because the region-reset cursor-restore
+# left prompts rendering off-view on some terminals. The yield spans the
+# input read, so the bar comes back (and its clock resumes) once answered
+# (3.3.0-F2).
 # ---------------------------------------------------------------------------
 
 def _record_suspend_order(monkeypatch):
-    """Patch suspend_for_prompt and builtins.input to record call order."""
+    """Patch yield_terminal and builtins.input to record call order."""
+    import contextlib
+
     order: list[str] = []
 
-    def fake_suspend() -> None:
-        order.append("suspend")
+    @contextlib.contextmanager
+    def fake_yield(kind="prompt"):
+        order.append(f"yield:{kind}")
+        try:
+            yield
+        finally:
+            order.append("restore")
 
     def fake_input(prompt: str = "") -> str:
         order.append("input")
@@ -337,9 +345,7 @@ def _record_suspend_order(monkeypatch):
     # renderer's own name still exercises the whole seam.
     import sysforge.ui.progress  # noqa: F401  (ensure it is registered)
 
-    monkeypatch.setattr(
-        "sysforge.ui.progress.suspend_for_prompt", fake_suspend
-    )
+    monkeypatch.setattr("sysforge.ui.progress.yield_terminal", fake_yield)
     monkeypatch.setattr("builtins.input", fake_input)
     return order
 
@@ -347,19 +353,18 @@ def _record_suspend_order(monkeypatch):
 def test_prompt_text_suspends_bar_before_input(monkeypatch):
     order = _record_suspend_order(monkeypatch)
     prompt_text("Q: ")
-    assert order == ["suspend", "input"]
+    assert order == ["yield:prompt", "input", "restore"]
 
 
 def test_prompt_choice_suspends_bar_before_input(monkeypatch):
     order = _record_suspend_order(monkeypatch)
     prompt_choice("Q? ", choices=("y", "n"), default="n")
-    # One suspend, before the (single) input read; the retry loop doesn't
-    # re-reserve the region, so a single suspend up front is sufficient.
-    assert order == ["suspend", "input"]
+    # One yield spanning the whole retry loop, not one per attempt.
+    assert order == ["yield:prompt", "input", "restore"]
 
 
 def test_prompt_key_suspends_bar_before_input(monkeypatch):
     order = _record_suspend_order(monkeypatch)
     # Non-TTY stdin (pytest) → line-input fallback, which goes through input().
     prompt_key("Q? ")
-    assert order == ["suspend", "input"]
+    assert order == ["yield:prompt", "input", "restore"]

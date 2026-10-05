@@ -397,6 +397,10 @@ def build_resolved_deps(
 
     Returns list of successfully built dep names.
     """
+    from sysforge.primitives import progress_hooks
+
+    # Opens the "AUR dep" tracker; refuse before any build (3.3.0-F2).
+    progress_hooks.hooks().require_no_tracker("build_resolved_deps")
     from sysforge.primitives.makepkg_wrapper import (
         BuildOptions,
         run as makepkg_run,
@@ -411,7 +415,6 @@ def build_resolved_deps(
 
     _log.ui(f"Building {len(aur_deps)} AUR dependency(ies) before main package")
 
-    from sysforge.primitives import progress_hooks
     built: list[str] = []
     with progress_hooks.hooks().tracker(len(aur_deps), "AUR dep") as _tick:
         for i, (dep, dep_pkgbuild) in enumerate(aur_deps):

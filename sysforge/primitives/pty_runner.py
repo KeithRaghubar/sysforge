@@ -29,9 +29,17 @@ progress) or None (the child is producing no output at all). The buffer is
 not consumed by idle_callback — subsequent \\n still delivers the original
 inter-newline content unchanged to line_callback.
 
+Progress bar: while forwarding raw bytes the runner is the bar's scheduled
+painter (3.3.0-F2). It enters ``progress_hooks.hooks().forwarding_output()``
+so the display's ticker stands down, and calls ``refresh()`` at most every
+``_REFRESH_S`` — only when ``_StreamBoundary`` says the forwarded stream sits
+between escape sequences and UTF-8 characters, so a bar frame can never land
+inside one.
+
 Public API:
     run_with_pty(cmd, *, cwd, env, line_callback, forward_bytes,
-                 preexec_fn=None, idle_callback=None, idle_timeout_s=30.0) -> int
+                 preexec_fn=None, idle_callback=None, idle_timeout_s=30.0,
+                 reserve_bottom_rows=0) -> int
 """
 import codecs
 import contextlib
@@ -51,6 +59,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from sysforge.primitives import progress_hooks
 
 # Terminal escape sequences a pty child may embed in its output. Because the
 # child sees a tty, compilers emit SGR colors, erase-line (CSI K), and OSC-8
@@ -145,6 +155,90 @@ class _TerminalQueryFilter:
     def flush(self) -> bytes:
         out, self._pending = self._pending, b""
         return out
+
+
+# How often the progress bar may be repainted while we forward a raw stream
+# (3.3.0-F2). While forwarding, run_with_pty is the bar's only scheduled
+# painter: the display's own ticker stands down for the duration.
+_REFRESH_S = 1.0
+
+# _StreamBoundary states.
+_GROUND, _ESC_SEEN, _ESC_INTER, _CSI, _STRING, _STRING_ESC = range(6)
+
+
+class _StreamBoundary:
+    """Whether a forwarded byte stream currently sits between sequences.
+
+    A bar frame is a single write, so line-oriented writers can't split one —
+    but a raw byte forwarder can be anywhere: inside a CSI, an OSC/DCS/APC/PM/
+    SOS string, a two-byte ``ESC (`` designation, or a multi-byte UTF-8
+    character. Writing a frame there would corrupt both. This tracks just
+    enough of ECMA-48 and UTF-8 to tell; it filters nothing. It is not derived
+    from ``_PENDING_TAIL_RE``, which only has to recognise the few query shapes
+    ``_TerminalQueryFilter`` drops and misses two-byte ESC, DCS and UTF-8.
+    """
+
+    def __init__(self) -> None:
+        self._state = _GROUND
+        self._osc = False
+        self._utf8_need = 0
+
+    @property
+    def at_boundary(self) -> bool:
+        return self._state == _GROUND and self._utf8_need == 0
+
+    def feed(self, data: bytes) -> None:
+        for byte in data:
+            self._step(byte)
+
+    def _step(self, b: int) -> None:  # noqa: C901 — one branch per ECMA-48 state
+        state = self._state
+        if state == _GROUND:
+            if b == 0x1B:
+                self._utf8_need = 0
+                self._state = _ESC_SEEN
+            elif 0x80 <= b <= 0xBF:
+                if self._utf8_need:
+                    self._utf8_need -= 1
+            elif 0xC0 <= b <= 0xDF:
+                self._utf8_need = 1
+            elif 0xE0 <= b <= 0xEF:
+                self._utf8_need = 2
+            elif 0xF0 <= b <= 0xF7:
+                self._utf8_need = 3
+            else:
+                self._utf8_need = 0      # ASCII (or invalid): any partial is abandoned
+        elif state == _ESC_SEEN:
+            if b == 0x5B:                # [
+                self._state = _CSI
+            elif b in (0x5D, 0x50, 0x58, 0x5E, 0x5F):  # ] P X ^ _
+                self._osc = b == 0x5D
+                self._state = _STRING
+            elif 0x20 <= b <= 0x2F:      # nF intermediate, e.g. ESC ( B
+                self._state = _ESC_INTER
+            elif b != 0x1B:
+                self._state = _GROUND    # two-byte escape (ESC 7, ESC D, …)
+        elif state == _ESC_INTER:
+            if b == 0x1B:
+                self._state = _ESC_SEEN
+            elif b >= 0x30:
+                self._state = _GROUND
+        elif state == _CSI:
+            if b == 0x1B:
+                self._state = _ESC_SEEN
+            elif 0x40 <= b <= 0x7E:
+                self._state = _GROUND
+        elif state == _STRING:
+            if b == 0x1B:
+                self._state = _STRING_ESC
+            elif b == 0x07 and self._osc:
+                self._state = _GROUND
+        elif state == _STRING_ESC:
+            if b == 0x5C:                # ESC \ — string terminator
+                self._state = _GROUND
+            else:                        # ESC ends the string and starts anew
+                self._state = _ESC_SEEN
+                self._step(b)
 
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
@@ -291,53 +385,77 @@ def run_with_pty(
         query_filter = (
             _TerminalQueryFilter() if (forward_bytes and reserve_bottom_rows) else None
         )
+        # 3.3.0-F2: while raw bytes are forwarded, this loop is the progress
+        # bar's scheduled painter — at most every _REFRESH_S, and only when the
+        # forwarded stream sits between sequences. At -vvv (forward_bytes off)
+        # output arrives as whole log lines and the display's ticker stays in
+        # charge.
+        hooks = progress_hooks.hooks()
+        boundary = _StreamBoundary() if forward_bytes else None
+        forwarding = hooks.forwarding_output() if forward_bytes else contextlib.nullcontext()
         buf = ""
         last_activity = time.monotonic()
-        while True:
-            if idle_callback is not None:
-                wait = max(0.0, idle_timeout_s - (time.monotonic() - last_activity))
-            else:
-                wait = None
-            try:
-                ready, _, _ = select.select([master_fd], [], [], wait)
-            except (OSError, ValueError):
-                break
-            if not ready:
-                # Idle timeout: surface progress without consuming the buffer.
-                # buf may hold an incomplete line (no \n yet); pass only the
-                # latest \r-overwritten segment so ninja-style status redraws
-                # report the current step instead of the whole redraw history.
+        last_refresh = last_activity
+        with forwarding:
+            while True:
+                now = time.monotonic()
+                waits = []
                 if idle_callback is not None:
-                    idle_callback(buf.split("\r")[-1] if buf else None)
-                    last_activity = time.monotonic()
-                continue
-            try:
-                chunk = os.read(master_fd, 4096)
-            except OSError as e:
-                if e.errno == errno.EIO:
+                    waits.append(max(0.0, idle_timeout_s - (now - last_activity)))
+                # Only wait for a refresh we could actually make: mid-sequence,
+                # a zero timeout would spin until the child next writes.
+                if boundary is not None and boundary.at_boundary:
+                    waits.append(max(0.0, _REFRESH_S - (now - last_refresh)))
+                wait = min(waits) if waits else None
+                try:
+                    ready, _, _ = select.select([master_fd], [], [], wait)
+                except (OSError, ValueError):
                     break
-                raise
-            if not chunk:
-                break
-            if raw_dump is not None:
-                # Never fail a build for a diagnostic write.
-                with contextlib.suppress(Exception):
-                    raw_dump.write(chunk)
-            if forward_bytes:
-                # Display only — line_callback below still receives every byte,
-                # so classification and the filter can't drift apart.
-                out = query_filter.feed(chunk) if query_filter is not None else chunk
-                if out:
+                if not ready:
+                    # Idle timeout: surface progress without consuming the buffer.
+                    # buf may hold an incomplete line (no \n yet); pass only the
+                    # latest \r-overwritten segment so ninja-style status redraws
+                    # report the current step instead of the whole redraw history.
+                    if (idle_callback is not None
+                            and time.monotonic() - last_activity >= idle_timeout_s):
+                        idle_callback(buf.split("\r")[-1] if buf else None)
+                        last_activity = time.monotonic()
+                else:
                     try:
-                        sys.stdout.buffer.write(out)
-                        sys.stdout.buffer.flush()
-                    except (BrokenPipeError, AttributeError):
-                        pass
-            buf += decoder.decode(chunk)
-            while (idx := buf.find("\n")) != -1:
-                line, buf = buf[:idx], buf[idx + 1:]
-                line_callback(line.rstrip("\r"))
-                last_activity = time.monotonic()
+                        chunk = os.read(master_fd, 4096)
+                    except OSError as e:
+                        if e.errno == errno.EIO:
+                            break
+                        raise
+                    if not chunk:
+                        break
+                    if raw_dump is not None:
+                        # Never fail a build for a diagnostic write.
+                        with contextlib.suppress(Exception):
+                            raw_dump.write(chunk)
+                    if forward_bytes:
+                        # Display only — line_callback below still receives every
+                        # byte, so classification and the filter can't drift apart.
+                        out = query_filter.feed(chunk) if query_filter is not None else chunk
+                        if out:
+                            try:
+                                sys.stdout.buffer.write(out)
+                                sys.stdout.buffer.flush()
+                            except (BrokenPipeError, AttributeError):
+                                pass
+                            if boundary is not None:
+                                boundary.feed(out)
+                    buf += decoder.decode(chunk)
+                    while (idx := buf.find("\n")) != -1:
+                        line, buf = buf[:idx], buf[idx + 1:]
+                        line_callback(line.rstrip("\r"))
+                        last_activity = time.monotonic()
+                if (boundary is not None and boundary.at_boundary
+                        and time.monotonic() - last_refresh >= _REFRESH_S):
+                    # A repaint must never be the reason a build stops.
+                    with contextlib.suppress(Exception):
+                        hooks.refresh()
+                    last_refresh = time.monotonic()
 
         if query_filter is not None:
             tail = query_filter.flush()

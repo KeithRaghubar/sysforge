@@ -1563,11 +1563,15 @@ def main():
     # raw traceback. Verbs keep raising KeyboardInterrupt normally — a
     # mutating verb's sentinel_scope persists its recovery sentinel on the
     # way up before this handler sees the interrupt.
+    #
+    # The progress bar's one lifecycle owner (3.3.0-F2): session() releases
+    # the terminal however _main ends, and it exits before these handlers run,
+    # so the region is gone before `aborted (Ctrl-C)` prints.
+    from sysforge.ui import progress
     try:
-        _main()
+        with progress.session():
+            _main()
     except KeyboardInterrupt:
-        from sysforge.ui import progress
-        progress.shutdown()  # release the DECSTBM scroll region
         log.error("[SYSFORGE]", "aborted (Ctrl-C)")
         sys.exit(130)  # 128 + SIGINT, the conventional interrupt exit
     except BrokenPipeError:
@@ -1577,8 +1581,6 @@ def main():
         # mid-build. Point fd 1 at /dev/null so the interpreter's exit-time
         # flush of the buffered remainder can't fail a second time. (Quitting
         # a *pager* early is absorbed in primitives/pager.py instead.)
-        from sysforge.ui import progress
-        progress.shutdown()
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, 1)
         sys.exit(141)  # 128 + SIGPIPE, what the shell reports for `yes | head`
@@ -1676,8 +1678,6 @@ def _dispatch(verb_cls, args) -> int:
     finally:
         # Verbs may sys.exit() inside execute — emit stats regardless.
         prof.disable()
-        from sysforge.ui import progress
-        progress.clear()
         if args.py_profile_out:
             prof.dump_stats(args.py_profile_out)
         pstats.Stats(prof, stream=sys.stderr).sort_stats("cumulative").print_stats(25)

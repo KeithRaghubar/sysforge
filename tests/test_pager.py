@@ -116,7 +116,7 @@ class _FakeProc:
 
 
 def test_pager_releases_progress_region_around_subprocess(monkeypatch):
-    """The pager must run inside ``progress.suspended()`` so an active DECSTBM
+    """The pager must run inside ``progress.yield_terminal("child")`` so an active DECSTBM
     scroll region (from e.g. ``state orphans``' pre-scan phase) is released
     before less takes the terminal — else less is clamped to ``[1, N-1]`` and
     its redraws desync (B5 mangling reproduced via ``state orphans``)."""
@@ -126,20 +126,20 @@ def test_pager_releases_progress_region_around_subprocess(monkeypatch):
     monkeypatch.setattr(pager.subprocess, "Popen", lambda *a, **k: _FakeProc())
 
     @contextlib.contextmanager
-    def _spy_suspended():
-        events.append("suspend-enter")
+    def _spy_suspended(kind="prompt"):
+        events.append(f"suspend-enter:{kind}")
         try:
             yield
         finally:
             events.append("suspend-exit")
 
-    monkeypatch.setattr(progress, "suspended", _spy_suspended)
+    monkeypatch.setattr(progress, "yield_terminal", _spy_suspended)
 
     with pager.maybe_pager(True):
         events.append("body")
 
     # Region released before the body writes to the pager, restored after.
-    assert events == ["suspend-enter", "body", "suspend-exit"]
+    assert events == ["suspend-enter:child", "body", "suspend-exit"]
 
 
 def test_maybe_pager_strips_dash_x_from_less_env(monkeypatch):

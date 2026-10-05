@@ -53,7 +53,7 @@ Resolution precedence in `use_unicode()`:
 1. Unicode **mode** (`log.set_unicode_mode`): `"never"` → off; `"always"` → on.
 2. Mode `"auto"` (default): `SYSFORGE_ASCII` (any non-empty value) disables; a stream whose `encoding` is a known non-UTF value disables; `TERM=linux` disables; otherwise Unicode is allowed (an unknown/`None` encoding stays Unicode so test capture sinks aren't over-stripped).
 
-Downgrade happens **only at the terminal-output chokepoints** — `log.ui()`, `log._format_line()` (error/warn/info/debug), `prompt.py`'s prompt strings, `ui/progress.py::_paint`, and the `partition` stage's plan-table `print()` — never at every call site. The UTF-8 file logs are written from the caller's original text and therefore always keep the real glyphs. In `progress._paint` the downgrade precedes the column clamp because ASCII fallbacks change string length.
+Downgrade happens **only at the terminal-output chokepoints** — `log.ui()`, `log._format_line()` (error/warn/info/debug), `prompt.py`'s prompt strings, `ui/progress.py::_paint_seq`, and the `partition` stage's plan-table `print()` — never at every call site. The UTF-8 file logs are written from the caller's original text and therefore always keep the real glyphs. In `progress._paint` the downgrade precedes the column clamp because ASCII fallbacks change string length.
 
 ### File logging
 
