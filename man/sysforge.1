@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-09\-28"
+.TH "sysforge" "1" "2026\-10\-05"
 .PP
 .PP
 .SH NAME
@@ -858,6 +858,21 @@ Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo\-mesa,
 Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 .RE
+.SS state boot\-entries
+.PP
+\fBsysforge state boot\-entries\fR [\fIOPTIONS\fR]
+.PP
+Show which systemd\-boot loader entry boots each installed kernel, who owns it (you / sysforge / none) and the entry sysforge cloned it from.\& Read\-only.\&
+.PP
+\fB\-\-no\-pager\fR
+.RS 4
+Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+.PP
+.RE
+\fBConfiguration:\fR kernel.\&toml (bootloader, boot_entries)
+.PP
+\fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $PAGER
+.PP
 .SS state failed
 .PP
 \fBsysforge state failed\fR [\fIOPTIONS\fR]
@@ -1663,7 +1678,7 @@ localyesconfig are warned against as high\-risk/low\-reward — they
 over\-minimize to modules currently loaded and accumulate the lsmod
 snapshot at <state_dir>/lsmod.\&snapshot (delete it to reset).\&
 Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,
-\fBrun reconfigure\fR, and \fBdoctor\fR on the matching axes.\&
+\fBrun reconfigure\fR, \fBstate boot\-entries\fR, and \fBdoctor\fR on the matching axes.\&
 .PP
 .RE
 build_state.\&toml (under the state directory)

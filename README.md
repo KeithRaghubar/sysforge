@@ -196,6 +196,12 @@ New to profile-guided optimization? [docs/guides/pgo.md](docs/guides/pgo.md) wal
 package PGO (mesa), toolchain PGO, and kernel AutoFDO/Propeller step by step, including how
 to collect a profile that actually helps.
 
+Running `sysforge run kernel` on systemd-boot also writes a loader entry for each kernel it
+builds, cloned from the entry you booted and never touching your own; `sysforge state
+boot-entries` shows what boots what, and
+[docs/guides/boot-entries.md](docs/guides/boot-entries.md) covers menu ordering, the default
+entry and one-time boots.
+
 That is the everyday surface. For the rest — `--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics — see `sysforge --help`, the [man page](man/sysforge.1), and
@@ -286,7 +292,7 @@ This runs stages 5–8:
 - **reconfigure** — pre-build checks: disk space, network, config review.
 - **toolchain** — *(opt-in)* builds the LLVM toolchain via the PGO bootstrap, behind three safety gates that keep the live `/usr` toolchain from ever being left broken (pre-build preflight, pre-install ABI audit, post-install verify with auto-restore). Register-only on the default gcc path. See [DESIGN.md](DESIGN.md) §Toolchain stage.
 - **packages** — builds and installs everything in `packages.toml` with profiled flags. Optionally trims mesa's GPU drivers to your hardware (`[mesa] filter_drivers`).
-- **kernel** — *(opt-in)* builds a custom kernel with boot-safety gates (won't leave the system unbootable). Interactive by default; compiler independent of the toolchain stage. See [DESIGN.md](DESIGN.md) §Kernel stage.
+- **kernel** — *(opt-in)* builds a custom kernel with boot-safety gates (won't leave the system unbootable). Interactive by default; compiler independent of the toolchain stage. On systemd-boot it also writes and maintains the kernel's loader entry (your own entries are never modified; `sysforge state boot-entries` lists them). See [DESIGN.md](DESIGN.md) §Kernel stage and [docs/guides/boot-entries.md](docs/guides/boot-entries.md).
 
 If a stage 5–8 run is interrupted, resume it with `sysforge run pipeline --resume`.
 

@@ -1002,7 +1002,31 @@ def _collect_boot_findings() -> list[diag.Finding]:
     out += diag.adapt_many("boot", kfindings)
     # Boot-artifact / /boot-space findings are filesystem-live (clear on the
     # next run); only the DKMS check is scoped to the running kernel.
+    out += _boot_entry_audit_findings()
     return _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:"))
+
+
+def _boot_entry_audit_findings() -> list[diag.Finding]:
+    """sysforge-managed loader-entry health (3.3.0-F5), systemd-boot only.
+
+    ``boot_entry_missing`` is filtered: ``verify_boot_artifacts`` already reports
+    that id (brick-class) per kernel above. Best-effort: any read failure is
+    simply no findings.
+    """
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.primitives import boot_entries
+
+    with contextlib.suppress(Exception):
+        kc = kconfig.load()
+        if kc is None or kconfig.resolve_bootloader(kc, None) != "systemd-boot":
+            return []
+        ents = boot_entries.load_entries(boot_entries.entries_dir())
+        return [
+            diag.Finding("boot", diag.SEV_WARN, check_id, msg, remediation=rem)
+            for check_id, msg, rem in boot_entries.audit(ents, boot_entries.existing_images())
+            if check_id != "boot_entry_missing"
+        ]
+    return []
 
 
 def _collect_restart_findings() -> list[diag.Finding]:

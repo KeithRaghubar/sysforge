@@ -436,6 +436,7 @@ _sysforge_state() {
         repair)  _sysforge_state_repair  ;;
         orphans) _sysforge_state_orphans ;;
         profiles) _sysforge_state_profiles ;;
+        boot-entries) _sysforge_state_boot_entries ;;
         failed)  _sysforge_state_failed  ;;
         forget)  _sysforge_state_forget  ;;
       esac
@@ -446,9 +447,10 @@ _sysforge_state() {
 _sysforge_state_subcommands() {
   local subcommands=(
     'list:tabulate build_state.toml entries'
-    'repair:re-parse PKGBUILDs to fix entries with unexpanded shell variables'
+    'repair:re-parse PKGBUILDs to fix entries with unexpanded variables'
     'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
     'profiles:list collected optimization profiles (and optionally purge one)'
+    'boot-entries:show which loader entry boots each kernel'
     'failed:list recorded build failures (with any diagnosed fix)'
     'forget:stop maintaining package(s) — delete their build_state record'
   )
@@ -471,6 +473,11 @@ _sysforge_state_orphans() {
 _sysforge_state_profiles() {
   _arguments \
     '--purge[delete one profile store (METHOD or METHOD/TARGET)]:store:(instr-pgo pgo-mesa pgo autofdo propeller bolt)' \
+    '--no-pager[do not pipe output through $PAGER]'
+}
+
+_sysforge_state_boot_entries() {
+  _arguments \
     '--no-pager[do not pipe output through $PAGER]'
 }
 

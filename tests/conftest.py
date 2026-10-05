@@ -179,6 +179,77 @@ def _isolate_pgo_stores(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_boot_entries(monkeypatch, tmp_path_factory):
+    """
+    Point ``boot_entries`` at a fake ESP and fence every privileged subprocess
+    it issues (3.3.0-F5).
+
+    The kernel stage, ``sysforge update`` and ``doctor`` call
+    ``boot_entries.apply_plan`` / ``check_boot_path`` without a ``run=`` and the
+    real runner is ``sudo cp/mv/rm`` against the host's /boot. Existing
+    kernel-stage tests mock ``subprocess.run`` for their own module, which does
+    not reach this one, so without a fence a stage test would write real boot
+    entries. Same reasoning as ``_isolate_pgo_stores``: isolation by default,
+    not by opt-in. ``boot_entries._run`` is replaced by a guard that only
+    answers ``bootctl --print-boot-path`` and performs ``cp``/``mv``/``rm -f``
+    whose destination lies under the current ``boot_entries.BOOT_DIR``; any
+    other command, or a destination outside the fake ESP, raises
+    AssertionError. A test that repoints ``BOOT_DIR`` gets that tree instead.
+    """
+    import shutil
+    import subprocess
+
+    from sysforge.primitives import boot_entries
+    from sysforge.primitives.privilege import privileged_argv
+
+    boot = tmp_path_factory.mktemp("boot")
+    entries = boot / "loader" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "99-test.conf").write_text(
+        "title Test Linux\n"
+        "linux /vmlinuz-linux\n"
+        "initrd /initramfs-linux.img\n"
+        "options root=UUID=00000000-0000-0000-0000-000000000000 rw\n"
+    )
+    # Files the template entry references (rendered-path validation, R13).
+    (boot / "vmlinuz-linux").write_bytes(b"")
+    (boot / "initramfs-linux.img").write_bytes(b"")
+    # The stage tests' kernel (linux-git) is "installed" by the time its entry is synced.
+    (boot / "vmlinuz-linux-git").write_bytes(b"")
+    (boot / "initramfs-linux-git.img").write_bytes(b"")
+    monkeypatch.setattr(boot_entries, "BOOT_DIR", boot)
+    monkeypatch.setattr(boot_entries, "EFI_SELECTED_VAR", boot / "no-efi-var")
+
+    prefix = list(privileged_argv([]))
+
+    def guard(argv, **kwargs):
+        cmd = list(argv)
+        while prefix and cmd[:len(prefix)] == prefix:
+            cmd = cmd[len(prefix):]
+        done = subprocess.CompletedProcess(argv, 0, "", "")
+
+        def inside(dst: str) -> bool:
+            root = Path(boot_entries.BOOT_DIR).resolve()
+            return Path(dst).resolve().is_relative_to(root)
+
+        if cmd == ["bootctl", "--print-boot-path"]:
+            return subprocess.CompletedProcess(argv, 0, f"{boot_entries.BOOT_DIR}\n", "")
+        if len(cmd) == 3 and cmd[0] == "cp" and inside(cmd[2]):
+            shutil.copyfile(cmd[1], cmd[2])
+            return done
+        if len(cmd) == 3 and cmd[0] == "mv" and inside(cmd[2]) and inside(cmd[1]):
+            os.replace(cmd[1], cmd[2])
+            return done
+        if len(cmd) == 3 and cmd[:2] == ["rm", "-f"] and inside(cmd[2]):
+            Path(cmd[2]).unlink(missing_ok=True)
+            return done
+        raise AssertionError(
+            f"boot_entries tried to run {argv!r} outside the test fake ESP")
+
+    monkeypatch.setattr(boot_entries, "_run", guard)
+
+
+@pytest.fixture(autouse=True)
 def _reset_source_sync_scheduler():
     """
     Give every test a fresh source-sync scheduler (3.3.0-DEV1).

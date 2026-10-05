@@ -272,3 +272,95 @@ def test_artifact_sentinel_corrupt_registry_swallowed(tmp_path):
         _consume_artifact_sentinel()
     mock_log.warn.assert_not_called()
     assert not (sentinels / "artifacts").exists()
+
+
+def test_kernel_sentinel_prunes_managed_boot_entries(tmp_path):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.pipeline.stages.kernel import install as kinstall
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    (sentinels / "kernel").touch()
+    calls = []
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger(), \
+         patch.object(kconfig, "load", lambda: kconfig.KernelConfig.from_toml({"enabled": True})), \
+         patch.object(kinstall, "prune_boot_entries", lambda **kw: calls.append(kw)):
+        up._consume_pacman_hook_sentinels(reminders_only=True)
+    assert calls == [{"manage": True, "dry_run": False}]
+    assert not (sentinels / "kernel").exists()
+
+
+def test_no_kernel_sentinel_no_prune(tmp_path):
+    from sysforge.pipeline.stages.kernel import install as kinstall
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    calls = []
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger(), \
+         patch.object(kinstall, "prune_boot_entries", lambda **kw: calls.append(kw)):
+        up._consume_pacman_hook_sentinels(reminders_only=True)
+    assert calls == []
+
+
+def _kernel_sentinel_dir(tmp_path):
+    sentinels = tmp_path / "sentinels"
+    sentinels.mkdir()
+    (sentinels / "kernel").touch()
+    return sentinels
+
+
+def test_kernel_sentinel_prune_failure_still_unlinks(tmp_path):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.pipeline.stages.kernel import install as kinstall
+    sentinels = _kernel_sentinel_dir(tmp_path)
+
+    def boom(**kw):
+        raise RuntimeError("[KERNEL] boot entry x: rm failed")
+
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger(), \
+         patch.object(kconfig, "load", lambda: kconfig.KernelConfig.from_toml({"enabled": True})), \
+         patch.object(kinstall, "prune_boot_entries", boom):
+        up._consume_pacman_hook_sentinels(reminders_only=True)
+    assert not (sentinels / "kernel").exists()
+
+
+def test_kernel_sentinel_prunes_when_silent(tmp_path):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.pipeline.stages.kernel import install as kinstall
+    sentinels = _kernel_sentinel_dir(tmp_path)
+    calls = []
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger(), \
+         patch.object(kconfig, "load", lambda: kconfig.KernelConfig.from_toml({"enabled": True})), \
+         patch.object(kinstall, "prune_boot_entries", lambda **kw: calls.append(kw)):
+        up._consume_pacman_hook_sentinels(silent=True, reminders_only=True)
+    assert len(calls) == 1
+
+
+def test_kernel_sentinel_no_prune_when_disabled_but_still_unlinks(tmp_path):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.pipeline.stages.kernel import install as kinstall
+    sentinels = _kernel_sentinel_dir(tmp_path)
+    calls = []
+    with patch("sysforge.update._SENTINEL_DIR", sentinels), _stub_logger() as mock_log, \
+         patch.object(kconfig, "load", lambda: kconfig.KernelConfig.from_toml({"enabled": True})), \
+         patch.object(kinstall, "prune_boot_entries", lambda **kw: calls.append(kw)):
+        up._consume_pacman_hook_sentinels(reminders_only=True, prune_boot_entries=False)
+    assert calls == []
+    mock_log.warn.assert_called_once()  # reminder behaviour unchanged
+    assert not (sentinels / "kernel").exists()
+
+
+@pytest.mark.parametrize("flag,expect_prune", [
+    ("dry_run", False), ("explain_drift", False), ("versions", False), (None, True),
+])
+def test_cmd_update_prunes_only_on_mutating_runs(tmp_path, flag, expect_prune):
+    """cmd_update threads prune_boot_entries=False for --dry-run and read-only reports."""
+    seen = []
+    args = MagicMock(interactive=False, dry_run=False, explain_drift=False, versions=False)
+    if flag:
+        setattr(args, flag, True)
+    with patch.object(up, "_consume_pacman_hook_sentinels",
+                      lambda *a, **k: seen.append(k.get("prune_boot_entries", True))), \
+         patch("sysforge.update._consume_artifact_sentinel"), \
+         patch("sysforge.update._cmd_update_body", return_value=0), \
+         patch("sysforge.update._suppress_pagers_in_env"), _stub_logger():
+        up.cmd_update(args)
+    assert seen and all(v is expect_prune for v in seen)

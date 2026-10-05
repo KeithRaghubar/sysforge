@@ -179,7 +179,7 @@ recovery command.
 	over-minimize to modules currently loaded and accumulate the lsmod
 	snapshot at <state_dir>/lsmod.snapshot (delete it to reset).
 	Read by: *run toolchain* / *run kernel*, *run pipeline*,
-	*run reconfigure*, and *doctor* on the matching axes.
+	*run reconfigure*, *state boot-entries*, and *doctor* on the matching axes.
 
 build_state.toml (under the state directory)
 	Per-package build records (a superset of pacman -Q) plus the table

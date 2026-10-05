@@ -336,8 +336,29 @@ _SENTINEL_REMINDERS = {
 }
 
 
+def _prune_managed_boot_entries() -> None:
+    """A kernel package was removed/changed: drop sysforge-managed loader entries
+    whose image is gone (3.3.0-F5). Best-effort; never fails `update`."""
+    try:
+        from sysforge.pipeline.stages.kernel import config as kconfig
+        from sysforge.pipeline.stages.kernel import install as kinstall
+        kc = kconfig.load()
+        if kc is None:
+            return
+        manage, _ = kconfig.resolve_boot_entries(kc, kconfig.resolve_bootloader(kc, None))
+        kinstall.prune_boot_entries(manage=manage, dry_run=False)
+    except Exception as e:
+        _log.warn(f"could not prune stale sysforge boot entries: {e}")
+
+
+def _read_only_run(args) -> bool:
+    """``--dry-run`` and the list-and-exit reports never mutate the system."""
+    return any(getattr(args, k, False) is True for k in ("dry_run", "explain_drift", "versions"))
+
+
 def _consume_pacman_hook_sentinels(
-    silent: bool = False, reminders_only: bool = False
+    silent: bool = False, reminders_only: bool = False,
+    *, prune_boot_entries: bool = True,
 ) -> None:
     """Surface kernel/toolchain reminders dropped by pacman PostTransaction
     hooks since the last `sysforge update` run, then unlink them.
@@ -350,6 +371,8 @@ def _consume_pacman_hook_sentinels(
     transactions just dropped, so they don't re-fire on the next invocation.
 
     silent=True suppresses the kernel/toolchain warnings but still unlinks.
+    ``prune_boot_entries=False`` skips the privileged managed-entry prune (read-only
+    update routes: ``--dry-run`` and the drift/versions reports).
     """
     if not _SENTINEL_DIR.is_dir():
         return
@@ -358,6 +381,8 @@ def _consume_pacman_hook_sentinels(
         if path.exists():
             if not silent:
                 _log.warn(reminder)
+            if kind == "kernel" and prune_boot_entries:
+                _prune_managed_boot_entries()
             with contextlib.suppress(OSError):
                 path.unlink()
     if reminders_only:
@@ -464,7 +489,8 @@ def cmd_update(args) -> int:
 
     # reminders_only: leave the buildstate + self-install sentinels in place so
     # the body's _reconcile_external_demotions can read them; it unlinks them.
-    _consume_pacman_hook_sentinels(reminders_only=True)
+    prune = not _read_only_run(args)
+    _consume_pacman_hook_sentinels(reminders_only=True, prune_boot_entries=prune)
     _consume_artifact_sentinel()
     _suppress_pagers_in_env(getattr(args, "interactive", False))
 
@@ -480,7 +506,8 @@ def cmd_update(args) -> int:
         # reconcile step; on the error path they persist for the next run, where
         # sysforge's own -U entries appear in both and cancel out. The body's
         # end-of-run call still clears the reconcile pair on the success path.
-        _consume_pacman_hook_sentinels(silent=True, reminders_only=True)
+        _consume_pacman_hook_sentinels(
+            silent=True, reminders_only=True, prune_boot_entries=prune)
         _consume_artifact_sentinel(silent=True)
         # Defensive: if any subprocess (pacman hook, makepkg subshell, etc.)
         # entered alt-screen mode and died without restoring, emit the reset
@@ -1520,7 +1547,7 @@ def _cmd_update_body(args) -> int:
     # Clear sentinels that our own Phase 5 / Phase 6.5 pacman transactions
     # may have dropped this run; the start-of-cmd_update consume already
     # surfaced anything left by transactions outside sysforge.
-    _consume_pacman_hook_sentinels(silent=True)
+    _consume_pacman_hook_sentinels(silent=True, prune_boot_entries=not _read_only_run(args))
 
     # 3.0.0-F2 (Important-4, narrowed per New-1 review): a source-freeze
     # denial is a blocker, not a skip — it must not print a summary line and

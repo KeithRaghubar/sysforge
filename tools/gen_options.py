@@ -67,6 +67,10 @@ _VERB_CONFIG: dict[str, tuple[str, str]] = {
         "build\\_state.toml under the state directory",
         "$SYSFORGE_STATE_DIR, $PAGER",
     ),
+    "state boot-entries": (
+        "kernel.toml (bootloader, boot\\_entries)",
+        "$SYSFORGE_CONFIG_DIR, $PAGER",
+    ),
     "env": (
         "profiles.toml",
         "$SYSFORGE_CONFIG_DIR",

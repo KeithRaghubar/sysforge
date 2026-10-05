@@ -15,6 +15,7 @@ import contextlib
 
 from sysforge.build_core import make_build_options
 from sysforge.pipeline.stages.base import Stage
+from sysforge.primitives import boot_entries
 from sysforge.primitives import kernel_fdo
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_lock import build_lock
@@ -183,6 +184,7 @@ class KernelStage(Stage):
         # omitted, keyed off the (possibly not-yet-cloned) source dir.
         upstream_pkgname, pkgname = config.resolve_names(kernel_cfg)
         bootloader = config.resolve_bootloader(kernel_cfg, options)
+        manage_entries, entries_prefix = config.resolve_boot_entries(kernel_cfg, bootloader)
         src_dir = config.srcdir_path(kernel_cfg)
         src_kind = config.resolve_source(kernel_cfg, src_dir)
 
@@ -260,6 +262,12 @@ class KernelStage(Stage):
                     "Post-install step will likely fail — pass "
                     "--bootloader=<installed> or update kernel.toml."
                 )
+
+        # F6: managed systemd-boot entries — refuse before the build if they
+        # cannot be produced (wrong partition, no template), and prune entries
+        # whose kernel was removed since the last run.
+        entries_template = install.preflight_boot_entries(pkgname, manage=manage_entries)
+        install.prune_boot_entries(manage=manage_entries, dry_run=options.dry_run)
 
         # Interactive kconfig is the kernel-stage default — flipped off by
         # --non-interactive (or `interactive = false` in kernel.toml). When
@@ -470,9 +478,16 @@ class KernelStage(Stage):
         if fdo_mode == "record":
             _sampling = kernel_fdo.detect_branch_sampling()
             if _sampling.supported:
+                _hint_prefix = (
+                    boot_entries.effective_prefix(entries_template, entries_prefix)
+                    if entries_template is not None else None
+                )
                 _log.warn(
                     "AutoFDO profiling kernel: after install, reboot into it and "
                     f"run `sysforge run kernel --autofdo=capture`. {_sampling.note}"
+                    + (" To boot it once: sudo bootctl set-oneshot "
+                       f"{boot_entries.entry_filename(fdo_eff_pkgname, _hint_prefix)}"
+                       if entries_template is not None else "")
                 )
             else:
                 _log.warn(
@@ -675,6 +690,22 @@ class KernelStage(Stage):
 
                 install.run_mkinitcpio(options.dry_run)
                 install.update_bootloader(bootloader, options.dry_run)
+                entry_version = None if options.dry_run else gates.built_kernel_release(
+                    gates.resolve_built_config(pkgbuild.parent, build_dir=built_dir))
+                try:
+                    install.sync_boot_entries(
+                        pkgname, fdo_eff_pkgname, install.fdo_role(fdo_mode, fdo_propeller),
+                        entry_version,
+                        manage=manage_entries, prefix=entries_prefix, dry_run=options.dry_run,
+                    )
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        f"[KERNEL] {fdo_eff_pkgname} is installed (initramfs and "
+                        f"bootloader updated) but its boot entry could not be "
+                        f"written: {e} — fix that and re-run `sysforge run kernel`, "
+                        'or set boot_entries = "off" in kernel.toml and add an '
+                        "entry by hand"
+                    ) from e
 
                 # Gate 3 — post-install boot-readiness (raises on brick). Inside
                 # the sentinel so an unbootable result blocks the next run for

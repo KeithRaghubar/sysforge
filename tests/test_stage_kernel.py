@@ -1278,6 +1278,52 @@ def test_resolve_bootloader_rejects_invalid_cli():
 
 
 # ---------------------------------------------------------------------------
+# resolve_boot_entries
+# ---------------------------------------------------------------------------
+
+
+def test_boot_entries_defaults():
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    c = kcfg()
+    assert c.boot_entries == "manage" and c.boot_entries_prefix is None
+    assert resolve_boot_entries(c, "systemd-boot") == (True, None)
+
+
+@pytest.mark.parametrize("bl", ["grub", "none"])
+def test_boot_entries_inactive_off_systemd_boot(bl):
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    assert resolve_boot_entries(kcfg(), bl) == (False, None)
+
+
+def test_boot_entries_off_and_prefix():
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    assert resolve_boot_entries(kcfg(boot_entries="off"), "systemd-boot") == (False, None)
+    assert resolve_boot_entries(kcfg(boot_entries_prefix="97"), "systemd-boot") == (True, "97")
+
+
+def test_boot_entries_invalid_values():
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    with pytest.raises(RuntimeError, match="boot_entries"):
+        resolve_boot_entries(kcfg(boot_entries="auto"), "systemd-boot")
+    with pytest.raises(RuntimeError, match="boot_entries_prefix"):
+        resolve_boot_entries(kcfg(boot_entries_prefix="9-7"), "systemd-boot")
+
+
+def test_boot_entries_prefix_must_be_quoted_string():
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    with pytest.raises(RuntimeError, match="must be a quoted string"):
+        resolve_boot_entries(kcfg(boot_entries_prefix=97), "systemd-boot")
+    with pytest.raises(RuntimeError, match="must be a quoted string"):
+        resolve_boot_entries(kcfg(boot_entries_prefix=False), "systemd-boot")
+
+
+def test_boot_entries_prefix_empty_string_invalid():
+    from sysforge.pipeline.stages.kernel import resolve_boot_entries
+    with pytest.raises(RuntimeError, match="boot_entries_prefix"):
+        resolve_boot_entries(kcfg(boot_entries_prefix=""), "systemd-boot")
+
+
+# ---------------------------------------------------------------------------
 # resolve_subpackages (headers/docs toggles)
 # ---------------------------------------------------------------------------
 
@@ -3936,3 +3982,224 @@ def test_dry_run_leaves_a_stale_seed_alone(tmp_path):
     cfg = kcfg({"pkgname": "linux-sysforge", "pkgbuild_src_dir": str(builds)})
     write_base_config(cfg, dry_run=True)
     assert seed.exists()
+
+
+# ---------------------------------------------------------------------------
+# 3.3.0-F5: managed systemd-boot entries wired into the kernel stage
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages.kernel import install as kinstall  # noqa: E402
+from sysforge.primitives import boot_entries as be  # noqa: E402
+
+OPERATOR_STAGE = (
+    "title Arch Linux Sysforge\nlinux /vmlinuz-linux-sysforge\n"
+    "initrd /initramfs-linux-sysforge.img\noptions root=UUID=abc rw\n"
+)
+
+
+def test_fdo_role():
+    assert kinstall.fdo_role(None, False) == "plain"
+    assert kinstall.fdo_role("record", True) == "profiling"
+    assert kinstall.fdo_role("use", False) == "autofdo"
+    assert kinstall.fdo_role("use", True) == "propeller"
+
+
+def _be_tree(tmp_path, monkeypatch, entries=None, images=("linux-sysforge",)):
+    boot = tmp_path / "boot"
+    d = boot / "loader" / "entries"
+    d.mkdir(parents=True)
+    for name, text in (entries or {}).items():
+        (d / name).write_text(text)
+    for k in images:
+        (boot / f"vmlinuz-{k}").write_bytes(b"x")
+    monkeypatch.setattr(be, "BOOT_DIR", boot)
+    monkeypatch.setattr(be, "read_selected_entry", lambda *a, **k: "97-arch-custom.conf")
+    monkeypatch.setattr(be, "read_pretty_name", lambda *a, **k: "Arch Linux")
+    return d
+
+
+def test_boot_entries_preflight_noop_when_not_managed(monkeypatch):
+    monkeypatch.setattr(be, "check_boot_path", lambda **k: (_ for _ in ()).throw(AssertionError))
+    kinstall.preflight_boot_entries("linux-sysforge", manage=False)
+
+
+def test_boot_entries_preflight_refuses_without_template(tmp_path, monkeypatch):
+    _be_tree(tmp_path, monkeypatch, entries={})
+    monkeypatch.setattr(be, "check_boot_path", lambda **k: None)
+    with pytest.raises(RuntimeError, match='boot_entries = "off"'):
+        kinstall.preflight_boot_entries("linux-sysforge", manage=True)
+
+
+def test_boot_entries_preflight_unreadable_entries_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(be, "BOOT_DIR", tmp_path / "nope")
+    monkeypatch.setattr(be, "check_boot_path", lambda **k: None)
+    with pytest.raises(RuntimeError, match="cannot read"):
+        kinstall.preflight_boot_entries("linux-sysforge", manage=True)
+
+
+def test_boot_entries_sync_writes_entry_for_new_kernel(tmp_path, monkeypatch):
+    _be_tree(tmp_path, monkeypatch, entries={"97-arch-custom.conf": OPERATOR_STAGE},
+             images=("linux-sysforge", "linux-sysforge-fdo"))
+    applied = {}
+    monkeypatch.setattr(be, "apply_plan",
+                        lambda plan, dry_run, **k: applied.setdefault("plan", plan) and [])
+    kinstall.sync_boot_entries("linux-sysforge", "linux-sysforge-fdo", "profiling", "7.2.7",
+                               manage=True, prefix=None, dry_run=False)
+    names = [w[0] for w in applied["plan"].writes]
+    assert names == ["sysforge-linux-sysforge-fdo.conf"]
+
+
+def test_boot_entries_sync_raises_when_wanted_kernel_skipped_but_applies_rest(
+        tmp_path, monkeypatch):
+    hdr = "# sysforge-managed (template: 97-arch-custom.conf, role: propeller) — r\n"
+    _be_tree(
+        tmp_path, monkeypatch,
+        entries={
+            "97-arch-custom.conf": OPERATOR_STAGE,
+            # operator-owned file squatting on the wanted kernel's entry name
+            "sysforge-linux-sysforge-fdo.conf": "linux /vmlinuz-other\n",
+            "sysforge-linux-sysforge-propeller.conf":
+                hdr + "linux /vmlinuz-linux-sysforge-propeller\n",
+        },
+        images=("linux-sysforge", "linux-sysforge-fdo", "linux-sysforge-propeller"))
+    applied = {}
+    monkeypatch.setattr(be, "apply_plan",
+                        lambda plan, dry_run, **k: applied.setdefault("plan", plan) and [])
+    with pytest.raises(RuntimeError, match=r"^\[KERNEL\] cannot write sysforge-linux-sysforge-fdo"):
+        kinstall.sync_boot_entries("linux-sysforge", "linux-sysforge-fdo", "plain", "7.2.7",
+                                   manage=True, prefix=None, dry_run=False)
+    assert [w[0] for w in applied["plan"].writes] == [
+        "sysforge-linux-sysforge-propeller.conf"]
+
+
+def test_boot_entries_sync_raises_when_rendered_paths_missing(tmp_path, monkeypatch):
+    _be_tree(tmp_path, monkeypatch,
+             entries={"97-arch-custom.conf":
+                      "linux /vmlinuz-linux-sysforge\ninitrd /booster-linux-sysforge.img\n"},
+             images=("linux-sysforge", "linux-sysforge-fdo"))
+    applied = {}
+    monkeypatch.setattr(be, "apply_plan",
+                        lambda plan, dry_run, **k: applied.setdefault("plan", plan) and [])
+    with pytest.raises(RuntimeError, match=r"/booster-linux-sysforge\.img"):
+        kinstall.sync_boot_entries("linux-sysforge", "linux-sysforge-fdo", "plain", "7.2.7",
+                                   manage=True, prefix=None, dry_run=False)
+    assert applied["plan"].writes == ()
+
+
+def test_boot_entries_stage_call_order(tmp_path, monkeypatch):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    order = []
+
+    monkeypatch.setattr(kinstall, "preflight_boot_entries",
+                        lambda *a, **k: order.append("preflight"))
+    monkeypatch.setattr(kinstall, "prune_boot_entries",
+                        lambda *a, **k: order.append("prune"))
+    monkeypatch.setattr(kinstall, "run_mkinitcpio", lambda *a, **k: order.append("mkinitcpio"))
+    monkeypatch.setattr(kinstall, "update_bootloader",
+                        lambda *a, **k: order.append("update_bootloader"))
+    monkeypatch.setattr(kinstall, "sync_boot_entries",
+                        lambda *a, **k: order.append("sync"))
+    monkeypatch.setattr(_km.gates, "gate3_verify", lambda *a, **k: order.append("gate3"))
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda *a, **k: None)
+    monkeypatch.setattr(_km.gates, "built_kernel_release", lambda *a, **k: "7.2.7")
+
+    def fake_build(*a, **k):
+        order.append("build")
+
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, side_effect=fake_build), \
+         patch.object(_km.stage, "install_built_packages", MagicMock(return_value=[])):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    assert order.index("preflight") < order.index("build")
+    assert order.index("prune") < order.index("build")
+    tail = [s for s in order if s in ("mkinitcpio", "update_bootloader", "sync", "gate3")]
+    assert tail == ["mkinitcpio", "update_bootloader", "sync", "gate3"]
+
+
+def test_boot_entries_preflight_returns_template(tmp_path, monkeypatch):
+    _be_tree(tmp_path, monkeypatch, entries={"97-arch-custom.conf": OPERATOR_STAGE})
+    monkeypatch.setattr(be, "check_boot_path", lambda **k: None)
+    tpl = kinstall.preflight_boot_entries("linux-sysforge", manage=True)
+    assert isinstance(tpl, be.Template)
+    assert kinstall.preflight_boot_entries("linux-sysforge", manage=False) is None
+
+
+class _StopAfterAdvisory(Exception):
+    pass
+
+
+def _record_advisory_text(tmp_path, monkeypatch, template, prefix):
+    from sysforge.primitives import kernel_fdo
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    warns = []
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o: ("record", False))
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("clang", "clang", None))
+    monkeypatch.setattr(_km.config, "resolve_boot_entries", lambda c, b: (True, prefix))
+    monkeypatch.setattr(kinstall, "preflight_boot_entries", lambda *a, **k: template)
+    monkeypatch.setattr(kinstall, "prune_boot_entries", lambda *a, **k: None)
+    monkeypatch.setattr(kernel_fdo, "detect_branch_sampling",
+                        lambda *a, **k: SimpleNamespace(supported=True, note="NOTE"))
+    monkeypatch.setattr(_km.stage, "_log", SimpleNamespace(
+        warn=lambda m, *a, **k: warns.append(m),
+        info=lambda *a, **k: None, ui=lambda *a, **k: None,
+        debug=lambda *a, **k: None))
+
+    def stop(*a, **k):
+        raise _StopAfterAdvisory
+
+    monkeypatch.setattr(_km.gates, "gate1_preflight", stop)
+    with patch.object(_km.config, "KERNEL_PATH", p), pytest.raises(_StopAfterAdvisory):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    return next(w for w in warns if "profiling kernel" in w)
+
+
+def test_record_advisory_oneshot_ignores_prefix_with_sort_key(tmp_path, monkeypatch):
+    from sysforge.primitives import kernel_fdo
+    tpl = be.Template(
+        be.parse_entry("a.conf", "title A\nsort-key arch\nlinux /vmlinuz-linux\n"), "linux")
+    text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre")
+    eff = kernel_fdo.record_pkgname("linux-git")
+    assert f"sudo bootctl set-oneshot sysforge-{eff}.conf" in text
+
+
+def test_record_advisory_oneshot_uses_prefix_without_sort_key(tmp_path, monkeypatch):
+    from sysforge.primitives import kernel_fdo
+    tpl = be.Template(be.parse_entry("a.conf", OPERATOR_STAGE), "linux-sysforge")
+    text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre")
+    eff = kernel_fdo.record_pkgname("linux-git")
+    assert f"sudo bootctl set-oneshot pre-sysforge-{eff}.conf" in text
+
+
+def test_boot_entries_sync_failure_explains_installed_state(tmp_path, monkeypatch):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    gate3 = MagicMock()
+
+    def boom(*a, **k):
+        raise RuntimeError("[KERNEL] boot entry x: cp failed")
+
+    monkeypatch.setattr(kinstall, "sync_boot_entries", boom)
+    monkeypatch.setattr(_km.gates, "gate3_verify", gate3)
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda *a, **k: None)
+    monkeypatch.setattr(_km.gates, "built_kernel_release", lambda *a, **k: "7.2.7")
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, return_value=None), \
+         patch.object(_km.stage, "install_built_packages", MagicMock(return_value=[])), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as sub:
+        sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError) as ei:
+            KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    msg = str(ei.value)
+    assert "is installed" in msg and "could not be written" in msg
+    assert "boot entry x: cp failed" in msg
+    gate3.assert_not_called()

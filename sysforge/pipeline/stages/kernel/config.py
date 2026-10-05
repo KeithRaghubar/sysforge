@@ -116,6 +116,39 @@ def resolve_bootloader(kernel_cfg, options):
         )
     return cli or cfg
 
+
+_BOOT_ENTRIES_MODES = ("manage", "off")
+
+
+def resolve_boot_entries(kernel_cfg, bootloader):
+    """(manage, prefix) for sysforge-managed systemd-boot entries (3.3.0-F5).
+
+    Only systemd-boot needs managed entries (grub-mkconfig discovers kernels;
+    'none' is hands-off). Invalid values fail before any build work.
+    """
+    from sysforge.primitives import boot_entries
+
+    mode = kernel_cfg.boot_entries
+    if mode not in _BOOT_ENTRIES_MODES:
+        raise RuntimeError(
+            f"[KERNEL] invalid kernel.toml boot_entries {mode!r}: "
+            f"must be one of {_BOOT_ENTRIES_MODES}"
+        )
+    prefix = kernel_cfg.boot_entries_prefix
+    if prefix is not None and not isinstance(prefix, str):
+        raise RuntimeError(
+            f"[KERNEL] invalid kernel.toml boot_entries_prefix {prefix!r}: "
+            f"must be a quoted string, e.g. boot_entries_prefix = \"97\""
+        )
+    try:
+        boot_entries.validate_prefix(prefix)
+    except ValueError as e:
+        raise RuntimeError(f"[KERNEL] invalid kernel.toml {e}") from e
+    if bootloader != "systemd-boot" or mode == "off":
+        return False, None
+    return True, prefix
+
+
 def resolve_names(kernel_cfg):
     """Resolve ``(upstream_pkgname, pkgname)`` from kernel.toml (F40).
 
@@ -312,6 +345,8 @@ class KernelConfig:
     require_fallback_kernel: bool = True
     min_boot_free_mb: int = 200
     bootloader: str = "systemd-boot"
+    boot_entries: str = "manage"
+    boot_entries_prefix: str | None = None
 
     @classmethod
     def from_toml(cls, data: dict | None) -> "KernelConfig | None":
@@ -346,6 +381,8 @@ class KernelConfig:
             require_fallback_kernel=bool(data.get("require_fallback_kernel", True)),
             min_boot_free_mb=int(data.get("min_boot_free_mb", 200)),
             bootloader=str(data.get("bootloader", "systemd-boot")),
+            boot_entries=str(data.get("boot_entries", "manage")),
+            boot_entries_prefix=data.get("boot_entries_prefix"),
         )
 
 

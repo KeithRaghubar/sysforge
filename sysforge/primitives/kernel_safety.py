@@ -27,6 +27,7 @@ hard-fails on brick findings and warns on the rest.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -513,19 +514,23 @@ def find_fallback_kernels(exclude_pkg: str | None = None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _boot_entry_references(pkgname: str) -> bool:
-    """True if any systemd-boot loader entry or grub.cfg references the kernel."""
-    needle = f"vmlinuz-{pkgname}"
+    """True if a systemd-boot entry's ``linux`` image, or a grub.cfg line, is
+    exactly ``vmlinuz-<pkgname>`` (3.3.0-B10: never a substring/title match, so
+    ``linux-sysforge-fdo`` cannot satisfy ``linux-sysforge``)."""
+    from sysforge.primitives import boot_entries
+
     entries_dir = _BOOT_DIR / "loader" / "entries"
     try:
         loader_entries = list(entries_dir.glob("*.conf"))
     except OSError:
         loader_entries = []
     for conf in loader_entries:
-        text = _read_text(conf) or ""
-        if needle in text or pkgname in text:
+        entry = boot_entries.parse_entry(conf.name, _read_text(conf) or "")
+        if boot_entries.boots_kernel(entry, pkgname):
             return True
     grub_cfg = _read_text(_BOOT_DIR / "grub" / "grub.cfg")
-    return bool(grub_cfg and needle in grub_cfg)
+    pattern = re.compile(rf"/vmlinuz-{re.escape(pkgname)}(\s|$)", re.MULTILINE)
+    return bool(grub_cfg and pattern.search(grub_cfg))
 
 
 def verify_boot_artifacts(pkgname: str, bootloader: str = "systemd-boot") -> list[KernelFinding]:

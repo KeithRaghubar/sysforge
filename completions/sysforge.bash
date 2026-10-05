@@ -337,7 +337,7 @@ _sysforge_packages() {
 _sysforge_state() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "list repair orphans profiles failed forget" -- "$cur") )
+        COMPREPLY=( $(compgen -W "list repair orphans profiles boot-entries failed forget" -- "$cur") )
         return
     fi
     case "$subverb" in
@@ -349,6 +349,9 @@ _sysforge_state() {
             ;;
         profiles)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager" -- "$cur") )
+            ;;
+        boot-entries)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--no-pager" -- "$cur") )
             ;;
         repair)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --dry-run" -- "$cur") )
@@ -457,7 +460,7 @@ _sysforge_help() {
         doctor)   subs="system pkg" ;;
         packages) subs="list add add-group remove" ;;
         run)      subs="pipeline hardware reconfigure toolchain packages kernel" ;;
-        state)    subs="list repair orphans profiles failed forget" ;;
+        state)    subs="list repair orphans profiles boot-entries failed forget" ;;
     esac
     COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
 }

@@ -110,6 +110,7 @@ from sysforge.pipeline.stages.kernel.constants import (  # noqa: F401
 from sysforge.pipeline.stages.kernel.config import (  # noqa: F401
     load_kernel_config,
     pkgbuild_path,
+    resolve_boot_entries,
     resolve_bootloader,
     resolve_compiler,
     resolve_keep_hotplug_drivers,
@@ -152,7 +153,11 @@ from sysforge.pipeline.stages.kernel.kconfig import (  # noqa: F401
     write_kconfig_fragment,
 )
 from sysforge.pipeline.stages.kernel.install import (  # noqa: F401
+    fdo_role,
+    preflight_boot_entries,
+    prune_boot_entries,
     run_mkinitcpio,
+    sync_boot_entries,
     update_bootloader,
 )
 from sysforge.pipeline.stages.kernel.gates import (  # noqa: F401
@@ -208,6 +213,7 @@ __all__ = [
     "record_and_diff_kconfig",
     "resolve_already_built_action",
     "resolve_base_config",
+    "resolve_boot_entries",
     "resolve_bootloader",
     "resolve_built_config",
     "resolve_compiler",
@@ -219,7 +225,11 @@ __all__ = [
     "resolve_subpackages",
     "run_fdo_capture",
     "stage_lsmod_snapshot",
+    "fdo_role",
+    "preflight_boot_entries",
+    "prune_boot_entries",
     "run_mkinitcpio",
+    "sync_boot_entries",
     "srcdir_path",
     "update_bootloader",
     "validate_manual_kconfig",

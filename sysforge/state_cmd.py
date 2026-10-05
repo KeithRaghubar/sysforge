@@ -690,6 +690,51 @@ class StateProfilesVerb(Verb):
         return ExecResult(exit_code=cmd_state_profiles(args))
 
 
+def _boot_entries_mode() -> tuple[str, bool]:
+    """(bootloader, managed) from kernel.toml; ('systemd-boot', True) when absent."""
+    from sysforge.pipeline.stages.kernel import config as kconfig
+
+    kc = kconfig.load() or kconfig.KernelConfig.from_toml({})
+    bl = kconfig.resolve_bootloader(kc, None)
+    return bl, kconfig.resolve_boot_entries(kc, bl)[0]
+
+
+def cmd_state_boot_entries(args) -> int:
+    """Which loader entry boots each installed kernel, and who owns it (3.3.0-F5)."""
+    from sysforge.primitives import boot_entries as be
+
+    bootloader, managed = _boot_entries_mode()
+    with _maybe_pager(not getattr(args, "no_pager", False)):
+        if bootloader != "systemd-boot":
+            print(f"bootloader = {bootloader!r}: sysforge does not manage loader entries "
+                  "(grub discovers kernels itself; 'none' is hands-off).")
+            return 0
+        try:
+            entries = be.load_entries(be.entries_dir())
+        except OSError as e:
+            print(f"cannot read {be.entries_dir()}: {e}")
+            return 1
+        if not managed:
+            print('boot_entries = "off": sysforge writes no entries; listing only.')
+        rows = [("KERNEL", "ENTRY", "OWNER", "TEMPLATE"),
+                *be.rows_for(entries, be.existing_images())]
+        widths = [max(len(r[i]) for r in rows) for i in range(3)]
+        for r in rows:
+            print("  ".join(c.ljust(widths[i]) if i < 3 else c
+                            for i, c in enumerate(r)).rstrip())
+    return 0
+
+
+class StateBootEntriesVerb(Verb):
+    """Read-only kernel → loader entry → owner listing (3.3.0-F5)."""
+
+    name = "state-boot-entries"
+    requires_sentinel = False
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_state_boot_entries(args))
+
+
 class StateOrphansVerb(Verb):
     """List (and optionally prune) stale PKGDEST artifacts.
 

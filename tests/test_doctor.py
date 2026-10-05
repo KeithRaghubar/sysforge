@@ -455,6 +455,7 @@ def _patch_kernel_safety(monkeypatch, *, kernels, verify=None, space=None,
                         lambda *a, **k: dkms or [])
     monkeypatch.setattr(kernel_safety, "running_kernel_release",
                         lambda: "6.0.0-test")
+    monkeypatch.setattr(doctor, "_boot_entry_audit_findings", lambda: [])
 
 
 def test_collect_boot_findings_adapts_brick_finding(monkeypatch):
@@ -2119,3 +2120,35 @@ def test_suggest_does_not_resurrect_opt_ins_for_broad_selectors():
     from sysforge.cli import _build_parser
     ns = _build_parser().parse_args(["doctor", "pkg", "--all", "--suggest"])
     assert doctor._resolve_pkg_axis_names(ns) == ["abi"]
+
+
+def test_boot_entry_audit_findings_filters_missing(monkeypatch):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    from sysforge.primitives import boot_entries as be
+    from sysforge.primitives import diagnostics as diag
+    monkeypatch.setattr(kconfig, "load", lambda: kconfig.KernelConfig.from_toml({"enabled": True}))
+    monkeypatch.setattr(be, "load_entries", lambda d: [])
+    monkeypatch.setattr(be, "existing_images", lambda *a: set())
+    monkeypatch.setattr(be, "audit", lambda ents, imgs: [
+        ("boot_entry_dangling", "m1", "r1"),
+        ("boot_entry_missing", "m2", "r2"),          # already reported by verify_boot_artifacts
+        ("boot_entry_template_gone", "m3", "r3"),
+    ])
+    out = doctor._boot_entry_audit_findings()
+    assert [f.check_id for f in out] == ["boot_entry_dangling", "boot_entry_template_gone"]
+    assert all(f.severity == diag.SEV_WARN and f.category == "boot" for f in out)
+
+
+def test_boot_entry_audit_findings_skips_grub(monkeypatch):
+    from sysforge.pipeline.stages.kernel import config as kconfig
+    cfg = kconfig.KernelConfig.from_toml({"enabled": True, "bootloader": "grub"})
+    monkeypatch.setattr(kconfig, "load", lambda: cfg)
+    assert doctor._boot_entry_audit_findings() == []
+
+
+def test_collect_boot_findings_includes_audit(monkeypatch):
+    from sysforge.primitives import diagnostics as diag
+    _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"])
+    marker = diag.Finding("boot", diag.SEV_WARN, "boot_entry_dangling", "m", remediation="r")
+    monkeypatch.setattr(doctor, "_boot_entry_audit_findings", lambda: [marker])
+    assert any(f.check_id == "boot_entry_dangling" for f in doctor._collect_boot_findings())

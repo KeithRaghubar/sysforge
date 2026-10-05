@@ -59,6 +59,7 @@ from sysforge.revert_cmd import RevertToStockVerb
 from sysforge.search_cmd import SearchVerb
 from sysforge.setup_cmd import SetupVerb
 from sysforge.state_cmd import (
+    StateBootEntriesVerb,
     StateFailedVerb,
     StateForgetVerb,
     StateListVerb,
@@ -906,6 +907,14 @@ def _add_state_parser(sub):
     p_profiles.add_argument("--no-pager", action="store_true", dest="no_pager",
         help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
     p_profiles.set_defaults(verb_cls=StateProfilesVerb)
+
+    p_bootent = state_sub.add_parser("boot-entries",
+        help="Show which systemd-boot loader entry boots each installed kernel, "
+             "who owns it (you / sysforge / none) and the entry sysforge cloned it "
+             "from. Read-only.")
+    p_bootent.add_argument("--no-pager", action="store_true", dest="no_pager",
+        help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+    p_bootent.set_defaults(verb_cls=StateBootEntriesVerb)
 
     p_failed = state_sub.add_parser("failed",
         help="List packages whose last build failed (recorded in build_state.toml), "

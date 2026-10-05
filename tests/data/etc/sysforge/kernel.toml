@@ -55,6 +55,21 @@ pkgname = "linux-sysforge"
 #   CLI override: `sysforge run kernel --bootloader grub`
 # bootloader = "systemd-boot"
 
+# boot_entries — "manage" | "off" — systemd-boot only. "manage" writes one
+#   /boot/loader/entries/sysforge-<kernel>.conf per sysforge-built kernel, cloned
+#   from the entry you booted (your own entries are never modified). "off" =
+#   hand-managed (UKI / kernel-install setups).
+#   default: "manage"
+# boot_entries = "manage"
+
+# boot_entries_prefix — optional filename prefix for sysforge-managed entries, for
+#   setups that order the systemd-boot menu by numbered filenames (higher number =
+#   higher in the menu). "97" → 97-sysforge-<kernel>.conf. Ignored when your
+#   entries use `sort-key` (sysforge copies that instead).
+#   See docs/guides/boot-entries.md.
+#   default: unset (sysforge-<kernel>.conf)
+# boot_entries_prefix = "97"
+
 # interactive — default: true — the PKGBUILD's `make nconfig` / `menuconfig`
 #   runs as written so the user can review/edit the resolved kconfig. Requires
 #   a real TTY: piped/captured runs downgrade to unattended with a warning.

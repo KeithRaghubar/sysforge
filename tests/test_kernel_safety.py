@@ -276,6 +276,42 @@ def test_find_fallback_requires_initramfs(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _boot_entry_references
+# ---------------------------------------------------------------------------
+
+
+
+def _boot_tree(tmp_path):
+    boot = tmp_path / "boot"
+    (boot / "loader" / "entries").mkdir(parents=True)
+    return boot
+
+
+def test_boot_entry_reference_is_exact_systemd_boot(tmp_path, monkeypatch):
+    boot = _boot_tree(tmp_path)
+    monkeypatch.setattr(ks, "_BOOT_DIR", boot)
+    (boot / "loader/entries/a.conf").write_text("linux /vmlinuz-linux-sysforge-fdo\n")
+    assert ks._boot_entry_references("linux-sysforge-fdo")
+    assert not ks._boot_entry_references("linux-sysforge")
+
+
+def test_boot_entry_reference_title_mention_does_not_count(tmp_path, monkeypatch):
+    boot = _boot_tree(tmp_path)
+    monkeypatch.setattr(ks, "_BOOT_DIR", boot)
+    (boot / "loader/entries/a.conf").write_text("title linux-sysforge\nlinux /vmlinuz-linux\n")
+    assert not ks._boot_entry_references("linux-sysforge")
+
+
+def test_boot_entry_reference_is_exact_grub(tmp_path, monkeypatch):
+    boot = _boot_tree(tmp_path)
+    (boot / "grub").mkdir()
+    monkeypatch.setattr(ks, "_BOOT_DIR", boot)
+    (boot / "grub/grub.cfg").write_text("linux /vmlinuz-linux-sysforge-fdo root=UUID=x\n")
+    assert ks._boot_entry_references("linux-sysforge-fdo")
+    assert not ks._boot_entry_references("linux-sysforge")
+
+
+# ---------------------------------------------------------------------------
 # verify_boot_artifacts
 # ---------------------------------------------------------------------------
 
