@@ -478,8 +478,9 @@ class KernelStage(Stage):
 
         # FDO feasibility advisory (record only — a `use` build already has its
         # profile). Surfaces this host's branch-sampling capability before the
-        # operator commits to building + booting a profiling kernel: AMD BRS
-        # (Zen 3+) is experimental for AutoFDO, and pre-Zen3 AMD has no path.
+        # operator commits to building + booting a profiling kernel: AMD branch
+        # sampling is experimental for AutoFDO, and an AMD CPU without the
+        # `brs`/`amd_lbr_v2` cpuinfo flag has no path (3.3.0-B22).
         if fdo_mode == "record":
             _sampling = kernel_fdo.detect_branch_sampling()
             if _sampling.supported:

@@ -252,9 +252,10 @@ For example, `pkgname = "linux-mine"` gives `linux-mine-sysforge-fdo`.
   AutoFDO tools (github.com/google/autofdo).
 - **Keep the build tree.** Converting needs the profiling kernel's `vmlinux` from its build
   directory (usually under `~/builds`). Don't wipe it between `record` and the conversion.
-- **CPU support.** Intel uses LBR, which is well supported. AMD needs **Zen 3 or newer**
-  (BRS), and AMD support is **experimental**. The warning `record` prints at `-v` says which
-  applies to you.
+- **CPU support.** Intel uses LBR, which is well supported. AMD needs branch sampling, which
+  Zen 4 and newer have (`amd_lbr_v2` in `/proc/cpuinfo`) and only some Zen 3 parts have (`brs`).
+  Client Zen 3 CPUs such as the Ryzen 5000 series have neither, so kernel FDO can't run on them.
+  AMD support is **experimental**. The warning `record` prints at `-v` says which applies to you.
 
 `capture` checks that the tools are on your `PATH` and refuses if one is missing.
 
@@ -458,7 +459,8 @@ After a purge, the next rebuild of that package is unprofiled until you collect 
 | No measurable gain after `use` | Program isn't on your hot path (e.g. Mesa with an NVIDIA GPU), or the workload didn't match real use | Re-check Step 0; re-record with a broader workload |
 | Rebuild prints *"age unknown"* | Profile predates version tracking | Harmless; refresh the profile when convenient |
 | PGO command refuses immediately | Toolchain is gcc | Switch the profile to `toolchain = "llvm"` |
-| Kernel `record` warns BRS is experimental | AMD Zen 3+ branch sampling | Expected; proceed or skip kernel FDO |
+| Kernel `record` warns BRS is experimental | AMD branch sampling (`brs`/`amd_lbr_v2`) | Expected; proceed or skip kernel FDO |
+| Kernel `record` warns branch sampling is unsupported, or `perf record` fails with *doesn't support branch stack sampling* | CPU has neither `brs` nor `amd_lbr_v2` (e.g. Ryzen 5000) | Kernel FDO isn't possible on this CPU; skip it |
 | `capture`: *needs tools that are not on PATH* | `perf`, `llvm-profgen` (round 1) or `generate_propeller_profiles` (round 2) is missing | Install what each hint line names, then re-run `capture` |
 | `capture`: *not booted into `<name>-profiling` (running: …)* | You're on another kernel, or you re-ran `record` and haven't rebooted since | Reboot into the profiling kernel, then re-run `capture` |
 | `capture`: *the profiling kernel's build tree is gone* | The build directory (usually under `~/builds`) was wiped after `record` | Re-run `--autofdo=record` (add `--propeller` in round 2), reboot, `capture` again |

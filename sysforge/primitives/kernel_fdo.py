@@ -433,14 +433,17 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
     """Resolve the branch-sampling ``perf`` event for AutoFDO on this CPU.
 
     AutoFDO needs taken-branch samples with a branch stack (``perf record -b``).
-    The mechanism is uarch-specific: Intel uses **LBR**; AMD uses **BRS**, which
-    exists only on **Zen 3 and later** (family ≥ 0x19). Pre-Zen3 AMD has no
-    usable branch-sampling path for AutoFDO. ``cpuinfo_text`` is injectable for
-    tests; production reads ``/proc/cpuinfo``.
+    The mechanism is uarch-specific: Intel uses **LBR**; AMD uses **BRS** (some
+    Zen 3 parts, cpuinfo flag ``brs``) or **LbrExtV2** (Zen 4+, flag
+    ``amd_lbr_v2``). Family is not a proxy — client Zen 3 is family 0x19 yet
+    lacks the BRS CPUID bit, so ``perf -b`` is refused (``3.3.0-B22``); the AMD
+    verdict keys on the kernel-exported flags. ``cpuinfo_text`` is injectable
+    for tests; production reads ``/proc/cpuinfo``.
     """
     text = cpuinfo_text if cpuinfo_text is not None else _read_cpuinfo()
     vendor_id = ""
     family = -1
+    flags: set[str] | None = None
     for line in text.splitlines():
         if ":" not in line:
             continue
@@ -454,8 +457,11 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
                 family = int(val)
             except ValueError:
                 family = -1
-        if vendor_id and family >= 0:
+        elif key == "flags" and flags is None:
+            flags = set(val.split())
+        if vendor_id and family >= 0 and flags is not None:
             break
+    flags = flags or set()
 
     if vendor_id == "GenuineIntel":
         return BranchSampling(
@@ -465,13 +471,15 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
             note="Intel LBR branch sampling.",
         )
     if vendor_id == "AuthenticAMD":
-        if family >= 0x19:  # Zen 3+ — BRS available
+        mech = ("LbrExtV2" if "amd_lbr_v2" in flags
+                else "BRS" if "brs" in flags else "")
+        if mech:
             return BranchSampling(
                 vendor="amd",
                 supported=True,
                 perf_event_args="--pfm-events RETIRED_TAKEN_BRANCH_INSTRUCTIONS:k",
                 note=(
-                    "AMD BRS branch sampling (Zen 3+, family "
+                    f"AMD {mech} branch sampling (family "
                     f"0x{family:x}). EXPERIMENTAL for AutoFDO and less "
                     "battle-tested than Intel LBR; the event uses libpfm "
                     "(`--pfm-events`) — verify your perf build supports it "
@@ -484,9 +492,9 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
             supported=False,
             perf_event_args="-e ex_ret_brn_tkn:k",
             note=(
-                f"AMD family 0x{family:x} predates Zen 3 — Branch Sampling (BRS) "
-                "is unavailable, so AutoFDO branch-stack collection is not "
-                "supported on this CPU."
+                f"AMD family 0x{family:x} exposes neither Branch Sampling (BRS, "
+                "cpuinfo flag `brs`) nor LbrExtV2 (`amd_lbr_v2`), so `perf -b` "
+                "branch-stack collection for AutoFDO is not supported on this CPU."
             ),
         )
     return BranchSampling(

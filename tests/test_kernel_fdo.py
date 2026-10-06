@@ -117,11 +117,31 @@ def test_require_profile_present_autofdo_ok(tmp_path):
 
 def test_detect_amd_zen3_brs_supported():
     bs = kernel_fdo.detect_branch_sampling(
-        "vendor_id\t: AuthenticAMD\ncpu family\t: 25\n"
+        "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nflags\t\t: fpu sse brs\n"
     )
     assert bs.vendor == "amd" and bs.supported
     assert "pfm" in bs.perf_event_args.lower()
     assert "experimental" in bs.note.lower()
+
+
+def test_detect_amd_zen4_lbr_v2_supported():
+    bs = kernel_fdo.detect_branch_sampling(
+        "vendor_id\t: AuthenticAMD\ncpu family\t: 25\n"
+        "flags\t\t: fpu sse amd_lbr_v2\n"
+    )
+    assert bs.vendor == "amd" and bs.supported
+    assert "pfm" in bs.perf_event_args.lower()
+
+
+def test_detect_amd_family19_without_brs_flag_unsupported():
+    # 3.3.0-B22: family 0x19 is not a BRS proxy — client Zen 3 (e.g. Vermeer,
+    # model 0x21) lacks the CPUID bit, so `perf -b` is refused at capture.
+    bs = kernel_fdo.detect_branch_sampling(
+        "vendor_id\t: AuthenticAMD\ncpu family\t: 25\nmodel\t\t: 33\n"
+        "flags\t\t: fpu sse ibs perfctr_core\n"
+    )
+    assert bs.vendor == "amd" and not bs.supported
+    assert "brs" in bs.note.lower()
 
 
 def test_detect_amd_pre_zen3_unsupported():
