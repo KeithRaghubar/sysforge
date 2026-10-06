@@ -113,6 +113,7 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.3.0-B11` | on an unchanged kernel, every run says the merge-drift check and Gate 2 "did not run", although the tree that built the installed package is still on disk | med | small | patch |
+| `3.3.0-B15` | completing a bare - under doctor system, doctor pkg, build, update or run toolchain prints a scrambled option listing; --help renders fine | med | small | patch |
 | `3.3.0-F1` | the building bar's ETA swings because it averages packages of very different sizes | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
@@ -127,6 +128,10 @@ canonical ordering.
 | `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
 | `3.2.0-F13` | Fence the remaining direct subprocess use behind the run seam | med | large | patch |
 | `3.3.0-B12` | the toolchain PGO counters reset partway through a pass, so the final pass reads [1/1] and then [1/6] under the same PGO 4/4 label | low | small | patch |
+| `3.3.0-B16` | under kernel.toml [fdo] mode, state profiles reports every applied kernel FDO store as 0d old, however old its profile is | low | small | patch |
+| `3.3.0-B17` | capture's stripped-vmlinux refusal tells a round-2 operator to re-record without --propeller | low | small | patch |
+| `3.3.0-B18` | a failed sidecar write can report the cleanup's error instead of its own, plus three loose ends from the kernel FDO rework | low | small | patch |
+| `3.3.0-DOC4` | the PGO guide says an unchanged kernel FDO use run quietly reinstalls the package it already built; an interactive run asks first | low | small | patch |
 | `3.3.0-F3` | a sudo password prompt sysforge raises itself does not pause or hide the progress bar | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
@@ -736,6 +741,109 @@ canonical ordering.
   dry-run pass headers are unchanged.
   *Priority: low · Effort: small · Bump: patch* — cosmetic, the build itself is correct; small
   because the sub-maps are already in hand at each call site.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B15` — completing a bare `-` under `doctor system`, `doctor pkg`, `build`, `update` or
+  `run toolchain` prints a scrambled option listing; `--help` renders fine.**
+  `sysforge doctor system -<TAB><TAB>` lays the option names out in one block and the descriptions
+  in another, so no name sits beside its own description and `-q`/`-h` drift into a stray column.
+  Reproduced under `zsh -f` with only `completions/` on `fpath`, so it is not a user style. The cause
+  is two match groups with incompatible layouts: the verb's `_arguments` group, which contains a
+  short/long alias pair (`'(-q --quiet)'{-q,--quiet}`, `-s/--suggest`, `-m/--makepkg`) that zsh
+  renders as one aliased row, and the separate `-h`/`--help` group that `_sysforge_help_flag` adds
+  through `_describe -o` on every verb (`completions/_sysforge`, `2.5.0-F2`). Neither group alone
+  breaks: disabling `_sysforge_help_flag` makes the listing align with `--quiet -q` on one row, and
+  verbs without an alias pair (`run kernel -`) or a `--` prefix (`doctor system --`) render
+  correctly with the help group present. The affected leaves are exactly those with an alias pair:
+  `_sysforge_doctor_system`, `_sysforge_doctor_pkg`, `_sysforge_build`, `_sysforge_update`,
+  `_sysforge_run_toolchain`.
+  Fix: keep one home for the help spec but deliver it inside `_arguments`. Define it once (for
+  example an array `_sysforge_help_spec=('(-h --help)'{-h,--help}'[show this help message and exit]')`)
+  and expand it into each leaf `_arguments` call, dropping the `_describe -o` group; or, if
+  per-leaf expansion is judged too invasive, keep `_sysforge_help_flag` but skip it in leaves that
+  already pass the help spec. Bash completion is unaffected (no descriptions). Update the
+  `completions-cli-parity` expectations if the help flag moves into the specs.
+  Tests: a zsh `zpty` listing test (skipped when zsh is absent) for `doctor system -` asserting each
+  description line starts with its own option name; the existing completion parity checks stay
+  green.
+  *Priority: med · Effort: small · Bump: patch* — med because it is live on every interactive
+  `doctor` completion, the verb most often completed by hand; small because the fix is one shared
+  spec array and its expansion at five call sites.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B16` — under `kernel.toml [fdo] mode`, `state profiles` reports every applied kernel FDO
+  store as `0d` old, however old its profile is.**
+  `fdo.finish_fdo_build` (`kernel/fdo.py:341`) rewrites `applied.toml` after every successful `use`
+  install, including an AlreadyBuilt reuse whose fingerprint is unchanged (`fdo.py:354`). With
+  `[fdo] mode` set, every routine `run kernel` is such a reuse. `makepkg_pgo._store_entry` dates a
+  store by the newest file in it (`makepkg_pgo.py:190`), so the bookkeeping write resets the age
+  column that `docs/guides/pgo.md` tells the operator to use when deciding to re-profile.
+  Fix: skip the write when `kernel_fdo.read_applied(store)` already equals the fingerprint (the
+  sidecar then means "last applied", not "last run"), and date a store from its profile artifacts
+  rather than its sidecars (`round.toml`, `applied.toml`), so a later bookkeeping change cannot
+  reintroduce the drift.
+  Tests: an unchanged-fingerprint finish leaves `applied.toml`'s mtime untouched; a changed one
+  rewrites it; `list_profile_stores` age ignores sidecar mtimes.
+  *Priority: low · Effort: small · Bump: patch* — the profile itself is applied correctly; only the
+  age readout misleads, and both changes are local.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B17` — capture's stripped-vmlinux refusal tells a round-2 operator to re-record without
+  `--propeller`.**
+  When only a debug-stripped `-headers` copy of `vmlinux` matches the running kernel,
+  `kernel_fdo.resolve_vmlinux` refuses with "re-run `sysforge run kernel --autofdo=record`"
+  (`kernel_fdo.py:599-604`). In round 2 that command builds a round-1 profiling kernel (no pinned
+  profile, no `CONFIG_PROPELLER_CLANG`), so following the message as printed sends the operator
+  back a round. The guide's troubleshooting row adds "(add `--propeller` in round 2)", but the
+  refusal is what the operator reads. `resolve_vmlinux` does not know the round; `run_fdo_capture`
+  does.
+  Fix: thread `propeller` into `resolve_vmlinux` (or have `run_fdo_capture` append the flag when it
+  re-raises), so every recovery command in a capture refusal names the round's own flags; check the
+  "build tree is gone" refusal for the same gap.
+  Tests: both refusals, round 1 and round 2, assert the exact record command they print.
+  *Priority: low · Effort: small · Bump: patch* — the guide already carries the right command; this
+  makes the tool agree with it.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B18` — a failed sidecar write can report the cleanup's error instead of its own, plus
+  three loose ends from the kernel FDO rework.**
+  `kernel_fdo._write_sidecar` (`kernel_fdo.py:230-242`) unlinks its `.tmp` in `except
+  BaseException` before re-raising. If that unlink itself raises (same directory, so the same
+  permission or I/O fault is likely), the new `OSError` replaces the original as the raised
+  exception, and `finish_fdo_build`'s warning names the cleanup failure rather than the write that
+  failed (the original survives only as `__context__`). Fix: suppress errors from the cleanup
+  (`contextlib.suppress(OSError)`) so the original always propagates; test with a store where both
+  the write and the unlink fail.
+  While there:
+  - `fdo.building_pkgver`'s docstring says "Otherwise as `built_pkgver`" (`kernel/fdo.py:182`), but
+    `built_pkgver` now prefers the patched build file and then the build manifest; say what
+    `building_pkgver` actually reads (the static PKGBUILD).
+  - `pkgbuild_patcher.PATCHED_PKGBUILD_NAME` exists, but three sites still spell the literal:
+    `pkgbuild_patcher.py:2325`, `:2348` and `update_version.py:75`. Use the constant.
+  *Priority: low · Effort: small · Bump: patch* — no observed failure; the masking only changes
+  which error text a best-effort warning shows.
+  **Standards home on adoption:** none.
+
+### Documentation
+
+- **`3.3.0-DOC4` — the PGO guide says an unchanged kernel FDO `use` run quietly reinstalls the
+  package it already built; an interactive run asks first.**
+  `docs/guides/pgo.md` § Keeping it applied: "If neither the profile nor the kernel changed, it
+  reinstalls the package it already built." That is what an unattended run does. An interactive
+  run takes the AlreadyBuilt path through `source.resolve_already_built_action`, which shows the
+  `3.2.0-B5` prompt (install as built / rebuild to review the kconfig / abort). An operator with
+  `[fdo] mode` set meets that prompt on every routine `run kernel` and has no guide text explaining
+  it. Fix: say both: unattended reuses the package, interactive asks, and "rebuild" there is only
+  needed to review the kernel config (a changed profile already forces a rebuild, `3.3.0-B14`).
+  *Priority: low · Effort: small · Bump: patch* — wording only; the behaviour is correct.
   **Standards home on adoption:** none.
 
 ### Open questions
