@@ -643,8 +643,8 @@ _sysforge_run_kernel() {
     '--no-docs[drop the -docs subpackage (the default)]' \
     '--keep-hotplug-drivers[re-enable hotplug drivers as modules]' \
     '--no-keep-hotplug-drivers[leave hotplug drivers off (default)]' \
-    '--autofdo[sample-based kernel FDO, LLVM only]:step:(record capture use)' \
-    '--propeller[layer Propeller block layout on --autofdo]' \
+    '--autofdo[sample-based kernel FDO step (LLVM only)]:step:(record capture use)' \
+    '--propeller[round 2: Propeller on the pinned AutoFDO profile]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \

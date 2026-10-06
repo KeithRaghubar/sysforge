@@ -35,9 +35,10 @@ from sysforge.pipeline.stages.kernel import (
     resolve_kconfig_targets,
 )
 from sysforge.pipeline.state import PipelineState
-from sysforge.primitives import device_probe, kbuild_map, kernel_safety
+from sysforge.primitives import device_probe, kbuild_map, kernel_fdo, kernel_safety
 import sysforge.log as sysforge_log
 import sysforge.pipeline.stages.kernel as _km
+from sysforge.pipeline.stages.kernel import fdo as kfdo
 
 
 
@@ -926,12 +927,54 @@ def _fdo_opts(**kw):
 
 
 def test_resolve_fdo_none_when_unset():
-    assert resolve_fdo(_fdo_opts()) == (None, False)
+    assert resolve_fdo(_fdo_opts()) == (None, False, False)
 
 
 def test_resolve_fdo_valid_modes():
-    assert resolve_fdo(_fdo_opts(kernel_fdo="record")) == ("record", False)
-    assert resolve_fdo(_fdo_opts(kernel_fdo="use", kernel_propeller=True)) == ("use", True)
+    assert resolve_fdo(_fdo_opts(kernel_fdo="record")) == ("record", False, True)
+    assert resolve_fdo(_fdo_opts(kernel_fdo="use", kernel_propeller=True)) == (
+        "use", True, True)
+
+
+@pytest.mark.parametrize("cli,cfg,expect", [
+    ((None, False), "autofdo", ("use", False, False)),
+    ((None, False), "propeller", ("use", True, False)),
+    ((None, False), "off", (None, False, False)),
+    (("record", False), "propeller", ("record", False, True)),
+    (("use", False), "propeller", ("use", False, True)),
+    (("capture", True), "autofdo", ("capture", True, True)),
+])
+def test_resolve_fdo_precedence(cli, cfg, expect):
+    """Explicit --autofdo wins over kernel.toml [fdo] mode; config only ever
+    implies `use` (record/capture need a reboot and a human workload)."""
+    opts = _fdo_opts(kernel_fdo=cli[0], kernel_propeller=cli[1])
+    assert resolve_fdo(opts, KernelConfig(fdo_mode=cfg)) == expect
+
+
+@pytest.mark.parametrize("table,mode", [(None, "off"), ({}, "off"),
+                                        ({"mode": "off"}, "off"),
+                                        ({"mode": "autofdo"}, "autofdo"),
+                                        ({"mode": "propeller"}, "propeller")])
+def test_fdo_mode_parse(table, mode):
+    data = {} if table is None else {"fdo": table}
+    assert KernelConfig.from_toml(data).fdo_mode == mode
+
+
+@pytest.mark.parametrize("table", [{"mode": "pgo"}, {"mode": 1}])
+def test_fdo_mode_invalid_refuses(table):
+    with pytest.raises(RuntimeError, match=r"\[fdo\] mode"):
+        KernelConfig.from_toml({"fdo": table})
+
+
+def test_fdo_not_a_table_refuses():
+    with pytest.raises(RuntimeError, match=r"\[fdo\] must be a table \(got 'autofdo'\)"):
+        KernelConfig.from_toml({"fdo": "autofdo"})
+
+
+def test_resolve_fdo_propeller_requires_mode_even_with_config():
+    """--propeller alone stays an error even when [fdo] mode would imply use."""
+    with pytest.raises(RuntimeError, match="requires --autofdo"):
+        resolve_fdo(_fdo_opts(kernel_propeller=True), KernelConfig(fdo_mode="propeller"))
 
 
 def test_resolve_fdo_invalid_mode_raises():
@@ -944,6 +987,57 @@ def test_resolve_fdo_propeller_requires_mode():
         resolve_fdo(_fdo_opts(kernel_propeller=True))
 
 
+def test_run_fdo_capture_refuses_when_tool_missing(monkeypatch, tmp_path):
+    from sysforge.primitives import kernel_fdo as kf
+    monkeypatch.setattr(kf, "resolve_store", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(
+        kf, "missing_tools", lambda **k: ["perf: install it with `pacman -S perf`"])
+    fake_log = MagicMock()
+    monkeypatch.setattr(_km.fdo, "_log", fake_log)
+    with pytest.raises(RuntimeError, match="perf"):
+        _km.fdo.run_fdo_capture("linux", False, False)
+    fake_log.ui.assert_not_called()
+
+
+def test_run_fdo_capture_happy_path_passes_recorded_tree(monkeypatch, tmp_path):
+    from pathlib import Path
+    from sysforge.primitives import fs_provision
+    from sysforge.primitives import kernel_fdo as kf
+    monkeypatch.setattr(kf, "resolve_store", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(kf, "missing_tools", lambda **k: [])
+    monkeypatch.setattr(kf, "read_round", lambda store: kf.RoundInfo("1-1", Path("/rec"), None))
+    seen = {}
+
+    def fake_resolve(name, **kw):
+        seen.update(kw)
+        return Path("/v")
+    monkeypatch.setattr(kf, "resolve_vmlinux", fake_resolve)
+    monkeypatch.setattr(
+        kf, "detect_branch_sampling",
+        lambda *a, **k: kf.BranchSampling("amd", True, "-e ev", "n"))
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir", lambda p: None)
+    fake_log = MagicMock()
+    monkeypatch.setattr(_km.fdo, "_log", fake_log)
+    _km.fdo.run_fdo_capture("linux", False, False)
+    assert seen["recorded_build_dir"] == Path("/rec")
+    assert any("sudo perf record" in str(c) for c in fake_log.ui.call_args_list)
+
+
+def test_run_fdo_capture_refuses_when_not_booted_prints_nothing_runnable(monkeypatch, tmp_path):
+    from sysforge.primitives import kernel_fdo as kf
+    monkeypatch.setattr(kf, "resolve_store", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(kf, "missing_tools", lambda **k: [])
+
+    def boom(*a, **k):
+        raise kf.KernelFdoError("not booted into X")
+    monkeypatch.setattr(kf, "resolve_vmlinux", boom)
+    fake_log = MagicMock()
+    monkeypatch.setattr(_km.fdo, "_log", fake_log)
+    with pytest.raises(RuntimeError, match="not booted"):
+        _km.fdo.run_fdo_capture("linux", False, False)
+    fake_log.ui.assert_not_called()
+
+
 # Dual-toolchain parity: the LLVM gate passes under clang and refuses gcc.
 
 def test_gate_fdo_llvm_explicit_llvm_passes():
@@ -951,8 +1045,20 @@ def test_gate_fdo_llvm_explicit_llvm_passes():
 
 
 def test_gate_fdo_llvm_explicit_gcc_refuses():
-    with pytest.raises(RuntimeError, match="requires the LLVM toolchain"):
+    with pytest.raises(RuntimeError, match="requires the LLVM toolchain") as ei:
         gate_fdo_llvm("record", False, "gcc", "/usr/bin/gcc")
+    assert "--autofdo=record" in str(ei.value)
+
+
+@pytest.mark.parametrize("propeller,mode", [(False, "autofdo"), (True, "propeller")])
+def test_gate_fdo_llvm_config_driven_gcc_names_fdo_mode(propeller, mode):
+    """A config-driven request names the kernel.toml setting and its way out,
+    never a flag the user did not pass."""
+    with pytest.raises(RuntimeError, match=r"\[fdo\] mode") as ei:
+        gate_fdo_llvm("use", propeller, "gcc", "/usr/bin/gcc", explicit=False)
+    msg = str(ei.value)
+    assert f'mode = "{mode}"' in msg and 'mode = "off"' in msg
+    assert "--autofdo" not in msg
 
 
 def test_gate_fdo_llvm_inherited_clang_cc_passes():
@@ -4132,14 +4238,15 @@ class _StopAfterAdvisory(Exception):
     pass
 
 
-def _record_advisory_text(tmp_path, monkeypatch, template, prefix):
-    from sysforge.primitives import kernel_fdo
+def _record_advisory_text(tmp_path, monkeypatch, template, prefix, plan=None):
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     warns = []
-    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o: ("record", False))
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o, c=None: ("record", False, True))
+    if plan is not None:
+        monkeypatch.setattr(_km.fdo, "plan_fdo_build", lambda *a, **k: plan)
     monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
     monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("clang", "clang", None))
     monkeypatch.setattr(_km.config, "resolve_boot_entries", lambda c, b: (True, prefix))
@@ -4162,7 +4269,6 @@ def _record_advisory_text(tmp_path, monkeypatch, template, prefix):
 
 
 def test_record_advisory_oneshot_ignores_prefix_with_sort_key(tmp_path, monkeypatch):
-    from sysforge.primitives import kernel_fdo
     tpl = be.Template(
         be.parse_entry("a.conf", "title A\nsort-key arch\nlinux /vmlinuz-linux\n"), "linux")
     text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre")
@@ -4171,7 +4277,6 @@ def test_record_advisory_oneshot_ignores_prefix_with_sort_key(tmp_path, monkeypa
 
 
 def test_record_advisory_oneshot_uses_prefix_without_sort_key(tmp_path, monkeypatch):
-    from sysforge.primitives import kernel_fdo
     tpl = be.Template(be.parse_entry("a.conf", OPERATOR_STAGE), "linux-sysforge")
     text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre")
     eff = kernel_fdo.record_pkgname("linux-git")
@@ -4203,3 +4308,770 @@ def test_boot_entries_sync_failure_explains_installed_state(tmp_path, monkeypatc
     assert "is installed" in msg and "could not be written" in msg
     assert "boot entry x: cp failed" in msg
     gate3.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# FdoPlan — two-round Propeller wiring (3.3.0-B14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fdo_stores(tmp_path, monkeypatch):
+    tcfg = {"profile_store": str(tmp_path / "store")}
+    monkeypatch.setattr(kernel_fdo, "_load_tcfg", lambda: tcfg)
+    afdo = kernel_fdo.resolve_store("linux-sysforge", propeller=False, tcfg=tcfg)
+    prop = kernel_fdo.resolve_store("linux-sysforge", propeller=True, tcfg=tcfg)
+    return afdo, prop
+
+
+def test_plan_record_round1(fdo_stores):
+    afdo, _ = fdo_stores
+    p = kfdo.plan_fdo_build("record", False, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert (p.eff_pkgname, p.env, p.build_mode, p.round_store) == (
+        "linux-sysforge-profiling", None, None, afdo)
+
+
+def test_plan_record_round2_pins_and_applies(fdo_stores):
+    afdo, prop = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    p = kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.env == {kernel_fdo.ENV_AUTOFDO: str(prop / "kernel.afdo")}
+    assert (prop / "kernel.afdo").read_bytes() == b"A"
+    assert p.afdo_sha256 == kernel_fdo.file_sha256(afdo / "kernel.afdo")
+    assert p.round_store == prop and p.eff_pkgname == "linux-sysforge-profiling"
+
+
+def test_plan_record_round2_without_round1_refuses(fdo_stores):
+    with pytest.raises(RuntimeError, match="round 1"):
+        kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+
+
+def test_plan_record_round2_dry_run_writes_nothing(fdo_stores):
+    afdo, prop = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                        building_pkgver="x", dry_run=True)
+    assert not prop.exists()
+
+
+def _ready_round2(prop, pkgver="7.2.7.arch1-1"):
+    prop.mkdir(parents=True, exist_ok=True)
+    (prop / "kernel.afdo").write_bytes(b"A")
+    (prop / "propeller_cc_profile.txt").write_text("c")
+    (prop / "propeller_ld_profile.txt").write_text("l")
+    kernel_fdo.write_round(prop, pkgver=pkgver, build_dir=None,
+                           afdo_sha256=kernel_fdo.file_sha256(prop / "kernel.afdo"))
+
+
+def test_plan_use_propeller_explicit(fdo_stores):
+    _, prop = fdo_stores
+    _ready_round2(prop)
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.eff_pkgname == "linux-sysforge-propeller"
+    assert p.env[kernel_fdo.ENV_AUTOFDO] == str(prop / "kernel.afdo")
+    assert p.build_mode == kernel_fdo.BUILD_MODE_PROPELLER
+
+
+def test_plan_use_propeller_explicit_pkgver_mismatch_refuses(fdo_stores):
+    _, prop = fdo_stores
+    _ready_round2(prop, pkgver="7.2.6.arch1-1")
+    with pytest.raises(RuntimeError, match="7.2.6.arch1-1"):
+        kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+
+
+def _rec_plan(store, sha=None):
+    return kfdo.FdoPlan(mode="record", propeller=False, eff_pkgname="linux-sysforge-profiling",
+                        env=None, build_mode=None, round_store=store, afdo_sha256=sha)
+
+
+def test_finish_record_writes_round(fdo_stores, tmp_path):
+    afdo, _ = fdo_stores
+    p = _rec_plan(afdo)
+    kfdo.finish_fdo_record(p, built_dir=tmp_path / "b", pkgver="7.2.7.arch1-1")
+    assert kernel_fdo.read_round(afdo) == kernel_fdo.RoundInfo(
+        "7.2.7.arch1-1", tmp_path / "b", None)
+
+
+def test_finish_record_already_built_keeps_previous_build_dir(fdo_stores, tmp_path):
+    afdo, _ = fdo_stores
+    kernel_fdo.write_round(afdo, pkgver="7.2.7.arch1-1", build_dir=tmp_path / "b")
+    p = _rec_plan(afdo)
+    kfdo.finish_fdo_record(p, built_dir=None, pkgver="7.2.7.arch1-1")
+    assert kernel_fdo.read_round(afdo).build_dir == tmp_path / "b"
+
+
+def test_finish_noop_for_use(fdo_stores):
+    afdo, _ = fdo_stores
+    p = kfdo.FdoPlan(mode="use", propeller=False, eff_pkgname="linux-sysforge-fdo", env={},
+                     build_mode="autofdo_kernel", round_store=None, afdo_sha256=None)
+    kfdo.finish_fdo_record(p, built_dir=None, pkgver="x")
+    assert not (afdo / "round.toml").exists()
+
+
+def test_plan_building_pkgver_none_for_vcs_pkgbuild(tmp_path):
+    """A pkgver() function means the static pkgver is the *previous* build's;
+    built_pkgver, with no patched copy or manifest, falls back to that literal."""
+    pb = make_pkgbuild(tmp_path, "linux-git")
+    pb.write_text("pkgname=linux-git\npkgver=7.2.7\npkgrel=1\n"
+                  "pkgver() {\n  echo 7.2.8\n}\n")
+    assert kfdo.building_pkgver(pb) is None
+    assert kfdo.built_pkgver(pb) == "7.2.7-1"
+
+
+def test_plan_built_pkgver_static(tmp_path):
+    pb = make_pkgbuild(tmp_path, "linux-git")
+    assert kfdo.built_pkgver(pb) == "6.10-1"
+    assert kfdo.built_pkgver(tmp_path / "missing" / "PKGBUILD") is None
+
+
+def test_plan_building_pkgver_reads_pkgver_pkgrel(tmp_path):
+    pb = make_pkgbuild(tmp_path, "linux-git")
+    assert kfdo.building_pkgver(pb) == "6.10-1"
+    assert kfdo.building_pkgver(tmp_path / "missing" / "PKGBUILD") is None
+    pb.write_text("pkgname=linux-git\npkgver=${_ver}.arch1\npkgrel=1\n")
+    assert kfdo.building_pkgver(pb) is None  # unresolved: skip the compare, never refuse
+
+
+def test_plan_record_advisory_uses_plan_eff_pkgname(tmp_path, monkeypatch):
+    plan = kfdo.FdoPlan(mode="record", propeller=False, eff_pkgname="linux-git-planned",
+                        env=None, build_mode=None, round_store=None, afdo_sha256=None)
+    tpl = be.Template(
+        be.parse_entry("a.conf", "title A\nsort-key arch\nlinux /vmlinuz-linux\n"), "linux")
+    text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre", plan=plan)
+    assert "sudo bootctl set-oneshot sysforge-linux-git-planned.conf" in text
+
+
+@pytest.mark.parametrize("propeller", [False, True])
+def test_record_advisory_capture_command_matches_round(tmp_path, monkeypatch, propeller):
+    # Round 2's record advisory must point at the round-2 capture, or the
+    # operator runs round 1's capture (llvm-profgen) on the round-2 kernel.
+    plan = kfdo.FdoPlan(mode="record", propeller=propeller,
+                        eff_pkgname="linux-git-sysforge-profiling", env=None,
+                        build_mode=None, round_store=None, afdo_sha256=None)
+    tpl = be.Template(
+        be.parse_entry("a.conf", "title A\nsort-key arch\nlinux /vmlinuz-linux\n"), "linux")
+    text = _record_advisory_text(tmp_path, monkeypatch, tpl, "pre", plan=plan)
+    if propeller:
+        assert "sysforge run kernel --autofdo=capture --propeller" in text
+    else:
+        assert "sysforge run kernel --autofdo=capture" in text
+        assert "--propeller" not in text
+
+
+class _StopAtBuild(Exception):
+    pass
+
+
+def test_plan_record_round2_build_carries_kconfig_and_pinned_env(tmp_path, monkeypatch):
+    """Round-2 record build: CONFIG_AUTOFDO_CLANG + CONFIG_PROPELLER_CLANG in the
+    fragment, and CLANG_AUTOFDO_PROFILE=<pinned copy> through extra_env."""
+    tcfg = {"profile_store": str(tmp_path / "store")}
+    monkeypatch.setattr(kernel_fdo, "_load_tcfg", lambda: tcfg)
+    afdo = kernel_fdo.resolve_store("linux-git", propeller=False, tcfg=tcfg)
+    prop = kernel_fdo.resolve_store("linux-git", propeller=True, tcfg=tcfg)
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o, c=None: ("record", True, True))
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("llvm", "clang", None))
+    seen = {}
+
+    def frag(*a, extra_kconfig=None, **k):
+        seen["kconfig"] = extra_kconfig
+        return None, 0, 0, 0, len(extra_kconfig or {})
+
+    def build(pkgbuild, *, options):
+        seen["options"] = options
+        raise _StopAtBuild
+
+    monkeypatch.setattr(_km.kconfig, "write_kconfig_fragment", frag)
+    with patch.object(_km.config, "KERNEL_PATH", p), patch(_MAKEPKG_RUN, build), \
+         pytest.raises(_StopAtBuild):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    assert seen["kconfig"] == {kernel_fdo.CONFIG_AUTOFDO: "y", kernel_fdo.CONFIG_PROPELLER: "y"}
+    opts = seen["options"]
+    assert opts.extra_env == {kernel_fdo.ENV_AUTOFDO: str(prop / "kernel.afdo")}
+    assert opts.optimization_build_mode is None
+    assert opts.rename_pkgbase_to == "linux-git-sysforge-profiling"
+
+
+def test_plan_use_propeller_unknown_building_pkgver_warns_and_proceeds(fdo_stores, monkeypatch):
+    _, prop = fdo_stores
+    _ready_round2(prop)
+    warns = []
+    monkeypatch.setattr(kfdo, "_log", SimpleNamespace(
+        warn=lambda m, *a, **k: warns.append(m), info=lambda *a, **k: None,
+        ui=lambda *a, **k: None, debug=lambda *a, **k: None))
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=True,
+                            building_pkgver=None)
+    assert p.eff_pkgname == "linux-sysforge-propeller" and p.propeller
+    assert p.profile_store == prop
+    assert any("cannot verify the round-2 Propeller profile" in w for w in warns)
+
+
+def test_plan_use_autofdo_carries_profile_store(fdo_stores):
+    afdo, _ = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.profile_store == afdo and p.eff_pkgname == "linux-sysforge-fdo"
+
+
+# ---------------------------------------------------------------------------
+# kernel.toml [fdo] mode — config-driven `use` (3.3.0-F6)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fdo_warns(monkeypatch):
+    warns = []
+    monkeypatch.setattr(kfdo, "_log", SimpleNamespace(
+        warn=lambda m, *a, **k: warns.append(m), info=lambda *a, **k: None,
+        ui=lambda *a, **k: None, debug=lambda *a, **k: None))
+    return warns
+
+
+def _live_afdo(afdo, pkgver=None):
+    afdo.mkdir(parents=True, exist_ok=True)
+    (afdo / "kernel.afdo").write_bytes(b"live")
+    if pkgver:
+        kernel_fdo.write_round(afdo, pkgver=pkgver, build_dir=None)
+
+
+def test_config_mode_set_no_profile_refuses(fdo_stores):
+    with pytest.raises(RuntimeError, match='mode = "off"') as ei:
+        kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    msg = str(ei.value)
+    assert "--autofdo=record" in msg and "sysforge run kernel`" in msg
+    assert "--autofdo=use" not in msg
+
+
+def test_explicit_use_no_profile_has_no_config_hint(fdo_stores):
+    with pytest.raises(RuntimeError, match="no AutoFDO profile") as ei:
+        kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert "[fdo]" not in str(ei.value)
+
+
+def test_config_autofdo_minor_mismatch_warns_and_builds(fdo_stores, fdo_warns):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo, pkgver="7.1.9.arch1-1")
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert (p.eff_pkgname, p.profile_store) == ("linux-sysforge-fdo", afdo)
+    assert any("7.1" in w and "7.2" in w and "new round" in w for w in fdo_warns)
+
+
+def test_config_autofdo_same_minor_silent(fdo_stores, fdo_warns):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo, pkgver="7.2.1.arch1-1")
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.build_mode == kernel_fdo.BUILD_MODE_AUTOFDO
+    assert fdo_warns == []
+
+
+def test_config_autofdo_no_round_warns_unknown(fdo_stores, fdo_warns):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=False,
+                        building_pkgver="7.2.7.arch1-1")
+    assert any("collected version unknown" in w for w in fdo_warns)
+
+
+def test_config_propeller_matching_round_builds_propeller(fdo_stores, fdo_warns):
+    _, prop = fdo_stores
+    _ready_round2(prop)
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert (p.propeller, p.eff_pkgname, p.build_mode, p.profile_store) == (
+        True, "linux-sysforge-propeller", kernel_fdo.BUILD_MODE_PROPELLER, prop)
+    assert fdo_warns == []
+
+
+def test_config_propeller_stale_falls_back_to_autofdo(fdo_stores, fdo_warns):
+    afdo, prop = fdo_stores
+    _live_afdo(afdo, pkgver="7.2.7.arch1-1")
+    _ready_round2(prop, pkgver="7.2.6.arch1-1")
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert (p.propeller, p.eff_pkgname, p.build_mode) == (
+        False, "linux-sysforge-fdo", kernel_fdo.BUILD_MODE_AUTOFDO)
+    assert p.env == {kernel_fdo.ENV_AUTOFDO: str(afdo / "kernel.afdo")}
+    assert p.profile_store == afdo
+    assert any("If linux-sysforge-propeller is installed" in w and "7.2.6.arch1-1" in w
+               for w in fdo_warns)
+    assert prop.exists()  # never auto-removes anything
+
+
+def test_config_propeller_unknown_building_pkgver_falls_back(fdo_stores, fdo_warns):
+    """R12: a VCS kernel's building version is unknown before makepkg runs
+    pkgver(), so the round-2 profile cannot be verified: config-driven
+    Propeller treats that as stale and builds AutoFDO only."""
+    afdo, prop = fdo_stores
+    _live_afdo(afdo, pkgver="7.2.7.arch1-1")
+    _ready_round2(prop)
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver=None)
+    assert (p.propeller, p.eff_pkgname, p.build_mode) == (
+        False, "linux-sysforge-fdo", kernel_fdo.BUILD_MODE_AUTOFDO)
+    assert p.env == {kernel_fdo.ENV_AUTOFDO: str(afdo / "kernel.afdo")}
+    assert p.profile_store == afdo
+    assert any("unknown" in w and "If linux-sysforge-propeller is installed" in w
+               for w in fdo_warns)
+
+
+def test_config_propeller_round2_never_done_refuses(fdo_stores):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    with pytest.raises(RuntimeError, match='mode = "autofdo"'):
+        kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+
+
+def test_config_propeller_fallback_without_autofdo_profile_refuses(fdo_stores):
+    _, prop = fdo_stores
+    _ready_round2(prop, pkgver="7.2.6.arch1-1")
+    with pytest.raises(RuntimeError, match='mode = "off"'):
+        kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+
+
+def test_config_fdo_mode_drives_plain_run(tmp_path, monkeypatch):
+    """A plain `run kernel` with [fdo] mode = "propeller" plans a config-driven
+    (explicit=False) Propeller `use` build."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    p.write_text(p.read_text() + '[fdo]\nmode = "propeller"\n')
+    state = PipelineState(tmp_path / "state")
+    gate = {}
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm",
+                        lambda *a, explicit=True, **k: gate.update(explicit=explicit))
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("llvm", "clang", None))
+    seen = {}
+
+    def plan(mode, propeller, pkgname, **kw):
+        seen.update(mode=mode, propeller=propeller, explicit=kw["explicit"])
+        raise _StopAtBuild
+
+    monkeypatch.setattr(_km.fdo, "plan_fdo_build", plan)
+    with patch.object(_km.config, "KERNEL_PATH", p), pytest.raises(_StopAtBuild):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    assert seen == {"mode": "use", "propeller": True, "explicit": False}
+    assert gate == {"explicit": False}
+
+
+def test_plan_record_round2_dry_run_without_round1_refuses(fdo_stores):
+    with pytest.raises(RuntimeError, match="round 1"):
+        kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                            building_pkgver="x", dry_run=True)
+
+
+def test_plan_record_provisions_round_store(fdo_stores, monkeypatch):
+    from sysforge.primitives import fs_provision
+    afdo, _ = fdo_stores
+    calls = []
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir",
+                        lambda path, **k: calls.append(path) or path)
+    kfdo.plan_fdo_build("record", False, "linux-sysforge", explicit=True,
+                        building_pkgver="x")
+    assert calls == [afdo]
+    calls.clear()
+    kfdo.plan_fdo_build("record", False, "linux-sysforge", explicit=True,
+                        building_pkgver="x", dry_run=True)
+    assert calls == []
+
+
+def test_plan_record_provision_failure_warns(fdo_stores, monkeypatch):
+    from sysforge.primitives import fs_provision
+    warns = []
+    monkeypatch.setattr(kfdo, "_log", SimpleNamespace(
+        warn=lambda m, *a, **k: warns.append(m), info=lambda *a, **k: None,
+        ui=lambda *a, **k: None, debug=lambda *a, **k: None))
+
+    def boom(path, **k):
+        raise fs_provision.FsProvisionError("no sudo")
+
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir", boom)
+    p = kfdo.plan_fdo_build("record", False, "linux-sysforge", explicit=True,
+                            building_pkgver="x")
+    assert p.mode == "record"
+    assert any("no sudo" in w for w in warns)
+
+
+def test_plan_record_round2_pin_permission_error_is_clean_refusal(fdo_stores, monkeypatch):
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(kernel_fdo, "pin_autofdo_profile", denied)
+    with pytest.raises(RuntimeError, match=r"\[KERNEL\] cannot pin the AutoFDO profile"):
+        kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                            building_pkgver="x")
+
+
+def test_finish_record_write_oserror_only_warns(fdo_stores, tmp_path, monkeypatch):
+    afdo, _ = fdo_stores
+    warns = []
+    monkeypatch.setattr(kfdo, "_log", SimpleNamespace(
+        warn=lambda m, *a, **k: warns.append(m), info=lambda *a, **k: None,
+        ui=lambda *a, **k: None, debug=lambda *a, **k: None))
+
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(kernel_fdo, "write_round", denied)
+    kfdo.finish_fdo_record(_rec_plan(afdo), built_dir=tmp_path / "b", pkgver="1-1")
+    assert len(warns) == 1
+    assert str(afdo) in warns[0] and "--autofdo=record" in warns[0]
+    assert "vmlinux" in warns[0]
+
+
+def test_finish_record_already_built_keeps_previous_pin_hash(fdo_stores, tmp_path):
+    afdo, _ = fdo_stores
+    kernel_fdo.write_round(afdo, pkgver="7.2.7.arch1-1", build_dir=tmp_path / "x",
+                           afdo_sha256="aa" * 32)
+    kfdo.finish_fdo_record(_rec_plan(afdo, sha="bb" * 32), built_dir=None,
+                           pkgver="7.2.7.arch1-1")
+    assert kernel_fdo.read_round(afdo) == kernel_fdo.RoundInfo(
+        "7.2.7.arch1-1", tmp_path / "x", "aa" * 32)
+
+
+def test_finish_record_already_built_without_prior_round_writes_no_hash(fdo_stores):
+    afdo, _ = fdo_stores
+    kfdo.finish_fdo_record(_rec_plan(afdo, sha="bb" * 32), built_dir=None,
+                           pkgver="7.2.7.arch1-1")
+    assert kernel_fdo.read_round(afdo).afdo_sha256 is None
+
+
+def test_plan_record_stage_sidecar_failure_does_not_strand_sentinel(tmp_path, monkeypatch):
+    """A round.toml write failure after a successful install warns; the stage
+    completes and the install sentinel is cleared."""
+    from sysforge.primitives import stage_sentinel
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o, c=None: ("record", False, True))
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("llvm", "clang", None))
+    monkeypatch.setattr(_km.gates, "gate3_verify", MagicMock())
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda *a, **k: None)
+    monkeypatch.setattr(_km.gates, "built_kernel_release", lambda *a, **k: "7.2.7")
+    monkeypatch.setattr(kinstall, "sync_boot_entries", lambda *a, **k: None)
+    seen = {}
+
+    def denied(store, **k):
+        seen["store"] = store
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(kernel_fdo, "write_round", denied)
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, return_value=None), \
+         patch.object(_km.stage, "install_built_packages", MagicMock(return_value=[])), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as sub:
+        sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    assert "store" in seen
+    assert stage_sentinel.StageSentinel(tmp_path / "state").get_active() is None
+
+
+# ---------------------------------------------------------------------------
+# Forced rebuilds: record always (R20), use on a changed profile (R21)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("propeller", [False, True])
+def test_plan_record_always_forces_rebuild(fdo_stores, propeller):
+    afdo, _ = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    for dry_run in (False, True):
+        p = kfdo.plan_fdo_build("record", propeller, "linux-sysforge", explicit=True,
+                                building_pkgver="7.2.7.arch1-1", dry_run=dry_run)
+        assert p.force_rebuild is True
+
+
+def test_plan_off_does_not_force(fdo_stores):
+    p = kfdo.plan_fdo_build(None, False, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is False
+
+
+def test_plan_use_unchanged_profile_reuses(fdo_stores):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    kernel_fdo.write_applied(afdo, kernel_fdo.applied_fingerprint(afdo, propeller=False))
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is False
+    assert p.applied_fingerprint == kernel_fdo.read_applied(afdo)
+
+
+def test_plan_use_changed_profile_forces(fdo_stores):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    kernel_fdo.write_applied(afdo, kernel_fdo.applied_fingerprint(afdo, propeller=False))
+    (afdo / "kernel.afdo").write_bytes(b"recaptured")
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is True
+    assert p.applied_fingerprint == kernel_fdo.applied_fingerprint(afdo, propeller=False)
+
+
+def test_plan_use_missing_applied_forces(fdo_stores):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    p = kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is True
+
+
+def test_plan_use_propeller_cc_change_forces(fdo_stores):
+    _, prop = fdo_stores
+    _ready_round2(prop)
+    kernel_fdo.write_applied(prop, kernel_fdo.applied_fingerprint(prop, propeller=True))
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is False
+    (prop / "propeller_cc_profile.txt").write_text("c2")
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=True,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.force_rebuild is True
+
+
+def test_plan_use_fallback_fingerprints_the_autofdo_store(fdo_stores, fdo_warns):
+    afdo, prop = fdo_stores
+    _live_afdo(afdo, pkgver="7.2.7.arch1-1")
+    _ready_round2(prop, pkgver="7.2.6.arch1-1")
+    kernel_fdo.write_applied(afdo, kernel_fdo.applied_fingerprint(afdo, propeller=False))
+    p = kfdo.plan_fdo_build("use", True, "linux-sysforge", explicit=False,
+                            building_pkgver="7.2.7.arch1-1")
+    assert p.profile_store == afdo and p.force_rebuild is False
+
+
+def test_plan_use_dry_run_writes_nothing(fdo_stores):
+    afdo, _ = fdo_stores
+    _live_afdo(afdo)
+    before = sorted(x.name for x in afdo.iterdir())
+    kfdo.plan_fdo_build("use", False, "linux-sysforge", explicit=True,
+                        building_pkgver="7.2.7.arch1-1", dry_run=True)
+    assert sorted(x.name for x in afdo.iterdir()) == before
+
+
+def _use_plan(store, fp="cd" * 32):
+    return kfdo.FdoPlan(mode="use", propeller=False, eff_pkgname="linux-sysforge-fdo",
+                        env={}, build_mode="autofdo_kernel", round_store=None,
+                        afdo_sha256=None, profile_store=store, applied_fingerprint=fp)
+
+
+def test_finish_build_use_writes_applied(fdo_stores, tmp_path):
+    afdo, _ = fdo_stores
+    kfdo.finish_fdo_build(_use_plan(afdo), built_dir=tmp_path / "b", pkgver="1-1")
+    assert kernel_fdo.read_applied(afdo) == "cd" * 32
+    assert not (afdo / "round.toml").exists()
+
+
+def test_finish_build_record_writes_no_applied(fdo_stores, tmp_path):
+    afdo, _ = fdo_stores
+    kfdo.finish_fdo_build(_rec_plan(afdo), built_dir=tmp_path / "b", pkgver="1-1")
+    assert kernel_fdo.read_round(afdo) is not None
+    assert kernel_fdo.read_applied(afdo) is None
+
+
+def test_finish_build_use_oserror_only_warns(fdo_stores, tmp_path, fdo_warns, monkeypatch):
+    afdo, _ = fdo_stores
+
+    def denied(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(kernel_fdo, "write_applied", denied)
+    kfdo.finish_fdo_build(_use_plan(afdo), built_dir=None, pkgver="1-1")
+    assert len(fdo_warns) == 1 and str(afdo) in fdo_warns[0]
+
+
+def _drive_build(tmp_path, monkeypatch, fdo, plan=None):
+    """Run the stage until the first makepkg_run call; return its options."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o, c=None: fdo)
+    if plan is not None:
+        monkeypatch.setattr(_km.fdo, "plan_fdo_build", lambda *a, **k: plan)
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("llvm", "clang", None))
+    seen = {}
+
+    def frag(*a, extra_kconfig=None, **k):
+        seen["kconfig"] = extra_kconfig
+        return None, 0, 0, 0, len(extra_kconfig or {})
+
+    def build(pkgbuild, *, options):
+        seen["options"] = options
+        raise _StopAtBuild
+
+    monkeypatch.setattr(_km.kconfig, "write_kconfig_fragment", frag)
+    with patch.object(_km.config, "KERNEL_PATH", p), patch(_MAKEPKG_RUN, build), \
+         pytest.raises(_StopAtBuild):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    return seen
+
+
+def test_stage_round2_record_first_build_forces(tmp_path, monkeypatch):
+    tcfg = {"profile_store": str(tmp_path / "store")}
+    monkeypatch.setattr(kernel_fdo, "_load_tcfg", lambda: tcfg)
+    afdo = kernel_fdo.resolve_store("linux-git", propeller=False, tcfg=tcfg)
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    seen = _drive_build(tmp_path, monkeypatch, ("record", True, True))
+    assert "-f" in (seen["options"].extra_flags or [])
+
+
+def test_stage_plain_first_build_does_not_force(tmp_path, monkeypatch):
+    seen = _drive_build(tmp_path, monkeypatch, (None, False, False))
+    assert "-f" not in (seen["options"].extra_flags or [])
+
+
+def test_plan_record_round2_provisions_before_pinning(fdo_stores, monkeypatch):
+    from sysforge.primitives import fs_provision
+    _, prop = fdo_stores
+    order = []
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir",
+                        lambda path, **k: order.append(("provision", path)) or path)
+    monkeypatch.setattr(kernel_fdo, "pin_autofdo_profile",
+                        lambda *a, **k: order.append(("pin",)) or (prop / "kernel.afdo", "s"))
+    kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                        building_pkgver="x")
+    assert order == [("provision", prop), ("pin",)]
+
+
+# ---------------------------------------------------------------------------
+# Stage-level use path: Gate 1 name, build options, boot-entry role (R23)
+# ---------------------------------------------------------------------------
+
+
+def _drive_install(tmp_path, monkeypatch, fdo):
+    """Run the stage end to end (stubbed build/install); return what the
+    build, Gate 1, the kconfig fragment and the boot-entry sync received."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(_km.fdo, "resolve_fdo", lambda o, c=None: fdo)
+    monkeypatch.setattr(_km.fdo, "gate_fdo_llvm", lambda *a, **k: None)
+    monkeypatch.setattr(_km.config, "resolve_compiler", lambda *a, **k: ("llvm", "clang", None))
+    monkeypatch.setattr(_km.gates, "gate3_verify", MagicMock())
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda *a, **k: None)
+    monkeypatch.setattr(_km.gates, "built_kernel_release", lambda *a, **k: "7.2.7")
+    seen = {}
+    real_gate1 = _km.gates.gate1_preflight
+
+    def gate1(kernel_cfg, options, pkgname, **k):
+        seen["gate1"] = pkgname
+        return real_gate1(kernel_cfg, options, pkgname, **k)
+
+    def frag(*a, extra_kconfig=None, **k):
+        seen["kconfig"] = extra_kconfig
+        return None, 0, 0, 0, len(extra_kconfig or {})
+
+    def build(pkgbuild, *, options):
+        seen["options"] = options
+
+    monkeypatch.setattr(_km.gates, "gate1_preflight", gate1)
+    monkeypatch.setattr(_km.kconfig, "write_kconfig_fragment", frag)
+    monkeypatch.setattr(kinstall, "sync_boot_entries",
+                        lambda pkg, eff, role, *a, **k: seen.update(role=role, eff=eff))
+    with patch.object(_km.config, "KERNEL_PATH", p), patch(_MAKEPKG_RUN, build), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as sub:
+        sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    return seen
+
+
+def _git_stores(tmp_path, monkeypatch):
+    tcfg = {"profile_store": str(tmp_path / "store")}
+    monkeypatch.setattr(kernel_fdo, "_load_tcfg", lambda: tcfg)
+    return (kernel_fdo.resolve_store("linux-git", propeller=False, tcfg=tcfg),
+            kernel_fdo.resolve_store("linux-git", propeller=True, tcfg=tcfg))
+
+
+def test_stage_gate1_checks_the_role_kernel(tmp_path, monkeypatch):
+    afdo, _ = _git_stores(tmp_path, monkeypatch)
+    _live_afdo(afdo)
+    seen = _drive_install(tmp_path, monkeypatch, ("use", False, True))
+    assert seen["gate1"] == "linux-git-sysforge-fdo"
+
+
+def test_stage_explicit_use_drives_build_and_boot_entry(tmp_path, monkeypatch):
+    afdo, _ = _git_stores(tmp_path, monkeypatch)
+    _live_afdo(afdo)
+    seen = _drive_install(tmp_path, monkeypatch, ("use", False, True))
+    opts = seen["options"]
+    assert opts.rename_pkgbase_to == "linux-git-sysforge-fdo"
+    assert opts.optimization_build_mode == kernel_fdo.BUILD_MODE_AUTOFDO
+    assert opts.extra_env == {kernel_fdo.ENV_AUTOFDO: str(afdo / "kernel.afdo")}
+    assert "-f" in (opts.extra_flags or [])  # no applied.toml yet
+    assert seen["kconfig"] == {kernel_fdo.CONFIG_AUTOFDO: "y"}
+    assert (seen["role"], seen["eff"]) == ("autofdo", "linux-git-sysforge-fdo")
+    assert kernel_fdo.read_applied(afdo) == kernel_fdo.applied_fingerprint(
+        afdo, propeller=False)
+
+
+def test_stage_config_propeller_fallback_builds_autofdo(tmp_path, monkeypatch):
+    afdo, prop = _git_stores(tmp_path, monkeypatch)
+    _live_afdo(afdo, pkgver="6.10-1")
+    _ready_round2(prop, pkgver="6.9-1")  # stale against the PKGBUILD's 6.10-1
+    seen = _drive_install(tmp_path, monkeypatch, ("use", True, False))
+    opts = seen["options"]
+    assert opts.rename_pkgbase_to == "linux-git-sysforge-fdo"
+    assert opts.optimization_build_mode == kernel_fdo.BUILD_MODE_AUTOFDO
+    assert seen["kconfig"] == {kernel_fdo.CONFIG_AUTOFDO: "y"}
+    assert kernel_fdo.CONFIG_PROPELLER not in seen["kconfig"]
+    assert (seen["role"], seen["eff"]) == ("autofdo", "linux-git-sysforge-fdo")
+    assert seen["gate1"] == "linux-git-sysforge-fdo"
+    assert kernel_fdo.read_applied(prop) is None
+
+
+# ---------------------------------------------------------------------------
+# Post-build pkgver: the file makepkg rewrote, not the stale PKGBUILD (R23)
+# ---------------------------------------------------------------------------
+
+
+def test_built_pkgver_prefers_rewritten_build_file(tmp_path):
+    pb = make_pkgbuild(tmp_path, "linux-git")  # 6.10-1 (stale: makepkg -p the copy)
+    (pb.parent / "PKGBUILD.sysforge").write_text(
+        "pkgname=linux-git-sysforge-profiling\npkgver=6.11.r3.gabc\npkgrel=1\n")
+    assert kfdo.built_pkgver(pb, pkgname="linux-git-sysforge-profiling") == "6.11.r3.gabc-1"
+
+
+def test_built_pkgver_reads_manifest_when_build_file_cleaned_up(tmp_path):
+    pb = make_pkgbuild(tmp_path, "linux-git")
+    (pb.parent / ".sysforge-built.list").write_text(
+        "linux-git-sysforge-profiling-6.11.r3.gabc-1-x86_64.pkg.tar.zst\n"
+        "linux-git-sysforge-profiling-headers-6.11.r3.gabc-1-x86_64.pkg.tar.zst\n")
+    assert kfdo.built_pkgver(pb, pkgname="linux-git-sysforge-profiling") == "6.11.r3.gabc-1"
+    # Another package's manifest entry never matches.
+    assert kfdo.built_pkgver(pb, pkgname="linux-git-sysforge-fdo") == "6.10-1"
+
+
+def test_stage_record_round_pkgver_comes_from_the_build(tmp_path, monkeypatch):
+    afdo, _ = _git_stores(tmp_path, monkeypatch)
+    (tmp_path / "builds" / "linux-git").mkdir(parents=True)
+    (tmp_path / "builds" / "linux-git" / ".sysforge-built.list").write_text(
+        "linux-git-sysforge-profiling-6.11-2-x86_64.pkg.tar.zst\n")
+    _drive_install(tmp_path, monkeypatch, ("record", False, True))
+    assert kernel_fdo.read_round(afdo).pkgver == "6.11-2"

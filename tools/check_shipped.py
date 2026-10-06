@@ -99,7 +99,7 @@ _KNOWN_SECTIONS: dict[str, set[str]] = {
                        "consumes_inference",
                        "package_compiler_overrides"},
     "packages.toml":  {"build", "package", "group"},
-    "kernel.toml":    {"kconfig"},
+    "kernel.toml":    {"kconfig", "fdo"},
     "toolchain.toml": {"packages", "llvm", "bolt"},
     "bootstrap.toml": {"partition", "system", "mirror", "desktop", "makepkg"},
 }

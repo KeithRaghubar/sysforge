@@ -152,6 +152,9 @@ def resolve_method_store(
 # rest keep one profile per method.
 _PER_TARGET_METHODS = frozenset({"pgo", "autofdo", "propeller", "bolt"})
 
+# Kernel FDO round sidecar written next to the profile (3.3.0-B14).
+ROUND_SIDECAR = "round.toml"
+
 
 @dataclass(frozen=True)
 class StoreEntry:
@@ -174,6 +177,13 @@ def _store_entry(method: str, target: str | None, path: Path) -> StoreEntry | No
     for sidecar in sorted(path.glob("*.profdata.version")):
         version = sidecar.read_text(encoding="utf-8").strip() or None
         break
+    if version is None and (path / ROUND_SIDECAR).is_file():
+        # Kernel FDO stores record the profiled pkgver in round.toml (3.3.0-B14);
+        # kernel_fdo.read_round is its one reader (missing/malformed → None).
+        # Imported here, not at module top: kernel_fdo imports this module at load.
+        from sysforge.primitives.kernel_fdo import read_round
+        info = read_round(path)
+        version = info.pkgver if info else None
     return StoreEntry(
         method=method, target=target, path=path,
         size_bytes=sum(s.st_size for s in stats),

@@ -106,8 +106,12 @@ Mechanism lives in the cited §DESIGN section.
     `-sysforge`. Per-package stores (mesa keeps back-compat `pgo-mesa`); durable reuse via
     `reuse_profdata`. LLVM-only; warn-list `config.pgo_warns_for`.
   - **Kernel sample-based FDO** (`primitives/kernel_fdo.py`): `run kernel --autofdo=record|capture|
-    use` (+`--propeller`); `capture` read-only; `use` injects via the `extra_env` make-var seam.
-    LLVM-only. §Kernel stage.
+    use`, run twice for Propeller (round 2 pins round 1's profile). One decision:
+    `fdo.plan_fdo_build` → `FdoPlan`, threaded through the stage. Role names only via
+    `kernel_fdo.record_pkgname`/`optimized_pkgname` (`strip_role` inverts); `round.toml` only via
+    `kernel_fdo.write_round`/`read_round`, `applied.toml` only via `kernel_fdo.write_applied`/
+    `read_applied` (a `use` forces `-f` when the profile changed; every `record` forces).
+    `capture` read-only; profiles go in via the `extra_env` make-var seam. LLVM-only. §Kernel stage.
   - **BOLT post-link** (`primitives/bolt.py`): EXPERIMENTAL **and BLOCKED** (dylib-only LLVM can't
     link standalone BOLT tools; `standalone_build_viable()` guards) — **keep `[bolt] enabled =
     false`**. Toolchain Pass 5, in-place stock name.

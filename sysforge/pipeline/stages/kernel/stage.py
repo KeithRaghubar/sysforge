@@ -22,7 +22,6 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
 from sysforge.primitives.makepkg_wrapper import install_built_packages
 from sysforge.primitives.makepkg_wrapper import run as makepkg_run
-from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
 from sysforge.pipeline.stages.kernel import (
@@ -193,51 +192,24 @@ class KernelStage(Stage):
         variant = get_toolchain_variant(state)
         state_dir, _ = resolve_state_dir(options.state_dir)
 
-        # Sample-based FDO (AutoFDO / Propeller). Resolved up front so the
-        # LLVM-only gate fires before any work, the read-only `capture` step can
-        # short-circuit (print perf/create_llvm_prof commands, no build), and the
-        # `use` step's profile presence is checked fail-fast. `fdo_env` (the
-        # CLANG_AUTOFDO_PROFILE/CLANG_PROPELLER_PROFILE_PREFIX make-variables) and
-        # `fdo_opt_build_mode` (autofdo_kernel/propeller_kernel → -sysforge coexist
-        # rename) thread into the build call below; `fdo_eff_pkgname` is the
-        # installed name the post-install gates must verify (the use build is
-        # renamed inside makepkg_wrapper).
-        fdo_mode, fdo_propeller = fdo.resolve_fdo(options)
-        fdo_env = None
-        fdo_opt_build_mode = None
-        fdo_eff_pkgname = pkgname
+        # Sample-based FDO (AutoFDO / Propeller). The request is resolved up
+        # front so the LLVM-only gate fires before any work and the read-only
+        # `capture` step can short-circuit (print perf/converter commands, no
+        # build). What the build applies and installs as is decided later, by
+        # `fdo.plan_fdo_build` right after the PKGBUILD is synced and validated:
+        # it compares the PKGBUILD's pkgver against the profiled round, so it
+        # must read the post-sync PKGBUILD. Until then only the plain `pkgname`
+        # is in play; `fdo_eff_pkgname` does not exist yet. kernel.toml
+        # `[fdo] mode` makes a plain run a config-driven (non-explicit) `use`
+        # build; it never implies `capture`, so that branch stays CLI-only.
+        fdo_mode, fdo_propeller, fdo_explicit = fdo.resolve_fdo(options, kernel_cfg)
         if fdo_mode:
             _fdo_compiler, _fdo_cc, _ = config.resolve_compiler(kernel_cfg, options, state)
-            fdo.gate_fdo_llvm(fdo_mode, fdo_propeller, _fdo_compiler, _fdo_cc)
+            fdo.gate_fdo_llvm(fdo_mode, fdo_propeller, _fdo_compiler, _fdo_cc,
+                              explicit=fdo_explicit)
             if fdo_mode == "capture":
                 fdo.run_fdo_capture(pkgname, fdo_propeller, options.dry_run)
                 return
-            if fdo_mode == "record":
-                # F26: the instrumented profiling kernel must not overwrite the
-                # production kernel. Install it under a distinct sysforge-owned
-                # coexist name (its own /boot entry, bootloader fallback), applied
-                # via the same rename_pkgbase_to seam as the use-build. The coexist
-                # name is itself the ownership gate — a reinstall only ever
-                # replaces a prior sysforge profiling kernel.
-                fdo_eff_pkgname = kernel_fdo.record_pkgname(pkgname)
-                _log.ui(
-                    f"AutoFDO{' + Propeller' if fdo_propeller else ''} record-build: "
-                    f"profiling kernel installs as {fdo_eff_pkgname} "
-                    f"(coexists with {pkgname}; boot into it to collect samples)"
-                )
-            if fdo_mode == "use":
-                _fdo_store = kernel_fdo.resolve_store(pkgname, propeller=fdo_propeller)
-                # Clean pre-build abort if the record→capture profile is missing.
-                kernel_fdo.require_profile(_fdo_store, propeller=fdo_propeller)
-                fdo_env = kernel_fdo.use_env(_fdo_store, propeller=fdo_propeller)
-                fdo_opt_build_mode = kernel_fdo.build_mode(propeller=fdo_propeller)
-                if not pkgname.endswith(f"-{RENAME_SUFFIX}"):
-                    fdo_eff_pkgname = f"{pkgname}-{RENAME_SUFFIX}"
-                _log.ui(
-                    f"AutoFDO{' + Propeller' if fdo_propeller else ''} use-build: "
-                    f"consuming {_fdo_store} → {fdo_eff_pkgname} "
-                    f"(coexists with {pkgname})"
-                )
 
         # A1: per-kernel toolchain drift. update.py's drift sweep skips
         # stage-owned packages (the kernel is one), so this stage owns the
@@ -325,10 +297,43 @@ class KernelStage(Stage):
         # build; the local rename is a patch applied later in makepkg_wrapper.
         source.validate_pkgname_matches_pkgbuild(pkgbuild, upstream_pkgname or pkgname)
 
+        # FDO plan: one decision threaded through the rest of the stage.
+        # `fdo_env` (CLANG_AUTOFDO_PROFILE / CLANG_PROPELLER_PROFILE_PREFIX
+        # make-variables; round-2 record also applies the pinned AutoFDO
+        # profile) and `fdo_opt_build_mode` (use only) feed the build call;
+        # `fdo_eff_pkgname` is the installed role name the post-install gates
+        # verify. A missing profile refuses here: after the sync, before any
+        # build. A Propeller round profiled against a different pkgver refuses
+        # when explicit; config-driven, it (or an unknown building pkgver, as for
+        # a VCS kernel) falls back to AutoFDO only.
+        fdo_plan = fdo.plan_fdo_build(
+            fdo_mode, fdo_propeller, pkgname, explicit=fdo_explicit,
+            building_pkgver=fdo.building_pkgver(pkgbuild),
+            dry_run=options.dry_run)
+        fdo_mode, fdo_propeller = fdo_plan.mode, fdo_plan.propeller
+        fdo_env = fdo_plan.env
+        fdo_opt_build_mode = fdo_plan.build_mode
+        fdo_eff_pkgname = fdo_plan.eff_pkgname
+        if fdo_mode == "record":
+            _log.ui(
+                f"{'Propeller round 2' if fdo_propeller else 'AutoFDO round 1'} "
+                f"record-build: profiling kernel installs as {fdo_eff_pkgname} "
+                f"(coexists with {pkgname}; boot into it to collect samples)"
+                + ("; applies the pinned AutoFDO profile" if fdo_propeller else ""))
+        elif fdo_mode == "use":
+            _log.ui(
+                f"AutoFDO{' + Propeller' if fdo_propeller else ''} use-build: "
+                f"consuming {fdo_plan.profile_store} → installs as {fdo_eff_pkgname} "
+                f"(coexists with {pkgname})")
+            if fdo_plan.force_rebuild:
+                _log.info(
+                    f"applied profile differs from the last {fdo_eff_pkgname} install "
+                    "(or none is recorded): forcing a fresh build")
+
         # A4: warn + confirm if the *installed* kernel name shadows a pacman repo
         # package (would overwrite the official package on install). For an FDO
-        # use-build that is the -sysforge name, which never collides; for
-        # record/no-FDO it is the stock pkgname.
+        # build that is its role name (<pkg>-sysforge-profiling / -fdo /
+        # -propeller), which never collides; without FDO it is the stock pkgname.
         source.check_pkgname_repo_collision(fdo_eff_pkgname, options)
 
         # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
@@ -484,7 +489,8 @@ class KernelStage(Stage):
                 )
                 _log.warn(
                     "AutoFDO profiling kernel: after install, reboot into it and "
-                    f"run `sysforge run kernel --autofdo=capture`. {_sampling.note}"
+                    "run `sysforge run kernel --autofdo=capture"
+                    f"{' --propeller' if fdo_propeller else ''}`. {_sampling.note}"
                     + (" To boot it once: sudo bootctl set-oneshot "
                        f"{boot_entries.entry_filename(fdo_eff_pkgname, _hint_prefix)}"
                        if entries_template is not None else "")
@@ -499,8 +505,10 @@ class KernelStage(Stage):
         # Gate 1 — cheap preflight (fallback-kernel guarantee, /boot space,
         # root-topology capture, advisory warnings). Hard-fails *before* the
         # build so a missing fallback / full /boot aborts with nothing spent.
+        # Keyed on the kernel this run replaces: an FDO build installs under its
+        # role name, so the plain <pkgname> kernel counts as a fallback.
         topology = gates.gate1_preflight(
-            kernel_cfg, options, pkgname, dry_run=options.dry_run,
+            kernel_cfg, options, fdo_eff_pkgname, dry_run=options.dry_run,
         )
 
         # Advisory lock around the whole build → audit → install window so two
@@ -542,6 +550,10 @@ class KernelStage(Stage):
             # conf + checkout name (3.2.0-B37). Stays None on the AlreadyBuilt
             # and dry-run paths: no fresh tree to demand.
             built_dir = None
+            # The pkgver this build produced, read inside the build lock (a
+            # concurrent run cannot rewrite the build files under us) for the
+            # post-install FDO sidecar.
+            fdo_built_pkgver = None
             if options.dry_run:
                 _log.ui(f"[dry-run] would build {pkgname} (no install) from {pkgbuild}")
             else:
@@ -575,22 +587,24 @@ class KernelStage(Stage):
                         kernel_build_headers=build_headers,
                         kernel_build_docs=build_docs,
                         kconfig_targets=kconfig_targets,
-                        # FDO use-build: profile path make-variables (extra_env →
-                        # `make`) + the optimization build_mode that earns the
-                        # -sysforge coexist rename. Both None for record/no-FDO.
+                        # FDO profile path make-variables (extra_env → `make`):
+                        # use-builds, and the round-2 record build, which applies
+                        # the pinned AutoFDO copy (CLANG_AUTOFDO_PROFILE). The
+                        # optimization build_mode is set for use-builds only.
                         extra_env=fdo_env,
                         optimization_build_mode=fdo_opt_build_mode,
-                        # Coexist pkgbase rename (patch_pkgbase_rename). For an
-                        # --autofdo=record build the target is the distinct
-                        # profiling name (F26), so the instrumented kernel never
-                        # overwrites the production one. Otherwise it is the F40
-                        # local-rename: patch the cloned upstream's pkgbase to the
-                        # local pkgname so the build installs alongside the
-                        # official package. None when neither applies (names match
-                        # or pure-local) → no patch, upstream name.
+                        # Coexist pkgbase rename (patch_pkgbase_rename):
+                        # - record: the distinct profiling name (F26), so the
+                        #   instrumented kernel never overwrites the production one.
+                        # - use: the role name (-fdo / -propeller, F6), so the
+                        #   optimized kernel never overwrites the plain one.
+                        # - otherwise the F40 local-rename: patch the cloned
+                        #   upstream's pkgbase to the local pkgname so the build
+                        #   installs alongside the official package. None when
+                        #   neither applies (names match or pure-local).
                         rename_pkgbase_to=(
                             fdo_eff_pkgname
-                            if fdo_mode == "record"
+                            if fdo_mode in ("record", "use")
                             else (
                                 pkgname
                                 if upstream_pkgname and pkgname != upstream_pkgname
@@ -599,8 +613,12 @@ class KernelStage(Stage):
                         ),
                     )
 
+                # Forced (-f) for every record and for a use whose applied
+                # profile changed (FdoPlan.force_rebuild); otherwise makepkg may
+                # reuse the package in PKGDEST (exit 13, the B5 prompt below).
                 try:
-                    built_dir = makepkg_run(pkgbuild, options=_kernel_build_options())
+                    built_dir = makepkg_run(pkgbuild, options=_kernel_build_options(
+                        extra_flags=["-f"] if fdo_plan.force_rebuild else None))
                 except AlreadyBuilt:
                     # B5: makepkg exit 13 skipped the build — and with it the
                     # in-prepare() kconfig review an interactive run promised.
@@ -635,6 +653,7 @@ class KernelStage(Stage):
                 self._kconfig_diff = gates.record_and_diff_kconfig(
                     state_dir, pkgname, pkgbuild.parent, build_dir=built_dir
                 )
+                fdo_built_pkgver = fdo.built_pkgver(pkgbuild, pkgname=fdo_eff_pkgname)
 
             # B4: acquire credentials *before* the sentinel scope. A sudo
             # prompt that times out makes sudo exit non-zero without ever
@@ -710,12 +729,22 @@ class KernelStage(Stage):
                 # Gate 3 — post-install boot-readiness (raises on brick). Inside
                 # the sentinel so an unbootable result blocks the next run for
                 # recovery. Keyed on the *installed* name: an FDO use-build is
-                # renamed to <pkgname>-sysforge, so /boot/vmlinuz-<that> is what
-                # must exist.
+                # renamed to its role name (<pkg>-sysforge-fdo / -propeller), so
+                # /boot/vmlinuz-<that> is what must exist.
                 if not options.dry_run:
                     gates.gate3_verify(
                         pkgbuild.parent, fdo_eff_pkgname, bootloader,
                         build_dir=built_dir,
                     )
+
+        # Record round: write round.toml for capture (vmlinux tree, profiled
+        # pkgver, pinned-profile hash). Outside the sentinel (install and Gate 3
+        # already succeeded) and best-effort, so a sidecar failure never strands
+        # a recovery sentinel over a good install. Use round: record the
+        # applied-profile fingerprint (applied.toml). pkgver was read inside the
+        # build lock from the build makepkg actually ran (fdo.built_pkgver).
+        if not options.dry_run:
+            fdo.finish_fdo_build(
+                fdo_plan, built_dir=built_dir, pkgver=fdo_built_pkgver)
 
         _log.info(f"Kernel stage complete: {fdo_eff_pkgname}")

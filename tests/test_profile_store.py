@@ -40,6 +40,36 @@ def test_list_profile_stores_reports_method_target_size(tmp_path):
     assert rows[("pgo", "htop")].path == root / "pgo" / "htop"
 
 
+def test_list_profile_stores_reads_round_sidecar_version(tmp_path):
+    tc = _tcfg(tmp_path)
+    store = tmp_path / "root" / "autofdo" / "linux"
+    _file(store / "kernel.afdo")
+    (store / "round.toml").write_text('pkgver = "7.2.7.arch1-1"\n')
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(tc)}
+    assert rows[("autofdo", "linux")].collected_version == "7.2.7.arch1-1"
+
+
+def test_list_profile_stores_reads_round_through_kernel_fdo(tmp_path, monkeypatch):
+    """One reader for round.toml: kernel_fdo.read_round (no inline parse)."""
+    from sysforge.primitives import kernel_fdo
+    store = tmp_path / "root" / "autofdo" / "linux"
+    _file(store / "kernel.afdo")
+    (store / "round.toml").write_text('pkgver = "on-disk"\n')
+    monkeypatch.setattr(kernel_fdo, "read_round",
+                        lambda s: kernel_fdo.RoundInfo("via-read-round", None, None))
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(_tcfg(tmp_path))}
+    assert rows[("autofdo", "linux")].collected_version == "via-read-round"
+
+
+@pytest.mark.parametrize("content", [b"not = [toml", b"pkgver = 7", b'pkgver = "\xff\xfe"\n'])
+def test_list_profile_stores_malformed_sidecar_has_no_version(tmp_path, content):
+    store = tmp_path / "root" / "autofdo" / "linux"
+    _file(store / "kernel.afdo")
+    (store / "round.toml").write_bytes(content)
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(_tcfg(tmp_path))}
+    assert rows[("autofdo", "linux")].collected_version is None
+
+
 def test_list_profile_stores_empty_when_nothing_collected(tmp_path):
     assert mp.list_profile_stores(_tcfg(tmp_path)) == []
 

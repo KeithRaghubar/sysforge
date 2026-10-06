@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from sysforge import log
-from sysforge.primitives import aur, pacman
+from sysforge.primitives import aur, kernel_fdo, pacman
 from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.primitives.pty_runner import strip_ansi
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
@@ -54,7 +54,9 @@ def installed_markers(
     ``facts`` is ``pacman.get_installed_facts()``; ``substitutes`` is
     ``pacman.get_installed_substitutes()`` (the ``replaces`` / conflicts+provides
     drop-in rule). The ``-sysforge`` suffix is matched by name as well, because a
-    coexist-mode rename (kernel FDO) declares no relation to its stock name.
+    coexist-mode rename (kernel FDO, including its ``-profiling`` / ``-fdo`` /
+    ``-propeller`` role names, stripped via ``kernel_fdo.strip_role``) declares
+    no relation to its stock name.
     The local DB, not build_state, is the authority: the marker describes what
     is installed right now, and a stale build_state entry must not claim a
     variant pacman no longer has.
@@ -62,8 +64,9 @@ def installed_markers(
     stock = {name: ver for name, (ver, _size) in facts.items()}
     variants: dict[str, set[tuple[str, str]]] = {}
     for name, ver in stock.items():
-        if name.endswith(_VARIANT_SUFFIX) and len(name) > len(_VARIANT_SUFFIX):
-            variants.setdefault(name[: -len(_VARIANT_SUFFIX)], set()).add((name, ver))
+        base = kernel_fdo.strip_role(name)
+        if base.endswith(_VARIANT_SUFFIX) and len(base) > len(_VARIANT_SUFFIX):
+            variants.setdefault(base[: -len(_VARIANT_SUFFIX)], set()).add((name, ver))
     for target, subs in (substitutes or {}).items():
         variants.setdefault(target, set()).update(subs)
     return InstalledMarkers(

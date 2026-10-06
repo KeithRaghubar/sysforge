@@ -32,14 +32,10 @@ enabled = false
 #   patches the cloned PKGBUILD's pkgbase to this name (coexist rename) so the
 #   build installs alongside the official package. Defaults to
 #   upstream_pkgname when omitted.
-#   NOTE: a pkgname already ending in "-sysforge" collapses with the
-#   optimized-build suffix — an AutoFDO/Propeller `use` build then REPLACES
-#   the prior build under the same name instead of coexisting. The shipped
-#   default below has exactly this property: it is fine for plain custom
-#   builds, but before adopting AutoFDO/Propeller `use` builds, rename to
-#   keep an optimized and a stock build installed side-by-side (bootloader
-#   fallback) — pick a pkgname that does not end in "-sysforge"
-#   (e.g. "linux-mine").
+#   AutoFDO/Propeller kernels install beside this one under their own role
+#   names: <pkgname>, then "-sysforge" if absent, then "-profiling" (record),
+#   "-fdo" or "-propeller" (use), e.g. linux-sysforge-fdo. The plain kernel
+#   is never replaced, so it stays a bootloader fallback. See [fdo] below.
 pkgname = "linux-sysforge"
 
 # upstream_pkgname — upstream package to pull/track. When set, the stage
@@ -231,6 +227,34 @@ pkgname = "linux-sysforge"
 #device_kconfig = true
 
 # ---------------------------------------------------------------------------
+# [fdo] — keep a collected AutoFDO / Propeller profile applied
+#
+# What a plain `sysforge run kernel` applies: "off" | "autofdo" | "propeller".
+# "autofdo" builds the -fdo kernel and "propeller" the -propeller kernel
+# (e.g. linux-sysforge-fdo / linux-sysforge-propeller), beside the plain
+# kernel. record/capture stay explicit commands (they need a reboot and a
+# human workload). An explicit --autofdo=… on the command line wins over
+# this. See docs/guides/pgo.md.
+#
+# "autofdo" with a profile collected on another major.minor kernel still
+# builds and warns (AutoFDO degrades gracefully). "propeller" whose round-2
+# profile was sampled on a different build (or a VCS kernel, whose version is
+# unknown until makepkg runs) builds AutoFDO only and warns; the older
+# -propeller kernel stays installed. No profile at all refuses before the
+# build. A newly captured profile rebuilds the optimized kernel on the next
+# run, even at the same kernel version.
+#
+# While mode is set, every plain run builds the optimized kernel, so the plain
+# fallback kernel (pkgname) is not rebuilt. To rebuild it, set mode = "off"
+# (or comment it out) for that run.
+#
+# Like [[kconfig]] below, this table header captures every key after it: add
+# new top-level keys ABOVE this block.
+# ---------------------------------------------------------------------------
+[fdo]
+#mode = "off"
+
+# ---------------------------------------------------------------------------
 # kconfig — kernel config fragment
 #
 # Entries are written to a sysforge.config fragment and applied via
@@ -240,10 +264,11 @@ pkgname = "linux-sysforge"
 #
 # Each override is one [[kconfig]] array-of-tables entry with an 'option' and a
 # 'value'. Note this is NOT the same shape as hardware_profile.toml's [kconfig]
-# table. This block is deliberately the LAST thing in the file: a live TOML
-# table header captures every top-level key written below it, so a header
-# placed mid-file would silently swallow e.g. kconfig_targets. Add new
-# top-level keys ABOVE this block, never below it.
+# table. The table blocks ([fdo] above, then this one) are deliberately the
+# LAST things in the file: a live TOML table header captures every
+# top-level key written below it, so a header placed mid-file would
+# silently swallow e.g. kconfig_targets. Add new top-level keys ABOVE the
+# [fdo] block, never below it.
 #
 #[[kconfig]]
 #option = "CONFIG_HZ_1000"

@@ -267,6 +267,22 @@ def _read_built_manifest(pkgbuild_dir) -> set[str]:
         return set()
 
 
+def built_manifest_version(pkgbuild_dir, pkgname: str) -> str | None:
+    """``pkgver-pkgrel`` of ``pkgname`` as this build's manifest recorded it.
+
+    The manifest comes from ``makepkg --packagelist`` against the patched
+    build file *after* makepkg rewrote its pkgver, so for a VCS PKGBUILD it
+    carries the version ``pkgver()`` produced, which the operator's PKGBUILD
+    (never rewritten) does not. ``None`` when no manifest entry is ``pkgname``.
+    """
+    for name in sorted(_read_built_manifest(pkgbuild_dir)):
+        parsed = _parse_built_pkg_filename(pkgname, name)
+        if parsed is not None:
+            _epoch, ver, rel = parsed
+            return f"{ver}-{rel}"
+    return None
+
+
 def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     """Return only the artifacts in PKGDEST that belong to ``pkgbuild_dir``.
 
@@ -759,7 +775,9 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     # Kernel local-rename (F40): patch the cloned upstream's pkgbase to the
     # configured local pkgname (linux-zen → linux-mine) so the build coexists
     # with the official package. Applied BEFORE the optional -sysforge suffix so
-    # the layers stack orthogonally (linux-zen → linux-mine → linux-mine-sysforge).
+    # the layers stack orthogonally for non-kernel builds. The kernel stage now
+    # passes the full per-role name (linux-mine-sysforge-fdo, 3.3.0-F6), so the
+    # suffix layer stands down for it (_suffix_layer_applies).
     local_rename = None
     if rename_pkgbase_to:
         local_rename = patch_pkgbase_rename(
@@ -771,7 +789,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             )
 
     rename = None
-    if optimization_build_mode and is_optimized_build_mode(optimization_build_mode):
+    if _suffix_layer_applies(optimization_build_mode, rename_pkgbase_to):
         # Conflict vs coexist is policy-per-build_mode (one home:
         # rename_mode_for_build_mode) — kernel FDO coexists with the stock kernel
         # for bootloader fallback; llvm/mesa replace their stock package.
@@ -1637,6 +1655,22 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         emit_session_report()
 
     return build_root(resolved_profile, _built_pkgbase(pkgmeta, rename, pkgbuild_path))
+
+
+def _suffix_layer_applies(optimization_build_mode, rename_pkgbase_to) -> bool:
+    """Whether the ``-sysforge`` suffix layer runs for this build.
+
+    Only an optimized build earns it. A *coexist* build whose caller already
+    passed the final pkgbase (the kernel's per-role name, 3.3.0-F6) is complete
+    after the local rename; the suffix's idempotency test (``endswith
+    "-sysforge"``) would otherwise append a second suffix to ``…-sysforge-fdo``.
+    """
+    if not (optimization_build_mode and is_optimized_build_mode(optimization_build_mode)):
+        return False
+    return not (
+        rename_pkgbase_to
+        and rename_mode_for_build_mode(optimization_build_mode) == "coexist"
+    )
 
 
 def _built_pkgbase(pkgmeta, rename, pkgbuild_path) -> str:

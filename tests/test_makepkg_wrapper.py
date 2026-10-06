@@ -205,3 +205,19 @@ def test_failure_tail_recognizes_the_common_markers():
 def test_failure_tail_handles_short_input():
     assert select_failure_tail(["a", "b"], limit=80) == ["a", "b"]
     assert select_failure_tail([], limit=80) == []
+
+
+def test_suffix_layer_stands_down_for_named_coexist_build():
+    # The kernel stage names the final coexist pkgbase itself (linux-sysforge-fdo);
+    # stacking -sysforge on it would yield linux-sysforge-fdo-sysforge.
+    assert not makepkg_wrapper._suffix_layer_applies("autofdo_kernel", "linux-sysforge-fdo")
+    assert not makepkg_wrapper._suffix_layer_applies(
+        "propeller_kernel", "linux-mine-sysforge-propeller")
+
+
+def test_suffix_layer_still_applies_without_explicit_target():
+    assert makepkg_wrapper._suffix_layer_applies("autofdo_kernel", None)
+    assert makepkg_wrapper._suffix_layer_applies("pgo_mesa", None)
+    # Conflict-mode builds never take the explicit-target exemption.
+    assert makepkg_wrapper._suffix_layer_applies("pgo_mesa", "whatever")
+    assert not makepkg_wrapper._suffix_layer_applies(None, None)

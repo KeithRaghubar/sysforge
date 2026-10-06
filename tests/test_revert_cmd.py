@@ -41,6 +41,20 @@ def test_plan_optimized_conflict_mode_is_replace(tmp_path):
     assert p2.stock_pkg == "llvm"
 
 
+def test_plan_role_named_fdo_kernel_is_derename(tmp_path):
+    # 3.3.0-F6: the use kernel installs as <base>-sysforge-fdo; revert still
+    # classifies it by build mode and resolves stock via origin_pkgbase.
+    bs = _bs(tmp_path, {
+        "linux-sysforge-fdo": {"build_mode": "autofdo_kernel",
+                               "pkgbase": "linux-sysforge-fdo",
+                               "origin_pkgbase": "linux"},
+    })
+    (p1,) = revert_cmd.plan_revert(bs, ["linux-sysforge-fdo"])
+    assert p1.action == "derename"
+    assert p1.pkgname == "linux-sysforge-fdo"
+    assert p1.stock_pkg == "linux"
+
+
 def test_plan_optimized_coexist_mode_is_derename(tmp_path):
     # kernel FDO (`autofdo_kernel`) coexists with stock — revert must remove the
     # renamed build then reinstall stock.

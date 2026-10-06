@@ -43,6 +43,10 @@ _EXTRACTABLE_KEYS = frozenset().union(*CONF_KEY_MAP.values())
 # its stock name (``search_cmd.installed_markers``) key off the same constant.
 RENAME_SUFFIX = "sysforge"
 
+# The patched copy makepkg builds from (`makepkg -p`); makepkg rewrites its
+# pkgver literal, never the operator's PKGBUILD.
+PATCHED_PKGBUILD_NAME = "PKGBUILD.sysforge"
+
 # Bare/export assignments, including += variants.
 # Groups: export (optional), key, op (= or +=), value (quoted or bare token)
 _ASSIGNMENT_RE = re.compile(
@@ -136,7 +140,7 @@ def patch_pkgbuild_groups(pkgbuild_path, groups):
     after the pkgname assignment (which may span multiple lines).
     Returns the path to the patched copy (PKGBUILD.sysforge).
     """
-    patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
+    patched_path = pkgbuild_path.parent / PATCHED_PKGBUILD_NAME
     groups_line = "groups=(" + " ".join(f'"{g}"' for g in groups) + ")"
 
     text = pkgbuild_path.read_text()
@@ -501,7 +505,7 @@ def apply_patch_pkgbuild(pkgbuild_path, pkgmeta):
     Returns the path to PKGBUILD.sysforge.
     """
     pkgbuild_path = Path(pkgbuild_path)
-    patched_path = pkgbuild_path.parent / "PKGBUILD.sysforge"
+    patched_path = pkgbuild_path.parent / PATCHED_PKGBUILD_NAME
 
     globals_ = pkgmeta.get("globals", {})
     pkgname = globals_.get("pkgbase") or globals_.get("pkgname", "unknown")

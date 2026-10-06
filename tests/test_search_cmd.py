@@ -103,6 +103,15 @@ def _aur(name, ver="1.0-1"):
     return {"Name": name, "Version": ver, "Description": "d"}
 
 
+def test_installed_markers_maps_role_kernels_to_stock_base():
+    m = search_cmd.installed_markers({
+        "linux-sysforge-fdo": ("7.2-1", 1),
+        "linux-sysforge-propeller": ("7.2-1", 1),
+    })
+    assert m.variants["linux"] == [
+        ("linux-sysforge-fdo", "7.2-1"), ("linux-sysforge-propeller", "7.2-1")]
+
+
 def test_installed_markers_maps_stock_and_variant():
     markers = search_cmd.installed_markers({
         "nano": ("7.2-1", 1),

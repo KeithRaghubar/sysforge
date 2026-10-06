@@ -133,6 +133,10 @@ def _toml_escape(value) -> str:
     return "".join(out)
 
 
+# Public export for sidecar writers such as kernel_fdo.
+toml_escape = _toml_escape
+
+
 class ArtifactRegistry:
     """Reads/writes ``artifacts.toml`` and locates authoritative content."""
 

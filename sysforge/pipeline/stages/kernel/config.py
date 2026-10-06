@@ -348,6 +348,9 @@ class KernelConfig:
     boot_entries: str = "manage"
     boot_entries_prefix: str | None = None
 
+    # `[fdo] mode`: what a plain `run kernel` applies (3.3.0-F6)
+    fdo_mode: str = "off"
+
     @classmethod
     def from_toml(cls, data: dict | None) -> "KernelConfig | None":
         """Build the typed config from kernel.toml's parsed dict.
@@ -383,7 +386,28 @@ class KernelConfig:
             bootloader=str(data.get("bootloader", "systemd-boot")),
             boot_entries=str(data.get("boot_entries", "manage")),
             boot_entries_prefix=data.get("boot_entries_prefix"),
+            fdo_mode=_parse_fdo_mode(data.get("fdo")),
         )
+
+
+_FDO_MODES = ("off", "autofdo", "propeller")
+
+
+def _parse_fdo_mode(table) -> str:
+    """``[fdo] mode`` → validated mode; absent table or key → ``"off"``.
+
+    Validated here, at stage entry, so a typo refuses before any sync or build.
+    """
+    if table is None:
+        return "off"
+    if not isinstance(table, dict):
+        raise RuntimeError(f"[KERNEL] kernel.toml [fdo] must be a table (got {table!r})")
+    mode = table.get("mode", "off")
+    if mode not in _FDO_MODES:
+        raise RuntimeError(
+            f'[KERNEL] kernel.toml [fdo] mode must be one of {", ".join(_FDO_MODES)}; '
+            f"got {mode!r}")
+    return mode
 
 
 def load() -> "KernelConfig | None":

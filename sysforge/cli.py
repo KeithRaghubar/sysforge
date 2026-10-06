@@ -1268,17 +1268,18 @@ def _add_run_parser(sub):
              "minimizing kconfig_targets sequence (e.g. localmodconfig) is set.")
     p_kernel.add_argument("--autofdo", choices=("record", "capture", "use"),
         dest="kernel_fdo",
-        help="Sample-based kernel optimization (AutoFDO; LLVM toolchain only). "
-             "Three steps spanning reboots: 'record' builds+installs a profiling "
-             "kernel (CONFIG_AUTOFDO_CLANG, stock name); 'capture' prints the "
-             "host-tailored perf + create_llvm_prof commands to run on the booted "
-             "profiling kernel (no build); 'use' rebuilds consuming the collected "
-             "profile and installs it as <pkgname>-sysforge alongside the stock "
-             "kernel for bootloader fallback.")
+        help="Sample-based kernel optimization (AutoFDO; LLVM toolchain only), "
+             "in steps spanning reboots. 'record' builds+installs the profiling "
+             "kernel (e.g. linux-sysforge-profiling); 'capture', run on that "
+             "booted kernel, prints the perf and converter commands (no build); "
+             "'use' builds the optimized kernel (e.g. linux-sysforge-fdo) beside "
+             "the plain one. Add --propeller for the optional round 2. kernel.toml "
+             "[fdo] mode makes a plain run a 'use' build.")
     p_kernel.add_argument("--propeller", action="store_true", dest="kernel_propeller",
-        help="Layer Propeller (basic-block layout) on the --autofdo cycle. "
-             "Requires --autofdo; adds CONFIG_PROPELLER_CLANG and the Propeller "
-             "profile pair. Recommended over BOLT for the kernel.")
+        help="Round 2: layer Propeller (basic-block layout) on round 1's AutoFDO "
+             "profile, which it pins. Requires --autofdo; run record, capture and "
+             "use again with --propeller. The use build installs as e.g. "
+             "linux-sysforge-propeller. Recommended over BOLT for the kernel.")
     p_kernel.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
         help="Disable per-package log files.")
     p_kernel.add_argument("--persist-log", action="store_true", dest="persist_log",

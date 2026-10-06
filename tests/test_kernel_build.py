@@ -701,19 +701,22 @@ def test_run_build_rename_pkgbase_to_applies_coexist_rename(tmp_path):
     assert "pkgbase=linux-mine" in patched
 
 
-def test_run_build_rename_stacks_under_fdo_suffix(tmp_path):
-    # Local rename first, FDO -sysforge suffix second: layers stack, and the
-    # returned dict keeps the *upstream* origin so `update` syncs the right tree.
+def test_run_build_rename_takes_role_name_under_fdo(tmp_path):
+    # The stage passes the full per-role name (3.3.0-F6); the -sysforge suffix
+    # layer stands down, and the returned dict keeps the *upstream* origin so
+    # `update` syncs the right tree.
     with _mock_build_context(tmp_path, pkgbuild_text=_ZEN_TEXT) as (pkgbuild, _):
         info = _run_build(pkgbuild, _minimal_profile(), {}, [],
                           extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
-                          kernel_build=True, rename_pkgbase_to="linux-mine",
+                          kernel_build=True,
+                          rename_pkgbase_to="linux-mine-sysforge-fdo",
                           optimization_build_mode="autofdo_kernel")
     assert info is not None
     assert info["origin_pkgbase"] == "linux-zen"
-    assert info["renamed_pkgbase"] == "linux-mine-sysforge"
+    assert info["renamed_pkgbase"] == "linux-mine-sysforge-fdo"
     patched = (tmp_path / "PKGBUILD.sysforge").read_text()
-    assert "pkgbase=linux-mine-sysforge" in patched
+    assert "pkgbase=linux-mine-sysforge-fdo" in patched
+    assert "sysforge-fdo-sysforge" not in patched
 
 
 def test_run_build_rename_noop_when_names_match(tmp_path):
