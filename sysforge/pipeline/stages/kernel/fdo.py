@@ -255,6 +255,7 @@ def _plan_use(propeller, pkgname, *, explicit, building_pkgver, tcfg) -> FdoPlan
             raise
         raise kernel_fdo.KernelFdoError(
             f'{e} Or set kernel.toml [fdo] mode = "autofdo".') from e
+    assert info is not None  # noqa: S101 — internal invariant (propeller=True raises on a missing round record), not input validation
     prop_name = kernel_fdo.optimized_pkgname(pkgname, propeller=True)
     if building_pkgver is None:
         if not explicit:
