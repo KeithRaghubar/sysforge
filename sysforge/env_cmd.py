@@ -7,7 +7,7 @@ env_cmd.py — ``sysforge env`` verb.
 
 Read-only: prints the inherited environment chain (shell → profile →
 makepkg.conf) and the points where those layers diverge. Dispatched through
-the Verb framework; the argparse surface lives in ``cli._add_env_parser``.
+the Verb framework; the argparse surface is ``EnvVerb.add_parser``.
 """
 from sysforge import log
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
@@ -18,6 +18,16 @@ class EnvVerb(Verb):
 
     name = "env"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("env",
+            help="Print the inherited env chain, all contributing sources "
+                 "(shell init files, systemd-user, PAM env, sysforge "
+                 "[defaults] profile), and a mismatches block when sources "
+                 "disagree. -vv adds inline per-var divergence annotations.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()

@@ -143,8 +143,8 @@ else
 import sys
 sys.path.insert(0, '.')
 try:
-    from sysforge.cli import _build_parser
-    p = _build_parser()
+    from sysforge.verbs.registry import build_parser
+    p = build_parser()
     seen = set()
     import argparse
     for action in p._actions:

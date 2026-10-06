@@ -25,7 +25,7 @@ Run `/design-sync` after finishing a non-trivial implementation change (new prim
 
    | Diff touches | Likely DESIGN.md section |
    |---|---|
-   | `sysforge/cli.py`, new verb/flag | `## Pipeline Layer`, `## Re-converge`, possibly a verb-specific subsection |
+   | `sysforge/cli.py`, `verbs/registry.py`, a verb's `add_parser`, new verb/flag | `## Pipeline Layer`, `## Re-converge`, possibly a verb-specific subsection |
    | `sysforge/primitives/<X>.py` | `## Primitives Layer` → `<X>.py` subsection |
    | `sysforge/pipeline/stages/<X>.py` | `## Pipeline Layer` → stage subsection |
    | `etc/sysforge/*.toml` schema change | `## Config Layer`, `## Package Manifest`, or `## Flag Profile System` |

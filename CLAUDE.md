@@ -80,8 +80,9 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   the ID and is the record `next-id` reads. Touching `sysforge/` or a shipped file makes it `B`/`F`.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`
-  (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Wire via
-  `set_defaults(verb_cls=…)`, not `func=`. §CLI Verb Framework.
+  (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Its flags live
+  on the class (`add_parser` classmethod, ending `set_defaults(verb_cls=cls)`); register it in
+  `verbs/registry.py` `COMMANDS`, directly or via its namespace's `VerbGroup`. §CLI Verb Framework.
 - **Dual-toolchain test parity**: logic branching on resolved compiler (gcc vs llvm) ships both a
   gcc-path and an llvm-path test in the same change.
 - **Log levels follow the rubric in `docs/design/12-logging.md`** (§Logging; standards row 25): `ui()`

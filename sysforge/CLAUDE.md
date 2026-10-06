@@ -146,8 +146,9 @@ Mechanism lives in the cited §DESIGN section.
   Scopes are sequential, never nested. Contention is strict (refuse, no override, no prompt);
   `OSError` stays lenient. §Toolchain stage.
 - **`doctor` axes**: each a producer → `list[diagnostics.Finding]`, read-only (no `pacman -Sy` /
-  `BuildState.save()`; never import `pipeline`). Register in `doctor.py` + `cli.py` + both
-  completions + manpage + each axis's `clean_msg` in the same change. §doctor.
+  `BuildState.save()`; never import `pipeline`). Register in `doctor.py` (the producer plus its
+  flag in `_add_system_axis_flags`) + both completions + manpage + each axis's `clean_msg` in the
+  same change. §doctor.
 - **ABI checker** (`abi_check.py`): symbol-version precise (`sym@@VER`/`sym@VER`) — don't regress.
 - **Toolchain preflight assumes rustup**: `toolchain_preflight._probe_cc` reads `$RUSTUP_TOOLCHAIN`;
   new cross targets plug into `collect_required_toolchains` + `rust:cross:<target>`.

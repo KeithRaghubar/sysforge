@@ -77,6 +77,20 @@ class LogVerb(Verb):
     name = "log"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("log",
+            help="Page the unified or per-package sysforge log through $PAGER.")
+        p.add_argument("pkg", nargs="?", metavar="PKG",
+            help="Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.log). "
+                 "Omit to page the unified log.")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory (used to locate the unified log).")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 

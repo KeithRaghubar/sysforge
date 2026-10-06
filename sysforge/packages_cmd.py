@@ -32,6 +32,7 @@ from sysforge import log
 _log = log.get_logger("PACKAGES")
 from sysforge.primitives.config import PKG_KEY_BUILD_FROM_SOURCE, load_config
 from sysforge.primitives.paths import resolve_packages_path
+from sysforge.primitives.pkg_catalog import valid_desktops
 from sysforge.verbs.shared import entry_toml_block, rewrite_packages_toml
 
 
@@ -223,7 +224,8 @@ def cmd_packages_remove(args):
 # Verb wrappers
 # ---------------------------------------------------------------------------
 
-from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup  # noqa: E402
+from sysforge.verbs.helpers import PACKAGES_FILE_HELP  # noqa: E402
 
 
 class PackagesListVerb(Verb):
@@ -231,6 +233,16 @@ class PackagesListVerb(Verb):
 
     name = "packages-list"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("list", help="Show override entries in packages.toml.")
+        p.add_argument("--packages", metavar="FILE", dest="packages",
+            help="Path to packages.toml.")
+        p.add_argument("--orphans", action="store_true", dest="orphans",
+            help="Show only entries whose package is not currently installed.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
@@ -250,6 +262,28 @@ class PackagesAddVerb(Verb):
 
     name = "packages-add"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("add",
+            help="Add or update an override entry. Requires at least one of "
+                 "--enable-build-from-source / --no-cache / --reason.")
+        p.add_argument("pkg", metavar="PKG", help="Package name to add or update.")
+        p.add_argument("--source", choices=("repo", "aur", "local"), dest="source",
+            help="Pin routing (metadata; doesn't satisfy validation on its own). "
+                 "`local` marks a hand-maintained PKGBUILD with no remote to sync from.")
+        p.add_argument("--enable-build-from-source", action="store_true",
+            dest="enable_build_from_source",
+            help="Build this repo package from source instead of installing the "
+                 "binary via pacman.")
+        p.add_argument("--no-cache", action="store_true", dest="no_cache",
+            help="Disable ccache/sccache for this package (required for PGO).")
+        p.add_argument("--reason", metavar="TEXT", dest="reason",
+            help="Free-form note attached to the entry.")
+        p.add_argument("--packages", metavar="FILE", dest="packages",
+            help="Path to packages.toml.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         has_build_from_source = bool(getattr(args, PKG_KEY_BUILD_FROM_SOURCE, False))
@@ -281,6 +315,18 @@ class PackagesAddGroupVerb(Verb):
     name = "packages-add-group"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("add-group",
+            help="Write a curated desktop-environment package group "
+                 "(installs via 'sysforge run packages').")
+        p.add_argument("desktop", metavar="DESKTOP", choices=valid_desktops(),
+            help=f"Desktop environment to add ({' | '.join(valid_desktops())}).")
+        p.add_argument("--packages", metavar="FILE", dest="packages",
+            help="Path to packages.toml.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 
@@ -295,9 +341,39 @@ class PackagesRemoveVerb(Verb):
     name = "packages-remove"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("remove", help="Remove an override entry.")
+        p.add_argument("pkg", metavar="PKG", help="Package name to remove.")
+        p.add_argument("--packages", metavar="FILE", dest="packages",
+            help="Path to packages.toml.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_packages_remove(args)
         return ExecResult()
+
+
+def _add_packages_group_flags(p):
+    # --packages on the parent so bare 'sysforge packages' and
+    # 'sysforge packages --packages foo.toml' both work
+    p.add_argument("--packages", metavar="FILE", dest="packages",
+        help=PACKAGES_FILE_HELP)
+    p.add_argument("--orphans", action="store_true", dest="orphans",
+        help="With list: show only entries whose package is not currently installed.")
+
+
+#: `sysforge packages`: list (default) / add / add-group / remove.
+PACKAGES_GROUP = VerbGroup(
+    name="packages",
+    help="Manage packages.toml override entries (list, add, add-group, remove).",
+    dest="packages_cmd",
+    members=(PackagesListVerb, PackagesAddVerb, PackagesAddGroupVerb,
+             PackagesRemoveVerb),
+    default=PackagesListVerb,
+    add_arguments=_add_packages_group_flags,
+)

@@ -527,7 +527,7 @@ def cmd_state_forget(args):
 # Verb wrappers
 # ---------------------------------------------------------------------------
 
-from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup  # noqa: E402
 
 
 class StateListVerb(Verb):
@@ -535,6 +535,16 @@ class StateListVerb(Verb):
 
     name = "state-list"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("list", help="Tabulate build_state.toml entries.")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
@@ -554,6 +564,19 @@ class StateRepairVerb(Verb):
     name = "state-repair"
     wants_run_log = True
     requires_sentinel = True
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("repair",
+            help="Repair build_state.toml: re-parse PKGBUILDs to rewrite entries with "
+                 "unexpanded shell variables (e.g. '$_pkgname-git'), and normalize "
+                 "known legacy build_mode tokens ('profiled' -> 'source_built').")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Show the planned repair without writing.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def journal_target(self, args) -> str | None:
         del args
@@ -678,6 +701,20 @@ class StateProfilesVerb(Verb):
     name = "state-profiles"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("profiles",
+            help="List the collected optimization profiles (PGO, AutoFDO, Propeller, "
+                 "BOLT) with size, age and collected version. Read-only unless --purge.")
+        p.add_argument("--purge", metavar="STORE", dest="purge",
+            help="Delete one profile store, METHOD or METHOD/TARGET as listed "
+                 "(e.g. pgo-mesa, pgo/htop); asks for confirmation, refuses without "
+                 "a TTY. A later rebuild is then unprofiled until you collect again.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def journal_target(self, args) -> str | None:
         spec = getattr(args, "purge", None)
         return journal.mode_target(f"profiles-purge:{spec}") if spec else None
@@ -731,6 +768,17 @@ class StateBootEntriesVerb(Verb):
     name = "state-boot-entries"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("boot-entries",
+            help="Show which systemd-boot loader entry boots each installed kernel, "
+                 "who owns it (you / sysforge / none) and the entry sysforge cloned it "
+                 "from. Read-only.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         return ExecResult(exit_code=cmd_state_boot_entries(args))
 
@@ -743,6 +791,21 @@ class StateOrphansVerb(Verb):
 
     name = "state-orphans"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("orphans",
+            help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. "
+                 "Only surfaces superseded files (pkgname installed AND artifact "
+                 "older than installed) so --prune is always safe.")
+        p.add_argument("--prune", action="store_true",
+            help="Delete the listed superseded artifacts (prompts for confirmation).")
+        p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
+            help="Skip the y/N prompt when pruning. Implies --prune.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def journal_target(self, args) -> str | None:
         del args
@@ -766,6 +829,26 @@ class StateFailedVerb(Verb):
 
     name = "state-failed"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("failed",
+            help="List packages whose last build failed (recorded in build_state.toml), "
+                 "with any diagnosed fix. Entries auto-clear on the next successful build.")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.add_argument("--names", action="store_true", dest="names",
+            help="Print only the failed pkgbases, one per line, with no header and no "
+                 "pager (empty when none), for retrying them: "
+                 "sysforge build $(sysforge state failed --names).")
+        p.add_argument("--clear", metavar="PKGBASE", dest="clear",
+            help="Clear the recorded failure for PKGBASE and exit.")
+        p.add_argument("--clear-all", action="store_true", dest="clear_all",
+            help="Clear all recorded failures and exit.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def journal_target(self, args) -> str | None:
         # --clear names one pkgbase; --clear-all is subjectless but rewrites
@@ -800,6 +883,20 @@ class StateForgetVerb(Verb):
     wants_run_log = True
     requires_sentinel = True
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("forget",
+            help="Stop maintaining PKG(s): delete their build_state record so "
+                 "`sysforge update` no longer rebuilds them from source. The installed "
+                 "package is left in place (still pinned by the sf-build group).")
+        p.add_argument("pkgnames", nargs="+", metavar="PKG",
+            help="Package name(s) or pkgbase(s) to stop tracking. A pkgbase forgets "
+                 "every split-package member sharing it.")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def journal_target(self, args) -> str | None:
         return journal.pkg_target(args.pkgnames)
 
@@ -809,3 +906,15 @@ class StateForgetVerb(Verb):
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         cmd_state_forget(args)
         return ExecResult()
+
+
+#: `sysforge state`: operates on build_state.toml; bare `state` is `state list`.
+STATE_GROUP = VerbGroup(
+    name="state",
+    help="Inspect or repair build_state.toml (live install-state mirror).",
+    dest="state_cmd",
+    members=(StateListVerb, StateRepairVerb, StateOrphansVerb, StateProfilesVerb,
+             StateBootEntriesVerb, StateFailedVerb, StateForgetVerb),
+    default=StateListVerb,
+    defaults={"state_cmd": "list"},
+)

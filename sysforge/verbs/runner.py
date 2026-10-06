@@ -7,9 +7,10 @@ verbs/runner.py — uniform dispatcher for CLI verbs.
 
 :func:`run_verb` walks a :class:`~sysforge.verbs.base.Verb` through its
 three phases (``pre_check`` → ``execute`` → ``post_validate``) with one
-shared error model and one shared sentinel-handoff path. Every
-``args.func`` in ``cli.py`` resolves to a ``Verb`` factory; ``main()``
-invokes ``sys.exit(run_verb(args.func(), args))``.
+shared error model and one shared sentinel-handoff path. Every leaf
+parser sets ``args.verb_cls`` to the ``Verb`` subclass that built it
+(``Verb.add_parser``); ``cli.main()`` invokes
+``sys.exit(_dispatch(args.verb_cls, args))``, a thin wrapper over ``run_verb``.
 
 Error model:
   • :class:`RuntimeError` raised from any phase → ``_log.error(msg)``,

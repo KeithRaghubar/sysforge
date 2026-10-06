@@ -10,7 +10,7 @@ subset of ``update``: it routes through the shared ``build_core`` engine (dep
 pre-install + AUR/local dep build + deferred bulk install), adding only the
 build-specific concerns — the ``--cleansrc`` source purge and inline per-package
 source sync (``update`` syncs up front instead). Dispatched through the Verb
-framework; the argparse surface lives in ``cli._add_build_parser``.
+framework; the argparse surface is ``BuildVerb.add_parser``.
 """
 import sys
 from pathlib import Path
@@ -223,6 +223,86 @@ class BuildVerb(Verb):
 
     name = "build"
     requires_sentinel = True
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("build", help="Build a package from a PKGBUILD.")
+        p.add_argument(
+            "pkgbuilds", nargs="+", metavar="PKGBUILD",
+            help="One or more packages to build (path, directory, or bare package name).",
+        )
+        p.add_argument("--makepkg", "-m", metavar="FLAGS",
+            help="Additional makepkg flags, appended after profile makepkg_flags. "
+                 "Usually optional: bare makepkg short flags are forwarded "
+                 "implicitly (sysforge build PKGBUILD -sfc works without -m). "
+                 "-m is only needed for makepkg long flags (e.g. --skippgpcheck), "
+                 "flags that take a value (-p, -D), or flags sysforge claims for "
+                 "itself (-h, -V).",
+        )
+        p.add_argument("--interactive", action="store_true",
+            help="Strip --noconfirm from profile makepkg_flags and hand stdout/stderr "
+                 "to makepkg's terminal so pacman conflict prompts and other "
+                 "unbuffered interactive output appear immediately (disables "
+                 "line-based output classification while set).")
+        p.add_argument("--persist-log", action="store_true", dest="persist_log",
+            help="Keep the per-package log file after a successful build. "
+                 "Also settable via [build] persist_log = true in packages.toml.")
+        p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
+            help="Disable the per-package log file.")
+        p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
+            help="Directory for the per-package log file (default: alongside the PKGBUILD).")
+        p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+            help="Path to a profiles.toml to use instead of the default.")
+        p.add_argument("--cc", metavar="COMPILER", dest="cc",
+            help="Override CC (C compiler) for this build, e.g. --cc clang.")
+        p.add_argument("--cxx", metavar="COMPILER", dest="cxx",
+            help="Override CXX (C++ compiler) for this build, e.g. --cxx clang++.")
+        p.add_argument("--ld", metavar="LINKER", dest="ld",
+            help="Override linker for this build, e.g. --ld lld.")
+        p.add_argument("--cache-report", action="store_true", dest="cache_report",
+            help="Print a structured cache summary (ccache/sccache hit rates) after the build. "
+                 "Also settable via [build] cache_report = true in packages.toml.")
+        p.add_argument("--abi-check", action="store_true", dest="abi_check",
+            help="Run a post-build ABI compatibility check on built shared libraries. "
+                 "Also settable via [build] abi_check = true in packages.toml.")
+        p.add_argument("--no-update", action="store_true", dest="no_update",
+            help="Skip git pull --rebase before building.")
+        p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+            help="Purge the package src dir and re-clone before building. "
+                 "Refuses (per package) if the existing clone has uncommitted changes, "
+                 "ahead-of-upstream commits, or no upstream tracking branch.")
+        p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+            help="Like --cleansrc but bypasses the dirty/diverged guard and "
+                 "overwrites the local tree unconditionally. Use when the upstream "
+                 "rewrote history (e.g. Arch packaging repos force-push every release) "
+                 "and the local commits have no value to preserve.")
+        p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+            help="Suppress the LLVM source pre-flight summary.")
+        p.add_argument("--no-review", action="store_true", dest="no_review",
+            help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
+                 "packages whose source changed since the last accepted build). "
+                 "Also configurable via [build] review = false in packages.toml.")
+        p.add_argument("--force", action="store_true", dest="force",
+            help="Unconditionally build all arguments from source for this run "
+                 "only, including repo packages not yet opted in. Never prompts "
+                 "for or modifies packages.toml opt-in keys.")
+        p.add_argument("--rebuild", action="store_true", dest="rebuild",
+            help="Force makepkg to rebuild even when a matching package already "
+                 "exists in PKGDEST (passes -f). Use after a toolchain or build-flag "
+                 "change, where the version is unchanged so makepkg would otherwise "
+                 "skip the build and reinstall the stale artifact. Note --force is "
+                 "unrelated: it only waives the repo-package opt-in gate.")
+        p.add_argument("--pgo", choices=("record", "use"), dest="pgo_mode",
+            help="Mesa instrumentation PGO (LLVM toolchain only). "
+                 "--pgo=record builds+installs an instrumented mesa that writes "
+                 "profile data to the sysforge store as you run graphics workloads; "
+                 "--pgo=use merges the collected profiles and rebuilds an optimized "
+                 "mesa-sysforge (conflicts/replaces stock mesa). No-op for non-mesa "
+                 "targets.")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory for build_state.toml.")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def unified_log_basename(self, args) -> str | None:
         """A multi-package ``build`` run leaves one consolidated log next to

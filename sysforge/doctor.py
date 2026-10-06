@@ -1550,7 +1550,106 @@ def _apply_rebuilds(
 # ---------------------------------------------------------------------------
 
 from sysforge.primitives.config import load_config as _load_config  # noqa: E402
-from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup  # noqa: E402
+
+
+def _add_system_axis_flags(p):
+    """Register the system-state axis flags on the `doctor system` subparser.
+
+    The bare `doctor` parser takes only `--quiet` (`_add_doctor_group_flags`);
+    the flat axis flags there were removed in 3.0.0 (2.6.1-F1).
+    """
+    p.add_argument("--graphics", action="store_true",
+        help="Run graphics system-state probes: nvidia-drm modeset, driver "
+             "version skew, Wayland explicit-sync protocol, Steam GPU accel, "
+             "and session type. Does not select packages — for the graphics "
+             "package set use `doctor pkg --graphics`.")
+    p.add_argument("--gfxperf", action="store_true",
+        help="Advisory graphics-performance sweep (stutter/tearing/frame-drop "
+             "contributors: video-decode path, GPU power/clocks, CPU governor, "
+             "frame pacing, thermal). Opt-in; never fails. Combine with "
+             "--graphics for the full graphics picture.")
+    p.add_argument("--hardware", action="store_true",
+        help="Run system-state hardware probes: inventory all PCI/USB devices, "
+             "flag any present device with no kernel driver bound, and audit the "
+             "running kernel's .config for boot-critical / device-driver gaps "
+             "(the missing-driver class of bug).")
+    p.add_argument("--distro", action="store_true",
+        help="Report the running distribution and its support tier, read from "
+             "os-release(5): Arch is the primary base, an Arch-derived distro "
+             "(ID_LIKE=arch) has its packaging/dependency/makepkg.conf "
+             "invariants validated but not the bootstrap/kernel/graphics "
+             "checks, and anything else warns. Read-only, no subprocess; on "
+             "plain Arch the bare sweep stays silent, this flag always prints "
+             "the identity.")
+    p.add_argument("--toolchain", action="store_true",
+        help="Check that the configured toolchain matches what's installed: when "
+             "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
+             "optionally PGO) but stock repo LLVM is installed — or the PGO "
+             "profdata is version-skewed — report it.")
+    p.add_argument("--rust", action="store_true",
+        help="Report which Rust toolchain a build will actually use: the "
+             "effective cargo/rustc owner (rustup channel or distro `rust` "
+             "package) and a WARN if the active rustup default is non-stable "
+             "(nightly/beta/pinned). Advisory, read-only; never fails, never "
+             "rewrites a pin. Opt-in. For per-package rust-toolchain.toml pins "
+             "use `doctor pkg PKG --rust`.")
+    p.add_argument("--cache", action="store_true",
+        help="Check compile-cache readiness *before* a build relies on it: "
+             "whether ccache/sccache are installed, their cache dir is writable, "
+             "and a non-zero size cap is set. Absence is informational, not a "
+             "failure. Distinct from build verbs' --cache-report, which measures "
+             "per-package hit rates *after* a build.")
+    p.add_argument("--pacman", action="store_true",
+        help="Check local package-database integrity (read-only, never syncs): "
+             "`pacman -Dk` dependency consistency, a stale db.lck, unmerged "
+             ".pacnew/.pacsave config files under /etc, and orphan packages.")
+    p.add_argument("--state", action="store_true",
+        help="Check sysforge's own state integrity: recorded build failures, an "
+             "interrupted stage sentinel from a prior run, and build_state drift "
+             "vs the live pacman database. Read-only (does not recover).")
+    p.add_argument("--boot", action="store_true",
+        help="Check running-system boot readiness (reusing the kernel stage's "
+             "safety primitives): per-kernel boot artifacts (vmlinuz + initramfs "
+             "+ boot entry), a recovery fallback kernel, /boot space, and DKMS "
+             "modules for the running kernel.")
+    p.add_argument("--restart", action="store_true",
+        help="Check whether upgraded packages have actually taken effect: scans "
+             "running processes for files replaced on disk (a `(deleted)` "
+             "mapping) and reports whether the fix is a unit restart, a "
+             "re-login, or a reboot. Read-only; never escalates, so coverage of "
+             "other users' processes is reported as incomplete rather than "
+             "prompting.")
+    p.add_argument("--storage", action="store_true",
+        help="Check storage/filesystem health: free space on the build dir "
+             "(warns under [doctor] disk_low_gb) and /etc/fstab integrity "
+             "(entries whose UUID/label/device no longer resolves). Read-only; "
+             "never mounts.")
+    p.add_argument("--services", action="store_true",
+        help="Check live service/driver runtime health: failed systemd units "
+             "(`systemctl --failed`), firmware a driver requested but could "
+             "not load this boot, and error-priority journal lines this boot.")
+    p.add_argument("--audio", action="store_true",
+        help="Check live PipeWire/WirePlumber sound-stack health: failed audio "
+             "user services (`systemctl --user --failed`) and a vanished output "
+             "sink (only the dummy auto_null device present). User-scoped, so it "
+             "degrades to clean under sudo.")
+    p.add_argument("--network", action="store_true",
+        help="Check network/connectivity configuration: no default route, "
+             "connection-manager ownership conflicts (more than one of "
+             "NetworkManager/systemd-networkd/dhcpcd/… enabled), and a DNS "
+             "provisioner conflict (systemd-resolved active but "
+             "/etc/resolv.conf is a static override). Read-only; no live "
+             "network calls.")
+    p.add_argument("--integrity", action="store_true",
+        help="Verify package-owned files against alpm's recorded mtree via "
+             "`pacman -Qkk`: files an admin or a misbehaving install script "
+             "altered or removed outside a pacman transaction. Opt-in (excluded "
+             "from the bare/full sweep because a whole-system scan re-hashes "
+             "every packaged file); scope it with `doctor pkg PKG --integrity`. "
+             "Read-only; never restores.")
+    p.add_argument("--quiet", "-q", action="store_true",
+        help="Suppress clean lines; print only findings.")
 
 
 class DoctorSystemVerb(Verb):
@@ -1562,6 +1661,16 @@ class DoctorSystemVerb(Verb):
 
     name = "doctor system"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("system",
+            help="System-state axes: toolchain, cache, hardware, graphics, pacman, "
+                 "state, boot, restart, storage, services, audio, network, distro. "
+                 "With no axis flag, runs all 13 non-opt-in axes.")
+        _add_system_axis_flags(p)
+        p.set_defaults(verb_cls=cls, packages=[])
+        return p
 
     def unified_log_basename(self, args) -> str | None:
         return "sysforge-doctor.log"
@@ -1590,6 +1699,62 @@ class DoctorPkgVerb(Verb):
     name = "doctor pkg"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("pkg",
+            help="Package-scoped axes over one or more targets: --abi (depends + "
+                 "ABI linkage), --rust (rust-toolchain.toml pins), --integrity "
+                 "(pacman -Qkk). With no axis flag, runs all three.")
+        p.add_argument("packages", nargs="*", metavar="PKG",
+            help="Installed package names to check.")
+        p.add_argument("--abi", action="store_true",
+            help="Walk each target's depends and ABI linkage: unsatisfied "
+                 "dependencies and unresolved sonames, over the transitive "
+                 "dependency closure unless --shallow.")
+        p.add_argument("--rust", action="store_true",
+            help="Report each target's rust-toolchain.toml pin and whether that "
+                 "toolchain is installed (uninstalled = mid-build network fetch). "
+                 "A named target with no PKGBUILD or no pin now says so explicitly "
+                 "instead of staying silent.")
+        p.add_argument("--integrity", action="store_true",
+            help="Verify each target's package-owned files against alpm's recorded "
+                 "mtree via `pacman -Qkk`. Read-only; never restores.")
+        p.add_argument("--all", action="store_true", dest="all",
+            help="Target every installed package, foreign and non-foreign "
+                 "(pacman -Q). Suppresses the opt-in axes — runs --abi only unless "
+                 "you name another axis explicitly.")
+        p.add_argument("--repo", action="store_true", dest="repo",
+            help="Target every non-foreign (native repo) package. Narrower than "
+                 "--all; suppresses the opt-in axes the same way.")
+        p.add_argument("--graphics", action="store_true",
+            help="Target the installed graphics stack (mesa, vulkan, libglvnd, "
+                 "wayland, libdrm, libva, libvdpau, egl-wayland, xwayland, "
+                 "gamescope, plus per-vendor drivers from the hardware overlay's "
+                 "gpu_vendors). A peer of --all / --repo. For graphics system-state "
+                 "probes use `doctor system --graphics`.")
+        p.add_argument("--shallow", action="store_true",
+            help="Do not recurse into transitive dependencies of each target.")
+        p.add_argument("--quiet", "-q", action="store_true",
+            help="Suppress clean lines; print only packages with issues.")
+        p.add_argument("--suggest", "-s", action="store_true",
+            help="For each unsatisfied soname, look up candidate packages "
+                 "via `pacman -Fq`. Findings split into 'install candidates' "
+                 "(missing from disk — install the package), 'rebuild "
+                 "candidates' (installed; rebuild against the current system), "
+                 "and 'ABI-drift candidates' (present but one of their "
+                 "versioned symbols no longer resolves — rebuild or upgrade, "
+                 "not reinstall). Requires a synced files db (`sudo pacman -Fy`).")
+        p.add_argument("--apply", action="store_true",
+            help="Hand the rebuild candidates from --suggest off to `sysforge "
+                 "update` and rebuild them. Implies --suggest. Drift-rebuild only "
+                 "in v1.x — install candidates are printed but not invoked.")
+        p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
+            help="Skip the y/N prompt before --apply rebuilds.")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Report what --apply would rebuild without invoking the build.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def unified_log_basename(self, args) -> str | None:
         # Opt into sysforge-doctor.log for a read-only run, but NOT for
         # `--apply` (non-dry-run): that path delegates to cmd_update, which
@@ -1611,3 +1776,27 @@ class DoctorPkgVerb(Verb):
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         return ExecResult(exit_code=cmd_doctor_pkg(args) or 0)
+
+
+def _add_doctor_group_flags(p):
+    # Bare `sysforge doctor` is `doctor system`, the everyday full sweep. The
+    # flat axis flags are NOT registered here: they were removed in 3.0.0, and
+    # 3.1.0 retired the migration hint that used to translate them, so argparse
+    # now reports them as unrecognized. Only `--quiet` survives at this level,
+    # since it modifies the sweep rather than selecting one.
+    p.add_argument("--quiet", "-q", action="store_true",
+        help="Suppress clean lines; print only findings.")
+
+
+#: `sysforge doctor`: system / pkg. Bare `doctor` is `doctor system` (2.6.1-F1);
+#: `packages=[]` keeps the shared target helpers happy at system scope.
+DOCTOR_GROUP = VerbGroup(
+    name="doctor",
+    help="Diagnose system health (`doctor system`) or package health "
+         "(`doctor pkg`). Bare `doctor` runs the full system sweep.",
+    dest="doctor_cmd",
+    members=(DoctorSystemVerb, DoctorPkgVerb),
+    default=DoctorSystemVerb,
+    defaults={"packages": []},
+    add_arguments=_add_doctor_group_flags,
+)

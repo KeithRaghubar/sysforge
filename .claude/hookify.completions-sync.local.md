@@ -4,9 +4,14 @@ enabled: true
 event: file
 action: warn
 conditions:
+  # Each verb's flags live in its own module's add_parser (3.2.0-F7), so the
+  # surface is any sysforge/ edit that touches an argparse call or a VerbGroup.
   - field: file_path
     operator: regex_match
-    pattern: (?:^|/)sysforge/cli(?:\.py$|/)
+    pattern: (?:^|/)sysforge/.*\.py$
+  - field: new_text
+    operator: regex_match
+    pattern: \badd_(?:argument|parser|subparsers|mutually_exclusive_group)\(|\bVerbGroup\(
 ---
 
 **CLI surface edited — update `completions/_sysforge` in this same change.**

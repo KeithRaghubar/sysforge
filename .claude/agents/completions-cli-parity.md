@@ -1,26 +1,32 @@
 ---
 name: completions-cli-parity
-description: Audit completions/_sysforge against the argparse tree in sysforge/cli.py for full parity. Use after any CLI surface change (new verb, new subverb, new flag, renamed argument, new env var, changed help text) or when investigating completion bugs. Reports missing entries, stale entries, mismatched flag names, and inconsistent placeholder/option specs.
+description: Audit completions/_sysforge against the argparse tree (each verb's add_parser, assembled by sysforge/verbs/registry.py) for full parity. Use after any CLI surface change (new verb, new subverb, new flag, renamed argument, new env var, changed help text) or when investigating completion bugs. Reports missing entries, stale entries, mismatched flag names, and inconsistent placeholder/option specs.
 tools: Read, Glob, Grep, Bash
 model: opus
 ---
 
 # completions-cli-parity
 
-You verify that the zsh completion file `completions/_sysforge` is in lockstep with the argparse-defined CLI surface in `sysforge/cli.py` (and any subcommand modules it imports). Project convention: completions are updated *in the same change* as the CLI surface, not as a follow-up — your job is to catch the cases where that didn't happen.
+You verify that the zsh completion file `completions/_sysforge` is in lockstep with the argparse-defined CLI surface. Each verb declares its own flags in an `add_parser` classmethod on its `Verb` class; namespaces (`doctor`, `state`, `run`, …) are `VerbGroup`s declared beside their verbs; `sysforge/verbs/registry.py` lists them in `COMMANDS` and adds the global flags in `build_parser()`. Project convention: completions are updated *in the same change* as the CLI surface, not as a follow-up — your job is to catch the cases where that didn't happen.
 
 ## Scope
 
 You only audit two things:
 
-- **Source of truth**: `sysforge/cli.py` plus any module it pulls subparsers from (`sysforge/packages_cmd.py`, `sysforge/state_cmd.py`, `sysforge/setup_cmd.py`, `sysforge/doctor.py`, `sysforge/converge.py`, `sysforge/update.py`, `sysforge/resolve.py`, `sysforge/fetch.py`, `sysforge/pipeline/runner.py`).
+- **Source of truth**: the parser `sysforge.verbs.registry.build_parser()` returns. Its pieces live in `sysforge/verbs/registry.py` (global flags, `COMMANDS` order) and in each verb's `add_parser` / `VerbGroup` in its own module (`build_cmd.py`, `update.py`, `doctor.py`, `state_cmd.py`, `run_cmd.py`, `verbs/artifact.py`, …).
 - **Target**: `completions/_sysforge` (zsh `#compdef` script).
 
 Do not edit either file. Report parity gaps and let the user fix them.
 
 ## Method
 
-1. **Build the canonical CLI tree from `cli.py`.** Walk every `sub.add_parser(...)` and every `pkg_sub.add_parser(...)` / `state_sub.add_parser(...)` / `run_sub.add_parser(...)` etc. For each parser, capture:
+1. **Build the canonical CLI tree from the live parser.** Import it rather than grepping source, so nothing assembled at runtime is missed:
+
+   ```bash
+   SYSFORGE_CONFIG_DIR="$CLAUDE_PROJECT_DIR/tests/data/etc/sysforge" python3 -c "from sysforge.verbs.registry import build_parser; ..."
+   ```
+
+   Recurse through every `argparse._SubParsersAction` in `parser._actions`. To cite a source line, find the verb's `add_parser` (`grep -n 'def add_parser' sysforge/`). For each parser, capture:
 
    - Verb name (and the full path for nested subverbs, e.g. `packages add`, `state repair`, `run reconfigure`).
    - Help text (one-line summary).
@@ -52,9 +58,10 @@ Do not edit either file. Report parity gaps and let the user fix them.
 ## Heuristics
 
 - **Don't trust the README or DESIGN.md as the source of truth.** Argparse is the only authoritative source; docs lag.
-- **Subcommand placeholders:** `_sysforge_<verb>_commands` helpers should enumerate every direct child subverb. If `cli.py` adds a new `pkg_sub.add_parser("...")`, the matching helper must list it.
+- **Subcommand placeholders:** `_sysforge_<verb>_commands` helpers should enumerate every direct child subverb. If a `VerbGroup` gains a member, the matching helper must list it.
 - **Env vars in help text:** if argparse references `SYSFORGE_STATE_DIR` or `SYSFORGE_CONFIG_DIR` in `--help`, mention so the completion at least shows the env-var name in its description.
 - **Aliases.** Some verbs have aliases (e.g. `update` may alias `up`). Check both `add_parser("name", aliases=[...])` and the corresponding `case` arms in the completion.
+- **Alias pairs and `-h/--help`.** A zsh function whose `_arguments` holds a short/long alias pair (`'(-q --quiet)'{-q,--quiet}`) must expand `$_sysforge_help_spec` and set `_sysforge_help_inline=1`, or the listing splits into a block of names and a block of descriptions (3.3.0-B15). Flag a new alias pair without both lines as a hard gap. `tests/test_completions_zsh.py` checks the rendered listing.
 - **Flag passthrough.** Memory `project_makepkg_passthrough.md`: `build`/`update`/`converge` accept implicit makepkg flag passthrough — completions don't have to enumerate every makepkg flag, but they shouldn't *block* unknown flags either. Verify the relevant `_arguments` allows extras (`*::makepkg-flags:` or similar).
 
 ## Output
@@ -65,4 +72,4 @@ Three sections:
 2. **Soft drift** — help-text mismatches, flag-style inconsistencies. Worth fixing but not blocking.
 3. **Verified clean** — the parts that match. Helps the user trust the audit.
 
-For each gap, cite `cli.py:<line>` and `_sysforge:<line>` so the user can jump straight to the fix.
+For each gap, cite `<module>.py:<line>` (the verb's `add_parser`) and `_sysforge:<line>` so the user can jump straight to the fix.

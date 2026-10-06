@@ -37,7 +37,7 @@ from sysforge.primitives import paths
 from sysforge.primitives.editor import resolve_merge_tool, run_tty_argv
 from sysforge.primitives.pager import maybe_pager
 from sysforge.primitives.prompt import prompt_choice, prompt_key
-from sysforge.verbs import ExecResult, PreCheckResult, Verb
+from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup
 
 _log = log.get_logger("CONFIG")
 
@@ -221,8 +221,38 @@ class ConfigMergeVerb(Verb):
     wants_run_log = True
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("merge",
+            help="Interactively adopt or clear .sfnew companions (and pacman's "
+                 ".pacnew/.pacsave for sysforge config) left by `make sync-config`. "
+                 "pacdiff-style: view diff, merge in a tool, skip, remove, or "
+                 "overwrite. Merge tool: SYSFORGE_MERGE > sysforge.toml [ui].merge "
+                 "> $DIFFPROG > vimdiff.")
+        p.add_argument("--config-dir", metavar="DIR", dest="config_dir",
+            help="Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else "
+                 "/etc/sysforge).")
+        p.add_argument("--list", action="store_true", dest="list",
+            help="List companion files and their live targets without prompting "
+                 "(non-interactive; for scripting/CI). Alias: --dry-run.")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Same as --list: report companions without merging.")
+        p.add_argument("--no-pager", action="store_true", dest="no_pager",
+            help="Don't pipe diffs through $PAGER (default: paginate when stdout is a TTY).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         return ExecResult(exit_code=cmd_config_merge(args))
+
+
+#: `sysforge config`: merge (subcommand required).
+CONFIG_GROUP = VerbGroup(
+    name="config",
+    help="Manage live sysforge config files (adopt shipped-default drift).",
+    dest="config_cmd",
+    members=(ConfigMergeVerb,),
+)

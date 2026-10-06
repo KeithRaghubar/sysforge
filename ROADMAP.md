@@ -113,7 +113,6 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.3.0-B11` | on an unchanged kernel, every run says the merge-drift check and Gate 2 "did not run", although the tree that built the installed package is still on disk | med | small | patch |
-| `3.3.0-B15` | completing a bare - under doctor system, doctor pkg, build, update or run toolchain prints a scrambled option listing; --help renders fine | med | small | patch |
 | `3.3.0-B20` | a DKMS module whose pacman-hook build failed is reported as never built, and the finding sends the operator to rerun the command that just failed | med | small | patch |
 | `3.3.0-F1` | the building bar's ETA swings because it averages packages of very different sizes | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
@@ -137,7 +136,6 @@ canonical ordering.
 | `3.3.0-F3` | a sudo password prompt sysforge raises itself does not pause or hide the progress bar | low | small | patch |
 | `2.6.1-F27` | Install stage target-root change summary | low | medium | patch |
 | `3.0.0-F1` | Preflight the Rust toolchain when the kernel fragment requests CONFIG_RUST | low | medium | patch |
-| `3.2.0-F7` | Per-verb parser assembly on the Verb class | low | medium | patch |
 | `3.3.0-F4` | a sudo prompt inside forwarded build output leaves the progress bar's clock running | low | medium | patch |
 | `3.2.0-Q1` | should the container's config be an allowlist of what may cross, rather than a copy of the host's with known-bad keys subtracted? | low | medium | minor |
 | `2.6.1-F21` | one home for replacing an existing config file | low | large | patch |
@@ -420,21 +418,6 @@ canonical ordering.
   sole caller. `3.2.0-F1` (a) already landed, so the `resolve_state_dir` reach-up is gone and this
   no longer has a prerequisite.
   *Priority: med · Effort: medium · Bump: patch* — internal restructuring only.
-  **Standards home on adoption:** none new.
-
----
-
-- **`3.2.0-F7` — Per-verb parser assembly on the `Verb` class.** `cli.py` is 1645 lines of
-  argparse construction with thirty distinct sysforge imports; `_add_run_parser` alone is 278
-  lines. None of it is logic, but it is the one place completions parity (§CLI Verb Framework,
-  `completions/_sysforge` lockstep rule) has to be checked by eye. Move each verb's flags into an
-  `add_parser(sub)` classmethod on its `Verb` subclass (the class already owns `pre_check`/
-  `execute`/`post_validate` and `requires_sentinel`), so `_build_parser` becomes a loop over the
-  verb registry and the flag surface lives next to the code that reads `args.<flag>`. Second
-  payoff: the `completions-cli-parity` audit and `help_cmd` can walk the registry rather than
-  importing `_build_parser` from `cli` (the one remaining `help_cmd → cli` reach-up).
-  *Priority: low · Effort: medium · Bump: patch* — behaviour-identical; verify with the completions
-  parity audit before and after.
   **Standards home on adoption:** none new.
 
 ---
@@ -743,36 +726,6 @@ canonical ordering.
   dry-run pass headers are unchanged.
   *Priority: low · Effort: small · Bump: patch* — cosmetic, the build itself is correct; small
   because the sub-maps are already in hand at each call site.
-  **Standards home on adoption:** none.
-
----
-
-- **`3.3.0-B15` — completing a bare `-` under `doctor system`, `doctor pkg`, `build`, `update` or
-  `run toolchain` prints a scrambled option listing; `--help` renders fine.**
-  `sysforge doctor system -<TAB><TAB>` lays the option names out in one block and the descriptions
-  in another, so no name sits beside its own description and `-q`/`-h` drift into a stray column.
-  Reproduced under `zsh -f` with only `completions/` on `fpath`, so it is not a user style. The cause
-  is two match groups with incompatible layouts: the verb's `_arguments` group, which contains a
-  short/long alias pair (`'(-q --quiet)'{-q,--quiet}`, `-s/--suggest`, `-m/--makepkg`) that zsh
-  renders as one aliased row, and the separate `-h`/`--help` group that `_sysforge_help_flag` adds
-  through `_describe -o` on every verb (`completions/_sysforge`, `2.5.0-F2`). Neither group alone
-  breaks: disabling `_sysforge_help_flag` makes the listing align with `--quiet -q` on one row, and
-  verbs without an alias pair (`run kernel -`) or a `--` prefix (`doctor system --`) render
-  correctly with the help group present. The affected leaves are exactly those with an alias pair:
-  `_sysforge_doctor_system`, `_sysforge_doctor_pkg`, `_sysforge_build`, `_sysforge_update`,
-  `_sysforge_run_toolchain`.
-  Fix: keep one home for the help spec but deliver it inside `_arguments`. Define it once (for
-  example an array `_sysforge_help_spec=('(-h --help)'{-h,--help}'[show this help message and exit]')`)
-  and expand it into each leaf `_arguments` call, dropping the `_describe -o` group; or, if
-  per-leaf expansion is judged too invasive, keep `_sysforge_help_flag` but skip it in leaves that
-  already pass the help spec. Bash completion is unaffected (no descriptions). Update the
-  `completions-cli-parity` expectations if the help flag moves into the specs.
-  Tests: a zsh `zpty` listing test (skipped when zsh is absent) for `doctor system -` asserting each
-  description line starts with its own option name; the existing completion parity checks stay
-  green.
-  *Priority: med · Effort: small · Bump: patch* — med because it is live on every interactive
-  `doctor` completion, the verb most often completed by hand; small because the fix is one shared
-  spec array and its expansion at five call sites.
   **Standards home on adoption:** none.
 
 ---

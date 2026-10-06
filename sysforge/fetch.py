@@ -93,6 +93,30 @@ class FetchVerb(Verb):
     wants_run_log = True
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("fetch",
+            help="Download PKGBUILD(s) into pkgbuild_src_dir without building.")
+        p.add_argument(
+            "pkgs", nargs="+", metavar="PKG",
+            help="One or more package names to download.",
+        )
+        p.add_argument("--no-update", action="store_true", dest="no_update",
+            help="Skip git pull --rebase for packages that are already cloned.")
+        p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+            help="Purge each package's src dir and re-clone. Refuses (per package) "
+                 "if the existing clone has uncommitted changes, ahead-of-upstream "
+                 "commits, or no upstream tracking branch.")
+        p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+            help="Like --cleansrc but bypasses the dirty/diverged guard and "
+                 "overwrites the local tree unconditionally.")
+        p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+            help="Suppress the LLVM source pre-flight summary.")
+        p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+            help="Path to a profiles.toml to use instead of the default.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         if not getattr(args, "pkgs", None):
             return PreCheckResult(blocker="fetch: no packages specified", exit_code=2)

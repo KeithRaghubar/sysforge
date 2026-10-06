@@ -1,6 +1,8 @@
 ## CLI Verb Framework
 
-Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `help`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `help_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. Argparse wiring in `cli.py` attaches the verb class via `parser.set_defaults(verb_cls=XVerb)` (never a `func=` callback), and `main()` resolves it via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
+Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`, `help`, `setup`, `log`, `completions`, `packages …`, `state …`, `config …`, `run …`) is a `Verb` subclass — the `Verb` ABC and the `PreCheckResult`/`ExecResult` result types live in `sysforge/verbs/base.py`, while each concrete verb lives in its own per-command module (`build_cmd.py`, `run_cmd.py`, `env_cmd.py`, `help_cmd.py`, `completions_cmd.py`, `update.py`, `packages_cmd.py`, …). Verbs are dispatched through `run_verb()` in `sysforge/verbs/runner.py`. The framework is intentionally thin: three phases, two result types, one runner, one shared sentinel primitive. `main()` resolves the parsed verb via `sys.exit(_dispatch(args.verb_cls, args))` — a thin wrapper around `run_verb` that adds the optional cProfile harness (see *Global profiling flags* below).
+
+**Each verb owns its argparse surface (3.2.0-F7).** A verb's flags live on its class, in an `add_parser(cls, sub)` classmethod that adds the command word and its arguments and ends with `set_defaults(verb_cls=cls)` (never a `func=` callback). The flag surface therefore sits beside the `pre_check`/`execute` code that reads `args.<flag>`. A namespace verb (`doctor`, `packages`, `state`, `artifact`, `config`, `run`) is a `VerbGroup` (`verbs/base.py`), declared in the module that owns its leaves: its name, help, subparser `dest`, ordered `members`, an optional default verb and `defaults`, a `metavar`, and an optional `add_arguments` for flags accepted on the bare namespace (`doctor -q`, `packages --packages/--orphans`). `verbs/registry.py` holds the ordered `COMMANDS` tuple plus what belongs to no single verb: the global flags, the help tiers and `build_parser()`. `cli._build_parser` and `cli.tiered_command_order` are re-exports of it. Verb modules never import the registry at load time, since it imports all of them. `tests/test_verb_registry.py` fails when a concrete `Verb` subclass is missing from `COMMANDS` or registered twice, when a registered verb lacks its own `add_parser`, or when `help_cmd` imports `cli`.
 
 
 **Verb modules are peers; shared operations live in `verbs/shared.py` (invariant).** A `*_cmd.py` module may import from `verbs/`, `primitives/` and `pipeline/`, but **never from a sibling `*_cmd.py`** — enforced by `test_verb_modules_do_not_import_siblings` in `tests/test_module_layering.py`, which counts function-level imports too (deferring one dodges the load-time cycle without removing the dependency). The rule exists because an edge between two verb modules is arbitrary: nothing makes `state_cmd` the owner of "stop maintaining this package" except that `sysforge state forget` is the verb that spells it, and a set of such edges is a fourth informal layer with nothing guarding its shape.
@@ -8,12 +10,15 @@ Every top-level CLI verb (`build`, `update`, `fetch`, `doctor`, `resolve`, `env`
 The fix for a violation is always to relocate the operation's *one home*, never to duplicate it — the one-home invariants (a single `packages.toml` writer; a single demotion path) are what the rule protects. Two modules serve that:
 
 - **`verbs/shared.py`** — operations shared *between verbs*. Two clusters today: the `packages.toml` entry shape and writer (`OVERRIDE_FIELDS`, `entry_toml_block`, `entry_is_inert`, `rewrite_packages_toml` — every mutation goes through the writer, which is line-level so header comments and surrounding whitespace survive and inert entries are pruned on the same write), consumed by `packages_cmd` and `build_cmd`'s repo opt-in gate; and `forget_packages(state_dir, pkgnames) -> (forgotten, missing)`, the build_state demotion behind `state forget`, `revert` and `uninstall`. It takes a state dir and a name list rather than an `args` namespace because two of its three callers are not the `forget` verb and had been synthesising a fake namespace to reach it; printing is the caller's business, since `revert` and `uninstall` fold demotion into their own summaries while `state forget` reports both lists.
-- **`verbs/helpers.py`** — small generic utilities with no cross-verb *behaviour* (today: `load_config_with_overrides`). Kept out of `base.py`, which is the verb protocol, and out of `cli.py`, which would close an import cycle since `cli` imports the verb modules.
+- **`verbs/helpers.py`** — small generic utilities with no cross-verb *behaviour* (today: `load_config_with_overrides` and the shared `PACKAGES_FILE_HELP` flag text). Kept out of `base.py`, which is the verb protocol, and out of `cli.py`/`verbs/registry.py`, which would close an import cycle since both import the verb modules.
 
 **Parent-verb subcommand default (invariant).** A verb namespace declares a
-default subverb via `set_defaults(verb_cls=…, <dest>=…)` on the *parent* parser
-**iff** it has a single obvious read-only "show me" view; otherwise its
-subparsers set `required = True`. Today: `doctor` → `system`, `packages` →
+default subverb (`VerbGroup.default`, plus `defaults` for the subparser `dest`)
+**iff** it has a single obvious read-only "show me" view; otherwise it leaves
+`default=None` and its subparsers become `required`. `VerbGroup.build` applies the
+defaults *after* creating the subparsers action, because argparse gives that
+action its own `default=None` for `dest`, which beats an earlier `set_defaults`
+for the same key. Today: `doctor` → `system`, `packages` →
 `list`, `artifact` → `list`, `state` → `list` carry defaults; `config` and `run`
 require a subcommand, because their subverbs mutate or diverge with no natural
 landing point. A new namespace picks a side by this test, not by precedent from
@@ -198,13 +203,13 @@ and discarding the content are different decisions.
 
 ### Top-level help tiers
 
-`sysforge --help` groups the top-level `COMMAND` list into three usage tiers — **Everyday** (`build`, `update`, `fetch`, `search`, `help`), **Inspect** (`doctor`, `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`, `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one flat, registration-ordered block, so a new user can tell routine drivers from ad-hoc introspection. The grouping is presentation-only (no behavioural change, no config flag). argparse folds every subparser into a single `_SubParsersAction` pseudo-group with no per-command category hook, so the tiering lives in `cli._TieredHelpFormatter`, which intercepts that one action and re-emits its choices under the tier headers; every other action (options, the `COMMAND` metavar line, per-verb and sub-verb `--help`) formats via the base `HelpFormatter` untouched. The tier map `cli._COMMAND_TIERS` is the single source of truth: `cli.tiered_command_order()` flattens it, and `tools/gen_options.py` orders the man-page COMMANDS sections by that list so the page stays in lockstep with the help (both completions mirror the order too). A `check_completions`-style parity test asserts the map partitions the user-facing verbs exactly (none missing, none duplicated); the internal `completions` verb is registered without help text and stays out of both the map and the listing.
+`sysforge --help` groups the top-level `COMMAND` list into three usage tiers — **Everyday** (`build`, `update`, `fetch`, `search`, `help`), **Inspect** (`doctor`, `resolve`, `env`, `log`, `state`, `artifact`), and **Maintain** (`setup`, `config`, `packages`, `run`, `revert-to-stock`, `uninstall`) — instead of one flat, registration-ordered block, so a new user can tell routine drivers from ad-hoc introspection. The grouping is presentation-only (no behavioural change, no config flag). argparse folds every subparser into a single `_SubParsersAction` pseudo-group with no per-command category hook, so the tiering lives in `verbs.registry._TieredHelpFormatter`, which intercepts that one action and re-emits its choices under the tier headers; every other action (options, the `COMMAND` metavar line, per-verb and sub-verb `--help`) formats via the base `HelpFormatter` untouched. The tier map `verbs.registry._COMMAND_TIERS` is the single source of truth: `tiered_command_order()` flattens it, and `tools/gen_options.py` orders the man-page COMMANDS sections by that list so the page stays in lockstep with the help (both completions mirror the order too). A `check_completions`-style parity test asserts the map partitions the user-facing verbs exactly (none missing, none duplicated); the internal `completions` verb is registered without help text and stays out of both the map and the listing.
 
 ### The `help` verb
 
 `sysforge help [COMMAND [SUBCOMMAND]]` is a read-only alias for `--help`, for users who reach for a
 help *verb* before a help *flag*. `HelpVerb` (`help_cmd.py`, `requires_sentinel = False`) re-enters
-`cli._build_parser()` — a function-local import, since `cli` imports `HelpVerb` at module scope —
+`verbs.registry.build_parser()` — a function-local import, since the registry imports `HelpVerb` at module scope —
 walks the `_SubParsersAction` chain word by word, and calls `print_help()` on the parser it lands on.
 It is an alias rather than a re-implementation: the output is the same parser object's help, so
 `sysforge help state failed` and `sysforge state failed --help` are byte-identical. An unrecognised
@@ -217,6 +222,14 @@ discoverability in the hand-written completions. Both files now advertise it fro
 dispatch point — zsh appends it with `_describe -o` after the per-verb handler runs
 (`_sysforge_help_flag`), bash with `COMPREPLY+=(…)` after its `case` — rather than repeating the flag
 in all 42 `_arguments` specs and every bash flag list.
+
+The zsh exception is a verb whose `_arguments` holds a short/long alias pair
+(`'(-q --quiet)'{-q,--quiet}`): zsh renders the pair as one aliased row, and a second `_describe`
+group beside it splits the listing into a block of names and a block of descriptions. Those verbs
+(`doctor`, `doctor system`, `doctor pkg`, `build`, `update`, `run toolchain`) expand the one shared
+`_sysforge_help_spec` array into their own `_arguments` call and set `_sysforge_help_inline=1`, which
+`_sysforge_help_flag` checks before adding its group. A new alias pair in any other verb needs the same
+two lines. `tests/test_completions_zsh.py` drives a real `zsh -f` on a pty and checks the rendered rows.
 
 ### Global profiling flags
 

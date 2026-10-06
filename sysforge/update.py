@@ -1594,6 +1594,148 @@ class UpdateVerb(Verb):
     name = "update"
     requires_sentinel = True
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("update",
+            help="Check for and rebuild outdated sysforge-managed packages.")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Show what would be rebuilt without doing it.")
+        p.add_argument("--devel", action="store_true", dest="devel",
+            help="Resolve and rebuild VCS packages (-git, -svn, -hg, -bzr) whose "
+                 "upstream HEAD has advanced past the installed version. "
+                 "Resolution runs makepkg --nobuild per VCS package; up-to-date "
+                 "packages are skipped, not rebuilt. Per-package upstream commits "
+                 "recorded in build_state are reused on subsequent runs to "
+                 "short-circuit the resolve via git ls-remote.")
+        p.add_argument("--offline", action="store_true", dest="offline",
+            help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
+        p.add_argument("--install-only", action="store_true", dest="install_only",
+            help="Skip rebuild; install only those locally-built artifacts in PKGDEST that are "
+                 "newer than the installed version. Implies --offline. Mutually exclusive with "
+                 "--makepkg, --no-cleanbuild, --cleansrc, --cleansrc-force, --interactive, and "
+                 "--cache-report.")
+        p.add_argument("--packages", metavar="FILE", dest="packages",
+            help="Path to packages.toml for override rules "
+                 "(default: /etc/sysforge/packages.toml; override the dir with "
+                 "$SYSFORGE_CONFIG_DIR).")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
+            help="Path to a profiles.toml to use instead of the default.")
+        p.add_argument("--cache-report", action="store_true", dest="cache_report",
+            help="Print a structured cache summary after the run.")
+        p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
+            help="Disable per-package log files.")
+        p.add_argument("--persist-log", action="store_true", dest="persist_log",
+            help="Keep log files after successful completion.")
+        p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
+            help="Directory for per-package log files.")
+        p.add_argument("--makepkg", "-m", metavar="FLAGS",
+            help="Extra flags passed verbatim to makepkg. Usually optional: bare "
+                 "makepkg short flags are forwarded implicitly (sysforge update -f "
+                 "works without -m). -m is only needed for makepkg long flags "
+                 "(e.g. --skippgpcheck), flags that take a value (-p, -D), or "
+                 "flags sysforge claims for itself (-h, -V).")
+        p.add_argument("--interactive", action="store_true",
+            help="Pause on build failures to allow manual correction "
+                 "(default: log failure and continue).")
+        p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
+            help="Skip the automatic --cleanbuild (-C) added for update runs. "
+                 "Useful when packages are already built and you only need to "
+                 "re-run the install step.")
+        p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
+            help="Purge each package's src dir and re-clone before building. "
+                 "Per-package fatal if the clone has uncommitted changes, "
+                 "ahead-of-upstream commits, or no upstream — that package is "
+                 "reported failed and the run continues.")
+        p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
+            help="Like --cleansrc but bypasses the dirty/diverged guard and "
+                 "overwrites every local tree unconditionally. Use when the "
+                 "upstream rewrote history (e.g. Arch packaging repos force-push "
+                 "every release) and local commits have no value to preserve.")
+        p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
+            help="Suppress the LLVM source pre-flight summary.")
+        review_group = p.add_mutually_exclusive_group()
+        review_group.add_argument("--review", action="store_true", dest="review",
+            help="Prompt to review the full source-tree diff for packages whose "
+                 "source changed since the last accepted build. By default update "
+                 "auto-accepts changes with a logged notice so batch runs stay "
+                 "unattended; use `sysforge build` or this flag to inspect diffs.")
+        review_group.add_argument("--no-review", action="store_true", dest="no_review",
+            help="Skip the PKGBUILD review gate entirely (no auto-accept notices). "
+                 "Also configurable via [build] review = false in packages.toml.")
+        sysupgrade_group = p.add_mutually_exclusive_group()
+        sysupgrade_group.add_argument("--sysupgrade", action="store_true", dest="sysupgrade",
+            help="Finish the run with a single `pacman -Syu` system upgrade, after "
+                 "source-built artifacts are installed (they stay protected by the "
+                 "`IgnoreGroup = sf-build` line `sysforge setup` adds). Independent "
+                 "of repo_mode — no extra packages enter the version-check walk. "
+                 "Also settable via [build] system_upgrade = true in packages.toml.")
+        sysupgrade_group.add_argument("--no-sysupgrade", action="store_true", dest="no_sysupgrade",
+            help="Skip the trailing system upgrade even when "
+                 "[build] system_upgrade = true is set in packages.toml.")
+        p.add_argument("--no-sysupgrade-report", action="store_true",
+            dest="no_sysupgrade_report",
+            help="Skip the version-change report for the trailing system upgrade. "
+                 "The report is on by default and applies only to the "
+                 "--sysupgrade / [build] system_upgrade route (the classified "
+                 "pacman-class list already itemizes itself); it snapshots the "
+                 "local package DB either side of the transaction and prints one "
+                 "`pkg: old -> new` line per change, capped at the default "
+                 "verbosity and printed in full under -v.")
+        p.add_argument("--no-toolchain-preflight", action="store_true",
+            dest="no_toolchain_preflight",
+            help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
+                 "lib32 cross targets) that normally runs before the build loop.")
+        p.add_argument("--include-stage-owned", action="store_true", dest="include_stage_owned",
+            help="Include packages owned by a pipeline stage (e.g. the kernel "
+                 "stage's `linux-sysforge`). Skipped by default; the owning stage "
+                 "(`sysforge run kernel`) is the canonical update path.")
+        # --versions and --explain-drift are both list-and-exit reports; the
+        # group makes argparse reject the combination instead of update.py
+        # silently picking a winner at its early-exit seam.
+        _report = p.add_mutually_exclusive_group()
+        _report.add_argument("--versions", action="store_true", dest="versions",
+            help="List packages with a newer version available and exit. Read-only: "
+                 "no source sync beyond the version check, no rebuild, no stage. "
+                 "Unlike a normal run this always includes stage-owned "
+                 "(toolchain/kernel) packages, annotated with the stage that owns "
+                 "them — it is the quick answer to 'is there a new toolchain or "
+                 "kernel?' without entering `run toolchain` / `run kernel`. "
+                 "Up-to-date packages collapse into a count. VCS packages report "
+                 "no available version unless --devel is also passed.")
+        _report.add_argument("--explain-drift", action="store_true", dest="explain_drift",
+            help="List drifted packages and exit, across both axes: toolchain "
+                 "drift (recorded toolchain_variant differs from the active "
+                 "gcc / stock_llvm / pgo_llvm) and flag drift (profiled packages "
+                 "whose flags now resolve differently than when built, with a "
+                 "per-key diff). Informational; no source sync, no rebuild.")
+        p.add_argument("--rebuild-on-toolchain-drift", action="store_true",
+            dest="rebuild_on_toolchain_drift",
+            help="Treat toolchain-variant drift as an upgrade trigger: packages "
+                 "built under a different toolchain than is active now are added "
+                 "to the rebuild queue. Off by default — drift is reported but "
+                 "not acted on, since most C/C++ packages don't measurably "
+                 "benefit from a re-stamp. Also settable via "
+                 "[update] rebuild_on_toolchain_drift = true in sysforge.toml.")
+        p.add_argument("--rebuild-on-flag-drift", action="store_true",
+            dest="rebuild_on_flag_drift",
+            help="Treat flag drift as an upgrade trigger: profiled packages whose "
+                 "flags now resolve differently than when built are added to the "
+                 "rebuild queue. Off by default — flag drift is reported but not "
+                 "acted on, since one profile edit can drift every profiled "
+                 "package. Also settable via [update] rebuild_on_flag_drift = true "
+                 "in sysforge.toml.")
+        p.add_argument("--rebuild-on-drift", action="store_true",
+            dest="rebuild_on_drift",
+            help="Umbrella for both --rebuild-on-toolchain-drift and "
+                 "--rebuild-on-flag-drift: rebuild anything that has drifted. "
+                 "Also settable via [update] rebuild_on_drift = true in sysforge.toml.")
+        p.add_argument("pkgnames", metavar="PKG", nargs="*",
+            help="Limit update to these package names (default: all sysforge-managed packages).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         if getattr(args, "install_only", False):
             conflicts = [

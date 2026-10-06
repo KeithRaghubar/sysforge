@@ -3,6 +3,8 @@
 _sysforge() {
   local context state state_descr line
   typeset -A opt_args
+  # Set by a verb that already carries $_sysforge_help_spec (3.3.0-B15).
+  local -i _sysforge_help_inline=0
 
   _arguments -C \
     '(-V --version)'{-V,--version}'[print sysforge version and exit]' \
@@ -46,12 +48,22 @@ _sysforge() {
       # argparse auto-adds -h/--help to every parser, so the flag is valid at
       # every level. Offered here once (2.5.0-F2) instead of in each verb's
       # `_arguments` spec; `-o` keeps it out of the way of real matches.
+      # Verbs with a short/long alias pair take the spec inline instead.
       _sysforge_help_flag
       ;;
   esac
 }
 
+# The -h/--help spec for verbs whose `_arguments` holds a short/long alias pair
+# ('(-q --quiet)'{-q,--quiet}). zsh renders that pair as one aliased row, and a
+# separate `_describe` group beside it splits the listing into a block of names
+# and a block of descriptions (3.3.0-B15). Such a verb expands this array into
+# its own `_arguments` call and sets `_sysforge_help_inline=1` so
+# `_sysforge_help_flag` stays out.
+_sysforge_help_spec=('(-h --help)'{-h,--help}'[show this help message and exit]')
+
 _sysforge_help_flag() {
+  (( _sysforge_help_inline )) && return
   [[ ${PREFIX} == -* ]] || return
   local -a hf=(
     '-h:show this help message and exit'
@@ -138,7 +150,9 @@ _sysforge_makepkg_flags() {
 }
 
 _sysforge_build() {
+  _sysforge_help_inline=1
   _arguments \
+    $_sysforge_help_spec \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
     '--interactive[strip --noconfirm from makepkg_flags]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
@@ -175,7 +189,9 @@ _sysforge_fetch() {
 }
 
 _sysforge_update() {
+  _sysforge_help_inline=1
   _arguments \
+    $_sysforge_help_spec \
     '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[rebuild VCS packages newer than installed]' \
@@ -223,7 +239,9 @@ _sysforge_doctor() {
   local context state state_descr line
   typeset -A opt_args
 
+  _sysforge_help_inline=1
   _arguments -C \
+    $_sysforge_help_spec \
     '1: :_sysforge_doctor_subcommands' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
     '*:: :->args'
@@ -247,7 +265,9 @@ _sysforge_doctor_subcommands() {
 }
 
 _sysforge_doctor_system() {
+  _sysforge_help_inline=1
   _arguments \
+    $_sysforge_help_spec \
     '--graphics[nvidia-drm modeset, driver skew, explicit-sync, session type]' \
     '--gfxperf[advisory graphics-performance sweep]' \
     '--hardware[inventory PCI/USB devices; audit kernel drivers]' \
@@ -268,7 +288,9 @@ _sysforge_doctor_system() {
 }
 
 _sysforge_doctor_pkg() {
+  _sysforge_help_inline=1
   _arguments \
+    $_sysforge_help_spec \
     '--abi[depends-satisfaction + soname/ABI linkage walk over the targets]' \
     '--rust[per-target rust-toolchain.toml pin + install]' \
     '--integrity[verify target files vs alpm mtree (pacman -Qkk)]' \
@@ -588,7 +610,9 @@ _sysforge_run_reconfigure() {
 }
 
 _sysforge_run_toolchain() {
+  _sysforge_help_inline=1
   _arguments \
+    $_sysforge_help_spec \
     '--dry-run[show what would run without executing]' \
     '--no-update[skip git pull --rebase before each build]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \

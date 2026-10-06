@@ -9,7 +9,7 @@ gen_options.py — generate the COMMANDS sections of sysforge(1) from argparse.
 
 Reads the hand-written scdoc template (man/sysforge.1.scd.in), replaces the
 @OPTIONS@ marker line with per-command scdoc sections derived from
-``sysforge.cli._build_parser()``, and writes the complete scdoc source
+``sysforge.verbs.registry.build_parser()``, and writes the complete scdoc source
 (man/sysforge.1.scd — an intermediate, not committed; ``scdoc`` then renders
 man/sysforge.1, which is committed).
 
@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sysforge.cli import _build_parser, tiered_command_order  # noqa: E402
+from sysforge.verbs.registry import build_parser, tiered_command_order  # noqa: E402
 
 MARKER = "@OPTIONS@"
 
@@ -201,7 +201,7 @@ def main() -> int:
     ap_.add_argument("--out", required=True)
     ns = ap_.parse_args()
 
-    parser = _build_parser()
+    parser = build_parser()
     body_lines: list[str] = []
     for name, sub, help_txt in _iter_commands(parser, order=tiered_command_order()):
         body_lines += _command_section(name, sub, help_txt)

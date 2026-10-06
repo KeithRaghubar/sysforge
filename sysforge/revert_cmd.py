@@ -155,6 +155,23 @@ class RevertToStockVerb(Verb):
     wants_run_log = True
     requires_sentinel = True
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser(
+            "revert-to-stock",
+            help="undo a source-built/optimized package back to the repo version",
+        )
+        p.add_argument("packages", nargs="+", metavar="PKG",
+            help="package name(s) to revert (stock or -sysforge name)")
+        p.add_argument("--force", action="store_true",
+            help="skip the confirmation prompt")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Show the planned revert without making changes.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def journal_target(self, args) -> str | None:
         return journal.pkg_target(args.packages)
 

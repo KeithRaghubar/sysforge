@@ -784,7 +784,8 @@ def test_help_hides_internal_completions_verb():
 # mutate or diverge with no natural landing point.
 
 def test_bare_artifact_defaults_to_artifact_list():
-    from sysforge.cli import ArtifactListVerb, _build_parser
+    from sysforge.cli import _build_parser
+    from sysforge.verbs.artifact import ArtifactListVerb
 
     ns = _build_parser().parse_args(["artifact"])
     assert ns.verb_cls is ArtifactListVerb
@@ -792,7 +793,8 @@ def test_bare_artifact_defaults_to_artifact_list():
 
 
 def test_bare_state_defaults_to_state_list():
-    from sysforge.cli import StateListVerb, _build_parser
+    from sysforge.cli import _build_parser
+    from sysforge.state_cmd import StateListVerb
 
     ns = _build_parser().parse_args(["state"])
     assert ns.verb_cls is StateListVerb

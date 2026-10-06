@@ -25,10 +25,18 @@ Verbs that mutate the live system set ``requires_sentinel = True``; the
 runner wraps ``execute + post_validate`` in
 :func:`~sysforge.primitives.stage_sentinel.sentinel_scope` so a crash or
 interrupt mid-mutation leaves a recovery sentinel for the next run.
+
+Each verb also owns its argparse surface: :meth:`Verb.add_parser` registers the
+command word and its flags, next to the code that reads ``args.<flag>``. A
+namespace verb (``doctor``, ``state``, …) is a :class:`VerbGroup` over its leaf
+verbs. ``verbs/registry.py`` lists them in order and assembles the parser
+(3.2.0-F7).
 """
 from __future__ import annotations
 
+import argparse
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,7 +85,8 @@ class Verb(ABC):
         system. When set, the runner wraps execute+post_validate in
         :func:`~sysforge.primitives.stage_sentinel.sentinel_scope`.
 
-    and implement the three phase methods.
+    and implement the three phase methods, plus :meth:`add_parser` for the
+    argparse surface.
     """
 
     name: str = ""
@@ -88,6 +97,16 @@ class Verb(ABC):
     #: this True; pure printers / read-only reports leave it False. Verbs that
     #: need a non-derived basename override ``unified_log_basename`` instead.
     wants_run_log: bool = False
+
+    @classmethod
+    def add_parser(cls, sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+        """Register this verb's subparser on ``sub`` and return it.
+
+        Adds the command word, its arguments and ``set_defaults(verb_cls=cls)``,
+        which is how ``cli._dispatch`` finds the verb. Called once per parser
+        build by ``verbs.registry.build_parser``.
+        """
+        raise NotImplementedError(f"{cls.__name__} does not define add_parser")
 
     @abstractmethod
     def pre_check(self, args) -> PreCheckResult:
@@ -162,3 +181,39 @@ class Verb(ABC):
         """
         del args, pre
         return None
+
+
+@dataclass(frozen=True)
+class VerbGroup:
+    """A namespace verb (``sysforge state …``) over a fixed set of leaf verbs.
+
+    ``build`` adds the parent parser, then ``add_arguments`` (flags accepted on
+    the bare namespace), then one subparser per ``members`` entry in order.
+    ``defaults`` is applied *after* the subparsers action exists. argparse gives
+    that action its own ``default=None`` for ``dest``, which beats an earlier
+    ``set_defaults`` for the same key, so this order is the only one in which a
+    default subcommand name such as ``state_cmd="list"`` takes effect.
+    ``default`` is the verb a bare ``sysforge <name>`` runs; ``None`` makes the
+    subcommand required.
+    """
+
+    name: str
+    help: str
+    dest: str
+    members: tuple[type[Verb], ...]
+    default: type[Verb] | None = None
+    defaults: Mapping[str, Any] = field(default_factory=dict)
+    metavar: str | None = None
+    add_arguments: Callable[[argparse.ArgumentParser], None] | None = None
+
+    def build(self, sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+        p = sub.add_parser(self.name, help=self.help)
+        if self.add_arguments is not None:
+            self.add_arguments(p)
+        group_sub = p.add_subparsers(dest=self.dest, metavar=self.metavar)
+        group_sub.required = self.default is None
+        if self.default is not None:
+            p.set_defaults(verb_cls=self.default, **self.defaults)
+        for verb_cls in self.members:
+            verb_cls.add_parser(group_sub)
+        return p

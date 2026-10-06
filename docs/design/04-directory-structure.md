@@ -6,7 +6,7 @@
 sysforge/
 ├── sysforge/
 │   ├── __init__.py
-│   ├── cli.py                         # CLI entry: argv preprocessing + argparse parser construction + verb dispatch (verb classes live in their per-command modules)
+│   ├── cli.py                         # CLI entry: argv preprocessing + verb dispatch (each verb's flags live on its class; verbs/registry.py assembles the parser)
 │   ├── log.py                         # structured logging (stderr + optional file output)
 │   ├── ui/
 │   │   ├── __init__.py
@@ -26,9 +26,10 @@ sysforge/
 │   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
 │   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
 │   ├── verbs/
-│   │   ├── base.py                    # Verb ABC + PreCheckResult/ExecResult result types
+│   │   ├── base.py                    # Verb ABC (incl. add_parser) + VerbGroup + PreCheckResult/ExecResult
+│   │   ├── registry.py                # ordered COMMANDS + global flags + help tiers → build_parser()
 │   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
-│   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides)
+│   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides, PACKAGES_FILE_HELP)
 │   └── primitives/
 │       ├── archinstall_config.py      # BootstrapConfig dataclass + pure → archinstall JSON (schema pin, _BASE_PACKAGES home)
 │       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)

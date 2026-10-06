@@ -9,7 +9,7 @@ A shell-completion data sink: prints candidate names for a requested resource
 (``makepkg-flags`` / ``state`` / ``manifest`` / ``local`` / the default
 repo+AUR package universe), one per line, for the ``_sysforge`` completion
 script to consume. Not user-facing. Dispatched through the Verb framework; the
-argparse surface lives in ``cli._build_parser``.
+argparse surface is ``CompletionsVerb.add_parser``.
 """
 from pathlib import Path
 
@@ -23,6 +23,16 @@ class CompletionsVerb(Verb):
 
     name = "completions"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("completions")
+        p.add_argument(
+            "resource",
+            choices=["packages", "manifest", "local", "state", "makepkg-flags"],
+        )
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()

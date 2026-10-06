@@ -147,6 +147,14 @@ class SearchVerb(Verb):
     name = "search"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("search",
+            help="search installed, repo, and AUR packages for a term")
+        p.add_argument("term", metavar="TERM", help="search term (name + description)")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         # Read-only verb: nothing to validate or resolve ahead of execute.
         return PreCheckResult(ctx={})

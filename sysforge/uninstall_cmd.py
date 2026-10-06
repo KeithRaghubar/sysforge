@@ -57,6 +57,17 @@ class UninstallVerb(Verb):
     wants_run_log = True
     requires_sentinel = True
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("uninstall",
+            help="remove package(s); demote any sysforge-tracked ones out of build state")
+        p.add_argument("packages", nargs="+", metavar="PKG",
+            help="package name(s) to remove (stock or -sysforge name)")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def journal_target(self, args) -> str | None:
         return journal.pkg_target(args.packages)
 

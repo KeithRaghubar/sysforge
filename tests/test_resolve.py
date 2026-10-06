@@ -522,11 +522,11 @@ def test_print_deps_installed_shows_required_by(capsys, tmp_path):
 def test_deps_and_show_flags_mutually_exclusive():
     """argparse should reject --deps and --show-flags together."""
     import argparse
-    from sysforge.cli import _add_resolve_parser
+    from sysforge.resolve import ResolveVerb
 
     parent = argparse.ArgumentParser()
     sub = parent.add_subparsers()
-    _add_resolve_parser(sub)
+    ResolveVerb.add_parser(sub)
 
     with pytest.raises(SystemExit):
         parent.parse_args(["resolve", "mypkg", "--deps", "--show-flags"])

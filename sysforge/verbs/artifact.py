@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sysforge import log
 from sysforge.primitives import artifacts, editor, prompt
-from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
+from sysforge.verbs.base import ExecResult, PreCheckResult, Verb, VerbGroup
 
 _log = log.get_logger("ARTIFACT")
 
@@ -23,6 +23,17 @@ class ArtifactListVerb(Verb):
 
     name = "artifact-list"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("list", help="list managed artifacts")
+        p.add_argument(
+            "--unmanaged",
+            action="store_true",
+            help="also show discovered candidates not yet adopted",
+        )
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         del args
@@ -90,6 +101,21 @@ class ArtifactReviewVerb(Verb):
 
     name = "artifact-review"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser(
+            "review", help="interactively offer discovered candidates for adoption")
+        p.add_argument(
+            "--all", action="store_true",
+            help="adopt every offerable candidate without prompting",
+        )
+        p.add_argument(
+            "--include-unknown", dest="include_unknown", action="store_true",
+            help="with --all, also adopt candidates of unknown ownership",
+        )
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         del args
@@ -207,6 +233,17 @@ class ArtifactAdoptVerb(Verb):
     name = "artifact-adopt"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("adopt", help="bring a live artifact under management")
+        p.add_argument("path", help="path to the artifact to adopt")
+        p.add_argument(
+            "--class", dest="cls", choices=list(artifacts.ARTIFACT_CLASSES),
+            default=None, help="artifact class (inferred from the scan root if omitted)",
+        )
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         del args
         return PreCheckResult()
@@ -230,6 +267,13 @@ class ArtifactEditVerb(Verb):
 
     name = "artifact-edit"
     requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("edit", help="edit the managed copy of an artifact")
+        p.add_argument("name", help="registry name of the artifact")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def pre_check(self, args) -> PreCheckResult:
         del args
@@ -274,6 +318,20 @@ class ArtifactDeployVerb(Verb):
 
     name = "artifact-deploy"
     requires_sentinel = True
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("deploy", help="push managed content to the live system")
+        grp = p.add_mutually_exclusive_group(required=True)
+        grp.add_argument("name", nargs="?", help="registry name of the artifact")
+        grp.add_argument("--all", action="store_true", help="deploy every managed artifact")
+        res = p.add_mutually_exclusive_group()
+        res.add_argument("--force", action="store_true",
+            help="managed copy wins, discarding the live edit")
+        res.add_argument("--adopt-live", dest="adopt_live", action="store_true",
+            help="live file wins, updating the managed copy")
+        p.set_defaults(verb_cls=cls)
+        return p
 
     def journal_target(self, args) -> str | None:
         if getattr(args, "all", False):
@@ -344,6 +402,18 @@ class ArtifactRemoveVerb(Verb):
     name = "artifact-remove"
     requires_sentinel = True
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("remove", help="remove an artifact from the live system")
+        p.add_argument("name", help="registry name of the artifact")
+        p.add_argument("--purge", action="store_true",
+            help="also delete the managed copy and registry entry")
+        p.add_argument("--force", action="store_true",
+            help="remove even though the live file changed outside sysforge "
+                 "(discards those live-only edits)")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def journal_target(self, args) -> str | None:
         return getattr(args, "name", None)
 
@@ -380,3 +450,15 @@ class ArtifactRemoveVerb(Verb):
             return ExecResult(exit_code=1)
         _log.ui(f"Removed {args.name}" + (" (purged)" if args.purge else ""))
         return ExecResult(exit_code=0)
+
+
+#: `sysforge artifact`: list (default), review, adopt, edit, deploy, remove.
+ARTIFACT_GROUP = VerbGroup(
+    name="artifact",
+    help="inventory user-authored scripts, units, and pacman hooks",
+    dest="artifact_cmd",
+    members=(ArtifactListVerb, ArtifactReviewVerb, ArtifactAdoptVerb,
+             ArtifactEditVerb, ArtifactDeployVerb, ArtifactRemoveVerb),
+    default=ArtifactListVerb,
+    defaults={"artifact_cmd": "list"},
+)

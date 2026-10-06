@@ -10,7 +10,8 @@ otherwise it walks the subparser chain (``sysforge help state failed``) and
 prints that parser's help — the same bytes ``sysforge state failed --help``
 emits, because it is literally the same parser object. Dispatched through the
 Verb framework (no sentinel, like ``env``/``resolve``); the argparse surface
-lives in ``cli._add_help_parser``.
+is ``HelpVerb.add_parser``; the parser it walks comes from
+``verbs.registry.build_parser``.
 
 Help text goes to stdout via ``print_help()`` rather than ``log.ui`` so it
 stays byte-identical to the ``--help`` flag and never lands in the log files.
@@ -38,13 +39,24 @@ class HelpVerb(Verb):
     name = "help"
     requires_sentinel = False
 
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("help",
+            help="Print help for sysforge or for a COMMAND (alias for --help).")
+        p.add_argument("topic", nargs="*", metavar="COMMAND",
+            help="Command (and optional subcommand) to describe, e.g. "
+                 "`sysforge help state failed`. Omit for top-level help.")
+        p.set_defaults(verb_cls=cls)
+        return p
+
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
-        from sysforge.cli import _build_parser
+        # Function-level: the registry imports every verb module, this one included.
+        from sysforge.verbs.registry import build_parser
 
-        target = _build_parser()
+        target = build_parser()
         trail: list[str] = []
         for word in getattr(args, "topic", None) or []:
             choices = _subparsers(target)
