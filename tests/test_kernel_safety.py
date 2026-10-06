@@ -382,6 +382,24 @@ def test_dkms_module_built_for_kernel(monkeypatch):
     assert ks.check_dkms_for_kernel("7.0.10-custom") == []
 
 
+def test_dkms_remediation_names_module_version(monkeypatch):
+    # dkms 3.x rejects `dkms install <mod> -k <kver>` ("Arguments <module> and
+    # <module-version> are not specified"); the remediation must carry the
+    # `<module>/<version>` pair from `dkms status` (3.3.0-B19).
+    out = "nvidia/615.71.09, 7.2.8-arch1-2, x86_64: installed\n"
+    monkeypatch.setattr(ks, "_run", lambda cmd: _completed(out))
+    (f,) = ks.check_dkms_for_kernel("7.2.8-custom")
+    assert "`sudo dkms install nvidia/615.71.09 -k 7.2.8-custom`" in f.remediation
+
+
+def test_dkms_remediation_without_version_uses_autoinstall(monkeypatch):
+    # No parseable version → fall back to `dkms autoinstall`, which needs none.
+    out = "nvidia: added\n"
+    monkeypatch.setattr(ks, "_run", lambda cmd: _completed(out))
+    (f,) = ks.check_dkms_for_kernel("7.2.8-custom")
+    assert "`sudo dkms autoinstall -k 7.2.8-custom`" in f.remediation
+
+
 def test_dkms_absent_no_findings(monkeypatch):
     monkeypatch.setattr(ks, "_run", lambda cmd: None)
     assert ks.check_dkms_for_kernel("7.0.10-custom") == []

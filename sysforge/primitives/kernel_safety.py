@@ -688,6 +688,9 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
     # was placed by the package rather than a fresh `dkms install`). Trusting
     # the literal state word alone false-flags such healthy modules.
     present_for: dict[str, set[str]] = {}
+    # Module → its source version (last seen wins). dkms 3.x refuses a bare
+    # module name: `dkms install` needs the `<module>/<version>` pair.
+    version_of: dict[str, str] = {}
     for line in r.stdout.splitlines():
         line = line.strip()
         if not line:
@@ -698,8 +701,10 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
         head = line.split(":", 1)[0]
         state = line.split(":", 1)[1].strip() if ":" in line else ""
         fields = [f.strip() for f in head.split(",")]
-        mod = fields[0].split("/", 1)[0]
+        mod, _, mod_ver = fields[0].partition("/")
         present_for.setdefault(mod, set())
+        if mod_ver:
+            version_of[mod] = mod_ver
         if len(fields) < 2:
             continue
         mod_kver = fields[1]
@@ -710,12 +715,15 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
     findings: list[KernelFinding] = []
     for mod, kvers in sorted(present_for.items()):
         if kver not in kvers:
+            ver = version_of.get(mod)
+            cmd = (f"sudo dkms install {mod}/{ver} -k {kver}" if ver
+                   else f"sudo dkms autoinstall -k {kver}")
             findings.append(KernelFinding(
                 SEV_WARN, f"dkms:{mod}",
                 f"DKMS module {mod!r} is not built for kernel {kver} — it "
                 "will not load on the new kernel.",
                 f"Install `{kver}` headers and run "
-                f"`sudo dkms install {mod} -k {kver}` (or reinstall the "
+                f"`{cmd}` (or reinstall the "
                 "DKMS package). nvidia → black screen; zfs root → unbootable.",
                 is_brick=False,
             ))
