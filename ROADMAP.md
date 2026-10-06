@@ -114,8 +114,10 @@ canonical ordering.
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.3.0-B11` | on an unchanged kernel, every run says the merge-drift check and Gate 2 "did not run", although the tree that built the installed package is still on disk | med | small | patch |
 | `3.3.0-B15` | completing a bare - under doctor system, doctor pkg, build, update or run toolchain prints a scrambled option listing; --help renders fine | med | small | patch |
+| `3.3.0-B20` | a DKMS module whose pacman-hook build failed is reported as never built, and the finding sends the operator to rerun the command that just failed | med | small | patch |
 | `3.3.0-F1` | the building bar's ETA swings because it averages packages of very different sizes | med | small | patch |
 | `3.1.0-B12` | update --include-stage-owned co-schedules a toolchain rebuild with the packages it compiles, and stamps them all with the pre-rebuild fingerprint | med | medium | patch |
+| `3.3.0-B21` | kernel installs keep none of pacman's output, so a failed DKMS hook or other post-transaction hook leaves no record | med | medium | patch |
 | `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F3` | Make update's phases functions, not comments | med | medium | patch |
@@ -830,6 +832,56 @@ canonical ordering.
     `pkgbuild_patcher.py:2325`, `:2348` and `update_version.py:75`. Use the constant.
   *Priority: low · Effort: small · Bump: patch* — no observed failure; the masking only changes
   which error text a best-effort warning shows.
+  **Standards home on adoption:** none.
+---
+
+- **`3.3.0-B20` — a DKMS module whose pacman-hook build failed is reported as never built, and the
+  finding sends the operator to rerun the command that just failed.**
+  Installing a kernel's `-headers` package fires `70-dkms-install.hook`, which runs `dkms install
+  --no-depmod <mod>/<ver> -k <kver>` inside the transaction. A failed module build only makes the
+  hook print a `WARNING: … exited <n>` line; pacman still exits 0, so the install looks clean.
+  `kernel_safety.check_dkms_for_kernel` (`kernel_safety.py:672`, called by Gate 3 at
+  `kernel/gates.py:432` and by `doctor` at `doctor.py:999`) sees only the end state (no
+  `installed` row for `<kver>`) and says "not built … run `sudo dkms install …`". That reads as if
+  nothing ran, and it gives no hint that a compile failed or where its output is. Observed
+  2026-10-06 installing `linux-sysforge-profiling` 7.2.8 (and on 2026-09-28/29 for
+  `linux-sysforge` 7.2.7): the hook build failed with exit 10, Gate 3 reported "not built", and a
+  manual rerun succeeded. The cause is still unknown because the failing `make.log` was overwritten
+  by the rerun and pacman's output was not kept (`3.3.0-B21`).
+  Fix: when `<kver>`'s headers are present (`/usr/lib/modules/<kver>/build/include` exists), look
+  in `/var/log/pacman.log` for that module/kernel's hook `exited <n>` line from the latest
+  transaction. If there is one, the finding says the automatic build ran and failed, gives the exit
+  code, and names `/var/lib/dkms/<mod>/<ver>/build/make.log`, warning that the next `dkms install`
+  overwrites that log, so copy it before retrying. The retry command stays as the second step. With
+  no headers, keep the "install headers" wording. With headers but no hook line, keep today's
+  message.
+  Tests: a pacman.log fixture with a failed hook line → "ran and failed" wording with exit code and
+  log path; headers present with no hook line → today's wording; headers absent → install-headers
+  wording; a failure line for a different kernel or module is ignored.
+  *Priority: med · Effort: small · Bump: patch*: nvidia on a new kernel is a black screen at the
+  next boot, and the current message hides the evidence the operator needs before rebooting.
+  **Standards home on adoption:** none.
+
+---
+
+- **`3.3.0-B21` — kernel installs keep none of pacman's output, so a failed DKMS hook or other
+  post-transaction hook leaves no record.**
+  `makepkg_wrapper.install_built_packages` (`makepkg_wrapper.py:414`) runs `pacman -U` with
+  inherited stdio so its prompts work. Everything pacman and its hooks print (DKMS builds,
+  `mkinitcpio`, bootloader updates) goes only to the terminal, and is lost once the scrollback is.
+  B7 added a "went to the terminal" note for a failing exit status, but hook failures exit 0 and
+  get no note at all. The interactive path in `pacman.install_packages` (`pacman.py:661`) has the
+  same gap. This is what made the `3.3.0-B20` hook failure impossible to diagnose after the fact.
+  Fix: run the kernel install through `pty_runner.run_with_pty` (`reserve_bottom_rows=0` keeps
+  stdin inherited, so the confirmation prompt still works) with a `line_callback` that tees each
+  ANSI-stripped line into the run log, and promote `==> WARNING: … exited <n>` and `Error!` hook
+  lines to `warn()` so they show up in the run summary. Extend the same capture to the interactive
+  branch of `pacman.install_packages`.
+  Tests: a fake pacman that prints a hook warning and exits 0 → the line is in the run log and
+  raised to `warn()`; the prompt still works (stdin reaches the child); a non-zero exit still
+  raises with the captured tail.
+  *Priority: med · Effort: medium · Bump: patch*: the install itself is correct; this is about
+  keeping evidence of brick-class hook failures (DKMS, initramfs).
   **Standards home on adoption:** none.
 
 ### Documentation
