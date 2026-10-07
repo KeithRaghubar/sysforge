@@ -118,9 +118,9 @@ canonical ordering.
 | `3.2.0-F10` | nothing verifies that a freshly installed locally-built mesa actually initialises | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
-| `3.1.0-Q1` | should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit? | med | medium | minor |
-| `3.2.0-Q2` | what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy decision that outlives both? | med | medium | minor |
-| `3.2.0-Q1` | should the container's config be an allowlist of what may cross, rather than a copy of the host's with known-bad keys subtracted? | low | medium | minor |
+| `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
+| `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
+| `3.4.0-F2` | the sandbox refuses a container conf that still names the host | low | medium | minor |
 | `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
 <!-- END roadmap-table -->
 
@@ -413,135 +413,100 @@ canonical ordering.
   currently needs forensic reconstruction.
   **Standards home on adoption:** none.
 
+- **`3.4.0-F2` — the sandbox refuses a container conf that still names the host.** Promoted from
+  `3.2.0-Q1`, which weighed three models for deriving the container's `makepkg.conf` and settled on
+  the middle one. The current model stays: `chroot_conf_text` copies the emitted host conf and
+  applies the five correction sets in `primitives/build_sandbox.py` (`_CHROOT_DEST_KEYS`,
+  `_ENV_EXPORT_DENY`, `_HOST_ONLY_BUILDENV`, `_TOOLCHAIN_PACKAGE`, `_PROFILE_USE_PREFIXES`). What
+  changes is what happens to anything the five sets don't cover. Add an audit pass over the *final*
+  container conf text, after every correction has run, that walks each assignment and export and refuses
+  (`SandboxUnavailable`, through the existing `preflight` refusal path) when it finds either of these:
+  an absolute path that will not exist inside the chroot (not under a mirrored or rewritten prefix,
+  not a standard system path), or a bare binary name in a compiler, linker or `BUILDENV` slot that
+  the chroot's provisioned toolchain will not supply. The refusal names the key, the value and the
+  correction set that would cover it, so a new member of this bug class becomes one readable refusal
+  instead of a build error several layers later. Every member of the class so far (`3.2.0-B2`, `B4`,
+  `B5`, `B6`, `B7`, `B10`, `B12`) named a path or a binary, so this default-denies the detectable
+  subset without enumerating the whole conf surface. **Rejected alternatives:** a full allowlist
+  (a large conf surface that changes between devtools releases, and it fails quietly: a legitimate key silently
+  not crossing shows up as an unexplained difference in build output) and leaving things as they are
+  (correct today, but every new bug in the class is found the slow way). Tests: one fixture per historical bug
+  showing the audit would have refused it, one clean-profile conf (gcc path and llvm path) that
+  must pass, and a test that a path covered by a mirror or rewrite is accepted.
+  *Priority: low · Effort: medium · Bump: minor* — low because the sandbox is opt-in and works for
+  the profiles exercised so far; medium for the path and binary classifiers plus the historical
+  fixture set.
+  **Standards home on adoption:** none new; `docs/design/11-makepkg-wrapper.md` owns the
+  container-conf description and gains the audit step.
+
+- **`3.4.0-F3` — an opt-in, DKMS-safe compile-time kernel hardening set.** Promoted from `3.1.0-Q1`,
+  which asked whether sysforge should take a position on kernel hardening. The scope boundary is now
+  decided. sysforge owns the **compile-time `CONFIG_*` half**, because the kernel stage already decides
+  kernel config. The **runtime half stays out of scope**: `/etc/sysctl.d`, kernel command-line
+  hardening, and `kptr_restrict`/`unprivileged_bpf_disabled`-style sysctls are system policy, which
+  `docs/design/20-scope.md` already excludes. Add a top-level `kernel.toml` key (for example
+  `hardening = false`; placed above `[fdo]` per the file's table-header rule, with
+  `_KNOWN_TOP_KEYS` extended in `tools/check_shipped.py`). When it is on, the stage merges a curated
+  hardening set into the `sysforge.config` fragment at the **lowest** precedence, so manual
+  `[[kconfig]]` entries and hardware-profile entries override it with the usual conflict warning, and
+  so the set survives `localmodconfig` minimisation like any other fragment entry.
+  **The set is DKMS-safe by construction:** it never contains module-signature enforcement
+  (`MODULE_SIG_FORCE`) or a lockdown mode that blocks unsigned modules, because on the tested
+  hardware (NVIDIA through DKMS) those leave the next boot without a graphics driver. Add a guard on the
+  *merged* result, so it also catches a manual entry: if the resolved config enforces module
+  signatures or lockdown while `kernel_safety.list_dkms_modules()` is non-empty, refuse before the
+  build and name the modules. This follows the `3.0.0-F1` precedent of preflighting a
+  `CONFIG_*` requirement rather than proceeding silently. Pick the token list at implementation time from the
+  kernel's own self-protection recommendations, checked against the current Arch config. Tokens Arch
+  already enables still belong in the set, to protect them from minimisation. Tokens with a
+  measurable runtime cost (for example `INIT_ON_FREE_DEFAULT_ON`) go in with a comment, which is
+  why the whole set is opt-in. The guide and `kernel.toml` comments state the runtime half is
+  deliberately not covered. Tests: the key off leaves the fragment unchanged; the key on merges at lowest
+  precedence and a manual entry wins; the DKMS guard refuses on a merged sig-force result with
+  modules present and passes without them; and an assertion that the curated set contains no
+  sig-enforcement or lockdown token.
+  *Priority: med · Effort: medium · Bump: minor* — an additive opt-in with no default change; the
+  effort is the merge precedence plus the DKMS guard and its tests, not the token list.
+  **Standards home on adoption:** a scope citation for the Arch wiki
+  [Security](https://wiki.archlinux.org/title/Security) page in `docs/design/20-scope.md` next to
+  `System_maintenance` and `General_recommendations`, which also narrows that file's "security
+  hardening as a whole" exclusion to the runtime half. It is **not** a `21-standards.md` row,
+  because the page is too broad to enforce as a whole.
+
+- **`3.4.0-F4` — a revert or forget is remembered, so `update` doesn't quietly re-adopt the
+  package.** Promoted from `3.2.0-Q2`, which asked what the unit of "stop maintaining this" is.
+  The mechanical half has shipped. `3.2.0-B15` fixed the reconcile key, and conflict-mode `revert`
+  is already pkgbase-atomic: `plan_revert` collects every installed split member and swaps them all
+  in one `pacman -S`, and `verbs/shared.forget_packages` forgets the whole pkgbase. What is still
+  missing is a durable **decision**. Today "stop maintaining" means only that the build_state
+  record is gone, and `update_assemble` rebuilds the target set every run from independent sources,
+  two of which re-adopt a reverted package with no notice: a non-inert `packages.toml` override
+  (`behavior_overridden`), and `repo_mode = "build_from_source"`, which pulls in every installed
+  repo package and so re-targets anything just reverted to stock. Persist an opt-out record in the
+  state dir (its own file, following the `artifacts-ignored.toml` precedent, keyed by pkgbase so a
+  split set opts out together). `revert` and `state forget` write it. The update assembly subtracts
+  it from `target_names` after every adoption source has been applied, and reports each suppressed
+  name once at `info` level, naming the source that would have re-adopted it (for example
+  "packages.toml override" or "repo_mode build_from_source") so the user can remove that policy.
+  **Only an explicit adoption clears the record**: `build <pkg>`, `update <pkg>` (the
+  `explicit_set` path) and `packages add <pkg>`. Passive sources never do. `state list` shows
+  opted-out entries so the record can be inspected. `uninstall` writes no record, because a
+  removed package is outside the installed set and a later reinstall is a fresh decision.
+  **Rejected alternatives:** pkgbase-atomic revert (already shipped as above, so not a choice any
+  more) and pkgname-precise revert that refuses when siblings survive (it would hand the user a
+  manual step and leave the policy path open). Completions and the man page pick up any new
+  `state list` column or flag in the same change. Tests: revert and then update with a non-inert
+  override suppresses the package and reports it; the same with `repo_mode =
+  "build_from_source"`; an explicit `build`/`update <pkg>`/`packages add` clears the record and
+  re-adopts; a split set opts out and clears as one pkgbase; and `uninstall` leaves no record.
+  *Priority: med · Effort: medium · Bump: minor* — med because both re-adoption paths are reachable
+  by ordinary use (`packages add`, or the source-everything repo mode); medium for a new persisted
+  file, the assembly subtraction, three clearing sites and the reporting.
+  **Standards home on adoption:** none new; `docs/design/` gains the opt-out record under the
+  update-assembly and revert sections.
+
 ### Bugs
 
 ### Documentation
 
 ### Open questions
-
-- **`3.2.0-Q1` — should the container's config be an allowlist of what may cross, rather than a copy
-  of the host's with known-bad keys subtracted?**
-  `chroot_conf_text` derives the container's `makepkg.conf` by reading the *emitted host* conf and
-  appending overrides, so every setting the host carries crosses the isolation boundary by default
-  and is corrected only where someone has already enumerated it. The corrections are five disjoint
-  sets in `primitives/build_sandbox.py`: `_CHROOT_DEST_KEYS` (host paths that must be rewritten),
-  `_ENV_EXPORT_DENY` (env keys that must not travel), `_HOST_ONLY_BUILDENV` (accelerators naming
-  host binaries), `_TOOLCHAIN_PACKAGE` (binaries to install instead of strip), and
-  `_PROFILE_USE_PREFIXES` (data files to mirror in). Each is correct. Together they cover exactly
-  the cases that have already failed.
-  **The evidence that this is structural, not incidental, is the failure history.** `3.2.0-B2`
-  (ccache/distcc in `BUILDENV`), `3.2.0-B4` (`CC=clang` naming an absent binary), `3.2.0-B5` (the
-  chroot's own databases), `3.2.0-B6` and `3.2.0-B7` (`-fuse-ld` inside a flag string, and then in
-  the conf rather than the exports) and `3.2.0-B10` (`-fprofile-use` naming a host *file*) are one
-  bug six times: a host-only assumption riding into the container in the copied conf. They could
-  only be found one at a time, because each was masked by the previous one failing earlier — the
-  ccache error hid the missing compiler, which hid the stale databases, which hid the missing
-  linker. Every fix was a new entry in one of the five sets, which is to say every fix widened the
-  subtraction list without changing the reason there is one. `3.2.0-B12` was the same shape arriving
-  from the write side (closed by refusing generate builds, another subtraction).
-  **The question is whether inversion is worth its cost, and it is genuinely arguable.** An
-  allowlist — name the keys the container may receive, drop everything else — makes a new host-only
-  setting a *default-deny* rather than a silent leak, and turns the failure mode from "cryptic build
-  error six layers in" into "sysforge did not pass X". That is the same refuse-rather-than-downgrade
-  principle preflight already applies (`3.2.0-B1`), extended from availability to configuration.
-  Against it: makepkg's conf surface is large and not stable across devtools releases, so an
-  allowlist has its own maintenance burden and its own failure mode — a legitimate setting silently
-  *not* crossing, which is quieter than the bug it replaces and would show up as an unexplained
-  build-output difference rather than an error. It would also be a behaviour change for existing
-  sandbox users, whose builds currently inherit conf keys nobody has enumerated on either list.
-  A middle option exists and may be the real answer: keep the copy, but add a **preflight audit**
-  that walks the emitted conf for absolute host paths and unresolvable binary names and refuses on
-  anything unrecognised — default-deny on the *detectable* subset without having to enumerate the
-  whole conf surface. That reaches the six bugs above (every one named a path or a binary) at a
-  fraction of the cost.
-  Resolve by deciding which of the three models the sandbox commits to, then promote to an `F`
-  (allowlist or audit) or move to `docs/ROADMAP-ABANDONED.md` with the rationale if the current
-  subtract-known-bad model is judged good enough. Do not implement straight off this entry. Note
-  the sandbox is default-off and now works for the profiles it has been exercised against, so
-  nothing forces the question today; the trigger to revisit is a seventh entry in this class.
-  *Priority: low · Effort: medium · Bump: minor* — low because the current model is functional and
-  the feature is opt-in; the effort is the model decision plus a preflight pass and its tests, not
-  the token lists themselves.
-  **Standards home on adoption:** none new — this changes how the container's configuration is
-  derived, and `docs/design/11-makepkg-wrapper.md` already owns that description; the isolation
-  boundary itself remains a `[security]` opt-in, not an external spec.
-
-- **`3.1.0-Q1` — should sysforge have an opinion about kernel hardening, or is that outside a build tool's remit?**
-  sysforge builds kernels from `kernel.toml` fragments, so the Arch wiki's
-  [Security](https://wiki.archlinux.org/title/Security) *Kernel hardening* section is squarely inside
-  the surface it already touches: `lockdown=integrity`, `module.sig_enforce=1` /
-  `CONFIG_MODULE_SIG_ALL`, `kernel.kptr_restrict`, BPF hardening (`kernel.unprivileged_bpf_disabled`,
-  `net.core.bpf_jit_harden=2`), and the ASLR sysctls (`vm.mmap_rnd_bits`). A shipped `hardened`
-  fragment is mechanically trivial next to what the kernel stage already does — which is exactly why
-  this is filed as a question rather than a feature: the cost is not implementation.
-  Two things have to be decided first. **The DKMS conflict is real and load-bearing on the systems
-  sysforge targets.** Signed-module enforcement blocks locally-compiled out-of-tree modules, which is
-  the normal case for a workstation running DKMS drivers; shipping a fragment that silently makes the
-  next boot lose its graphics driver is a worse outcome than shipping nothing. Any hardening fragment
-  therefore has to either detect installed DKMS modules and refuse, or carry the signing-key
-  machinery to enrol them — and the second is a substantially larger project than the fragment.
-  **The scope question is the deeper one:** the sysctl half is not a build-time concern at all. Making
-  it sysforge's business turns a build tool into a system-policy tool, and `20-scope.md` currently
-  draws that line deliberately. There is a defensible middle — own the compile-time `CONFIG_*` half,
-  since sysforge already decides kernel config, and stay out of `/etc/sysctl.d` entirely — and that
-  split is the most likely resolution, but it is a scope call, not an implementation detail.
-  Resolve by deciding the scope boundary first, then promote the surviving half to an `F` (or move
-  this to `docs/ROADMAP-ABANDONED.md` with the rationale). Do not implement straight off this entry.
-  Related: `3.0.0-F1` is the existing precedent for the kernel stage preflighting a `CONFIG_*`
-  requirement rather than silently proceeding; the build sandbox (shipped) is the precedent for an
-  opt-in `[security]` key that is refused rather than silently downgraded when unavailable.
-  *Priority: med · Effort: medium · Bump: minor* — worth deciding rather than leaving implicit, and
-  the likely landing is an additive opt-in fragment; effort is the decision plus the DKMS-detection
-  guard, not the config tokens themselves.
-  **Standards home on adoption:** deferred to promotion — if the `CONFIG_*` half lands, the Arch
-  wiki *Security* page becomes a scope citation in `docs/design/20-scope.md` alongside
-  `System_maintenance` and `General_recommendations`, **not** a `21-standards.md` row: that table's
-  **enforced** column commits to a named mechanism, and the page is far too broad to enforce whole.
-
-- **`3.2.0-Q2` — what is the unit of "stop maintaining this": a pkgname, a pkgbase, or a policy
-  decision that outlives both?**
-  `3.2.0-B15` (shipped) fixed the mechanical miss — the reconcile not matching a renamed or
-  split-sibling key. It does not settle the model question underneath it, which is what "sysforge no longer owns this
-  package" should actually mean, and the current answer is three different things in three places.
-  **`state forget` is pkgbase-wide.** It deletes the named entry plus every entry whose `pkgbase`
-  equals the name (`state_cmd.py`), so forgetting `mesa-sysforge` drops `mesa-docs-sysforge` too.
-  **`revert` is pkgname-wide for the install and pkgbase-wide for the state.** `plan_revert`
-  (`revert_cmd.py:61`) resolves exactly one target to one `RevertPlan` and reinstalls exactly one
-  stock package, then calls `cmd_state_forget` with the renamed pkgname — which sweeps the siblings'
-  *records*. So `sysforge revert mesa` leaves `mesa-docs-sysforge` installed on disk but no longer
-  tracked: an untracked optimized artifact that no longer matches any stock package and that nothing
-  will ever update. **`update` is neither** — it re-derives ownership from scratch each run
-  (`update_assemble.py:110`) from four independent sources, of which build_state is only one.
-  **The three candidate models are genuinely different, not refinements of each other.**
-  *(1) pkgbase-atomic* — a revert plans the whole split set, reinstalling every stock counterpart
-  that has one and removing every renamed member that does not. Matches the unit sysforge actually
-  builds in, and is the only model under which the disk state after a revert is a state pacman could
-  have produced on its own. Costs a plan that can fail partway through a multi-package transaction,
-  where today each target is one atomic `pacman -S`.
-  *(2) pkgname-precise, with refusal* — keep the per-package unit, but make `plan_revert` detect
-  surviving siblings and refuse (or require `--pkgbase`) rather than leave a half-reverted split.
-  Cheapest, and honest, but it hands the user a manual step for something sysforge knows how to do.
-  *(3) a persistent opt-out* — record "user reverted this, do not re-adopt" and have assembly honour
-  it, rather than relying on the absence of a build_state entry to mean the same thing. This is the
-  only one of the three that also answers the policy leg: `state forget` and `revert` both clear
-  *state* while `packages.toml` carries *policy*, and a non-inert entry there re-targets the package
-  on the next run regardless of what was forgotten (`behavior_overridden`, `update_assemble.py:88`).
-  Neither command reads `packages.toml`, and neither warns that an override will undo the forget.
-  **Scope note, checked rather than assumed:** the policy leg is not currently live on this
-  workstation — `~/sf-config/packages.toml` sets `repo_mode = "pacman"` and carries no `mesa` entry,
-  so mesa is tracked purely through build_state and the shipped `3.2.0-B15` alone restored correct
-  behaviour here. The leg is reachable for anyone who has used `packages add` on a package they later revert,
-  and it is the reason model (3) is on the list at all; it is not what caused the observed failure.
-  Resolve by choosing the unit first — that choice determines whether the policy leg needs a new
-  persisted concept or only a warning — then promote to an `F` (pkgbase-atomic revert, or the opt-out
-  record) or a `B` (refuse-on-surviving-sibling, if the precise model is kept). Do not implement
-  straight off this entry. Related: `3.2.0-B15` was the mechanical prerequisite and has shipped
-  regardless of which model wins; `uninstall_cmd` shares `resolve_installed_name` and would follow the
-  same unit.
-  *Priority: med · Effort: medium · Bump: minor* — med because the half-reverted split is reachable
-  through the supported `revert` path today and leaves an artifact nothing maintains, but it is
-  recoverable by hand and no data is lost; the effort is the model decision plus a revert planner
-  that spans a pkgbase, not the plumbing.
-  **Standards home on adoption:** none new — ownership and the rules-vs-state split are already
-  described in `docs/design/`, and this refines what that split's boundary means rather than adopting
-  an external spec.
