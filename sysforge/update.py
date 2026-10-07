@@ -103,6 +103,7 @@ from sysforge.primitives.profile import (
     resolve_profile,
 )
 from sysforge.primitives import restart_probe
+from sysforge.primitives import sudo_session
 from sysforge.primitives.source_sync import (
     STATUS_FROZEN,
     STATUS_PURGE_REFUSED,
@@ -1529,6 +1530,27 @@ def _phase_build(run: UpdateRun) -> int | None:
 
 
 def _phase_install_and_report(run: UpdateRun) -> int:
+    """Phase 6.5 + run report, holding sudo from the ``pacman -Syu`` onward.
+
+    The build's keepalive (3.4.0-F1) ends when ``build_and_install`` returns,
+    but the trailing ``-Syu`` and the end-of-run sentinel consume after it
+    (which prunes stale boot entries with sudo when the upgrade touched a
+    kernel) can outlast the sudo timestamp — a slow download or DKMS rebuild
+    then left that prune prompting at an unattended terminal (3.4.0-B2).
+    """
+    with contextlib.ExitStack() as credentials:
+        return _install_and_report(run, credentials)
+
+
+def _hold_credentials(credentials: contextlib.ExitStack) -> None:
+    """Authenticate (yielding the bar if sudo must prompt) and keep sudo warm
+    until *credentials* closes. A failed prompt is not fatal here: the
+    ``-Syu`` itself asks again and reports its own failure."""
+    if sudo_session.authenticate():
+        credentials.enter_context(sudo_session.keepalive(tag="UPDATE"))
+
+
+def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> int:
     """Phase 6.5: Bulk pacman upgrade (pacman-class repo packages)."""
     # Source-built artifacts are installed first so the `IgnoreGroup =
     # sf-build` line in /etc/pacman.conf (added by `sysforge setup`) keeps
@@ -1536,17 +1558,19 @@ def _phase_install_and_report(run: UpdateRun) -> int:
     # invoke a single transaction even though the version-check already
     # listed specific packages — running -Syu is what the user would do
     # by hand and stays consistent with `pacman -Syu` semantics.
-    # Hand the bottom row back before pacman -Syu — it's fully interactive
-    # (confirmation prompt, its own progress bars).
+    # Hand the bottom row back before pacman -Syu — it owns the TTY (its own
+    # progress bars, and the confirmation prompt under --interactive).
     _ui_progress.phase(None)
     pacman_upgrade_pkgs = sorted(r.pkgbase for r in run.pending_pacman_upgrade)
     pacman_upgrade_failed = False
     system_upgrade_ran = False
     sysupgrade_changes: dict[str, tuple[str | None, str | None]] = {}
     if (pacman_upgrade_pkgs or run.sysupgrade_pending) and not run.offline:
-        noconfirm = getattr(run.args, "noconfirm", False)
+        # 3.4.0-B1: unattended like the rest of update — pacman's defaults
+        # answer its prompts (a package conflict defaults to No and aborts the
+        # transaction). --interactive hands the questions to the operator.
         cmd = privileged_argv(["pacman", "-Syu"])
-        if noconfirm:
+        if not getattr(run.args, "interactive", False):
             cmd.append("--noconfirm")
         if pacman_upgrade_pkgs:
             _log.info(
@@ -1574,6 +1598,7 @@ def _phase_install_and_report(run: UpdateRun) -> int:
             except Exception:  # noqa: BLE001 — reporting only, never fatal
                 _log.debug("system-upgrade report: pre-transaction snapshot failed")
                 capture_report = False
+        _hold_credentials(credentials)
         import subprocess as _subprocess
         with run.timer.phase("pacman -Syu"):
             rc = _subprocess.run(cmd).returncode  # noqa: TID251 — pacman -Syu is interactive and owns the TTY
@@ -1767,7 +1792,9 @@ class UpdateVerb(Verb):
                  "flags sysforge claims for itself (-h, -V).")
         p.add_argument("--interactive", action="store_true",
             help="Pause on build failures to allow manual correction "
-                 "(default: log failure and continue).")
+                 "(default: log failure and continue), and let the trailing "
+                 "pacman -Syu ask its confirmation prompts (default: "
+                 "--noconfirm).")
         p.add_argument("--no-cleanbuild", action="store_true", dest="no_cleanbuild",
             help="Skip the automatic --cleanbuild (-C) added for update runs. "
                  "Useful when packages are already built and you only need to "

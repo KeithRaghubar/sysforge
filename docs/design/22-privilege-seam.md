@@ -145,7 +145,13 @@ returns, so AUR dependency installs, just-in-time sibling installs and the final
 (`_holds_build_credentials`, a context variable carrying the call's `ExitStack`),
 so the keepalive is entered at the first point sudo is needed and released on
 every return path; a refused or timed-out prompt aborts before anything is built,
-and root skips it. The daemon began life private to
+and root skips it. `update` holds a second keepalive (tag `UPDATE`, `3.4.0-B2`)
+from just before its trailing `pacman -Syu` until the end-of-run sentinel
+consume, whose stale boot-entry prune needs sudo when the upgrade touched a
+kernel package; the build's keepalive has ended by then and a long `-Syu` (a big
+download, a DKMS rebuild) would otherwise leave that prune prompting. The phase
+function owns an `ExitStack` that `_hold_credentials` enters only when a `-Syu`
+runs. The daemon began life private to
 the toolchain stage; a second copy in the kernel stage is exactly the drift the
 one-home invariants exist to prevent.
 

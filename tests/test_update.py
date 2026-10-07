@@ -2331,6 +2331,71 @@ def test_sysupgrade_failure_sets_exit_code(update_scenario):
     assert update_scenario.exit_code != 0
 
 
+def _syu_command(scenario):
+    return next(c for c in scenario.fake_run.commands if "pacman -Syu" in c)
+
+
+def test_sysupgrade_is_unattended_by_default(update_scenario):
+    """3.4.0-B1: the trailing -Syu takes --noconfirm, like the rest of a plain
+    update run — it used to read an `args.noconfirm` update never defined."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert "--noconfirm" in _syu_command(update_scenario)
+
+
+def test_sysupgrade_prompts_under_interactive(update_scenario):
+    """3.4.0-B1: --interactive hands pacman's questions back to the operator."""
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(
+        _make_args(offline=False, sysupgrade=True, interactive=True), **kw)
+    assert "--noconfirm" not in _syu_command(update_scenario)
+
+
+def test_sysupgrade_holds_sudo_through_the_sentinel_prune(update_scenario, monkeypatch):
+    """3.4.0-B2: sudo stays warm from before the -Syu until after the end-of-run
+    sentinel consume, whose boot-entry prune needs it once the upgrade has
+    touched a kernel — a long -Syu used to let it prompt unattended."""
+    import contextlib
+    from sysforge import update as up
+    events = []
+
+    @contextlib.contextmanager
+    def keepalive(*, tag, enabled=True):
+        events.append(("enter", tag))
+        yield
+        events.append(("exit", tag))
+
+    monkeypatch.setattr(up.sudo_session, "keepalive", keepalive)
+    real_consume = up._consume_pacman_hook_sentinels
+
+    def consume(*a, **k):
+        events.append(("consume", k.get("reminders_only", False)))
+        return real_consume(*a, **k)
+
+    monkeypatch.setattr(up, "_consume_pacman_hook_sentinels", consume)
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert _syu_fired(update_scenario)
+    start = events.index(("enter", "UPDATE"))
+    end = events.index(("exit", "UPDATE"))
+    # The body's end-of-run consume (the one that prunes) sits inside the hold.
+    assert ("consume", False) in events[start:end]
+
+
+def test_no_sysupgrade_takes_no_extra_keepalive(update_scenario, monkeypatch):
+    """3.4.0-B2: without a -Syu there is nothing to hold sudo for."""
+    from sysforge import update as up
+    monkeypatch.setattr(up.sudo_session, "keepalive",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("keepalive")))
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False), **kw)
+    assert not _syu_fired(update_scenario)
+
+
 # ---------------------------------------------------------------------------
 # Stage-owned packages — kernel ownership filter
 # ---------------------------------------------------------------------------

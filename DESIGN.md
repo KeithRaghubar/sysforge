@@ -405,7 +405,7 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 
 - `pkgbuild_src_dir` — directory holding pre-cloned PKGBUILDs (`<pkgbuild_src_dir>/<name>/PKGBUILD`). Missing AUR clones are auto-fetched here on demand.
 - `repo_mode` — controls how the **bootstrap** (`run packages`) builds repo-source entries: `"pacman"` (install via `pacman -S --needed`) or `"build_from_source"` (build from PKGBUILD with sysforge flag profiles); per-package `enable_build_from_source = true` forces source-build regardless. At **steady-state** `repo_mode = "build_from_source"` is a *bulk drift-surfacing* switch: it pulls **every** installed repo package into `sysforge update`'s walk so repo-side version drift is reported alongside AUR drift. It is **not** how you get a repo package source-built going forward — that happens automatically once sysforge has built it (build_state authority; `sysforge build mesa` is the natural entry). Of the bulk set, only the overridden / already-source-built subset is rebuilt from source; the remainder takes a fast pacman path (`checkupdates` for upgrade detection, one terminal `sudo pacman -Syu` after the source-build loop). This avoids a per-package `pkgctl repo clone` for every installed repo package and is what makes the "track everything" mode tolerable on a maintained workstation. The legacy value `"profiled"` was removed in 3.0.0 and is now rejected (single resolver: `config.resolve_repo_mode`).
-- `system_upgrade` *(bool, default `false`)* — finish every `sysforge update` run with a single `sudo pacman -Syu` (Phase 6.5), independent of `repo_mode`. This is the standalone form of the trailing upgrade: no packages are added to the version-check walk and no `checkupdates` probe runs, because pacman resolves the transaction itself — one subprocess. The `repo_mode = "build_from_source"` route above still triggers the same Phase 6.5 transaction off its classified `repo_class = "pacman"` set; the two are independent inputs to one gate. The flag pair `--sysupgrade` / `--no-sysupgrade` overrides per run through the `config.resolve_flag_default` precedence seam (`--no-sysupgrade` is the explicit-off leg, checked first). `--offline` suppresses it entirely. Ordering is the same either way: source artifacts install in Phase 6 first, protected from the transaction by the `IgnoreGroup = sf-build` line `sysforge setup` adds.
+- `system_upgrade` *(bool, default `false`)* — finish every `sysforge update` run with a single `sudo pacman -Syu` (Phase 6.5), independent of `repo_mode`. This is the standalone form of the trailing upgrade: no packages are added to the version-check walk and no `checkupdates` probe runs, because pacman resolves the transaction itself — one subprocess. The `repo_mode = "build_from_source"` route above still triggers the same Phase 6.5 transaction off its classified `repo_class = "pacman"` set; the two are independent inputs to one gate. The flag pair `--sysupgrade` / `--no-sysupgrade` overrides per run through the `config.resolve_flag_default` precedence seam (`--no-sysupgrade` is the explicit-off leg, checked first). `--offline` suppresses it entirely. The transaction is unattended like the rest of `update`: it runs with `--noconfirm`, so pacman's own defaults answer its prompts (a package conflict defaults to No and aborts the transaction, reported as `pacman -Syu FAILED`), and `--interactive` drops `--noconfirm` to put the questions to the operator (3.4.0-B1). Ordering is the same either way: source artifacts install in Phase 6 first, protected from the transaction by the `IgnoreGroup = sf-build` line `sysforge setup` adds.
 
 ### Package groups
 
@@ -4340,7 +4340,13 @@ returns, so AUR dependency installs, just-in-time sibling installs and the final
 (`_holds_build_credentials`, a context variable carrying the call's `ExitStack`),
 so the keepalive is entered at the first point sudo is needed and released on
 every return path; a refused or timed-out prompt aborts before anything is built,
-and root skips it. The daemon began life private to
+and root skips it. `update` holds a second keepalive (tag `UPDATE`, `3.4.0-B2`)
+from just before its trailing `pacman -Syu` until the end-of-run sentinel
+consume, whose stale boot-entry prune needs sudo when the upgrade touched a
+kernel package; the build's keepalive has ended by then and a long `-Syu` (a big
+download, a DKMS rebuild) would otherwise leave that prune prompting. The phase
+function owns an `ExitStack` that `_hold_credentials` enters only when a `-Syu`
+runs. The daemon began life private to
 the toolchain stage; a second copy in the kernel stage is exactly the drift the
 one-home invariants exist to prevent.
 

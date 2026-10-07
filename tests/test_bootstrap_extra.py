@@ -1387,8 +1387,15 @@ class TestReconfigureReminderRemoval:
                 return real_path(arg)
 
             mock_path_cls.side_effect = path_side_effect
-            # Should not raise
-            stage.run({}, mock_state, options)
+            # The sudo fallback is faked: a real `sudo -n rm` would run as root
+            # whenever the developer's credentials happen to be cached.
+            with patch("sysforge.pipeline.stages.reconfigure.run.probe",
+                       return_value=subprocess.CompletedProcess([], 1)) as probe:
+                # Should not raise
+                stage.run({}, mock_state, options)
+            argv = probe.call_args.args[0]
+            assert argv[-3:] == ["rm", "-f", "/etc/profile.d/sysforge-resume.sh"]
+            assert "-n" in argv
 
 
 # ===========================================================================

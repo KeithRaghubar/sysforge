@@ -93,3 +93,11 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.3.0-B21` — kernel installs and interactive package installs now keep pacman's output, including the hooks'.** `run kernel`'s `pacman -U`, and an interactive `build`/`update` install, passed pacman's output straight through to the terminal so its prompts would work. Everything pacman's hooks printed (DKMS module builds, `mkinitcpio`, bootloader updates) was lost once it scrolled away, and a failed hook still exits 0, so nothing recorded it at all. That is why the `3.3.0-B20` DKMS failure could not be diagnosed afterwards. These installs now run on a pseudo-terminal that still forwards the output live and still takes your answer to the confirmation prompt, while each line is also written to the run log. A hook line reporting a failure (`==> WARNING: … exited <n>`, `Error!`, `==> ERROR:`) is raised as a warning so it shows in the run summary. A failed install now includes pacman's last lines in its error instead of saying the output went to the terminal.
+
+---
+
+- **`3.4.0-B1` — `update`'s trailing `pacman -Syu` no longer stops at a confirmation prompt.** Every other step of `update` runs unattended, but the system upgrade (`--sysupgrade`, `[build] system_upgrade`, or the `repo_mode = "build_from_source"` repo-package upgrade) only added `--noconfirm` when an option `update` does not have was set, so it always waited at pacman's `Proceed with installation?` and a run left alone stopped there. It now runs with `--noconfirm`, letting pacman's defaults answer: a package conflict still defaults to No, so the upgrade is cancelled and the summary reports it as failed rather than removing a package unasked. Pass `--interactive` to answer pacman's prompts yourself.
+
+---
+
+- **`3.4.0-B2` — `update` no longer asks for your sudo password again after a long system upgrade.** The build keeps sudo active only until its own installs finish. When the trailing `pacman -Syu` upgrades a kernel package, the end of the run removes sysforge boot entries whose kernel image is gone, which needs sudo. If the upgrade ran longer than sudo's timeout (a large download, a slow DKMS rebuild), that cleanup stopped at a password prompt after everything else had finished. `update` now keeps sudo active from just before the upgrade until that cleanup is done.

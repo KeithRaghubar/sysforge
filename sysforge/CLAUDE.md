@@ -165,7 +165,8 @@ Mechanism lives in the cited §DESIGN section.
 - **Sudo credential *lifetime*** (orthogonal to escalation): `primitives/sudo_session.py`
   — `authenticate()` (returns usability, so "not authorized, nothing ran" is
   distinguishable from "ran and failed") + `keepalive(tag=…, enabled=…)` context
-  manager. The two long-building stages and `build_core.build_and_install` use it;
+  manager. The two long-building stages, `build_core.build_and_install`, and `update`'s
+  `-Syu` + end-of-run prune window (`3.4.0-B2`) use it;
   never re-roll the daemon. **makepkg never escalates** (`3.4.0-F1`): strip `-s`/`-i`
   and install deps (`build_core.install_missing_repo_deps`) and artifacts
   (`install_built_packages`) through the privilege seam — sudo's prompt goes to

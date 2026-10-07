@@ -197,7 +197,7 @@ _sysforge_update() {
     '--devel[rebuild VCS packages newer than installed]' \
     '--offline[no network: skip pulls, clones, and AUR RPC]' \
     '--install-only[install pre-built PKGDEST artifacts only]' \
-    '--interactive[pause on build failures for manual fixes]' \
+    '--interactive[pause on build failures; let pacman -Syu prompt]' \
     '--no-cleanbuild[skip automatic --cleanbuild]' \
     '--cleansrc[purge src dirs and re-clone (rebuilds only)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
