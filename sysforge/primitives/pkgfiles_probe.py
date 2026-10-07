@@ -43,6 +43,7 @@ import subprocess
 
 from sysforge.primitives import diagnostics as diag
 from sysforge.primitives.diagnostics import Finding
+from sysforge.primitives import run
 
 # [prefix] <pkg>: <path starting with /> (<Reason>). The summary line has no
 # `(...)` and its "path" does not start with `/`, so it never matches.
@@ -65,11 +66,8 @@ def _run(packages: list[str] | None) -> subprocess.CompletedProcess | None:
     if packages:
         cmd += list(packages)
     try:
-        return subprocess.run(
-            cmd, capture_output=True, text=True, check=False,
-            env={**os.environ, "LC_ALL": "C"},
-        )
-    except (FileNotFoundError, OSError):
+        return run.capture(cmd, env={**os.environ, "LC_ALL": "C"})
+    except OSError:
         return None
 
 

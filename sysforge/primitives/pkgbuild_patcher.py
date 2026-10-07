@@ -2322,7 +2322,7 @@ def cleanup_patch_artifacts(pkgbuild_path):
     pkgbuild_path = Path(pkgbuild_path)
     build_dir = pkgbuild_path.parent
 
-    for name in ("PKGBUILD.sysforge", "pkgbuild_extracted_profile.toml"):
+    for name in (PATCHED_PKGBUILD_NAME, "pkgbuild_extracted_profile.toml"):
         target = build_dir / name
         if target.exists():
             target.unlink()
@@ -2345,7 +2345,7 @@ def warn_artifacts_left(
     points the reader at the wrong pkgbase when something else in the batch is
     the actual failure (``3.1.0-B15``).
     """
-    artifacts = "PKGBUILD.sysforge"
+    artifacts = PATCHED_PKGBUILD_NAME
     if has_extracted_profile:
         artifacts += " and pkgbuild_extracted_profile.toml"
     if already_built:

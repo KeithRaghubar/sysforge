@@ -30,7 +30,6 @@ Wiring:
 """
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from sysforge.primitives.aur import (
 from sysforge.primitives.net_policy import NetworkFrozen
 from sysforge.primitives.pkgbuild_patcher import is_llvm_pkgbase
 from sysforge.primitives.render import arrow, tag_header, version_pair
+from sysforge.primitives import run
 
 _log = log.get_logger("LLVM")
 
@@ -102,10 +102,7 @@ def _classify_variant(pkgbase: str) -> str:
 
 
 def _git_remote_url(pkgbuild_dir: Path) -> str | None:
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "config", "--get", "remote.origin.url"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "config", "--get", "remote.origin.url"])
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
@@ -197,10 +194,9 @@ def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
     if state in ("not_a_repo", "no_head"):
         return False, None
 
-    r = subprocess.run(
+    r = run.probe(
         ["git", "-C", str(pkgbuild_dir), "status",
          "--short", "--untracked-files=no"],
-        capture_output=True, text=True,
     )
     if r.returncode == 0 and r.stdout.strip():
         return True, "uncommitted changes"
@@ -227,10 +223,7 @@ def _dirty_reason(pkgbuild_dir: Path) -> tuple[bool, str | None]:
 
 
 def _head_commit(pkgbuild_dir: Path) -> str | None:
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"])
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
@@ -319,7 +312,7 @@ def collect_llvm_state(
         )
 
     # Lazy imports — keep llvm_state cheap to import.
-    from sysforge.primitives.makepkg_wrapper import _resolve_pgo_state
+    from sysforge.primitives.makepkg_pgo import _resolve_pgo_state
     from sysforge.primitives.pacman import (
         get_foreign_packages,
         get_installed_version,

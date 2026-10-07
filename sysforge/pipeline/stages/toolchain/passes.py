@@ -14,14 +14,17 @@ The two live together because ``build_pass`` is only meaningful as a loop over
 ``build_pkg``, and separating them would put a module boundary in the middle of
 one operation.
 """
+import contextlib
 from pathlib import Path
 
+from sysforge import build_core
 from sysforge.build_core import make_build_options
 from sysforge.primitives import build_fingerprint
 from sysforge.primitives.already_built import resolve_already_built
 from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.primitives.makepkg_invoke import AlreadyBuilt
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.build.makepkg_wrapper import install_built_packages
+from sysforge.build.makepkg_wrapper import run as makepkg_run
 from sysforge.ui import progress
 
 from sysforge.pipeline.stages.toolchain import constants, reuse
@@ -107,13 +110,22 @@ def build_pkg(
         )
 
 
+def pass_size(*pkgbuild_maps: dict[str, Path]) -> int:
+    """Build count of one logical pass: unique PKGBUILD dirs across its sub-maps.
+
+    Split packages share a directory and build once, so they count once — the
+    same rule :func:`build_pass` ticks by.
+    """
+    return len({p.parent for m in pkgbuild_maps for p in m.values()})
+
+
 def build_pass(
     label: str,
     pkgbuild_map: dict[str, Path],
     options,
     cc: str | None = None,
     cxx: str | None = None,
-    install: bool = True,
+    install: bool = False,
     compiler_flags_extra: str | None = None,
     linker_flags_extra: str | None = None,
     pgo_build: bool = False,
@@ -124,6 +136,7 @@ def build_pass(
     cmake_llvm_dir: str | None = None,
     reuse_ctx: "reuse.ReuseCtx | None" = None,
     pgo_reuse: bool = True,
+    tick: "progress.Tick | None" = None,
 ) -> dict[str, str]:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -137,7 +150,15 @@ def build_pass(
     appended — otherwise makepkg would invoke ``sudo pacman -S llvm=<ver>``,
     fail with "target not found" (the version isn't published anywhere), and
     abort the pass.  Pass 1 sets staged_deps=False because it builds against
-    the live system; Pass 2/3/4 set staged_deps=True.
+    the live system; Pass 2/3/4 set staged_deps=True. With ``staged_deps=False``
+    the missing repo deps are installed by sysforge first
+    (``build_core.install_missing_repo_deps``, excluding the pass's own
+    packages) rather than by makepkg ``--syncdeps`` (3.4.0-F1).
+
+    ``install=True`` installs each package's artifacts through
+    ``makepkg_wrapper.install_built_packages`` right after it builds — never
+    makepkg ``--install`` (3.4.0-F1). Every current pass passes ``False``: the
+    toolchain installs as one batch inside the sentinel.
 
     ``reuse_ctx`` enables opt-in input-fingerprint reuse (Pass 4 only). When set,
     each built PKGBUILD's fingerprint is computed and recorded; if
@@ -148,20 +169,33 @@ def build_pass(
 
     ``pgo_reuse=False`` stops each package re-applying its own durable
     ``--pgo=use`` profile (the training-corpus pass: never ``-fprofile-use``).
+
+    ``tick`` counts this call's builds on a tracker the caller opened for the
+    whole *logical* pass (sized with :func:`pass_size`), so a pass split across
+    several calls shows one monotonic counter instead of restarting at
+    ``[1/n]`` per call (3.3.0-B12). ``label`` then only heads the sub-pass.
+    Without it the call opens its own tracker, as before.
     """
-    extra = ["--install"] if install else []
-    if pgo_build:
-        extra = ["--cleanbuild", "--force"] + extra
-    strip_flags: frozenset | None = None
+    # makepkg never escalates (3.4.0-F1): no --install, and --syncdeps is
+    # always stripped. A sudo inside the build's forwarded output could not
+    # pause or hide the progress bar; sysforge does both steps itself below,
+    # through the privilege seam.
+    extra = ["--cleanbuild", "--force"] if pgo_build else []
+    strip_flags = SYNC_FLAGS
     if staged_deps:
         extra = extra + ["--nodeps"]
-        strip_flags = SYNC_FLAGS
     _log.ui(f"─── {label} ──────────────────────────────────────────")
-    total = len({p.parent for p in pkgbuild_map.values()})
+    if not staged_deps and not options.dry_run:
+        # What --syncdeps did: install missing repo deps, never a pass member.
+        build_core.install_missing_repo_deps(
+            sorted({p for p in pkgbuild_map.values()}),
+            exclude=frozenset(pkgbuild_map))
     seen_dirs: set[Path] = set()
     first = True
     fingerprints: dict[str, str] = {}
-    with progress.tracker(total, label) as tick:
+    counter = (contextlib.nullcontext(tick) if tick is not None
+               else progress.tracker(pass_size(pkgbuild_map), label))
+    with counter as tick:
         for name, pkgbuild_path in pkgbuild_map.items():
             pkg_dir = pkgbuild_path.parent
             if pkg_dir in seen_dirs:
@@ -212,6 +246,10 @@ def build_pass(
                 pgo_reuse=pgo_reuse,
             )
             first = False
+            if install and not options.dry_run:
+                tick.note(f"installing {pkg_dir.name}")
+                install_built_packages(pkg_dir, noconfirm=True)
+                tick.resume()
 
             if reuse_ctx is not None and fp is not None:
                 members = [n for n, p in pkgbuild_map.items() if p.parent == pkg_dir]

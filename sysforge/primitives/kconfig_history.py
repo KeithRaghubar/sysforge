@@ -22,6 +22,7 @@ an unreadable archive must never affect a kernel build. Failures return
 Public API:
     archive_path(state_dir, pkgname, release) -> Path
     archive(state_dir, pkgname, release, config_path, keep=KEEP) -> Path | None
+    read(state_dir, pkgname, release) -> dict | None
     previous(state_dir, pkgname, *, exclude_release=None) -> tuple[str, dict] | None
 """
 from __future__ import annotations
@@ -101,6 +102,21 @@ def archive(state_dir, pkgname: str, release: str, config_path, keep: int = KEEP
         except OSError:  # noqa: PERF203 — one bad unlink must not stop the rest
             continue
     return dest
+
+
+def read(state_dir, pkgname: str, release: str):
+    """The archived config for exactly ``(pkgname, release)``, parsed, or ``None``.
+
+    The fallback source for a reused (AlreadyBuilt) kernel whose build tree no
+    longer matches the package it ships (3.3.0-B11).
+    """
+    path = archive_path(state_dir, pkgname, release)
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except (OSError, gzip.BadGzipFile, EOFError):
+        return None
+    return parse_kconfig_text(text) or None
 
 
 def previous(state_dir, pkgname: str, *, exclude_release: str | None = None):

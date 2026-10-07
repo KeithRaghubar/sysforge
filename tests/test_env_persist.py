@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: MIT
 """Tests for sysforge.primitives.env_persist."""
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -235,39 +234,36 @@ def test_apply_write_preserves_unrelated_lines(tmp_path):
     assert "export EDITOR=vim" not in text
 
 
-def test_apply_write_escalates_when_unwritable(tmp_path):
-    """A root-owned target stages to a temp file and copies via the
-    privilege seam — never a hand-rolled sudo argv."""
+def test_apply_write_escalates_when_unwritable(tmp_path, monkeypatch):
+    """A root-owned target is installed through the privilege seam (via
+    atomic_write, 2.6.1-F21) — never a hand-rolled sudo argv, never a
+    truncate-then-write."""
+    from sysforge.primitives import atomic_write
     target = _export_target(tmp_path)
     plan = plan_write(target, VARS, None)
-    with patch(
-        "sysforge.primitives.env_persist.Path.write_text",
-        side_effect=PermissionError,
-    ), patch(
-        "sysforge.primitives.env_persist.privileged_argv",
-        return_value=["<escalated>", "cp"],
-    ) as priv, patch("sysforge.primitives.env_persist.subprocess.run") as run:
-        run.return_value.returncode = 0
+    calls = []
+    monkeypatch.setattr(atomic_write, "_replace_direct",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "no")))
+    monkeypatch.setattr(atomic_write, "run_privileged",
+                        lambda argv, **k: calls.append(argv))
+    apply_write(plan)
+    # Assert on the seam, not on the literal it abstracts (§22).
+    assert [c[0] for c in calls] == ["install", "mv"]
+    assert calls[1][-1] == str(target.path)
+
+
+def test_apply_write_raises_when_escalation_fails(tmp_path, monkeypatch):
+    from sysforge.primitives import atomic_write
+    target = _export_target(tmp_path)
+    plan = plan_write(target, VARS, None)
+    monkeypatch.setattr(atomic_write, "_replace_direct",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "no")))
+
+    def fail(argv, **k):
+        raise RuntimeError("[ENV] install failed (exit 1)")
+    monkeypatch.setattr(atomic_write, "run_privileged", fail)
+    with pytest.raises(OSError, match="unchanged"):
         apply_write(plan)
-
-    # Assert on the seam, not on the literal it abstracts: an "sudo" assertion
-    # here would pin the very implementation detail §22 exists to hide.
-    inner = priv.call_args[0][0]
-    assert inner[0] == "cp"
-    assert inner[-1] == str(target.path)
-    assert run.call_args[0][0] == ["<escalated>", "cp"]
-
-
-def test_apply_write_raises_when_escalation_fails(tmp_path):
-    target = _export_target(tmp_path)
-    plan = plan_write(target, VARS, None)
-    with patch(
-        "sysforge.primitives.env_persist.Path.write_text",
-        side_effect=PermissionError,
-    ), patch("sysforge.primitives.env_persist.subprocess.run") as run:
-        run.return_value.returncode = 1
-        with pytest.raises(OSError, match="exited 1"):
-            apply_write(plan)
 
 
 @pytest.mark.parametrize("factory", [_bare_target, _export_target])

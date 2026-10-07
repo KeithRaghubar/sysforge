@@ -38,6 +38,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from sysforge import log
+from sysforge.primitives import privilege
 
 # How often (seconds) to refresh sudo credentials during a long build.
 # Must stay well under the sudoers default timestamp_timeout (5 minutes); the
@@ -53,14 +54,18 @@ def authenticate() -> bool:
     timestamp to warm. Otherwise runs the ``sudo -v`` auth probe with inherited
     stdio so the operator sees and can answer the prompt.
 
+    Delegates to :func:`privilege.ensure_credentials`, which skips the prompt
+    when credentials are already cached and otherwise yields the terminal
+    around it.
+
     Returns ``False`` when the probe exits non-zero, which covers the case this
     seam was built for: the prompt went unanswered and ``passwd_timeout`` fired,
     so nothing has been authorised and any privileged step that follows would
     fail without having done anything.
     """
-    if os.geteuid() == 0:
-        return True
-    return subprocess.run(["sudo", "-v"]).returncode == 0
+    # Probe-then-prompt with the terminal yielded, so the bar neither draws
+    # over the prompt nor counts the wait (3.3.0-F3).
+    return privilege.ensure_credentials()
 
 
 def _keepalive_daemon(stop_event: threading.Event, tag: str) -> None:

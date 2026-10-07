@@ -17,6 +17,7 @@ Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
 | WARN | `warn()` | `-v` | Recoverable anomalies: skips, fallbacks, soname/ABI mismatches that don't block. |
 | INFO | `info()` | `-vv` | Progress/status narration: "syncing X", "wrote temp conf", "building 3/7". |
 | DEBUG | `debug()` | `-vvv` | Full body dumps: config/profile/conf contents, resolved argv, env snapshots. |
+| OUT | `transcript()` | never | A child's output that already reached the terminal raw through a pty, mirrored into the log files only (`[SYSFORGE][OUT]<tag>`), so it is kept without being echoed twice at any verbosity. Not narration and not an answer: the record of what the child printed (`3.3.0-B21`, pacman install transactions). |
 
 Decision test for each site: *is this the answer, or narration about producing the answer?* The answer → `ui()`; narration → `info()` (or `debug()` for full dumps). `ui()` is verbosity-immune and reserved for primary output only — it is **not** a "make this always show up" escape hatch. File logs are unaffected: every level is always written to file regardless of stderr gating, so a demotion never loses forensic detail.
 

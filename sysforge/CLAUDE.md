@@ -8,7 +8,8 @@ check-standards` (group `claude_md`) verifies they still resolve.
 
 - **`tests/test_pipeline.py`** imports from both `primitives.config` and `…profile` — moving
   symbols across them breaks it; update the test in the same change.
-- **`primitives/` must not import from `pipeline/` or `ui/`** — it is the leaf layer, and since
+- **`primitives/` must not import from `pipeline/`, `ui/` or `build/`** (the orchestration layer
+  `makepkg_wrapper` moved into, `3.2.0-F4`) — it is the leaf layer, and since
   `3.2.0-F1` the guard covers both in full, not just `pipeline.stages`. A function-level import to
   dodge the cycle is not a fix: `pipeline/stages/__init__.py` instantiates every stage at import, so
   one constant drags all eleven stage modules in. Two ways down: **relocate** (shared tables →
@@ -44,6 +45,10 @@ Mechanism lives in the cited §DESIGN section.
   preexec (the one home replacing all three raw `lift_for_child` sites); with cpu_quota it becomes
   `-p MemoryMax=` on the systemd-run scope. `resolve_child_mem_cap` arbitrates so the two never
   double-apply (returns `None` when the scope owns the cap). §Flag/Profile.
+- **Replacing an existing config file**: `atomic_write.replace_file` (symlink-, mode- and
+  owner-preserving temp-in-dest-dir + rename; escalates via `run_privileged`). Never
+  `write_text`/`sudo cp` over a user's or root's config. Creating files with a fixed mode
+  (`artifacts.write_live`, `pacman_hooks`) is a different shape and stays out. §primitives-layer.
 - **makepkg path resolution**: `pacman.get_pkgdest()`/`get_builddir()`/`get_srcdest()`/
   `get_logdest()` — never read `os.environ["BUILDDIR"]` or assume `~/builds`. Write conf keys via
   `config.set_makepkg_conf_keys`. §primitives-layer.
@@ -160,7 +165,11 @@ Mechanism lives in the cited §DESIGN section.
 - **Sudo credential *lifetime*** (orthogonal to escalation): `primitives/sudo_session.py`
   — `authenticate()` (returns usability, so "not authorized, nothing ran" is
   distinguishable from "ran and failed") + `keepalive(tag=…, enabled=…)` context
-  manager. Both long-building stages use it; never re-roll the daemon in a stage.
+  manager. The two long-building stages and `build_core.build_and_install` use it;
+  never re-roll the daemon. **makepkg never escalates** (`3.4.0-F1`): strip `-s`/`-i`
+  and install deps (`build_core.install_missing_repo_deps`) and artifacts
+  (`install_built_packages`) through the privilege seam — sudo's prompt goes to
+  `/dev/tty`, where a forwarded child's prompt can't be seen or kept off the bar.
   **Always `authenticate()` before entering `keepalive()`** — the refresh inherits
   stdio and would otherwise prompt from a background thread. The kernel stage also
   probes *before* `sentinel_scope` so a stale prompt can't strand a recovery

@@ -33,10 +33,12 @@ Public API:
     session()               context manager; releases the terminal on exit
     shutdown()              release the terminal; idempotent; atexit-registered
     phase(label)            uncounted status, a single slot; phase(None) clears
-    tracker(total, prefix)  context manager yielding a tick(label) callable.
+    tracker(total, prefix, expected=None)
+                            context manager yielding a tick(label) callable.
                             While open its line wins over the phase and carries
                             ' · <elapsed>' (past _ELAPSED_FLOOR_S) and, after
-                            two completions, ' · ~<eta> left'. The callable
+                            two completions (or at once given per-item
+                            ``expected`` seconds), ' · ~<eta> left'. The callable
                             also carries:
                               tick.note(text)  show '[i/n] <text>' instead of
                                                the label (no increment)
@@ -49,7 +51,7 @@ Public API:
                             tracker clock pauses for the duration
     clear()                 teardown: release the region, keep the state
     reserved_rows()         0/1 — rows a pty child must not use
-    refresh() / forwarding_output() / require_no_tracker(owner)
+    refresh() / forwarding_output() / require_no_tracker(owner) / paused_seconds()
                             see ``primitives/progress_hooks.py``
 """
 import atexit
@@ -113,7 +115,7 @@ class _Tracker:
     label: str = ""                    # in-flight item's label
     note: Optional[str] = None         # tick.note() overlay; None → show label
     last_tick: float = 0.0             # active-clock time the in-flight item started
-    expected: Optional[list[int]] = None  # per-item seconds; reserved for 3.3.0-F1
+    expected: Optional[list[Optional[int]]] = None  # per-item seconds, tick order (3.3.0-F1)
     paused_total: float = 0.0          # wall seconds spent paused since entry
     paused_since: Optional[float] = None  # set while paused
 
@@ -127,6 +129,8 @@ class _Bar:
     yielded: Optional[str] = None      # None | "prompt" | "child"
     yield_depth: int = 0
     pause_depth: int = 0               # yields + bare pauses; the clock stops while > 0
+    paused_total: float = 0.0          # all time spent paused, tracker or not (3.3.0-F1)
+    paused_since: Optional[float] = None
     forwarding: int = 0                # pty_runner forwarding a raw stream; ticker stands down
     reserved: bool = False
     resize_pending: bool = False
@@ -216,6 +220,39 @@ def _active(t: _Tracker, now: float) -> float:
     return now - paused
 
 
+def _eta(t: _Tracker, active: float) -> Optional[float]:
+    """Seconds left on *t*, or ``None`` when there is no honest estimate.
+
+    Without per-item ``expected`` durations: the in-run mean of completed items
+    times what remains (needs two completions — one is an anecdote). With
+    them (3.3.0-F1): the sum of what is still to run, each item at its own
+    expected duration — the in-flight one at ``max(0, expected - elapsed)`` —
+    so a 20-minute package finishing does not swing the figure for the
+    30-second ones behind it. An item with no history uses the in-run mean,
+    and until there is one the estimate is withheld rather than guessed.
+    """
+    # Item `index` is still in flight, so only 1..index-1 have measured durations.
+    completed = t.index - 1
+    mean = (t.last_tick - t.started) / completed if completed >= 2 else None
+    in_flight_for = active - t.last_tick
+    if t.expected is None or all(e is None for e in t.expected):
+        if mean is None or t.total <= completed:
+            return None
+        # Remaining work includes the in-flight item; subtract what it has
+        # already burned so the figure decays between ticks.
+        return mean * (t.total - completed) - in_flight_for
+    current = max(t.index - 1, 0)          # 0-based in-flight item
+    remaining = 0.0
+    for i in range(current, t.total):
+        exp = t.expected[i] if t.expected[i] is not None else mean
+        if exp is None:
+            return None
+        if i == current and t.index >= 1:
+            exp = max(0.0, exp - in_flight_for)
+        remaining += exp
+    return remaining
+
+
 def _time_suffix(t: _Tracker, now: float) -> str:
     """' · <elapsed>[ · ~<eta> left]' for an open tracker, or ''."""
     active = _active(t, now)
@@ -223,15 +260,9 @@ def _time_suffix(t: _Tracker, now: float) -> str:
     if elapsed < _ELAPSED_FLOOR_S:
         return ""
     out = f" · {_fmt_span(elapsed)}"
-    # Item `index` is still in flight, so only 1..index-1 have measured durations.
-    completed = t.index - 1
-    if completed >= 2 and t.total > completed:
-        rate = (t.last_tick - t.started) / completed
-        # Remaining work includes the in-flight item; subtract what it has
-        # already burned so the figure decays between ticks.
-        eta = rate * (t.total - completed) - (active - t.last_tick)
-        if eta > 0:
-            out += f" · ~{_fmt_span(eta)} left"
+    eta = _eta(t, active)
+    if eta is not None and eta > 0:
+        out += f" · ~{_fmt_span(eta)} left"
     # eta <= 0 means the estimate is overrun, not that we are done: drop it
     # rather than pin '~0s left' to the bar for the rest of a long item.
     return out
@@ -513,8 +544,11 @@ def _pause() -> None:
     with _lock:
         _bar.pause_depth += 1
         t = _bar.tracker
-        if _bar.pause_depth == 1 and t is not None:
-            t.paused_since = _monotonic()
+        if _bar.pause_depth == 1:
+            now = _monotonic()
+            _bar.paused_since = now
+            if t is not None:
+                t.paused_since = now
 
 
 def _unpause() -> None:
@@ -523,9 +557,28 @@ def _unpause() -> None:
             return
         _bar.pause_depth -= 1
         t = _bar.tracker
-        if _bar.pause_depth == 0 and t is not None and t.paused_since is not None:
-            t.paused_total += _monotonic() - t.paused_since
-            t.paused_since = None
+        if _bar.pause_depth == 0:
+            now = _monotonic()
+            if _bar.paused_since is not None:
+                _bar.paused_total += now - _bar.paused_since
+                _bar.paused_since = None
+            if t is not None and t.paused_since is not None:
+                t.paused_total += now - t.paused_since
+                t.paused_since = None
+
+
+def paused_seconds() -> float:
+    """Total seconds spent paused so far, including any pause in progress.
+
+    Monotonic, so a caller timing work takes the delta across its own span
+    and subtracts it — ``makepkg_wrapper`` does, so a build that sat at a
+    prompt does not record the wait as build time (3.3.0-F1).
+    """
+    with _lock:
+        total = _bar.paused_total
+        if _bar.paused_since is not None:
+            total += _monotonic() - _bar.paused_since
+        return total
 
 
 @contextlib.contextmanager
@@ -727,7 +780,8 @@ class _TrackerTick:
 
 
 @contextlib.contextmanager
-def tracker(total: int, prefix: str) -> Iterator[Tick]:
+def tracker(total: int, prefix: str,
+            expected: Optional[list[Optional[int]]] = None) -> Iterator[Tick]:
     """Yield a tick(label) callable counting *total* items.
 
         with progress.tracker(len(items), "building") as tick:
@@ -750,7 +804,10 @@ def tracker(total: int, prefix: str) -> Iterator[Tick]:
         outer = _bar.tracker
         if outer is None:
             now = _monotonic()
-            t = _Tracker(total=total, prefix=prefix, started=now, last_tick=now)
+            t = _Tracker(total=total, prefix=prefix, started=now, last_tick=now,
+                         expected=(list(expected)
+                                   if expected is not None and len(expected) == total
+                                   else None))
             if _bar.pause_depth:
                 t.paused_since = now   # opened while yielded: starts paused
             _bar.tracker = t

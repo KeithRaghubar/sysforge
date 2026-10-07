@@ -565,3 +565,41 @@ def test_keyboardinterrupt_in_reporting_still_propagates_when_the_stage_succeede
     state = PipelineState(tmp_path)
     with pytest.raises(KeyboardInterrupt):
         _runner._run_stage_with_change_report(ReportingStage(), {}, state, make_options())
+
+
+# --- Install-stage target-root manifest (2.6.1-F27) --------------------------
+
+class FreshTargetStage(ReportingStage):
+    def __init__(self, root):
+        super().__init__(name="install")
+        self.change_root = str(root)
+        self.change_before_empty = True
+
+
+def test_empty_before_takes_only_the_after_snapshot_from_target_root(
+        tmp_path, monkeypatch, capsys):
+    calls = _snapshots(monkeypatch, [{"base": PkgFacts("3-2"), "linux": PkgFacts("7.2-1")}])
+    _standalone(FreshTargetStage(tmp_path / "mnt"), tmp_path, monkeypatch)
+    assert calls == [tmp_path / "mnt"]
+    out = capsys.readouterr().err
+    assert "Install stage changes: 2 added." in out
+    assert "Updated:" not in out and "Removed:" not in out
+
+
+def test_unreadable_target_is_unknown_with_reason_never_no_changes(
+        tmp_path, monkeypatch, capsys):
+    def boom(root=None):
+        raise change_report.SnapshotError(f"no pacman local DB at {root}/var/lib/pacman/local")
+    monkeypatch.setattr(change_report, "snapshot", boom)
+    _standalone(FreshTargetStage(tmp_path / "mnt"), tmp_path, monkeypatch)
+    out = capsys.readouterr().err
+    assert "change summary unavailable (no pacman local DB at" in out
+    assert "no package changes" not in out
+
+
+def test_install_stage_opts_in_against_archinstall_mountpoint():
+    from sysforge.pipeline.stages.install import InstallStage
+    from sysforge.primitives.archinstall_invoke import TARGET_ROOT
+    s = InstallStage()
+    assert s.reports_changes and s.change_before_empty
+    assert s.change_root == str(TARGET_ROOT) == "/mnt"

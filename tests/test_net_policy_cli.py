@@ -106,7 +106,7 @@ def test_build_no_update_succeeds_under_freeze(tmp_path, monkeypatch):
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch("sysforge.build_core.prepare_deps"))
             stack.enter_context(patch(
-                "sysforge.primitives.makepkg_wrapper.run",
+                "sysforge.build.makepkg_wrapper.run",
                 side_effect=lambda *a, **k: _touch_future(artifact)))
             stack.enter_context(patch(
                 "sysforge.build_core.snapshot_pkg_dir",

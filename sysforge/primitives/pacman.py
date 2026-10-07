@@ -55,8 +55,9 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.aur_resolve import _looks_unresolved, _strip_version
 from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
-from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.privilege import ensure_credentials, privileged_argv
 from sysforge.primitives.pty_runner import strip_ansi
+from sysforge.primitives import run
 
 _log = log.get_logger("PACMAN")
 
@@ -238,7 +239,7 @@ def detect_orphan_artifacts(
             # artifact, or genuinely abandoned. We can't tell, so we
             # don't surface it.
             continue
-        from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+        from sysforge.primitives.makepkg_artifacts import _parse_built_pkg_filename
         parsed = _parse_built_pkg_filename(pkgname, path.name)
         if parsed is None:
             continue
@@ -370,11 +371,8 @@ def read_pkgname_from_file(path) -> str | None:
     .PKGINFO without fully extracting the archive.
     """
     try:
-        result = subprocess.run(
-            ["bsdtar", "-xOqf", str(path), ".PKGINFO"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
+        result = run.probe(["bsdtar", "-xOqf", str(path), ".PKGINFO"], timeout=10)
+    except subprocess.SubprocessError:
         return None
     if result.returncode != 0:
         return None
@@ -395,11 +393,8 @@ def _read_pkginfo_names(path, keys: tuple) -> dict:
     """
     out: dict = {k: set() for k in keys}
     try:
-        result = subprocess.run(
-            ["bsdtar", "-xOqf", str(path), ".PKGINFO"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
+        result = run.probe(["bsdtar", "-xOqf", str(path), ".PKGINFO"], timeout=10)
+    except subprocess.SubprocessError:
         return out
     if result.returncode != 0:
         return out
@@ -528,9 +523,10 @@ def deps_broken_by_install(pkg_paths: list) -> dict:
     treats that as "do not relax dependency checking", so a probe that cannot
     speak never widens what the real transaction is allowed to do.
     """
-    result = subprocess.run(
+    result = run.probe(
         ["pacman", "-U", "--print"] + [str(p) for p in pkg_paths],
-        stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
     )
     if result.returncode == 0:
         return {}
@@ -659,24 +655,29 @@ def batch_install_pkgs(
     # Interactive: inherit pacman's streams so the conflict prompt is visible
     # and stdin can answer it. Non-interactive: capture stderr to relay it.
     run_kwargs: dict = {} if interactive else {"stderr": subprocess.PIPE, "text": True}
-    result = subprocess.run(argv, **run_kwargs)
-    if result.returncode != 0:
-        if not interactive and result.stderr:
-            for line in result.stderr.splitlines():
-                _log.error(line)
-            if conflicts_out is not None:
-                conflicts_out.update(file_conflict_culprits(result.stderr))
-        elif interactive:
-            # Interactive runs inherit pacman's streams so the conflict prompt
-            # works, which means its diagnostics went to the terminal and not
-            # into the unified run-log. Say so: a bare "install failed" in the
-            # log with no reason anywhere is what made the intra-batch pin
-            # deadlock hard to diagnose (3.1.0-B14).
-            _log.error(
-                f"pacman -U exited {result.returncode}; its output went to the "
-                "terminal (interactive run), not this log"
-            )
-        return False
+    # Prompt (if sudo must) now, with the bar yielded — this runs inside the
+    # `building` tracker for a just-in-time install (3.3.0-F3).
+    ensure_credentials()
+    if interactive:
+        # Interactive runs keep pacman's prompts working on the terminal, and
+        # since 3.3.0-B21 its output (hooks included) is also kept in the run
+        # log — before, it went only to the terminal, which is what made the
+        # intra-batch pin deadlock hard to diagnose (3.1.0-B14).
+        returncode, tail = run_logged_transaction(argv)
+        if returncode != 0:
+            _log.error(f"pacman -U exited {returncode}; last output:")
+            for line in tail:
+                _log.error(f"  {line}")
+            return False
+    else:
+        result = subprocess.run(argv, **run_kwargs)  # noqa: TID251 — privileged pacman -U; stderr parsed for file conflicts
+        if result.returncode != 0:
+            if result.stderr:
+                for line in result.stderr.splitlines():
+                    _log.error(line)
+                if conflicts_out is not None:
+                    conflicts_out.update(file_conflict_culprits(result.stderr))
+            return False
     # Record sysforge's own install targets so `sysforge update`'s reconcile can
     # tell them apart from an external `pacman -S` (which demotes a source-built
     # entry). Best-effort: a missing marker never fails the install.
@@ -685,6 +686,42 @@ def batch_install_pkgs(
         [n for n in (read_pkgname_from_file(p) for p in pkg_paths) if n]
     )
     return True
+
+
+# A pacman hook that failed: libalpm's hook wrapper prints the WARNING when a
+# hook command exits non-zero (DKMS, mkinitcpio), and dkms/mkinitcpio print
+# ``Error!``/``==> ERROR:`` themselves. pacman still exits 0 for all of them.
+_HOOK_FAILURE_RE = re.compile(r"==> WARNING: .*exited \d+\s*$|^\s*Error!|==> ERROR:")
+# Lines kept for a failing transaction's error message.
+_TRANSACTION_TAIL = 30
+
+
+def run_logged_transaction(argv: list[str]) -> tuple[int, list[str]]:
+    """Run a pacman transaction on a pty, keeping its output (3.3.0-B21).
+
+    Output is forwarded to the terminal as it arrives and each ANSI-stripped
+    line is also written to the run log (``log.transcript``), so a hook's
+    output (DKMS builds, mkinitcpio) survives the scrollback. A failed hook
+    line is raised to ``warn()`` because pacman exits 0 for it. No rows are
+    reserved, so stdin stays inherited and pacman's prompts still work.
+    Returns ``(returncode, last lines)``.
+    """
+    from sysforge import log as _rootlog
+    from sysforge.primitives import pty_runner
+
+    lines: list[str] = []
+
+    def on_line(raw: str) -> None:
+        line = pty_runner.strip_ansi(raw).rstrip()
+        lines.append(line)
+        _rootlog.transcript("[PACMAN]", line)
+        if _HOOK_FAILURE_RE.search(line):
+            _log.warn(f"pacman hook reported a failure: {line.strip()}")
+
+    rc = pty_runner.run_with_pty(
+        argv, cwd=Path.cwd(), env=dict(os.environ), line_callback=on_line,
+        forward_bytes=True, reserve_bottom_rows=0)
+    return rc, lines[-_TRANSACTION_TAIL:]
 
 
 # ---------------------------------------------------------------------------
@@ -760,11 +797,7 @@ def filter_missing_deps(deps: list) -> list:
             ]
         except _alpm().error:
             pass
-    result = subprocess.run(
-        ["pacman", "-T"] + deps,
-        capture_output=True,
-        text=True,
-    )
+    result = run.probe(["pacman", "-T"] + deps)
     # pacman -T exits 0 if all satisfied, 127 if any are missing.
     # The missing deps are printed to stdout.
     return result.stdout.split()
@@ -772,7 +805,8 @@ def filter_missing_deps(deps: list) -> list:
 
 def batch_install_makedeps(deps: list) -> None:
     _log.info(f"Batch-installing {len(deps)} missing makedep(s): {deps}")
-    result = subprocess.run(
+    ensure_credentials()
+    result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
         privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + deps
     )
     if result.returncode != 0:
@@ -786,7 +820,8 @@ def install_repo_pkgs(names: list) -> None:
     Raises RuntimeError on a non-zero pacman exit.
     """
     _log.info(f"Installing {len(names)} repo package(s): {names}")
-    result = subprocess.run(
+    ensure_credentials()
+    result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
         privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + list(names)
     )
     if result.returncode != 0:
@@ -802,7 +837,7 @@ def remove_pkgs(names: list) -> None:
     """
     if not names:
         return
-    subprocess.run(
+    subprocess.run(  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
         privileged_argv(["pacman", "-R", "--noconfirm", "--", *names]),
         check=True,
     )
@@ -825,7 +860,7 @@ def reinstall_repo_pkgs(names: list, *, replace: bool = False) -> None:
     argv = ["pacman", "-S", "--noconfirm"]
     if replace:
         argv.append("--ask=4")
-    subprocess.run(privileged_argv([*argv, "--", *names]), check=True)
+    subprocess.run(privileged_argv([*argv, "--", *names]), check=True)  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
 
 
 def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
@@ -845,7 +880,7 @@ def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
     if not names:
         return
     argv = privileged_argv(["pacman", "-Rnsu", *(extra_flags or []), "--", *names])
-    subprocess.run(argv, check=True)
+    subprocess.run(argv, check=True)  # noqa: TID251 — privileged, interactive confirmation; CalledProcessError is this helper's contract
 
 
 def _search(flag: str, term: str) -> str:
@@ -854,10 +889,7 @@ def _search(flag: str, term: str) -> str:
     Forced colour preserves pacman's native rendering while capture lets the
     caller omit an empty section. Empty string on no match (exit != 0).
     """
-    result = subprocess.run(
-        ["pacman", flag, "--color", "always", term],
-        capture_output=True, text=True,
-    )
+    result = run.probe(["pacman", flag, "--color", "always", term])
     return result.stdout if result.returncode == 0 else ""
 
 
@@ -883,11 +915,7 @@ def get_installed_version(pkgname: str) -> str | None:
             return pkg.version if pkg else None
         except _alpm().error:
             pass
-    result = subprocess.run(
-        ["pacman", "-Q", pkgname],
-        capture_output=True,
-        text=True,
-    )
+    result = run.probe(["pacman", "-Q", pkgname])
     if result.returncode != 0:
         return None
     # Output format: "pkgname version\n"
@@ -903,7 +931,7 @@ def get_all_installed_packages() -> dict[str, str]:
             return {pkg.name: pkg.version for pkg in localdb.pkgcache}
         except _alpm().error:
             pass
-    result = subprocess.run(["pacman", "-Q"], capture_output=True, text=True)
+    result = run.probe(["pacman", "-Q"])
     if result.returncode != 0:
         return {}
     packages = {}
@@ -949,12 +977,13 @@ def get_installed_facts(root=None) -> dict[str, tuple[str, int | None]]:
     pyalpm record (``pkg.isize``), so the change summary's size column costs no
     extra query. Falls back to ``pacman -Qi`` when pyalpm is unavailable.
 
-    ``root`` is accepted for the target-root case (2.6.1-F27) but only the live
-    root is supported today; a non-None value raises so a caller can never
-    silently receive live-root data for a target root.
+    ``root`` reads another system's DB (the install stage's mounted target,
+    2.6.1-F27) straight from ``<root>/var/lib/pacman/local/*/desc``, so neither
+    pacman nor alpm has to be pointed at it. A root with no local DB raises —
+    never an empty dict that would read as "nothing installed".
     """
     if root is not None:
-        raise NotImplementedError("get_installed_facts(root=...) is not implemented yet")
+        return _local_db_facts(Path(root) / "var/lib/pacman/local")
 
     if _use_pyalpm():
         try:
@@ -963,7 +992,7 @@ def get_installed_facts(root=None) -> dict[str, tuple[str, int | None]]:
         except _alpm().error:
             pass
 
-    result = subprocess.run(["pacman", "-Qi"], capture_output=True, text=True)
+    result = run.probe(["pacman", "-Qi"])
     if result.returncode != 0:
         # Unlike get_all_installed_packages()'s {} fallback, this is a diff
         # input: an installed Arch system with zero packages does not exist,
@@ -976,6 +1005,36 @@ def get_installed_facts(root=None) -> dict[str, tuple[str, int | None]]:
             f"{result.stderr.strip() or 'no output'}"
         )
     return _parse_qi_facts(result.stdout)
+
+
+def _local_db_facts(db_dir: Path) -> dict[str, tuple[str, int | None]]:
+    """``{name: (version, isize)}`` from a local DB's ``desc`` files.
+
+    ``desc`` is libalpm's on-disk record: ``%NAME%`` / ``%VERSION%`` /
+    ``%SIZE%`` headers, each followed by its value line(s) and a blank line.
+    Raises when the DB directory is absent or unreadable.
+    """
+    if not db_dir.is_dir():
+        raise RuntimeError(f"no pacman local DB at {db_dir}")
+    facts: dict[str, tuple[str, int | None]] = {}
+    for entry in sorted(db_dir.iterdir()):
+        desc = entry / "desc"
+        if not desc.is_file():
+            continue
+        fields: dict[str, str] = {}
+        key = None
+        for line in desc.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("%") and line.endswith("%"):
+                key = line.strip("%")
+            elif line and key and key not in fields:
+                fields[key] = line
+            elif not line:
+                key = None
+        name, version = fields.get("NAME"), fields.get("VERSION")
+        if name and version:
+            size = fields.get("SIZE")
+            facts[name] = (version, int(size) if size and size.isdigit() else None)
+    return facts
 
 
 def _parse_qi_facts(text: str) -> dict[str, tuple[str, int | None]]:
@@ -1033,10 +1092,7 @@ def get_installed_substitutes() -> dict[str, list[tuple[str, str]]]:
         except _alpm().error:
             rows = []
     if not rows:
-        result = subprocess.run(
-            ["pacman", "-Qi"], capture_output=True, text=True,
-            env={**os.environ, "LC_ALL": "C"},
-        )
+        result = run.probe(["pacman", "-Qi"], env={**os.environ, "LC_ALL": "C"})
         if result.returncode != 0:
             return {}
         rows = _parse_qi_relations(result.stdout)
@@ -1097,7 +1153,7 @@ def get_foreign_packages() -> dict[str, str]:
             }
         except _alpm().error:
             pass
-    result = subprocess.run(["pacman", "-Qm"], capture_output=True, text=True)
+    result = run.probe(["pacman", "-Qm"])
     if result.returncode != 0:
         return {}
     packages = {}
@@ -1119,7 +1175,7 @@ def get_pacman_sync_version(pkgname: str) -> str | None:
             return None
         except _alpm().error:
             pass
-    result = subprocess.run(["pacman", "-Si", "--", pkgname], capture_output=True, text=True)
+    result = run.probe(["pacman", "-Si", "--", pkgname])
     if result.returncode != 0:
         return None
     for line in result.stdout.splitlines():
@@ -1155,14 +1211,11 @@ def checkupdates_map(timeout: float = 60.0) -> dict[str, str] | None:
     by returning ``{}``), other = error (returns ``None``).
     """
     try:
-        result = subprocess.run(
-            ["checkupdates"],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        return None
+        result = run.capture(["checkupdates"], timeout=timeout)
     except (subprocess.TimeoutExpired, OSError) as e:
         _log.warn(f"checkupdates failed: {e}")
+        return None
+    if result is None:  # pacman-contrib not installed
         return None
 
     # checkupdates exits 2 when there are no updates — not an error.
@@ -1346,11 +1399,12 @@ def owners_of(candidates: list[Path]) -> dict[Path, str | None]:
     if not paths_in:
         return {}
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, paths are not shell-interpreted
+        proc = run.capture(  # noqa: S603 — fixed argv, paths are not shell-interpreted
             ["pacman", "-Qo", *[str(p) for p in paths_in]],
-            capture_output=True, text=True, check=False,
         )
     except (subprocess.SubprocessError, OSError):
+        proc = None
+    if proc is None:
         # Lookup unavailable wholesale — return {} (absent), never a dict of
         # Nones that would read as "confirmed unowned".
         return {}

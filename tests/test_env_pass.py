@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from sysforge.primitives.makepkg_wrapper import (
+from sysforge.build.makepkg_wrapper import (
     resolve_env_vars,
     emit_makepkg_conf,
 )

@@ -22,11 +22,11 @@ Public API:
 from __future__ import annotations
 
 import shutil
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import run
 
 _log = log.get_logger("SNAPSHOT")
 _done = False
@@ -67,10 +67,7 @@ def create_snapper_snapshot(config: str, description: str) -> str | None:
     if not shutil.which("snapper"):
         return None
     try:
-        r = subprocess.run(
-            ["snapper", "-c", config, "create", "-d", description, "-p"],
-            capture_output=True, text=True, check=False,
-        )
+        r = run.probe(["snapper", "-c", config, "create", "-d", description, "-p"])
     except OSError as e:
         _log.warn(f"  snapper snapshot failed: {e}")
         return None
@@ -88,10 +85,7 @@ def create_raw_snapshot() -> Path | None:
     dest = Path("/.snapshots") / f"sysforge-pre-build-{stamp}"
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        r = subprocess.run(
-            ["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)],
-            capture_output=True, text=True, check=False,
-        )
+        r = run.probe(["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)])
     except OSError as e:
         _log.warn(f"  raw btrfs snapshot failed: {e}")
         return None

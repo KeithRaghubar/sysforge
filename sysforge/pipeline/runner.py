@@ -81,10 +81,14 @@ def _run_stage_with_change_report(stage, config, state, options):
     root = Path(change_root) if change_root else None
     unavailable: str | None = None
     before: dict = {}
-    try:
-        before = change_report.snapshot(root)
-    except change_report.SnapshotError as e:
-        unavailable = str(e)
+    if getattr(stage, "change_before_empty", False):
+        # A fresh target (2.6.1-F27): nothing was installed before this stage.
+        pass
+    else:
+        try:
+            before = change_report.snapshot(root)
+        except change_report.SnapshotError as e:
+            unavailable = str(e)
 
     stage_error: BaseException | None = None
     try:

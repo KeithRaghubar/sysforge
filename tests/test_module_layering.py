@@ -6,9 +6,12 @@
 test_module_layering.py — structural guard on the primitives → pipeline/ui edge.
 
 ``sysforge/primitives/`` is the leaf layer: pipeline stages compose primitives,
-never the reverse. Every upward import is a latent import cycle, and the ones
-that exist today are written as *function-level* imports precisely to dodge one
-at module load — the deferral hides the cycle rather than removing it.
+never the reverse. Since 3.2.0-F4 the same holds for ``sysforge/build/``, the
+orchestration layer ``makepkg_wrapper`` (and AUR dependency building) moved
+into: a primitive importing it is an upward edge like any other. Every upward
+import is a latent import cycle, and the ones that exist today are written as
+*function-level* imports precisely to dodge one at module load — the deferral
+hides the cycle rather than removing it.
 
 The blast radius is not theoretical. ``pipeline/stages/__init__.py`` eagerly
 instantiates all seven stages, so a primitive reaching up for even a single
@@ -52,8 +55,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SYSFORGE_DIR = REPO_ROOT / "sysforge"
 PRIMITIVES_DIR = SYSFORGE_DIR / "primitives"
 
-# The layers a primitive may never import from.
-_FORBIDDEN_PREFIXES = ("sysforge.pipeline", "sysforge.ui")
+# The layers a primitive may never import from. ``sysforge.build`` (3.2.0-F4)
+# is the orchestration layer makepkg_wrapper moved into; the prefix match is
+# dotted, so ``sysforge.build_core`` is a different module and not caught here.
+_FORBIDDEN_PREFIXES = ("sysforge.pipeline", "sysforge.ui", "sysforge.build")
 
 # module filename -> frozenset of names it may still import from a forbidden
 # layer. Shrink this; never grow it.
@@ -170,3 +175,11 @@ def test_verb_modules_do_not_import_siblings():
         "shared operation into sysforge/verbs/shared.py:\n  "
         + "\n  ".join(violations)
     )
+
+
+def test_build_layer_is_forbidden_but_build_core_is_not():
+    """3.2.0-F4: the guard is a dotted-prefix match — `sysforge.build.*` is the
+    orchestration layer, `sysforge.build_core` a different (top-level) module."""
+    assert _is_forbidden("sysforge.build")
+    assert _is_forbidden("sysforge.build.makepkg_wrapper")
+    assert not _is_forbidden("sysforge.build_core")

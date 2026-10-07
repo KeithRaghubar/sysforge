@@ -43,7 +43,7 @@ def extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
     """Extract a .pkg.tar.* file to the staging directory."""
     staging.mkdir(parents=True, exist_ok=True)
     _log.info(f"  Extracting {pkg_file.name} → {staging}")
-    result = subprocess.run(
+    result = run.probe(
         [
             "tar",
             "--warning=no-unknown-keyword",
@@ -52,7 +52,7 @@ def extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
             "-C",
             str(staging),
         ],
-        capture_output=True,
+        text=False,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -192,12 +192,8 @@ def do_profraw_merge(pgo_store: Path, label: str) -> tuple[int, int]:
         inputs = [str(profdata_path)] if profdata_path.exists() else []
         inputs += [str(f) for f in batch]
 
-        result = subprocess.run(
+        result = run.probe(
             ["llvm-profdata", "merge", "--output", str(tmp_path)] + inputs,
-            capture_output=True,
-            text=True,
-            # lift-only (no mem cap): a memory ceiling on the profdata merge would
-            # masquerade as a merge failure and trip the batch-size backoff below.
             preexec_fn=make_child_preexec(None),
         )
         if result.returncode != 0:
@@ -242,12 +238,7 @@ def collect_pgo_packages(pkgbuild_map: dict[str, Path]) -> list[Path]:
         if build_dir in seen_dirs:
             continue
         seen_dirs.add(build_dir)
-        result = subprocess.run(
-            ["makepkg", "--packagelist"],
-            cwd=build_dir,
-            capture_output=True,
-            text=True,
-        )
+        result = run.probe(["makepkg", "--packagelist"], cwd=build_dir)
         if result.returncode != 0:
             _log.warn(
                 f"[PGO] makepkg --packagelist failed in {build_dir}: "
@@ -328,7 +319,7 @@ def pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> Non
     _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
         _log.info(f"  {p.name}")
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
         privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs]
     )
     if result.returncode != 0:

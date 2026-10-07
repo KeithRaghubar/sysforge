@@ -545,7 +545,7 @@ class TestHardwareStageRun:
         options = make_options(state_dir=tmp_path)
 
         with patch("sysforge.pipeline.stages.hardware.Path") as mock_path, \
-             patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+             patch("sysforge.primitives.run.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")):
 
@@ -575,7 +575,7 @@ class TestHardwareStageRun:
                    description="Samsung NVMe", driver="nvme",
                    expected_modules=["nvme"], suggested_kconfig=["CONFIG_BLK_DEV_NVME"]),
         ]
-        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
              patch("sysforge.primitives.device_probe.enumerate_devices",
@@ -613,7 +613,7 @@ class TestHardwareStageRun:
         stage = HardwareStage()
         options = make_options(state_dir=tmp_path, dry_run=True)
 
-        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
              patch("sysforge.primitives.device_probe.enumerate_devices",
@@ -644,7 +644,7 @@ class TestHardwareStageRun:
                    expected_modules=["nvme"],
                    suggested_kconfig=["CONFIG_BLK_DEV_NVME"]),
         ]
-        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
              patch("sysforge.primitives.device_probe.enumerate_devices",
@@ -677,7 +677,7 @@ class TestHardwareStageRun:
             return []
         # No Path.read_text patch here — load_map must read the real cache
         # file; /proc/cpuinfo is read for real (any host cpuinfo parses).
-        with patch("sysforge.pipeline.stages.hardware.subprocess.run") as mock_run, \
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run, \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
              patch("sysforge.primitives.device_probe.enumerate_devices",
@@ -921,18 +921,18 @@ class TestHasExistingPartitions:
 
     def test_bare_disk_returns_false(self):
         # lsblk lists only the device itself — no child partitions.
-        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="sda\n")
             assert _has_existing_partitions("/dev/sda") is False
 
     def test_partitioned_disk_returns_true(self):
-        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="sda\nsda1\nsda2\n")
             assert _has_existing_partitions("/dev/sda") is True
 
     def test_lsblk_failure_returns_false(self):
         # Can't determine — fall through to the normal confirm rather than erroring.
-        with patch("sysforge.pipeline.stages._partition_plan.subprocess.run") as mock_run:
+        with patch("sysforge.primitives.run.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             assert _has_existing_partitions("/dev/sda") is False
 

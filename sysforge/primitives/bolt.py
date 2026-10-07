@@ -41,6 +41,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.makepkg_pgo import resolve_method_store
 from sysforge.primitives.paths import TOOLCHAIN_PATH
+from sysforge.primitives import run
 
 _log = log.get_logger("BOLT")
 
@@ -189,7 +190,7 @@ def llvm_bolt_cmd(binary: Path, fdata: Path, out: Path) -> list[str]:
 def _run(argv: list[str], *, what: str) -> subprocess.CompletedProcess:
     """Run a BOLT-cycle subprocess, raising :class:`BoltError` on failure."""
     _log.info(f"{what}: {' '.join(argv)}")
-    result = subprocess.run(argv, capture_output=True, text=True)
+    result = run.probe(argv)
     if result.returncode != 0:
         raise BoltError(
             f"{what} failed (exit {result.returncode}): "

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import run
 
 _log = log.get_logger("ABI")
 
@@ -92,10 +93,7 @@ def check_package_layout(pkg_path: Path) -> list[LayoutFinding]:
     """One archive walk (``bsdtar -t``, names only) — the listing the ABI check
     already uses, with a different predicate. Raises on a failed listing so the
     caller's single non-fatal handler reports it."""
-    result = subprocess.run(
-        ["bsdtar", "-t", "-f", str(pkg_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["bsdtar", "-t", "-f", str(pkg_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         raise RuntimeError(f"bsdtar list failed for {Path(pkg_path).name}: "
                            f"{result.stderr.strip()}")

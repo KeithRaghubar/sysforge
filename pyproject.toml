@@ -67,7 +67,9 @@ line-length = 100
 # E501 enables the line-length=100 enforcement above (it lives in the E5 group,
 # which the E4/E7/E9 selectors do not cover). 2.3.0-STD1 governs the
 # subprocess-seam discipline the noisy S-rules can't.
-select = ["E4", "E7", "E9", "E501", "F", "S", "B", "SIM", "PTH"]
+# TID251 (3.2.0-F13) fences subprocess behind primitives/run — see the
+# banned-api table below.
+select = ["E4", "E7", "E9", "E501", "F", "S", "B", "SIM", "PTH", "TID251"]
 ignore = [
     # E402: SysForge modules deliberately set `_log = log.get_logger("TAG")`
     # between imports so the logger binds to the module's tag. Pure, no side effect.
@@ -79,6 +81,21 @@ ignore = [
     # (101 sites) — PATH resolution is deliberate for a CLI tool.
     "S607",
 ]
+
+# 3.2.0-F13: every external command goes through the run seam
+# (primitives/run.py: capture / probe / run_or_raise) or the privilege seam,
+# so the unified run-log, --dry-run and the child preexec apply uniformly. The
+# seam modules themselves are exempt below; a call that must stay raw
+# (inherits the TTY, streams, needs its own preexec_fn, or is a privileged
+# command whose status/exception the caller inspects) carries a
+# `# noqa: TID251 — <why>` naming its reason. Enforced together with
+# tests/test_standards_compliance.py (standards row 28).
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess.run".msg = "use primitives/run (capture/probe/run_or_raise) or privilege.run_privileged"
+"subprocess.Popen".msg = "use primitives/run or pty_runner; a raw Popen needs a `# noqa: TID251 — <why>`"
+"subprocess.call".msg = "use primitives/run"
+"subprocess.check_call".msg = "use primitives/run.run_or_raise"
+"subprocess.check_output".msg = "use primitives/run.capture"
 
 [tool.ruff.lint.per-file-ignores]
 # Test code is not production attack surface: pytest uses bare `assert` (S101),
@@ -94,7 +111,14 @@ ignore = [
 # collapsing them produces one over-long line per test and reads worse. Neither
 # is relaxed for sysforge/ or tools/, where pathlib migration and `with`-depth
 # are real signals about code that handles user paths.
-"tests/**" = ["S", "PTH", "SIM117"]
+"tests/**" = ["S", "PTH", "SIM117", "TID251"]
+# The run seam and its siblings are where subprocess lives (3.2.0-F13); dev
+# tooling under tools/ is not shipped and shells out freely.
+"sysforge/primitives/run.py" = ["TID251"]
+"sysforge/primitives/pty_runner.py" = ["TID251"]
+"sysforge/primitives/privilege.py" = ["TID251"]
+"sysforge/primitives/sudo_session.py" = ["TID251"]
+"tools/**" = ["TID251"]
 
 # Coverage is run via `make coverage`, which layers pytest-cov into an
 # ephemeral `uv run --no-sync --with pytest-cov` overlay (no system/venv

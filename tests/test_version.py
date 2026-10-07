@@ -30,7 +30,7 @@ def test_vercmp_newer():
         result = vercmp("3.4.1-1", "3.3.0-1")
     assert result == 1
     mock.assert_called_once_with(["vercmp", "3.4.1-1", "3.3.0-1"],
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True, check=False)
 
 
 def test_vercmp_equal():

@@ -584,7 +584,8 @@ def test_remove_live_hook_privileged(monkeypatch, tmp_path):
 def test_unit_is_enabled_false_on_error(monkeypatch):
     def _boom(*a, **kw):
         raise OSError("no systemctl")
-    monkeypatch.setattr(artifacts.subprocess, "run", _boom)
+    from sysforge.primitives import run as run_seam
+    monkeypatch.setattr(run_seam.subprocess, "run", _boom)
     assert artifacts.unit_is_enabled("a.service") is False
 
 

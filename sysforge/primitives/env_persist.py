@@ -29,13 +29,11 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives import atomic_write
 
 _log = log.get_logger("ENV")
 
@@ -255,31 +253,11 @@ def apply_write(plan: WritePlan) -> None:
     """Write ``plan.new_text`` to its target.
 
     A ``nochange`` plan is a no-op — it never touches the file, so re-running
-    the step does not churn mtimes. Otherwise the direct path is a plain
-    in-place ``write_text`` (no write-temp-then-rename). On ``PermissionError``
-    the content is instead staged to a chmod'd temp file and copied into
-    place through the privilege seam, escalating for ``/etc/environment``.
+    the step does not churn mtimes. Otherwise the write goes through
+    :func:`atomic_write.replace_file`: atomic (the user's shell rc is the file
+    carrying irreplaceable content here), symlink- and mode-preserving, and
+    escalating through the privilege seam for ``/etc/environment`` (2.6.1-F21).
     """
     if plan.action == "nochange":
         return
-
-    path = plan.target.path
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(plan.new_text, encoding="utf-8")
-        return
-    except PermissionError:
-        pass
-
-    fd, tmp_name = tempfile.mkstemp(suffix=".sysforge-env")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(plan.new_text)
-        tmp.chmod(0o644)
-        _log.info(f"  Writing (sudo): {path}")
-        rc = subprocess.run(privileged_argv(["cp", str(tmp), str(path)])).returncode
-        if rc != 0:
-            raise OSError(f"sudo cp exited {rc} — {path} unchanged")
-    finally:
-        tmp.unlink(missing_ok=True)
+    atomic_write.replace_file(plan.target.path, plan.new_text, tag="ENV")

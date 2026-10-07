@@ -29,7 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sysforge.primitives.config import load_consumes_inference
-from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
+from sysforge.build.makepkg_wrapper import emit_makepkg_conf
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.profile import merge_extends, resolve_consumes
 from sysforge.primitives.toolchain_preflight import collect_required_toolchains
@@ -421,7 +421,7 @@ def test_step5_lib32_scrubs_icf_from_profile_ldflags(is_lib32, expect_icf):
         # Force lld to be "found" so effective_linker == lld and the
         # linker-gated lld-flag strip is skipped — isolating the lib32 scrub.
         with patch(
-            "sysforge.primitives.makepkg_wrapper.shutil.which",
+            "sysforge.build.makepkg_wrapper.shutil.which",
             side_effect=lambda n: f"/usr/bin/{n}" if n == "lld" else None,
         ), emit_makepkg_conf(
             resolved, frozenset({"makepkg", "env"}),

@@ -507,19 +507,24 @@ class TestBatchInstallPkgsInteractive:
 
     @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="foo")
     @patch("sysforge.primitives.install_reconcile.record_self_install")
-    @patch("sysforge.primitives.pacman.subprocess.run")
-    def test_interactive_drops_noconfirm_and_inherits_tty(
-        self, mock_run, _rec, _rd, tmp_path
+    @patch("sysforge.primitives.pacman.run_logged_transaction", return_value=(0, []))
+    def test_interactive_drops_noconfirm_and_runs_logged(
+        self, mock_tx, _rec, _rd, tmp_path
     ):
-        mock_run.return_value = MagicMock(returncode=0, stderr=None)
+        """The conflict prompt must reach the operator, and (3.3.0-B21) the
+        output is kept: interactive installs go through the pty transaction,
+        which leaves stdin inherited and tees into the run log."""
         assert batch_install_pkgs(
             [self._make_pkg(tmp_path)], interactive=True
         ) is True
-        call = self._pacman_call(mock_run)
-        assert "--noconfirm" not in call.args[0]
-        # The conflict prompt must reach the operator: streams stay inherited
-        # (not captured), so the question is visible and stdin can answer it.
-        assert call.kwargs.get("stderr") is None
+        argv = mock_tx.call_args.args[0]
+        assert "--noconfirm" not in argv and argv[-1].endswith(".pkg.tar.zst")
+
+    def test_interactive_failure_logs_captured_tail(self, tmp_path, pacman_tx, capsys):
+        pacman_tx.returncode = 1
+        pacman_tx.tail = ["error: failed to commit transaction (conflicting files)"]
+        assert batch_install_pkgs([self._make_pkg(tmp_path)], interactive=True) is False
+        assert "conflicting files" in capsys.readouterr().err
 
 
 class TestBatchInstallPkgsConflictRename:
@@ -577,17 +582,15 @@ class TestBatchInstallPkgsConflictRename:
     @patch("sysforge.primitives.pacman.read_pkgname_from_file",
            return_value="mesa-sysforge")
     @patch("sysforge.primitives.install_reconcile.record_self_install")
-    @patch("sysforge.primitives.pacman.subprocess.run")
     def test_interactive_never_adds_ask(
-        self, mock_run, _rec, _name, _repl, mock_inst, tmp_path
+        self, _rec, _name, _repl, mock_inst, tmp_path, pacman_tx
     ):
         # Interactive runs let the operator answer the prompt — no --ask, and
         # the installed-set query is never needed.
-        mock_run.return_value = MagicMock(returncode=0, stderr=None)
         assert batch_install_pkgs(
             [self._make_pkg(tmp_path)], interactive=True
         ) is True
-        argv = mock_run.call_args_list[0].args[0]
+        argv = pacman_tx.calls[0]
         assert not any(str(a).startswith("--ask") for a in argv)
         mock_inst.assert_not_called()
 
@@ -938,11 +941,23 @@ class TestOwnersOf:
 
 class TestGetInstalledFacts:
 
-    def test_non_none_root_raises_not_implemented(self):
-        """2.6.1-F27 will implement target-root support; until then a caller
-        must never silently receive live-root data for a target root."""
-        with pytest.raises(NotImplementedError):
-            pacman.get_installed_facts(root=Path("/mnt/target"))
+    def test_target_root_reads_its_own_local_db(self, tmp_path):
+        """2.6.1-F27: a target root's DB is read from its desc files, never the
+        live root's."""
+        db = tmp_path / "var/lib/pacman/local"
+        for name, ver, size in (("base", "3-2", "0"), ("linux", "7.2.7.arch1-1", "142000000")):
+            entry = db / f"{name}-{ver}"
+            entry.mkdir(parents=True)
+            (entry / "desc").write_text(
+                f"%NAME%\n{name}\n\n%VERSION%\n{ver}\n\n%DESC%\nx\n\n%SIZE%\n{size}\n\n")
+        (db / "ALPM_DB_VERSION").write_text("9\n")
+        assert pacman.get_installed_facts(root=tmp_path) == {
+            "base": ("3-2", 0), "linux": ("7.2.7.arch1-1", 142000000)}
+
+    def test_target_root_without_db_raises(self, tmp_path):
+        """No DB is a read failure (→ UNKNOWN), never an empty "nothing installed"."""
+        with pytest.raises(RuntimeError, match="no pacman local DB"):
+            pacman.get_installed_facts(root=tmp_path)
 
     def test_qi_fallback_nonzero_exit_raises_not_empty_dict(self, monkeypatch):
         """A failed `pacman -Qi` fallback must raise, not return {}.
@@ -1231,15 +1246,17 @@ class TestBatchInstallFailureIsDiagnosable:
         assert batch_install_pkgs([self._make_pkg(tmp_path)]) is False
         assert "failed to prepare transaction" in capsys.readouterr().err
 
-    @patch("sysforge.primitives.pacman.subprocess.run")
-    def test_interactive_failure_points_at_the_terminal(
-        self, mock_run, tmp_path, capsys
+    def test_interactive_failure_shows_the_captured_output(
+        self, tmp_path, capsys, pacman_tx
     ):
-        mock_run.return_value = MagicMock(returncode=1, stderr=None)
+        """3.3.0-B21 supersedes 3.1.0-B14's "went to the terminal" note: the
+        interactive transaction is now captured, so the reason is in the log."""
+        pacman_tx.returncode = 1
+        pacman_tx.tail = ["error: failed to prepare transaction (could not satisfy dependencies)"]
         assert batch_install_pkgs(
             [self._make_pkg(tmp_path)], interactive=True
         ) is False
-        assert "terminal" in capsys.readouterr().err.lower()
+        assert "failed to prepare transaction" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -1327,3 +1344,56 @@ def test_get_package_dates_none_when_not_installed(tmp_path):
     from sysforge.primitives.pacman import get_package_dates
 
     assert get_package_dates("ghost", root=tmp_path) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# 3.3.0-B21: run_logged_transaction keeps pacman's output (real pty, fake pacman)
+# ---------------------------------------------------------------------------
+
+_FAKE_PACMAN = r"""
+import sys
+print(":: Proceed with installation? [Y/n] ", end="", flush=True)
+answer = sys.stdin.readline().strip()
+print(f"answered={answer}")
+print("(1/2) Arming ConditionNeedsUpdate...")
+print("==> dkms install --no-depmod nvidia/615.71.09 -k 7.2.8-sf")
+print("Error! Bad return status for module build on kernel: 7.2.8-sf (x86_64)")
+print("==> WARNING: `dkms install --no-depmod nvidia/615.71.09 -k 7.2.8-sf' exited 10")
+sys.exit(int(sys.argv[1]))
+"""
+
+
+def _run_fake_pacman(tmp_path, monkeypatch, pacman_tx, rc):
+    import sys as _sys
+    from sysforge import log as _log_mod
+    answer = tmp_path / "stdin"
+    answer.write_text("y\n")
+    fh = answer.open()
+    monkeypatch.setattr(_sys, "stdin", fh)
+    logged, warned = [], []
+    monkeypatch.setattr(_log_mod, "_write_to_files", lambda line, raw=False: logged.append(line))
+    monkeypatch.setattr(_log_mod, "warn", lambda tag, msg: warned.append(msg))
+    try:
+        out = pacman_tx.real([_sys.executable, "-c", _FAKE_PACMAN, str(rc)])
+    finally:
+        fh.close()
+    return out, logged, warned
+
+
+def test_logged_transaction_hook_failure_with_exit_zero_is_kept(
+        tmp_path, monkeypatch, pacman_tx, capfd):
+    (rc, tail), logged, warned = _run_fake_pacman(tmp_path, monkeypatch, pacman_tx, 0)
+    assert rc == 0
+    log_text = "".join(logged)
+    assert "[SYSFORGE][OUT][PACMAN] ==> WARNING: `dkms install" in log_text
+    assert any("exited 10" in w for w in warned)
+    assert any(w.startswith("pacman hook reported a failure: Error!") for w in warned)
+    assert "answered=y" in log_text          # stdin reached the child
+    assert "answered=y" in capfd.readouterr().out   # and output was forwarded live
+
+
+def test_logged_transaction_nonzero_returns_tail(tmp_path, monkeypatch, pacman_tx):
+    (rc, tail), _logged, _warned = _run_fake_pacman(tmp_path, monkeypatch, pacman_tx, 1)
+    assert rc == 1
+    assert tail[-1].endswith("exited 10")
+    assert any("answered=y" in line for line in tail)

@@ -1517,7 +1517,7 @@ def test_build_failure_exits_nonzero(update_scenario, monkeypatch, capsys):
     back through ``cmd_update``'s return value into
     ``ExecResult.exit_code``.
     """
-    import sysforge.primitives.makepkg_wrapper as _mw
+    import sysforge.build.makepkg_wrapper as _mw
 
     def _boom(*a, **k):
         raise RuntimeError("simulated build failure")
@@ -2880,3 +2880,61 @@ def test_flag_drift_notice_never_says_rebuilding_when_nothing_is_queued(
     line = next(m for m in seen if m.startswith("flag drift:"))
     assert "rebuilding" not in line
     assert "ripgrep" in line and "sysforge run toolchain" in line
+
+
+# ---------------------------------------------------------------------------
+# 3.1.0-B12: a stage-owned toolchain package in the batch builds as its own
+# pass first, and the rest is stamped with the re-read fingerprint
+# ---------------------------------------------------------------------------
+
+def _toolchain_and_dependent_scenario(update_scenario):
+    update_scenario.add_pkg("llvm", "pkgname=llvm\npkgver=22.1.6\npkgrel=1\n")
+    update_scenario.add_pkg("foo", "pkgname=foo\npkgver=2\npkgrel=1\n")
+    update_scenario.record("foo", "1", "1", source="local")
+    toolchain_path = update_scenario.src_root.parent / "toolchain.toml"
+    toolchain_path.write_text('enabled = true\ncompiler = "llvm"\n')
+    return toolchain_path
+
+
+def test_include_stage_owned_builds_toolchain_first_then_restamps(update_scenario):
+    toolchain_path = _toolchain_and_dependent_scenario(update_scenario)
+    with (
+        patch("sysforge.primitives.stage_ownership.KERNEL_PATH",
+              update_scenario.src_root.parent / "nope-kernel.toml"),
+        patch("sysforge.primitives.stage_ownership.TOOLCHAIN_PATH", toolchain_path),
+        patch("sysforge.update.get_toolchain_fingerprint",
+              side_effect=["fp-before", "fp-after"]),
+    ):
+        builds = update_scenario.run(
+            _make_args(include_stage_owned=True),
+            installed={"llvm": "22.1.5-1", "foo": "1-1"},
+            foreign={"llvm": "22.1.5-1", "foo": "1-1"},
+        )
+    order = [(Path(a[0]).parent.name, k["options"].toolchain_fingerprint)
+             for a, k in builds]
+    assert order == [("llvm", "fp-before"), ("foo", "fp-after")]
+
+
+def test_without_toolchain_in_batch_single_pass_one_fingerprint_read(update_scenario):
+    update_scenario.add_pkg("foo", "pkgname=foo\npkgver=2\npkgrel=1\n")
+    update_scenario.record("foo", "1", "1", source="local")
+    with patch("sysforge.update.get_toolchain_fingerprint",
+               side_effect=["fp-only"]) as fp:
+        builds = update_scenario.run(
+            _make_args(), installed={"foo": "1-1"}, foreign={"foo": "1-1"})
+    assert [k["options"].toolchain_fingerprint for _a, k in builds] == ["fp-only"]
+    assert fp.call_count == 1
+
+
+def test_split_toolchain_first_by_owner_stamp_and_config(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from sysforge.update_assemble import split_toolchain_first
+    from sysforge.primitives import stage_ownership
+    monkeypatch.setattr(stage_ownership, "TOOLCHAIN_PATH", tmp_path / "none.toml")
+    monkeypatch.setattr(stage_ownership, "KERNEL_PATH", tmp_path / "none.toml")
+    t = lambda base, *names: SimpleNamespace(pkgbase=base, pkgnames=list(names) or [base])  # noqa: E731
+    batch = [t("foo"), t("my-clang", "my-clang"), t("bar"), t("llvm", "llvm", "llvm-libs")]
+    bs = {"my-clang": {"owner_stage": "toolchain"}, "llvm-libs": {"owner_stage": "toolchain"}}
+    first, rest = split_toolchain_first(batch, bs)
+    assert [x.pkgbase for x in first] == ["my-clang", "llvm"]
+    assert [x.pkgbase for x in rest] == ["foo", "bar"]

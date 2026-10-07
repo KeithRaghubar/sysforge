@@ -46,9 +46,9 @@ def test_recording_a_build_cannot_touch_the_live_state_file(tmp_path):
     """The exact shape that leaked: run() with _run_build patched still records."""
     from unittest.mock import patch
 
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     from sysforge.primitives.build_state import BuildState
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build.makepkg_wrapper import BuildOptions
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=linux-isolation-probe\npkgver=1\npkgrel=1\n")

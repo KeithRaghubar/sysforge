@@ -13,15 +13,17 @@ to the sibling module that owns it.
 import dataclasses
 import contextlib
 
+from sysforge import build_core
 from sysforge.build_core import make_build_options
+from sysforge.primitives.makepkg_flags import SYNC_FLAGS
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives import boot_entries
 from sysforge.primitives import kernel_fdo
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_lock import build_lock
-from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
-from sysforge.primitives.makepkg_wrapper import install_built_packages
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.build.makepkg_wrapper import AlreadyBuilt
+from sysforge.build.makepkg_wrapper import install_built_packages
+from sysforge.build.makepkg_wrapper import run as makepkg_run
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
 from sysforge.pipeline.stages.kernel import (
@@ -511,6 +513,9 @@ class KernelStage(Stage):
         topology = gates.gate1_preflight(
             kernel_cfg, options, fdo_eff_pkgname, dry_run=options.dry_run,
         )
+        # A CONFIG_RUST=y fragment needs host Rust tooling the kernel tree
+        # pins; refuse now rather than let olddefconfig drop it (3.0.0-F1).
+        gates.gate_rust_preflight(fragment_path, state_dir, dry_run=options.dry_run)
 
         # Advisory lock around the whole build → audit → install window so two
         # concurrent `sysforge run kernel` runs sharing this state dir can't
@@ -551,6 +556,9 @@ class KernelStage(Stage):
             # conf + checkout name (3.2.0-B37). Stays None on the AlreadyBuilt
             # and dry-run paths: no fresh tree to demand.
             built_dir = None
+            # AlreadyBuilt install-as-built only: the reused package's own
+            # resolved config, when one can be verified (3.3.0-B11).
+            reused_config = None
             # The pkgver this build produced, read inside the build lock (a
             # concurrent run cannot rewrite the build files under us) for the
             # post-install FDO sidecar.
@@ -574,6 +582,9 @@ class KernelStage(Stage):
                     return make_build_options(
                         "kernel", options,
                         extra_flags=extra_flags,
+                        # makepkg never escalates (3.4.0-F1): the profile's
+                        # --syncdeps is stripped; deps are installed above.
+                        strip_flags=SYNC_FLAGS,
                         log_dir=options.log_dir,
                         profile_conf=(
                             getattr(options, "profile_conf", None)
@@ -614,13 +625,17 @@ class KernelStage(Stage):
                         ),
                     )
 
+                # What --syncdeps did, through the privilege seam (3.4.0-F1).
+                build_core.install_missing_repo_deps(
+                    [pkgbuild], exclude=frozenset({pkgname, fdo_eff_pkgname}))
+
                 # Forced (-f) for every record and for a use whose applied
                 # profile changed (FdoPlan.force_rebuild); otherwise makepkg may
                 # reuse the package in PKGDEST (exit 13, the B5 prompt below).
                 try:
                     built_dir = makepkg_run(pkgbuild, options=_kernel_build_options(
                         extra_flags=["-f"] if fdo_plan.force_rebuild else None))
-                except AlreadyBuilt:
+                except AlreadyBuilt as exc:
                     # B5: makepkg exit 13 skipped the build — and with it the
                     # in-prepare() kconfig review an interactive run promised.
                     # Ask the operator (install as-built / rebuild with -f to
@@ -632,19 +647,27 @@ class KernelStage(Stage):
                         )
                     else:
                         already_built = True
+                        # 3.3.0-B11: the tree that built the reused package
+                        # (or its archived config), verified against the
+                        # release the artifact ships, so Gate 2 and the drift
+                        # check run instead of reporting "did not run".
+                        reused_config = gates.resolve_reused_config(
+                            state_dir, pkgname, pkgbuild.parent,
+                            build_dir=getattr(exc, "build_dir", None))
 
                 # Gate 2 — resolved-.config audit (raises on brick, pre-install).
                 gates.gate2_audit(
                     pkgbuild.parent, topology,
                     skip_boot_audit=skip_boot_audit, state_dir=state_dir,
-                    build_dir=built_dir,
+                    build_dir=built_dir, reused=reused_config,
                 )
 
                 # Advisory: warn if any option sysforge merged didn't survive
                 # the build's kconfig resolution (nconfig toggle or olddefconfig
                 # dep drop). Never raises; no-op when no fragment was written.
                 self._kconfig_drift = gates.gate2_kconfig_drift(
-                    pkgbuild.parent, fragment_path, build_dir=built_dir
+                    pkgbuild.parent, fragment_path, build_dir=built_dir,
+                    reused=reused_config,
                 )
                 self._reported_kconfig_merge = fragment_path is not None
 

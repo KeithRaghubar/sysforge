@@ -12,7 +12,7 @@ already root and the suite must not depend on who runs it.
 import threading
 from unittest.mock import MagicMock, patch
 
-from sysforge.primitives import sudo_session
+from sysforge.primitives import privilege, sudo_session
 from sysforge.primitives.sudo_session import (
     SUDO_KEEPALIVE_INTERVAL,
     _keepalive_daemon,
@@ -33,17 +33,28 @@ def _run_result(returncode):
 
 def test_authenticate_runs_sudo_v_and_reports_success():
     with patch("os.geteuid", return_value=1000), \
+         patch.object(privilege, "_credentials_cached", return_value=False), \
          patch("subprocess.run", return_value=_run_result(0)) as mock_run:
         assert authenticate() is True
 
-    mock_run.assert_called_once_with(["sudo", "-v"])
+    mock_run.assert_called_once_with(["sudo", "-v"], check=False)
 
 
 def test_authenticate_reports_failure_on_nonzero():
     """A timed-out passwd prompt exits non-zero — the caller must be able to see it."""
     with patch("os.geteuid", return_value=1000), \
+         patch.object(privilege, "_credentials_cached", return_value=False), \
          patch("subprocess.run", return_value=_run_result(1)):
         assert authenticate() is False
+
+
+def test_authenticate_skips_prompt_when_credentials_cached():
+    """3.3.0-F3: cached credentials → no `sudo -v`, nothing to answer."""
+    with patch("os.geteuid", return_value=1000), \
+         patch.object(privilege, "_credentials_cached", return_value=True), \
+         patch("subprocess.run") as mock_run:
+        assert authenticate() is True
+    mock_run.assert_not_called()
 
 
 def test_authenticate_is_a_noop_when_already_root():

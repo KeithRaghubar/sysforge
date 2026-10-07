@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 import tempfile
 import tomllib
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from sysforge import log
 from sysforge.primitives import pacman, pacman_hooks, paths
 from sysforge.primitives.config import load_sysforge_toml
 from sysforge.primitives.privilege import run_privileged
+from sysforge.primitives import run
 
 # Artifact classes. Explicit registry field rather than an inference from the
 # destination path, so adding a class is a table entry instead of a new branch
@@ -784,11 +784,8 @@ def unit_is_enabled(unit: str) -> bool:
     is indistinguishable from "not enabled" for pre_remove's purposes.
     """
     try:
-        cp = subprocess.run(
-            ["systemctl", "is-enabled", "--quiet", unit],
-            capture_output=True, text=True,
-        )
-        return cp.returncode == 0
+        cp = run.capture(["systemctl", "is-enabled", "--quiet", unit])
+        return cp is not None and cp.returncode == 0
     except OSError:  # e.g. systemctl missing entirely
         return False
 

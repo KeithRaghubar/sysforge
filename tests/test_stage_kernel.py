@@ -89,6 +89,10 @@ def _capture_logs():
 
 @pytest.fixture(autouse=True)
 def _neutralize_kernel_gates(monkeypatch):
+    # 3.4.0-F1: the stage installs missing repo deps itself (pacman -T, then
+    # sudo pacman -S). Never from a test; tests of that step re-patch it.
+    from sysforge import build_core as _bc
+    monkeypatch.setattr(_bc, "install_missing_repo_deps", lambda *a, **k: None)
     monkeypatch.setattr(kernel_safety, "find_fallback_kernels",
                         lambda *a, **k: ["linux"])
     monkeypatch.setattr(kernel_safety, "check_boot_mount_space",
@@ -1020,6 +1024,7 @@ def test_run_fdo_capture_happy_path_passes_recorded_tree(monkeypatch, tmp_path):
     monkeypatch.setattr(_km.fdo, "_log", fake_log)
     _km.fdo.run_fdo_capture("linux", False, False)
     assert seen["recorded_build_dir"] == Path("/rec")
+    assert seen["propeller"] is False  # 3.3.0-B17: refusals name the round's flags
     assert any("sudo perf record" in str(c) for c in fake_log.ui.call_args_list)
 
 
@@ -3278,14 +3283,14 @@ LSMOD_HEADER = "Module                  Size  Used by\n"
 
 
 def _mock_lsmod(monkeypatch, stdout):
-    real_run = _km.kconfig.subprocess.run
+    real_run = run_seam.subprocess.run
 
     def fake_run(argv, *args, **kwargs):
         if argv == ["lsmod"]:
             return MagicMock(returncode=0, stdout=stdout)
         return real_run(argv, *args, **kwargs)
 
-    monkeypatch.setattr(_km.kconfig.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
 
 
 def test_snapshot_accumulates_across_captures(tmp_path, monkeypatch):
@@ -3569,6 +3574,8 @@ def _run_stage_already_built(tmp_path, *, prompt_ret=None, tty=True,
                return_value=tty), \
          patch.object(_km.stage, "install_built_packages") as mock_install, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
+         patch("sysforge.build.makepkg_wrapper.built_kernel_artifact_release",
+               return_value=None), \
          _capture_logs() as logs:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         try:
@@ -4096,6 +4103,7 @@ def test_dry_run_leaves_a_stale_seed_alone(tmp_path):
 
 from sysforge.pipeline.stages.kernel import install as kinstall  # noqa: E402
 from sysforge.primitives import boot_entries as be  # noqa: E402
+from sysforge.primitives import run as run_seam
 
 OPERATOR_STAGE = (
     "title Arch Linux Sysforge\nlinux /vmlinuz-linux-sysforge\n"
@@ -4885,6 +4893,26 @@ def test_finish_build_use_writes_applied(fdo_stores, tmp_path):
     assert not (afdo / "round.toml").exists()
 
 
+# 3.3.0-B16: applied.toml means "last applied", so a same-profile reuse leaves it alone.
+def test_finish_build_use_unchanged_fingerprint_leaves_applied_mtime(fdo_stores, tmp_path):
+    import os
+    afdo, _ = fdo_stores
+    path = kernel_fdo.write_applied(afdo, "cd" * 32)
+    os.utime(path, (1_000_000, 1_000_000))
+    kfdo.finish_fdo_build(_use_plan(afdo), built_dir=None, pkgver="1-1")
+    assert path.stat().st_mtime == 1_000_000
+
+
+def test_finish_build_use_changed_fingerprint_rewrites_applied(fdo_stores, tmp_path):
+    import os
+    afdo, _ = fdo_stores
+    path = kernel_fdo.write_applied(afdo, "ab" * 32)
+    os.utime(path, (1_000_000, 1_000_000))
+    kfdo.finish_fdo_build(_use_plan(afdo), built_dir=None, pkgver="1-1")
+    assert kernel_fdo.read_applied(afdo) == "cd" * 32
+    assert path.stat().st_mtime > 1_000_000
+
+
 def test_finish_build_record_writes_no_applied(fdo_stores, tmp_path):
     afdo, _ = fdo_stores
     kfdo.finish_fdo_build(_rec_plan(afdo), built_dir=tmp_path / "b", pkgver="1-1")
@@ -5075,3 +5103,259 @@ def test_stage_record_round_pkgver_comes_from_the_build(tmp_path, monkeypatch):
         "linux-git-sysforge-profiling-6.11-2-x86_64.pkg.tar.zst\n")
     _drive_install(tmp_path, monkeypatch, ("record", False, True))
     assert kernel_fdo.read_round(afdo).pkgver == "6.11-2"
+
+
+# ---------------------------------------------------------------------------
+# 3.3.0-B11 — a reused (AlreadyBuilt) kernel's own config feeds Gate 2 + drift
+# ---------------------------------------------------------------------------
+
+_REL = "7.2.7-arch1-1-sysforge"
+
+
+def _reuse_tree(root, release, body="CONFIG_EXT4_FS=y\nCONFIG_HZ_1000=y\n"):
+    tree = root / "src" / "linux-7.2.7"
+    (tree / "include" / "config").mkdir(parents=True)
+    (tree / ".config").write_text(body)
+    (tree / "include" / "config" / "kernel.release").write_text(release + "\n")
+    return tree
+
+
+def _artifact_release(monkeypatch, release):
+    from sysforge.build import makepkg_wrapper
+    monkeypatch.setattr(makepkg_wrapper, "built_kernel_artifact_release",
+                        lambda d: release)
+
+
+def test_reused_config_matching_tree_is_used(tmp_path, monkeypatch):
+    _artifact_release(monkeypatch, _REL)
+    tree = _reuse_tree(tmp_path / "builds" / "linux-sysforge", _REL)
+    got = _km.gates.resolve_reused_config(
+        tmp_path / "state", "linux-sysforge", tmp_path / "pkg",
+        build_dir=tmp_path / "builds" / "linux-sysforge")
+    assert got is not None and got.path == tree / ".config"
+    assert got.source.startswith("build tree") and got.release == _REL
+    assert got.config["CONFIG_HZ_1000"] == "y"
+
+
+def test_reused_config_mismatched_tree_falls_back_to_archive(tmp_path, monkeypatch):
+    from sysforge.primitives import kconfig_history
+    _artifact_release(monkeypatch, _REL)
+    _reuse_tree(tmp_path / "builds" / "linux-sysforge", "7.2.8-arch1-1-sysforge")
+    archived = tmp_path / "archived.config"
+    archived.write_text("CONFIG_EXT4_FS=y\nCONFIG_ARCHIVED=y\n")
+    kconfig_history.archive(tmp_path / "state", "linux-sysforge", _REL, archived)
+    got = _km.gates.resolve_reused_config(
+        tmp_path / "state", "linux-sysforge", tmp_path / "pkg",
+        build_dir=tmp_path / "builds" / "linux-sysforge")
+    assert got is not None and got.path is None
+    assert "kconfig-history" in got.source
+    assert got.config["CONFIG_ARCHIVED"] == "y"
+
+
+def test_reused_config_none_without_tree_or_archive(tmp_path, monkeypatch):
+    _artifact_release(monkeypatch, _REL)
+    _reuse_tree(tmp_path / "builds" / "linux-sysforge", "7.2.8-arch1-1-sysforge")
+    assert _km.gates.resolve_reused_config(
+        tmp_path / "state", "linux-sysforge", tmp_path / "pkg",
+        build_dir=tmp_path / "builds" / "linux-sysforge") is None
+
+
+def test_reused_config_none_when_artifact_release_unknown(tmp_path, monkeypatch):
+    _artifact_release(monkeypatch, None)
+    _reuse_tree(tmp_path / "builds" / "linux-sysforge", _REL)
+    assert _km.gates.resolve_reused_config(
+        tmp_path / "state", "linux-sysforge", tmp_path / "pkg",
+        build_dir=tmp_path / "builds" / "linux-sysforge") is None
+
+
+def test_gate2_audits_reused_config_names_source_no_e2(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config",
+                        lambda cfg, *a, **k: seen.setdefault("cfg", cfg) and [])
+    monkeypatch.setattr(kernel_safety, "running_kernel_release", lambda: _REL)
+    monkeypatch.setattr(device_probe, "enumerate_devices", lambda **k: [])
+    reused = _km.gates.ReusedConfig({"CONFIG_EXT4_FS": "y"}, _REL, "build tree /t")
+    with _capture_logs() as logs:
+        _km.gates.gate2_audit(tmp_path, None, skip_boot_audit=False, reused=reused)
+    assert seen["cfg"] == {"CONFIG_EXT4_FS": "y"}
+    assert any("build tree /t" in m for m in _info_messages(logs))
+    assert not any("matches the running kernel" in m for m in _warn_messages(logs))
+    assert not any("not found" in m for m in _warn_messages(logs))
+
+
+def test_gate2_kconfig_drift_checks_reused_config(tmp_path):
+    fragment = tmp_path / "sysforge.config"
+    fragment.write_text("CONFIG_MZEN3=y\nCONFIG_HZ_1000=y\n")
+    reused = _km.gates.ReusedConfig(
+        {"CONFIG_HZ_1000": "y"}, _REL, "kconfig-history archive /a")
+    with _capture_logs() as logs:
+        drifts = _km.gates.gate2_kconfig_drift(tmp_path, fragment, reused=reused)
+    assert drifts is not None and [d.option for d in drifts] == ["CONFIG_MZEN3"]
+    assert any("kconfig-history archive /a" in m for m in _warn_messages(logs))
+
+
+def test_already_built_install_resolves_reused_tree_from_exception(tmp_path):
+    """The stage hands AlreadyBuilt.build_dir (the wrapper's build_root) to the
+    resolver and threads the result into both checks."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.non_interactive = True
+    tree_root = tmp_path / "profile-builds" / "linux-git"
+
+    def fake_makepkg(pkgbuild, *, options):
+        e = AlreadyBuilt(pkgbuild)
+        e.build_dir = tree_root
+        raise e
+
+    reused = _km.gates.ReusedConfig({"CONFIG_EXT4_FS": "y"}, _REL, "build tree x")
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch("sysforge.pipeline.stages.kernel.stage.makepkg_run", side_effect=fake_makepkg), \
+         patch.object(_km.gates, "resolve_reused_config", return_value=reused) as res, \
+         patch.object(_km.gates, "gate2_audit") as g2, \
+         patch.object(_km.stage, "install_built_packages"), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+    assert res.call_args.kwargs["build_dir"] == tree_root
+    assert g2.call_args.kwargs["reused"] is reused
+    assert g2.call_args.kwargs["build_dir"] is None
+
+
+def test_fresh_build_never_consults_reused_config(tmp_path, monkeypatch):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, return_value=tmp_path / "fresh"), \
+         patch.object(_km.gates, "resolve_reused_config") as res, \
+         patch.object(_km.gates, "gate2_audit") as g2, \
+         patch.object(_km.stage, "install_built_packages"), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+    res.assert_not_called()
+    assert g2.call_args.kwargs["reused"] is None
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F1 — refuse a CONFIG_RUST=y build the host cannot do
+# ---------------------------------------------------------------------------
+
+def _failing_rust_check():
+    from sysforge.primitives.toolchain_preflight import ToolchainCheck
+    return ToolchainCheck("rust:kernel", False, "rustc 1.80.0 < 1.85.0", "rustup update", False)
+
+
+def test_rust_preflight_noop_without_config_rust(tmp_path, monkeypatch):
+    from sysforge.primitives import toolchain_preflight as tp
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("CONFIG_HZ_1000=y\n# CONFIG_RUST is not set\n")
+    monkeypatch.setattr(tp, "probe_rust_kernel",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("probed")))
+    _km.gates.gate_rust_preflight(frag, tmp_path, dry_run=False)
+    _km.gates.gate_rust_preflight(None, tmp_path, dry_run=False)
+
+
+def test_rust_preflight_uses_cached_tree_minimums(tmp_path, monkeypatch):
+    from sysforge.primitives import toolchain_preflight as tp
+    tree = tmp_path / "tree"
+    (tree / "scripts").mkdir(parents=True)
+    (tree / "scripts" / "min-tool-version.sh").write_text(
+        "rustc)\n\techo 1.85.0\n\t;;\nbindgen)\n\techo 0.71.1\n\t;;\n")
+    _km.gates.cache_rust_minimums(tmp_path, tree, "7.2.7-arch1-1")
+    seen = {}
+
+    def ok(mins, source):
+        seen.update(mins=mins, source=source)
+        return tp.ToolchainCheck("rust:kernel", True, "fine", None, False)
+    monkeypatch.setattr(tp, "probe_rust_kernel", ok)
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("CONFIG_RUST=y\n")
+    _km.gates.gate_rust_preflight(frag, tmp_path, dry_run=False)
+    assert seen == {"mins": {"rustc": "1.85.0", "bindgen": "0.71.1"},
+                    "source": "the 7.2.7-arch1-1 kernel tree"}
+
+
+def test_rust_preflight_dry_run_reports_without_raising(tmp_path, monkeypatch):
+    from sysforge.primitives import toolchain_preflight as tp
+    monkeypatch.setattr(tp, "probe_rust_kernel", lambda *a, **k: _failing_rust_check())
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("CONFIG_RUST=y\n")
+    with _capture_logs() as logs:
+        _km.gates.gate_rust_preflight(frag, tmp_path, dry_run=True)
+    assert any("would abort" in str(c) for c in logs.ui.call_args_list)
+
+
+@pytest.mark.parametrize("compiler", ["gcc", "llvm"])
+def test_rust_preflight_refuses_before_build_on_both_toolchains(tmp_path, monkeypatch, compiler):
+    """Dual-toolchain parity: CONFIG_RUST is orthogonal to LLVM=1, so the
+    refusal is identical on the gcc and llvm kernel paths."""
+    from sysforge.primitives import toolchain_preflight as tp
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds, kconfig=[{"option": "CONFIG_RUST", "value": "y"}])
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.compiler = compiler
+    monkeypatch.setattr(tp, "probe_rust_kernel", lambda *a, **k: _failing_rust_check())
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN) as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="CONFIG_RUST=y"):
+            KernelStage().run({}, state, opts)
+    mock_build.assert_not_called()
+
+
+def test_gate2_caches_tree_rust_minimums(tmp_path, monkeypatch):
+    """Gate 2 harvests the built tree's minimums for the next run's preflight."""
+    tree = tmp_path / "b" / "src" / "linux-7.2.7"
+    (tree / "scripts").mkdir(parents=True)
+    (tree / "include" / "config").mkdir(parents=True)
+    (tree / ".config").write_text("CONFIG_EXT4_FS=y\n")
+    (tree / "include" / "config" / "kernel.release").write_text("7.2.7-sf\n")
+    (tree / "scripts" / "min-tool-version.sh").write_text(
+        "rustc)\n\techo 1.85.0\n\t;;\nbindgen)\n\techo 0.71.1\n\t;;\n")
+    monkeypatch.setattr(kernel_safety, "audit_resolved_config", lambda *a, **k: [])
+    monkeypatch.setattr(device_probe, "enumerate_devices", lambda **k: [])
+    monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: tree / ".config")
+    state = tmp_path / "state"
+    state.mkdir()
+    _km.gates.gate2_audit(tmp_path, None, skip_boot_audit=False, state_dir=state,
+                          build_dir=tmp_path / "b")
+    assert _km.gates.load_rust_minimums(state) == (
+        {"rustc": "1.85.0", "bindgen": "0.71.1"}, "the 7.2.7-sf kernel tree")
+
+
+
+# 3.4.0-F1 — makepkg never escalates on the kernel path either
+@pytest.mark.parametrize("compiler", ["gcc", "llvm"])
+def test_kernel_build_strips_syncdeps_and_installs_deps_first(tmp_path, monkeypatch, compiler):
+    """Dual-toolchain parity: the profile's --syncdeps never reaches makepkg;
+    sysforge installs missing repo deps first, excluding the kernel itself."""
+    from sysforge import build_core as _bc
+    from sysforge.primitives.makepkg_flags import SYNC_FLAGS
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    opts.compiler = compiler
+    order = []
+    monkeypatch.setattr(_bc, "install_missing_repo_deps",
+                        lambda paths, **k: order.append(("deps", k["exclude"])))
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, side_effect=lambda pb, options: order.append(
+             ("build", options.strip_flags))), \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, opts)
+    (dk, exclude), (bk, strip) = order[:2]
+    assert (dk, bk) == ("deps", "build")
+    assert "linux-git" in exclude
+    assert set(SYNC_FLAGS) <= set(strip)

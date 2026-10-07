@@ -87,6 +87,7 @@ from sysforge.primitives.net_policy import (
 from sysforge.primitives.pacman import get_repo_candidate_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
+from sysforge.primitives import run
 
 _log = log.get_logger("SYNC")
 
@@ -598,11 +599,7 @@ class SourceSyncScheduler:
 
 
 def _head_commit(pkgbuild_dir: Path) -> str | None:
-    import subprocess
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"])
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
@@ -624,9 +621,7 @@ def _fetch_repo_tags(
             from sysforge.primitives.rate_limit import run_throttled_git
             r = run_throttled_git(cmd, limiter, timeout=timeout or None)
         else:
-            r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout or None,
-            )
+            r = run.probe(cmd, timeout=timeout or None)
     except subprocess.TimeoutExpired:
         return f"git fetch --tags timed out after {timeout}s"
     if r.returncode != 0:
@@ -641,11 +636,7 @@ def _reset_hard_fetch_head(pkgbuild_dir: Path) -> str | None:
     user commits worth preserving, so when fetch reports divergence and the
     working tree is clean it's safe to force-track upstream.
     """
-    import subprocess
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "reset", "--hard", "FETCH_HEAD"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "reset", "--hard", "FETCH_HEAD"])
     if r.returncode != 0:
         return None
     return _head_commit(pkgbuild_dir)

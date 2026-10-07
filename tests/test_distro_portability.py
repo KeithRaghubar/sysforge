@@ -22,7 +22,7 @@ from pathlib import Path
 
 from sysforge.primitives import pacman
 from sysforge.primitives.config import parse_system_makepkg_conf
-from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
+from sysforge.build.makepkg_wrapper import emit_makepkg_conf
 from sysforge.primitives.profile import merge_extends
 
 # Narrowed mirror of the [profiles.*] tables in

@@ -92,6 +92,52 @@ def _isolate_filesystem_soname_cache(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sudo_probe(monkeypatch):
+    """
+    Default the sudo credential probe to "cached" for every test.
+
+    ``privilege.ensure_credentials`` (3.3.0-F3) runs a real ``sudo -n true``
+    before every privileged install, and ``sudo -v`` when that fails — so a
+    test reaching an install path without stubbing ``subprocess`` would probe
+    the host's sudo, and on a machine without cached credentials, prompt.
+    Tests of the prompt path re-patch ``_credentials_cached`` themselves.
+    """
+    from sysforge.primitives import privilege as _privilege
+    monkeypatch.setattr(_privilege, "_credentials_cached", lambda: True)
+
+
+class _PacmanTransactions:
+    """Recorder standing in for ``pacman.run_logged_transaction``."""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+        self.returncode = 0
+        self.tail: list[str] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        return self.returncode, list(self.tail)
+
+
+@pytest.fixture(autouse=True)
+def pacman_tx(monkeypatch):
+    """
+    Never run a real pacman transaction on a pty (3.3.0-B21).
+
+    ``pacman.run_logged_transaction`` spawns ``sudo pacman -U`` through
+    ``pty_runner`` (``Popen``), which a ``subprocess.run`` patch does not
+    reach — so an install-path test would otherwise escalate for real. Request
+    this fixture by name to read ``.calls`` or set ``.returncode``/``.tail``.
+    Tests of the runner itself re-patch ``pty_runner.run_with_pty``.
+    """
+    from sysforge.primitives import pacman as _pacman
+    rec = _PacmanTransactions()
+    rec.real = _pacman.run_logged_transaction  # for tests of the runner itself
+    monkeypatch.setattr(_pacman, "run_logged_transaction", rec)
+    return rec
+
+
+@pytest.fixture(autouse=True)
 def _isolate_local_pacman_db(monkeypatch, tmp_path_factory):
     """
     Point the local-DB root at an empty tree instead of /var/lib/pacman/local.
@@ -672,7 +718,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
     integration tests (in test_update.py and the build-flag tests in
     test_env_state.py).
     """
-    import sysforge.primitives.makepkg_wrapper as _mw
+    import sysforge.build.makepkg_wrapper as _mw
 
     src_root = tmp_path / "src"
     src_root.mkdir()
@@ -792,7 +838,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
         def build_raises_already_built(self, pkgbase):
             """Make the faked build for ``pkgbase`` raise AlreadyBuilt, exercising
             build_core's existing-artifact recovery path."""
-            from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+            from sysforge.build.makepkg_wrapper import AlreadyBuilt
             pkgbuild = src_root / pkgbase / "PKGBUILD"
 
             def _raise():

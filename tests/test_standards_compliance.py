@@ -881,3 +881,48 @@ def test_release_gates_accepts_a_pinned_type_checker(tmp_path):
                 "typecheck:\n"
                 "\tuv run --no-sync --with pyright==$(PYRIGHT_VERSION) pyright sysforge/\n")
     assert mod.check_release_gates(repo) == []
+
+
+# ---------------------------------------------------------------------------
+# Row 28 — subprocess goes through primitives/run (3.2.0-F13)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_SEAM_MODULES = {
+    "sysforge/primitives/run.py", "sysforge/primitives/pty_runner.py",
+    "sysforge/primitives/privilege.py", "sysforge/primitives/sudo_session.py",
+}
+_BANNED = {"subprocess.run", "subprocess.Popen", "subprocess.call",
+           "subprocess.check_call", "subprocess.check_output"}
+
+
+def _ruff_lint_cfg():
+    import tomllib
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["tool"]["ruff"]["lint"]
+
+
+def test_subprocess_fence_rule_is_selected_and_bans_every_call_api():
+    lint = _ruff_lint_cfg()
+    assert "TID251" in lint["select"]
+    assert set(lint["flake8-tidy-imports"]["banned-api"]) >= _BANNED
+
+
+def test_subprocess_fence_exempts_only_the_seam_modules():
+    """The exemption list is the seam, not a convenience: shipped code outside
+    these four files needs a per-call reason instead."""
+    exempt = {path for path, rules in _ruff_lint_cfg()["per-file-ignores"].items()
+              if "TID251" in rules and path.startswith("sysforge/")}
+    assert exempt == _SEAM_MODULES
+
+
+def test_subprocess_fence_every_raw_call_names_its_reason():
+    import re
+    bare = []
+    for py in sorted((REPO_ROOT / "sysforge").rglob("*.py")):
+        for n, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            m = re.search(r"noqa:[^#]*\bTID251\b(.*)$", line)
+            if m and not re.search(r"[A-Za-z]{3}", m.group(1)):
+                bare.append(f"{py.relative_to(REPO_ROOT)}:{n}")
+    assert not bare, f"`# noqa: TID251` without a reason: {bare}"

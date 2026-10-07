@@ -601,3 +601,82 @@ def test_probe_cc_independent_lineages_ignored(monkeypatch):
     assert not report.failed
     assert "spirv-llvm-translator" not in queried
     assert not any(p.startswith("lib32-") for p in queried)
+
+
+# ---------------------------------------------------------------------------
+# 3.0.0-F1: kernel Rust support (rust:kernel)
+# ---------------------------------------------------------------------------
+
+_MIN_TOOL = """\
+#!/bin/sh
+case "$1" in
+binutils)
+\techo 2.30.0
+\t;;
+rustc)
+\tif [ "$SRCARCH" = "s390" ]; then
+\t\techo 1.96.0
+\telse
+\t\techo 1.85.0
+\tfi
+\t;;
+bindgen)
+\techo 0.71.1
+\t;;
+*)
+\techo "$1: unknown tool" >&2
+\texit 1
+\t;;
+esac
+"""
+
+
+def test_kernel_rust_minimums_parses_arch_conditional_and_plain_arms(tmp_path):
+    from sysforge.primitives.toolchain_preflight import kernel_rust_minimums
+    script = tmp_path / "min-tool-version.sh"
+    script.write_text(_MIN_TOOL)
+    assert kernel_rust_minimums(script) == {"rustc": "1.85.0", "bindgen": "0.71.1"}
+
+
+def test_kernel_rust_minimums_unreadable_is_empty(tmp_path):
+    from sysforge.primitives.toolchain_preflight import kernel_rust_minimums
+    assert kernel_rust_minimums(tmp_path / "missing.sh") == {}
+
+
+def _rust_host(monkeypatch, *, rustc="1.91.0", bindgen="0.72.0", core_src=True):
+    from sysforge.primitives import rust_probe, toolchain_preflight as tp
+    versions = {"rustc": rustc, "bindgen": bindgen}
+    monkeypatch.setattr(tp, "_tool_version", lambda tool: versions.get(tool))
+    monkeypatch.setattr(tp, "_rust_core_src_present", lambda: core_src)
+    monkeypatch.setattr(rust_probe, "rustc_provenance",
+                        lambda: "/usr/bin/rustc (rustup: nightly-x86_64)")
+    return tp
+
+
+def test_probe_rust_kernel_ok_within_window(monkeypatch):
+    tp = _rust_host(monkeypatch)
+    c = tp.probe_rust_kernel({"rustc": "1.85.0", "bindgen": "0.71.1"}, "the 7.2.7 kernel tree")
+    assert c.ok and "rustc 1.91.0 >= 1.85.0" in c.detail and "7.2.7" in c.detail
+
+
+def test_probe_rust_kernel_too_old_names_minimum_and_provenance(monkeypatch):
+    tp = _rust_host(monkeypatch, rustc="1.80.0")
+    c = tp.probe_rust_kernel({"rustc": "1.85.0", "bindgen": "0.71.1"}, "tree")
+    assert not c.ok
+    assert "rustc 1.80.0 < 1.85.0" in c.detail
+    assert "rustup: nightly-x86_64" in c.detail
+    assert "silently drop CONFIG_RUST" in c.detail
+
+
+def test_probe_rust_kernel_missing_bindgen_and_rust_src(monkeypatch):
+    tp = _rust_host(monkeypatch, bindgen=None, core_src=False)
+    c = tp.probe_rust_kernel(None)
+    assert not c.ok
+    assert "bindgen not found" in c.detail and "rust-src" in c.detail
+    assert "rust-bindgen" in c.fix_cmd and "rustup component add rust-src" in c.fix_cmd
+    assert "presence checked only" in c.detail
+
+
+def test_probe_one_routes_rust_kernel_token(monkeypatch):
+    tp = _rust_host(monkeypatch)
+    assert tp._probe_one("rust:kernel").name == "rust:kernel"

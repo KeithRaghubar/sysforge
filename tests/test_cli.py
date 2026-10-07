@@ -30,7 +30,7 @@ from sysforge.cli import (
     _resolve_throttle_override,
     _resolve_verbosity,
 )
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 
 
 # ---------------------------------------------------------------------------

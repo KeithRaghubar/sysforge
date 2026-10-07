@@ -41,6 +41,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
+from sysforge.primitives import run
 
 # Fingerprint schema version. Bump whenever the set of inputs folded into a
 # fingerprint changes, so every previously cached entry is invalidated (a stale
@@ -92,10 +93,7 @@ def source_commit(pkgbuild_dir) -> str | None:
     and the commit dimension simply stays constant.
     """
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
+        proc = run.probe(["git", "-C", str(pkgbuild_dir), "rev-parse", "HEAD"], timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
@@ -112,10 +110,7 @@ def compiler_version_line(cc) -> str:
     if not cc:
         return ""
     try:
-        proc = subprocess.run(
-            [str(cc), "--version"], capture_output=True, text=True,
-            timeout=10, check=False,
-        )
+        proc = run.probe([str(cc), "--version"], timeout=10)
         out = proc.stdout if isinstance(proc.stdout, str) else ""
         return out.splitlines()[0].strip() if out else ""
     except (OSError, subprocess.SubprocessError):

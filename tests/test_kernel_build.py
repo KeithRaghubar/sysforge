@@ -8,12 +8,12 @@ test_kernel_build.py — unit tests for kernel build mode behaviours:
 import subprocess
 from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from sysforge.primitives import kconfig_plan as kp
-from sysforge.primitives.makepkg_wrapper import _find_built_packages, _invoke_with_retry, _run_build
+from sysforge.build.makepkg_wrapper import _find_built_packages, _invoke_with_retry, _run_build
 
 
 # ---------------------------------------------------------------------------
@@ -55,18 +55,18 @@ def _mock_build_context(tmp_path, profile=None, extra_env_out=None,
         captured["extra_env"] = dict(extra_env or {})
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.apply_patch_pkgbuild",
+        patch("sysforge.build.makepkg_wrapper.apply_patch_pkgbuild",
               return_value=patched),
-        patch("sysforge.primitives.makepkg_wrapper.patch_pkgbuild_groups",
+        patch("sysforge.build.makepkg_wrapper.patch_pkgbuild_groups",
               return_value=patched),
-        patch("sysforge.primitives.makepkg_wrapper.emit_makepkg_conf",
+        patch("sysforge.build.makepkg_wrapper.emit_makepkg_conf",
               side_effect=fake_emit),
-        patch("sysforge.primitives.makepkg_wrapper.resolve_env_vars",
+        patch("sysforge.build.makepkg_wrapper.resolve_env_vars",
               return_value={}),
-        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+        patch("sysforge.build.makepkg_wrapper._invoke_with_retry",
               side_effect=fake_invoke),
-        patch("sysforge.primitives.makepkg_wrapper.cleanup_patch_artifacts"),
-        patch("sysforge.primitives.makepkg_wrapper.handle_failure"),
+        patch("sysforge.build.makepkg_wrapper.cleanup_patch_artifacts"),
+        patch("sysforge.build.makepkg_wrapper.handle_failure"),
     ):
         yield pkgbuild, captured
 
@@ -147,9 +147,9 @@ def test_already_built_captures_manifest_for_renamed_build(tmp_path):
 
     with (
         _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+        patch("sysforge.build.makepkg_wrapper._invoke_with_retry",
               side_effect=_raise_already_built),
-        patch("sysforge.primitives.makepkg_wrapper._capture_built_manifest") as cap,
+        patch("sysforge.build.makepkg_wrapper._capture_built_manifest") as cap,
         pytest.raises(AlreadyBuilt),
     ):
         # extracted_profile set (kernel kconfig fragment) satisfies the same
@@ -158,6 +158,50 @@ def test_already_built_captures_manifest_for_renamed_build(tmp_path):
                    extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
                    kernel_build=True)
     cap.assert_called_once()
+
+
+def test_already_built_carries_build_root(tmp_path):
+    """3.3.0-B11: AlreadyBuilt leaves with the tree the reused package was built
+    in, by the fresh path's own rule (profile BUILDDIR / post-rename pkgbase)."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    def _raise_already_built(*a, **kw):
+        raise AlreadyBuilt(tmp_path / "PKGBUILD.sysforge")
+
+    profile = {**_minimal_profile(), "BUILDDIR": str(tmp_path / "bd")}
+    with (
+        _mock_build_context(tmp_path) as (pkgbuild, _),
+        patch("sysforge.build.makepkg_wrapper._invoke_with_retry",
+              side_effect=_raise_already_built),
+        patch("sysforge.build.makepkg_wrapper._capture_built_manifest"),
+        pytest.raises(AlreadyBuilt) as ei,
+    ):
+        _run_build(pkgbuild, profile, {}, [],
+                   extracted_profile={}, pkgmeta={"globals": {"pkgbase": "linux-x"}},
+                   kernel_build=True)
+    assert ei.value.build_dir == tmp_path / "bd" / "linux-x"
+
+
+def test_built_kernel_artifact_release_reads_module_dir(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from sysforge.build import makepkg_wrapper
+    from sysforge.primitives import run
+    pkgs = [tmp_path / "linux-x-headers.pkg.tar.zst", tmp_path / "linux-x.pkg.tar.zst"]
+    monkeypatch.setattr(makepkg_wrapper, "_artifacts_for_pkgbuild", lambda d: pkgs)
+
+    def fake_capture(cmd, **kw):
+        if "headers" in cmd[4]:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0,
+                               stdout="usr/lib/modules/7.2.7-arch1-1-sysforge/vmlinuz\n")
+    monkeypatch.setattr(run, "capture", fake_capture)
+    assert makepkg_wrapper.built_kernel_artifact_release(tmp_path) == "7.2.7-arch1-1-sysforge"
+
+
+def test_built_kernel_artifact_release_none_without_artifacts(tmp_path, monkeypatch):
+    from sysforge.build import makepkg_wrapper
+    monkeypatch.setattr(makepkg_wrapper, "_artifacts_for_pkgbuild", lambda d: [])
+    assert makepkg_wrapper.built_kernel_artifact_release(tmp_path) is None
 
 
 def test_already_built_skips_manifest_when_no_rename(tmp_path):
@@ -169,9 +213,9 @@ def test_already_built_skips_manifest_when_no_rename(tmp_path):
 
     with (
         _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+        patch("sysforge.build.makepkg_wrapper._invoke_with_retry",
               side_effect=_raise_already_built),
-        patch("sysforge.primitives.makepkg_wrapper._capture_built_manifest") as cap,
+        patch("sysforge.build.makepkg_wrapper._capture_built_manifest") as cap,
         pytest.raises(AlreadyBuilt),
     ):
         # No extracted profile and no rename → the guard is false, so pkgname
@@ -190,7 +234,7 @@ def test_kernel_build_applies_btf_guard(tmp_path):
     """kernel_build=True → patch_kernel_btf_guard called (gates vmlinux.h on BTF)."""
     with (
         _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
+        patch("sysforge.build.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
     ):
         _run_build(pkgbuild, _minimal_profile(), {}, [],
                    extracted_profile={}, pkgmeta=_minimal_pkgmeta(),
@@ -202,7 +246,7 @@ def test_non_kernel_build_never_applies_btf_guard(tmp_path):
     """kernel_build=False → patch_kernel_btf_guard never called."""
     with (
         _mock_build_context(tmp_path) as (pkgbuild, _),
-        patch("sysforge.primitives.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
+        patch("sysforge.build.makepkg_wrapper.patch_kernel_btf_guard") as mock_btf,
     ):
         _run_build(pkgbuild, _minimal_profile(), {}, [],
                    extracted_profile=None, pkgmeta=_minimal_pkgmeta(),
@@ -362,8 +406,16 @@ def test_find_built_packages_ignores_unrelated(tmp_path):
 # install_built_packages — used by the kernel stage's split build/install
 # ---------------------------------------------------------------------------
 
+def _as_tx(fake_run):
+    """Adapt a ``subprocess.run``-shaped fake to ``pacman.run_logged_transaction``
+    (the pty seam installs go through since 3.3.0-B21)."""
+    def tx(cmd):
+        return fake_run(cmd).returncode, []
+    return tx
+
+
 def test_install_built_packages_runs_pacman_U(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     # PKGDEST-unset so _find_artifacts looks only in the PKGBUILD dir (the dev
     # machine's real PKGDEST would otherwise leak its built packages in).
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
@@ -375,7 +427,7 @@ def test_install_built_packages_runs_pacman_U(tmp_path, monkeypatch):
         calls["cmd"] = cmd
         return SimpleNamespace(returncode=0)
 
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+    with patch("sysforge.primitives.pacman.run_logged_transaction", _as_tx(fake_run)):
         pkgs = mw.install_built_packages(tmp_path)
     assert calls["cmd"][:4] == ["sudo", "pacman", "-U", "--noconfirm"]
     assert len(pkgs) == 2
@@ -389,7 +441,7 @@ def test_install_built_packages_scopes_to_pkgbuild_pkgnames(tmp_path, monkeypatc
     packages into the kernel install. The install set must be scoped to the
     PKGBUILD's pkgnames.
     """
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     pkgdest = tmp_path / "pkgdest"
     pkgdest.mkdir()
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
@@ -411,7 +463,7 @@ def test_install_built_packages_scopes_to_pkgbuild_pkgnames(tmp_path, monkeypatc
         calls["cmd"] = cmd
         return SimpleNamespace(returncode=0)
 
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+    with patch("sysforge.primitives.pacman.run_logged_transaction", _as_tx(fake_run)):
         pkgs = mw.install_built_packages(tmp_path)
     installed = {p.name for p in pkgs}
     assert installed == {
@@ -434,7 +486,7 @@ def test_install_built_packages_renamed_no_manifest_refuses_full_pkgdest(
     ``pacman -U``. It must refuse (raise) rather than install what it cannot
     positively attribute to this build.
     """
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     pkgdest = tmp_path / "pkgdest"
     pkgdest.mkdir()
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
@@ -454,7 +506,7 @@ def test_install_built_packages_renamed_no_manifest_refuses_full_pkgdest(
     def fake_run(cmd, *a, **k):
         raise AssertionError(f"pacman must not run on unscoped set: {cmd}")
 
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run), \
+    with patch("sysforge.primitives.pacman.run_logged_transaction", _as_tx(fake_run)), \
             pytest.raises(RuntimeError, match="nothing to install|could not scope"):
         mw.install_built_packages(tmp_path)
 
@@ -462,7 +514,7 @@ def test_install_built_packages_renamed_no_manifest_refuses_full_pkgdest(
 def test_install_built_packages_uses_manifest_for_renamed_build(
         tmp_path, monkeypatch):
     """With a build-time manifest, a renamed kernel installs exactly its set."""
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     pkgdest = tmp_path / "pkgdest"
     pkgdest.mkdir()
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
@@ -480,7 +532,7 @@ def test_install_built_packages_uses_manifest_for_renamed_build(
         calls["cmd"] = cmd
         return SimpleNamespace(returncode=0)
 
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run", fake_run):
+    with patch("sysforge.primitives.pacman.run_logged_transaction", _as_tx(fake_run)):
         pkgs = mw.install_built_packages(tmp_path)
     assert {p.name for p in pkgs} == {
         "linux-sysforge-7.1.4.arch1-1-x86_64.pkg.tar",
@@ -490,24 +542,24 @@ def test_install_built_packages_uses_manifest_for_renamed_build(
 
 
 def test_install_built_packages_no_artifact_raises(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     with pytest.raises(RuntimeError, match="nothing to install"):
         mw.install_built_packages(tmp_path)
 
 
 def test_install_built_packages_pacman_failure_raises(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper as mw
+    from sysforge.build import makepkg_wrapper as mw
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: None)
     (tmp_path / "linux-custom-1-1-x86_64.pkg.tar.zst").touch()
-    with patch("sysforge.primitives.makepkg_wrapper.subprocess.run",
-               lambda cmd, *a, **k: SimpleNamespace(returncode=1)), \
+    with patch("sysforge.primitives.pacman.run_logged_transaction",
+               _as_tx(lambda cmd, *a, **k: SimpleNamespace(returncode=1))), \
             pytest.raises(RuntimeError, match="pacman -U failed"):
         mw.install_built_packages(tmp_path)
 
 
 def test_no_install_option_default_false():
-    from sysforge.primitives.makepkg_wrapper import BuildOptions, INSTALL_FLAGS
+    from sysforge.build.makepkg_wrapper import BuildOptions, INSTALL_FLAGS
     assert BuildOptions().no_install is False
     # INSTALL_FLAGS is the set merged into strip_flags when no_install is set.
     assert "-i" in INSTALL_FLAGS and "--install" in INSTALL_FLAGS
@@ -531,8 +583,8 @@ def test_run_update_sync_honors_source(tmp_path, monkeypatch, opt_source, expect
     was mis-synced as AUR — a spurious AUR RPC for local PKGBUILDs, and (worse) a
     git-hosted PKGBUILD repo was never fetched, yielding a stale build.
     """
-    from sysforge.primitives import makepkg_wrapper as mw
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.build.makepkg_wrapper import BuildOptions
     from sysforge.primitives.source_sync import STATUS_FAILED
 
     pkgbuild = tmp_path / "PKGBUILD"
@@ -577,22 +629,26 @@ def test_invoke_retry_sudo_reauth_and_install(tmp_path):
 
     profile = {}
     fail = subprocess.CalledProcessError(1, "makepkg")
-    sudo_v_result = MagicMock(returncode=0)
     pacman_result = MagicMock(returncode=0)
+    order = []
 
     with (
         patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        # Credentials go through the privilege seam (3.2.0-F13 / 3.3.0-F3):
+        # prompted only if needed, with the progress bar yielded.
+        patch("sysforge.primitives.makepkg_invoke.ensure_credentials",
+              side_effect=lambda: order.append("credentials")) as creds,
         patch("sysforge.primitives.makepkg_invoke.subprocess.run",
-              side_effect=[sudo_v_result, pacman_result]) as mock_run,
+              side_effect=lambda argv, **k: order.append(argv) or pacman_result),
         patch("builtins.input", return_value="s"),
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", profile,
                            extra_flags=["--install"])
 
-    calls = mock_run.call_args_list
-    assert calls[0] == call(["sudo", "-v"])
-    assert calls[1][0][0][0:3] == ["sudo", "pacman", "-U"]
-    assert str(pkg_file) in calls[1][0][0]
+    creds.assert_called_once()
+    assert order[0] == "credentials"
+    assert order[1][0:3] == ["sudo", "pacman", "-U"]
+    assert str(pkg_file) in order[1]
 
 
 def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
@@ -605,8 +661,9 @@ def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
 
     with (
         patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.ensure_credentials"),
         patch("sysforge.primitives.makepkg_invoke.subprocess.run",
-              side_effect=[MagicMock(returncode=0), pacman_fail]),
+              side_effect=[pacman_fail]),
         patch("builtins.input", side_effect=["s", "abort"]),
         pytest.raises(RuntimeError, match="build_failed"),
     ):
@@ -743,8 +800,8 @@ def test_run_build_rename_noop_when_names_match(tmp_path):
 def test_run_owner_stage_kernel_forces_kernel_build(tmp_path):
     """owner_stage="kernel" → _run_build gets kernel_build=True even when no
     profile rule resolves build_mode="kernel"."""
-    from sysforge.primitives import makepkg_wrapper as mw
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.build.makepkg_wrapper import BuildOptions
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")
@@ -764,8 +821,8 @@ def test_run_owner_stage_kernel_forces_kernel_build(tmp_path):
 def test_run_no_owner_stage_keeps_profile_derivation(tmp_path):
     """Without owner_stage, kernel_build still follows profile build_mode
     (False here — no rule maps this package to the kernel profile)."""
-    from sysforge.primitives import makepkg_wrapper as mw
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.build.makepkg_wrapper import BuildOptions
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")
@@ -785,8 +842,8 @@ def test_run_profile_override_kernel_derives_kernel_build(tmp_path):
     """The profile-derived path still works without owner_stage: an explicit
     kernel profile (build_mode="kernel") yields kernel_build=True. Pins the
     rule-routed derivation the fixture's (now commented) kernel rule covered."""
-    from sysforge.primitives import makepkg_wrapper as mw
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.build.makepkg_wrapper import BuildOptions
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=linux-unruled\npkgver=1\npkgrel=1\n")

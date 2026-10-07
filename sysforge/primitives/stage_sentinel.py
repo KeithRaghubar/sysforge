@@ -227,7 +227,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
         return False
 
     try:
-        proc = subprocess.run(recovery_cmd.split(), check=False)
+        proc = subprocess.run(recovery_cmd.split(), check=False)  # noqa: TID251 — operator's recovery command runs on the TTY
     except FileNotFoundError:
         _log.error("Recovery command binary missing — cannot run recovery")
         return False

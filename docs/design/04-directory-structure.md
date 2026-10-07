@@ -30,6 +30,9 @@ sysforge/
 │   │   ├── registry.py                # ordered COMMANDS + global flags + help tiers → build_parser()
 │   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
 │   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides, PACKAGES_FILE_HELP)
+│   ├── build/                         # orchestration layer above primitives (3.2.0-F4)
+│   │   ├── makepkg_wrapper.py         # per-package build lifecycle: prepare, invoke, record, install
+│   │   └── aur_deps.py                # build + install resolved AUR deps (resolution stays in aur_resolve)
 │   └── primitives/
 │       ├── archinstall_config.py      # BootstrapConfig dataclass + pure → archinstall JSON (schema pin, _BASE_PACKAGES home)
 │       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)
@@ -43,7 +46,6 @@ sysforge/
 │       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
 │       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
 │       ├── prompt.py                  # shared interactive-prompt helpers (every stage uses these)
-│       ├── makepkg_wrapper.py         # build execution: emit conf, invoke makepkg
 │       ├── makepkg_flags.py           # makepkg flag-string transforms (owns [FLAG] tag)
 │       ├── makepkg_artifacts.py       # built .pkg.tar* discovery + filename→version parse (pure, no tag)
 │       ├── makepkg_pgo.py             # PGO profdata state resolution (pure, no logger)

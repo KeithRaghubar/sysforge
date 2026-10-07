@@ -77,6 +77,7 @@ from sysforge.primitives.pkg_catalog import (
     write_desktop_group,
 )
 from sysforge.primitives import storage_probe
+from sysforge.primitives import atomic_write
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
@@ -85,6 +86,7 @@ from sysforge.primitives.prompt import (
     prompt_choice as _prompt_choice,
     prompt_key as _prompt_key,
 )
+from sysforge.primitives import run
 
 def _pipeline_stages() -> list[tuple[str, str]]:
     """Lazy import to avoid circular import from stages/__init__.py."""
@@ -150,28 +152,9 @@ def _save_sysforge_toml_ui(key: str, value: str) -> None:
         lines.append("")
 
     content = "\n".join(lines)
-    try:
-        SYSFORGE_TOML_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SYSFORGE_TOML_PATH.write_text(content)
-        return
-    except PermissionError:
-        pass
-    # Root-owned target (installed system: /etc/sysforge/sysforge.toml) —
-    # stage to a temp file and escalate, mirroring the makepkg.conf write path.
-    import tempfile
-    fd, tmp_name = tempfile.mkstemp(suffix=".sysforge.toml")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        _log.info(f"  Writing (sudo): {SYSFORGE_TOML_PATH}")
-        rc = subprocess.run(
-            privileged_argv(["cp", str(tmp), str(SYSFORGE_TOML_PATH)])
-        ).returncode
-        if rc != 0:
-            raise OSError(f"sudo cp exited {rc} — {SYSFORGE_TOML_PATH} unchanged")
-    finally:
-        tmp.unlink(missing_ok=True)
+    # Atomic, symlink- and mode-preserving; escalates for the root-owned
+    # /etc/sysforge/sysforge.toml of an installed system (2.6.1-F21).
+    atomic_write.replace_file(SYSFORGE_TOML_PATH, content, tag="RECONFIGURE")
 
 
 # ---------------------------------------------------------------------------
@@ -333,10 +316,7 @@ def _packages_providing(editor_cmd: str) -> list[str]:
     basename = Path(editor_cmd).name
     if not basename:
         return []
-    result = subprocess.run(
-        ["pacman", "-Fq", f"/usr/bin/{basename}"],
-        capture_output=True, text=True,
-    )
+    result = run.probe(["pacman", "-Fq", f"/usr/bin/{basename}"])
     if result.returncode != 0 or not result.stdout.strip():
         return []
     pkgs: list[str] = []
@@ -414,10 +394,7 @@ def _choose_install_package(editor_cmd: str, options=None) -> str | None:
     pkg_name = _prompt("  Pacman package name to install [Enter to cancel]: ")
     if not pkg_name:
         return None
-    check = subprocess.run(
-        ["pacman", "-Si", pkg_name],
-        capture_output=True, text=True,
-    )
+    check = run.probe(["pacman", "-Si", pkg_name])
     if check.returncode != 0:
         _log.ui(
             f"  {pkg_name!r} not found in pacman repos. "
@@ -459,7 +436,7 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
         package=pkg_name,
         editor=editor_cmd,
     ):
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
             privileged_argv(["pacman", "-S", "--needed", "--noconfirm", pkg_name])
         )
     if result.returncode != 0 or not shutil.which(editor_cmd):
@@ -1174,10 +1151,7 @@ def _git_packager_default() -> str:
     """Best-effort ``Name <email>`` from git config, or '' when unavailable."""
     def _get(key: str) -> str:
         try:
-            r = subprocess.run(
-                ["git", "config", "--get", key],
-                capture_output=True, text=True, timeout=5,
-            )
+            r = run.probe(["git", "config", "--get", key], timeout=5)
         except (OSError, subprocess.SubprocessError):
             return ""
         return r.stdout.strip() if r.returncode == 0 else ""
@@ -1220,18 +1194,12 @@ def _offer_makepkg_defaults(conf: dict, conf_path: Path) -> None:
     if not pending:
         return
 
-    import tempfile
-    fd, tmp_name = tempfile.mkstemp(suffix=".makepkg.conf")
-    os.close(fd)
-    tmp = Path(tmp_name)
+    _log.info(f"  Writing: {', '.join(pending)} → {conf_path}")
     try:
-        set_makepkg_conf_keys(conf_path, pending, dest=tmp)
-        _log.info(f"  Writing (sudo): {', '.join(pending)} → {conf_path}")
-        rc = subprocess.run(privileged_argv(["cp", str(tmp), str(conf_path)])).returncode
-        if rc != 0:
-            _log.warn(f"  sudo cp exited {rc} — {conf_path} unchanged")
-    finally:
-        tmp.unlink(missing_ok=True)
+        # One atomic replace (2.6.1-F21), escalating for /etc/makepkg.conf.
+        set_makepkg_conf_keys(conf_path, pending)
+    except OSError as e:
+        _log.warn(f"  {e}")
 
 
 def _step_makepkg(config, state, options, editor: str) -> str:
@@ -1305,12 +1273,12 @@ def _step_sudo(config, state, options, editor: str) -> str:
         )
         return editor
 
-    result = subprocess.run(["sudo", "-n", "true"], capture_output=True)
+    result = run.probe(["sudo", "-n", "true"], text=False)
     if result.returncode == 0:
         _log.ui("  sudo: OK (passwordless)")
         return editor
 
-    result2 = subprocess.run(["id", "-Gn", user], capture_output=True, text=True)
+    result2 = run.probe(["id", "-Gn", user])
     groups = result2.stdout.strip().split() if result2.returncode == 0 else []
     if "wheel" in groups or "sudo" in groups:
         _log.ui("  sudo: requires password (user is in wheel/sudo — OK)")
@@ -1438,10 +1406,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
         _log.warn("  gpg not found — key verification unavailable")
         return editor
 
-    r = subprocess.run(
-        ["gpg", "--list-keys", "--with-colons"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["gpg", "--list-keys", "--with-colons"])
     key_count = r.stdout.count("\npub:") if r.returncode == 0 else 0
     _log.ui(f"  GPG keyring: {key_count} public key(s)")
 
@@ -1453,10 +1418,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
                 f"  Importing {len(asc_files)} key(s) from {global_keys_dir}"
             )
             if not options.dry_run:
-                r = subprocess.run(
-                    ["gpg", "--import", *[str(f) for f in asc_files]],
-                    capture_output=True, text=True,
-                )
+                r = run.probe(["gpg", "--import", *[str(f) for f in asc_files]])
                 if r.returncode != 0:
                     _log.warn(f"  GPG import failed:\n{r.stderr.strip()}")
                 else:
@@ -1477,7 +1439,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
         )
         if choice == "y":
             _log.info("Running gpg --refresh-keys (this may take a while)...")
-            r = subprocess.run(["gpg", "--refresh-keys"])
+            r = subprocess.run(["gpg", "--refresh-keys"])  # noqa: TID251 — long network refresh streams its progress
             if r.returncode != 0:
                 _log.warn("  gpg --refresh-keys failed")
             else:
@@ -1748,10 +1710,8 @@ class ReconfigureStage(Stage):
                 # so a missing-credentials cache fails fast instead of blocking
                 # at a password prompt (this path runs from a profile.d login
                 # chain on some systems; that has no TTY).
-                result = subprocess.run(
-                    privileged_argv(["rm", "-f", str(reminder)], noninteractive=True),
-                    capture_output=True,
-                )
+                result = run.probe(
+                    privileged_argv(["rm", "-f", str(reminder)], noninteractive=True))
                 if result.returncode == 0:
                     _log.ui("Removed login reminder via sudo (/etc/profile.d/sysforge-resume.sh)")
                 else:

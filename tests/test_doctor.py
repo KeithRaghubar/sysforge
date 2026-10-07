@@ -203,7 +203,7 @@ def test_check_depends_soname_missing():
 
 
 def test_check_depends_pacman_t_reports_missing():
-    with patch("sysforge.doctor.subprocess.run",
+    with patch("sysforge.primitives.run.subprocess.run",
                side_effect=_pacman_t_mock(["glibc>=2.40"], 127)):
         issues = doctor._check_depends(["glibc>=2.40"], set())
     assert len(issues) == 1
@@ -211,7 +211,7 @@ def test_check_depends_pacman_t_reports_missing():
 
 
 def test_check_depends_pacman_t_all_satisfied():
-    with patch("sysforge.doctor.subprocess.run",
+    with patch("sysforge.primitives.run.subprocess.run",
                side_effect=_pacman_t_mock([], 0)):
         issues = doctor._check_depends(["glibc", "ncurses"], set())
     assert issues == []
@@ -629,7 +629,7 @@ def test_cmd_doctor_reports_missing_dep(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    with patch("sysforge.doctor.subprocess.run",
+    with patch("sysforge.primitives.run.subprocess.run",
                side_effect=_pacman_t_mock(["missinglib>=2.0"], 127)):
         rc = doctor.cmd_doctor_pkg(_make_args(packages=["brokenpkg"]))
 
@@ -699,7 +699,7 @@ def test_cmd_doctor_affected_line_lists_multiple_packages(tmp_path, monkeypatch,
         r.returncode = 127
         return r
 
-    with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
+    with patch("sysforge.primitives.run.subprocess.run", side_effect=fake_pacman_t):
         rc = doctor.cmd_doctor_pkg(_make_args(packages=["pkga", "pkgb"]))
 
     err = capsys.readouterr().err
@@ -735,7 +735,7 @@ def test_cmd_doctor_affected_line_tags_mixed_origins(tmp_path, monkeypatch, caps
         r.returncode = 127
         return r
 
-    with patch("sysforge.doctor.subprocess.run", side_effect=fake_pacman_t):
+    with patch("sysforge.primitives.run.subprocess.run", side_effect=fake_pacman_t):
         doctor.cmd_doctor_pkg(_make_args(packages=["nativepkg", "foreignpkg"]))
 
     err = capsys.readouterr().err
@@ -1405,7 +1405,7 @@ def test_cmd_doctor_all_covers_repo_packages(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
     _patch_axes_clean(monkeypatch)  # --all also runs system axes; keep them quiet
 
-    with patch("sysforge.doctor.subprocess.run",
+    with patch("sysforge.primitives.run.subprocess.run",
                side_effect=_pacman_t_mock(["missinglib>=1"], 127)):
         rc = doctor.cmd_doctor_pkg(_make_args(all=True))
 

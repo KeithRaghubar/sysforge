@@ -23,6 +23,8 @@ Public API:
 
 Token grammar for required toolchains:
     "rust:native"                       — host rustc must run
+    "rust:kernel"                       — rustc + bindgen + rust-src for a
+                                          CONFIG_RUST=y kernel (3.0.0-F1)
     "rust:cross:<target>"               — rustc must build for <target>
                                           using the workstation's default
                                           rustup toolchain
@@ -46,9 +48,9 @@ toolchain the build will use, not the workstation default.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
-import subprocess
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -58,6 +60,7 @@ from sysforge import log
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.render import tag_header, version_pair
 from sysforge.primitives.version import vercmp
+from sysforge.primitives import run
 
 _log = log.get_logger("PREFLIGHT")
 
@@ -155,10 +158,7 @@ def _active_rustup_toolchain() -> str | None:
         return env_tc
     if not shutil.which("rustup"):
         return None
-    r = subprocess.run(
-        ["rustup", "show", "active-toolchain"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["rustup", "show", "active-toolchain"])
     if r.returncode != 0:
         return None
     line = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
@@ -178,7 +178,7 @@ def _probe_command(name: str, cmd: list[str], install_hint: str) -> ToolchainChe
             detail=f"{cmd[0]} not on PATH",
             fix_cmd=install_hint, auto_remediable=False,
         )
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = run.probe(cmd)
     if r.returncode != 0:
         return ToolchainCheck(
             name=name, ok=False,
@@ -231,7 +231,7 @@ def _probe_rust_cross(target: str, pin: str | None = None) -> ToolchainCheck:
     with tempfile.TemporaryDirectory(prefix="sysforge-rs-probe-") as td:
         src = Path(td) / "probe.rs"
         src.write_text("fn main(){}\n")
-        r = subprocess.run(
+        r = run.probe(
             [
                 "rustc",
                 "--edition", "2021",
@@ -241,7 +241,7 @@ def _probe_rust_cross(target: str, pin: str | None = None) -> ToolchainCheck:
                 "--out-dir", td,
                 str(src),
             ],
-            capture_output=True, text=True, env=probe_env,
+            env=probe_env,
         )
 
     if r.returncode == 0:
@@ -315,7 +315,7 @@ _TOOLCHAIN_REINSTALL_HINT = _reinstall_hint(LLVM_LOCKSTEP_SUITE)
 
 def _installed_pkgver(pkg: str) -> str | None:
     """Return the installed ``pkgver-pkgrel`` for ``pkg`` (``pacman -Q``), or None."""
-    r = subprocess.run(["pacman", "-Q", pkg], capture_output=True, text=True)
+    r = run.probe(["pacman", "-Q", pkg])
     if r.returncode != 0:
         return None
     parts = r.stdout.split()
@@ -411,7 +411,7 @@ def _probe_cc(compiler: str) -> ToolchainCheck:
             name=name, ok=False, detail=f"{base} not on PATH",
             fix_cmd=install_hint, auto_remediable=False,
         )
-    r = subprocess.run([base, "--version"], capture_output=True, text=True)
+    r = run.probe([base, "--version"])
     if r.returncode != 0:
         lines = (r.stderr or r.stdout or "").strip().splitlines()
         first = lines[0] if lines else f"{base} --version exited {r.returncode}"
@@ -438,11 +438,120 @@ def _probe_cc(compiler: str) -> ToolchainCheck:
     )
 
 
+# ---------------------------------------------------------------------------
+# Kernel Rust support (3.0.0-F1)
+# ---------------------------------------------------------------------------
+# CONFIG_RUST depends on host tooling, not on the kernel source: kbuild's
+# scripts/rust_is_available.sh demands rustc and bindgen at or above the tree's
+# minimums plus the `core` library source, and when it fails kconfig silently
+# drops the symbol during olddefconfig. The minimums come from the tree's own
+# scripts/min-tool-version.sh — the only source that stays right across kernel
+# versions — parsed as text, never executed.
+
+KERNEL_MIN_TOOL_SCRIPT = "scripts/min-tool-version.sh"
+_VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?)")
+
+
+def kernel_rust_minimums(script: Path) -> dict[str, str]:
+    """``{"rustc": ..., "bindgen": ...}`` minimums from a kernel tree's
+    ``min-tool-version.sh``, or ``{}`` when unreadable.
+
+    An arch-conditional arm (``if [ "$SRCARCH" = s390 ]; … else echo X``)
+    yields its ``else`` branch, the value every other arch (x86_64 included)
+    gets; an unconditional arm yields its only ``echo``.
+    """
+    try:
+        text = Path(script).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    for tool in ("rustc", "bindgen"):
+        arm = re.search(rf"^\s*{tool}\)\s*$(.*?)^\s*;;", text, re.M | re.S)
+        if not arm:
+            continue
+        body = arm.group(1)
+        if re.search(r"^\s*else\s*$", body, re.M):
+            body = re.split(r"^\s*else\s*$", body, flags=re.M)[-1]
+        echo = re.search(r"echo\s+(\d+(?:\.\d+)+)", body)
+        if echo:
+            out[tool] = echo.group(1)
+    return out
+
+
+def _tool_version(tool: str) -> str | None:
+    if not shutil.which(tool):
+        return None
+    r = run.probe([tool, "--version"])
+    m = _VERSION_RE.search((r.stdout or r.stderr or "")) if r.returncode == 0 else None
+    return m.group(1) if m else None
+
+
+def _rust_core_src_present() -> bool:
+    """kbuild's last check: the ``core`` library source rustc will compile."""
+    lib_src = os.environ.get("RUST_LIB_SRC")
+    if not lib_src:
+        r = run.probe(["rustc", "--print", "sysroot"])
+        if r.returncode != 0 or not r.stdout.strip():
+            return False
+        lib_src = str(Path(r.stdout.strip()) / "lib/rustlib/src/rust/library")
+    return (Path(lib_src) / "core" / "src" / "lib.rs").is_file()
+
+
+def probe_rust_kernel(minimums: Mapping[str, str] | None = None,
+                      source: str | None = None) -> ToolchainCheck:
+    """Can this host build a ``CONFIG_RUST=y`` kernel? (token ``rust:kernel``)
+
+    Mirrors ``rust_is_available.sh``: rustc and bindgen present and at or above
+    ``minimums`` (from :func:`kernel_rust_minimums`; ``None`` = presence only),
+    and the ``core`` library source installed. The failure detail carries
+    :func:`rust_probe.rustc_provenance`, since a rustup install shadowing the
+    distro ``rust`` is the common reason the rustc a kernel resolves is not the
+    one the operator expects. ``source`` names where the minimums came from.
+    """
+    from sysforge.primitives import rust_probe
+    mins = dict(minimums or {})
+    problems: list[str] = []
+    fixes: list[str] = []
+    found: list[str] = []
+    for tool, fix in (("rustc", "rustup update  # or: pacman -S rust"),
+                      ("bindgen", "pacman -S rust-bindgen")):
+        ver = _tool_version(tool)
+        want = mins.get(tool)
+        if ver is None:
+            problems.append(f"{tool} not found")
+            fixes.append(fix)
+        elif want and vercmp(ver, want) < 0:
+            problems.append(f"{tool} {ver} < {want} (kernel minimum)")
+            fixes.append(fix)
+        else:
+            found.append(f"{tool} {ver}" + (f" >= {want}" if want else ""))
+    if _tool_version("rustc") is not None and not _rust_core_src_present():
+        problems.append("Rust `core` library source missing (rust-src)")
+        fixes.append("rustup component add rust-src")
+    window = (f"minimums from {source}" if mins and source
+              else "kernel minimums unknown, presence checked only")
+    if problems:
+        return ToolchainCheck(
+            name="rust:kernel", ok=False,
+            detail=(f"CONFIG_RUST=y requested but {'; '.join(problems)} "
+                    f"[rustc: {rust_probe.rustc_provenance()}; {window}] — "
+                    "kconfig would silently drop CONFIG_RUST"),
+            fix_cmd="; ".join(dict.fromkeys(fixes)), auto_remediable=False,
+        )
+    return ToolchainCheck(
+        name="rust:kernel", ok=True,
+        detail=f"{', '.join(found)}, rust-src present ({window})",
+        fix_cmd=None, auto_remediable=False,
+    )
+
+
 def _probe_one(token: str) -> ToolchainCheck:
     if token.startswith("cc:"):
         return _probe_cc(token[len("cc:") :])
     if token == "rust:native":  # noqa: S105 — toolchain-spec token, not a secret
         return _probe_rust_native()
+    if token == "rust:kernel":  # noqa: S105 — toolchain-spec token, not a secret
+        return probe_rust_kernel()
     if token.startswith("rust:cross:"):
         body = token[len("rust:cross:") :]
         target, _, pin = body.partition("@")
@@ -532,9 +641,7 @@ def _run_fix(fix_cmd: str) -> tuple[int, str]:
         return 1, f"could not parse fix command: {fix_cmd!r}"
     if not argv:
         return 1, "empty fix command"
-    r = subprocess.run(
-        argv, capture_output=True, text=True,
-    )
+    r = run.probe(argv)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 

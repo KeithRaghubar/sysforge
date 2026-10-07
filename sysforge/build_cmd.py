@@ -25,7 +25,7 @@ from sysforge.primitives.config import (
     REPO_MODE_SOURCE,
     PKG_KEY_BUILD_FROM_SOURCE,
 )
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import load_config_with_overrides

@@ -33,12 +33,17 @@ Public API:
     _find_existing_artifacts(...)        # also consumed by update's install_only scan
     _record_build_failure(state_dir, target, exc)
 """
+import contextlib
+import contextvars
+import functools
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import build_sandbox
+from sysforge.primitives import sudo_session
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.timing import PhaseRecord, PhaseTimer
 from sysforge.primitives.makepkg_artifacts import find_artifacts
@@ -121,6 +126,28 @@ class BuildOutcome:
     layout_findings: list[str] = field(default_factory=list)
 
 
+def merge_outcomes(first: BuildOutcome, second: BuildOutcome) -> BuildOutcome:
+    """One outcome for two sequential :func:`build_and_install` passes (3.1.0-B12).
+
+    Lists concatenate in pass order, ``not_installed`` merges, flags OR.
+    ``phase_records`` is taken from *first*: both passes share the caller's
+    timer, so the two lists are the same records and must not be doubled.
+    """
+    return BuildOutcome(
+        built_pkgs=first.built_pkgs + second.built_pkgs,
+        failed_pkgs=first.failed_pkgs + second.failed_pkgs,
+        pgo_skipped_pkgs=first.pgo_skipped_pkgs + second.pgo_skipped_pkgs,
+        built_pkg_files=first.built_pkg_files + second.built_pkg_files,
+        install_failed=first.install_failed or second.install_failed,
+        not_installed={**first.not_installed, **second.not_installed},
+        review_skipped=first.review_skipped + second.review_skipped,
+        aborted=first.aborted or second.aborted,
+        phase_records=first.phase_records,
+        installed_deps=first.installed_deps + second.installed_deps,
+        layout_findings=first.layout_findings + second.layout_findings,
+    )
+
+
 def target_from_pkgbuild(pkgbuild_path) -> BuildTarget:
     """Build a :class:`BuildTarget` from a PKGBUILD path.
 
@@ -198,6 +225,35 @@ def _record_build_failure(state_dir, target, exc) -> None:
 # Dependency preparation
 # ---------------------------------------------------------------------------
 
+def install_missing_repo_deps(pkgbuild_paths, *, exclude=frozenset(),
+                              installed_deps_out: list | None = None) -> None:
+    """Install every missing *repo* build dependency in one ``pacman -S``.
+
+    The one home for what makepkg's ``--syncdeps`` would otherwise do from
+    inside the build (3.4.0-F1): collects ``depends`` + ``makedepends`` +
+    ``checkdepends``, keeps only names a sync repo carries (an AUR name would
+    abort the whole transaction), drops ``exclude`` (the packages about to be
+    built — sysforge never installs the stock copy of what it is building),
+    and installs through the privilege seam, so a sudo prompt is sysforge's
+    own (bar hidden, clock paused) instead of arriving inside build output.
+    Best-effort: a failure warns and lets the build surface the real error.
+    """
+    if not pkgbuild_paths:
+        return
+    build_deps = collect_builddeps(pkgbuild_paths)
+    missing_deps = [d for d in filter_missing_deps(build_deps) if d not in exclude]
+    repo_missing = sorted(repo_packages(missing_deps)) if missing_deps else []
+    if not repo_missing:
+        return
+    try:
+        batch_install_makedeps(repo_missing)
+        if installed_deps_out is not None:
+            installed_deps_out.extend(repo_missing)
+    except RuntimeError as e:
+        _log.error(str(e))
+        _log.warn("makedep pre-install failed — some builds may fail")
+
+
 def prepare_deps(
     pkgbuild_paths: list[Path],
     config: dict,
@@ -246,23 +302,11 @@ def prepare_deps(
     # before building too, so a missing repo runtime dep would abort the build
     # (exit 8). Restrict to sync-repo packages so AUR deps don't poison the
     # pacman -S transaction (they're built by the AUR arm below).
-    build_deps = collect_builddeps(pkgbuild_paths)
-    missing_deps = filter_missing_deps(build_deps)
-    repo_missing = sorted(repo_packages(missing_deps)) if missing_deps else []
-    if repo_missing:
-        try:
-            batch_install_makedeps(repo_missing)
-            if installed_deps_out is not None:
-                installed_deps_out.extend(repo_missing)
-        except RuntimeError as e:
-            _log.error(str(e))
-            _log.warn("makedep pre-install failed — some builds may fail")
+    install_missing_repo_deps(pkgbuild_paths, installed_deps_out=installed_deps_out)
 
     # AUR/local deps — resolve transitively, build in topo order.
-    from sysforge.primitives.aur_resolve import (
-        resolve_aur_deps_batch,
-        build_resolved_deps,
-    )
+    from sysforge.build.aur_deps import build_resolved_deps
+    from sysforge.primitives.aur_resolve import resolve_aur_deps_batch
     try:
         aur_deps = resolve_aur_deps_batch(pkgbuild_paths, config, fetch=True)
         aur_deps = [d for d in aur_deps if d.name not in building_names]
@@ -576,7 +620,7 @@ def make_build_options(stage: str, options, **overrides):
     exactly one place. ``abi_check`` is read via ``getattr`` so a run-options
     object without the attribute degrades to ``False`` rather than raising.
     """
-    from sysforge.primitives.makepkg_wrapper import BuildOptions
+    from sysforge.build.makepkg_wrapper import BuildOptions
 
     if stage not in _STAGE_BUILD_DEFAULTS:
         raise ValueError(f"unknown build stage {stage!r}")
@@ -797,6 +841,52 @@ def _refuse_skewed_install(target, findings: list, state_dir, outcome) -> None:
     _record_build_failure(state_dir, target, msg)
 
 
+# The ExitStack of the build_and_install call in flight, so the credential
+# keepalive can be entered at the first point a build needs sudo and still be
+# released when the call returns, on every path (3.4.0-F1).
+_build_credentials: contextvars.ContextVar[contextlib.ExitStack | None] = (
+    contextvars.ContextVar("sysforge_build_credentials", default=None))
+
+
+def _holds_build_credentials(fn):
+    """Give each ``build_and_install`` call its own credential scope."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with contextlib.ExitStack() as stack:
+            token = _build_credentials.set(stack)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                _build_credentials.reset(token)
+    return wrapper
+
+
+def _keep_credentials_for_the_build() -> None:
+    """Authenticate once, then keep sudo warm until the build returns (3.4.0-F1).
+
+    Every escalation a build makes — the repo dependency install, AUR
+    dependency installs, the just-in-time sibling installs and the final
+    ``pacman -U`` — goes through the privilege seam, and with the timestamp
+    refreshed in the background none of them prompts mid-run, however long
+    the builds between them take. ``authenticate()`` comes first (it prompts,
+    with the progress bar yielded, only if sudo would) because the keepalive's
+    refresh inherits stdio and must never be the thing that prompts. A refused
+    or timed-out prompt aborts before anything is built: every path below ends
+    in an install, so building first would only waste the build.
+    """
+    stack = _build_credentials.get()
+    if stack is None or os.geteuid() == 0:
+        return
+    if not sudo_session.authenticate():
+        raise RuntimeError(
+            "[SYSFORGE] sudo authentication failed or timed out before the "
+            "build — nothing was built or installed. Re-run when you can "
+            "answer the prompt."
+        )
+    stack.enter_context(sudo_session.keepalive(tag="BUILD"))
+
+
+@_holds_build_credentials
 def build_and_install(
     targets,
     *,
@@ -862,8 +952,8 @@ def build_and_install(
         return outcome
 
     # Imported here (not at module top) so tests patching
-    # ``sysforge.primitives.makepkg_wrapper.run`` are observed.
-    from sysforge.primitives.makepkg_wrapper import (
+    # ``sysforge.build.makepkg_wrapper.run`` are observed.
+    from sysforge.build.makepkg_wrapper import (
         BuildOptions,
         run as build_run,
         PGOBuildSkipped,
@@ -975,6 +1065,9 @@ def build_and_install(
 
     pkgbuild_paths = [t.pkgbuild_path for t in targets if t.pkgbuild_path]
     building_names = {t.pkgbase for t in targets}
+    # First sudo use is the dependency prep below; take credentials now so
+    # nothing in the rest of the build prompts mid-output (3.4.0-F1).
+    _keep_credentials_for_the_build()
     _ui_progress.phase("resolving dependencies")
     with timer.phase("dep prep"):
         proceed = prepare_deps(
@@ -1011,7 +1104,12 @@ def build_and_install(
     jit_files: list[Path] = []
     not_installed: dict[Path, str] = {}
 
-    with _ui_progress.tracker(len(targets), "building") as _tick:
+    # Per-target expected durations, in final build order, so the live ETA
+    # weighs a 20-minute package and a 30-second one by their own history
+    # instead of a batch mean that swings at every completion (3.3.0-F1).
+    _expected = _estimate.per_target_seconds(
+        [getattr(t, "pkgnames", None) or [t.pkgbase] for t in targets], _bs_est)
+    with _ui_progress.tracker(len(targets), "building", expected=_expected) as _tick:
         for _idx, target in enumerate(targets):
             _tick(target.pkgbase)
             # ── Just-in-time install of intra-batch deps ──────────────────

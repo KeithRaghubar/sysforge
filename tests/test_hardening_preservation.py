@@ -14,7 +14,7 @@ import pytest
 
 from sysforge.primitives.config import load_preserved_system_tokens
 from sysforge.primitives.makepkg_conf import serialize_effective_flags
-from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
+from sysforge.build.makepkg_wrapper import emit_makepkg_conf
 from sysforge.primitives.profile import (
     apply_preserved_system_tokens,
     merge_preserved_tokens,

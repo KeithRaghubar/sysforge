@@ -363,8 +363,11 @@ An explicit `--autofdo=…` on the command line always wins over `mode`. `record
 You don't need to bump `pkgrel` or force anything after a new capture. sysforge records which
 profile each optimized kernel was built with, and when you run `--autofdo=use` (or a plain run
 with `mode` set) after capturing a new profile, it rebuilds the kernel even though the version
-hasn't changed. If neither the profile nor the kernel changed, it reinstalls the package it
-already built. Every `--autofdo=record` always builds fresh.
+hasn't changed. If neither the profile nor the kernel changed, there is nothing new to build:
+an unattended run reinstalls the package it already built, and an interactive run asks first,
+offering to install it as built, rebuild it, or abort. Install as built is the usual answer;
+choose rebuild only if you want to review the kernel config again (a changed profile already
+forces a rebuild, so you never need it for that). Every `--autofdo=record` always builds fresh.
 
 While `mode` is set, every plain `sysforge run kernel` is a `use` build, so it never rebuilds
 the plain `<name>` kernel you keep as a fallback. To rebuild the plain kernel, set

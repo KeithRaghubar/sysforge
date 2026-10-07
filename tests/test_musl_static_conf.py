@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
+from sysforge.build.makepkg_wrapper import emit_makepkg_conf
 from sysforge.primitives.profile import merge_extends
 
 # Minimal profile set; the lld linker is declared in the *system* conf (as it

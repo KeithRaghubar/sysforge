@@ -54,8 +54,11 @@ from sysforge.primitives.config import (
     PKG_KEY_BUILD_FROM_SOURCE,
 )
 from sysforge.primitives.paths import PACKAGES_PATH, resolve_packages_path
-from sysforge.primitives.makepkg_wrapper import run as makepkg_run
+from sysforge.build.makepkg_wrapper import AlreadyBuilt, install_built_packages
+from sysforge.build.makepkg_wrapper import run as makepkg_run
+from sysforge import build_core
 from sysforge.build_core import make_build_options
+from sysforge.primitives.pacman import BATCH_STRIP_FLAGS
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.stage_sentinel import sentinel_scope
@@ -213,7 +216,7 @@ def _enable_display_managers(packages, built, *, dry_run):
         if dry_run:
             _log.ui(f"[dry-run] would enable display manager: {dm}.service")
             continue
-        result = subprocess.run(privileged_argv(["systemctl", "enable", f"{dm}.service"]))
+        result = subprocess.run(privileged_argv(["systemctl", "enable", f"{dm}.service"]))  # noqa: TID251 — privileged; status inspected
         if result.returncode != 0:
             _log.warn(
                 f"Could not enable {dm}.service (enable it manually to boot into the desktop)"
@@ -229,7 +232,7 @@ def _install_repo(pkg, options):
         _log.ui(f"[dry-run] sudo pacman -S --needed {name}")
         return
     _log.info(f"Installing from repo: {name}")
-    result = subprocess.run(privileged_argv(["pacman", "-S", "--needed", "--noconfirm", name]))
+    result = subprocess.run(privileged_argv(["pacman", "-S", "--needed", "--noconfirm", name]))  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
     if result.returncode != 0:
         raise RuntimeError(f"pacman -S failed for {name!r} (exit {result.returncode})")
 
@@ -282,8 +285,13 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         parts.append("cc=" + toolchain.get("cc_override", ""))
     suffix = f" ({', '.join(p for p in parts if p)})" if parts else ""
     _log.info(f"Building {name} from {pkgbuild}{suffix}")
+    # makepkg never escalates (3.4.0-F1): no --syncdeps / --install from the
+    # profile. Repo deps go in first and the built package after, both through
+    # the privilege seam — every manifest entry is an install target.
+    build_core.install_missing_repo_deps([pkgbuild], exclude=frozenset({name}))
     build_opts = make_build_options(
         "packages", options,
+        strip_flags=BATCH_STRIP_FLAGS,
         log_dir=options.log_dir,
         profile_conf=config.get("profile_conf"),
         update=not options.no_update,
@@ -293,7 +301,11 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
         source=pkg.get("source"),
         toolchain_variant=toolchain.get("variant"),
     )
-    makepkg_run(pkgbuild, options=build_opts)
+    try:
+        makepkg_run(pkgbuild, options=build_opts)
+    except AlreadyBuilt:
+        _log.info(f"{name}: already built — installing the existing package")
+    install_built_packages(pkgbuild.parent, noconfirm=True)
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +362,8 @@ class PackagesStage(Stage):
             state.save()
 
         # Resolve and build AUR deps for all AUR/profiled packages
-        from sysforge.primitives.aur_resolve import (
-            resolve_aur_deps,
-            build_resolved_deps,
-        )
+        from sysforge.build.aur_deps import build_resolved_deps
+        from sysforge.primitives.aur_resolve import resolve_aur_deps
         aur_names = []
         for name in all_names:
             if name in built or name in skipped or name in skip_set:

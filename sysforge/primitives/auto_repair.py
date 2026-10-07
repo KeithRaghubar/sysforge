@@ -51,6 +51,8 @@ from typing import Callable, Literal
 
 from sysforge import log
 from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives import run
+from sysforge.primitives.run import run_or_raise
 
 _log = log.get_logger("REPAIR")
 
@@ -169,16 +171,18 @@ def _repair_vendored_deps(pkgbuild_dir: Path, info: MatchInfo) -> None:
             raise RuntimeError("vendored_deps_missing repair: meson binary not on PATH")
         project_root = targets[0].parent
         _log.info(f"repair: meson subprojects download (in {project_root})")
-        subprocess.run([meson, "subprojects", "download"],
-                       cwd=str(project_root), check=True)
+        run_or_raise([meson, "subprojects", "download"], tag="REPAIR",
+                     operation="meson subprojects download", capture=False,
+                     cwd=str(project_root))
     elif kind == "git_submodule":
         project_root = Path(info.detail["project_root"])
         git = shutil.which("git")
         if git is None:
             raise RuntimeError("vendored_deps_missing repair: git binary not on PATH")
         _log.info(f"repair: git submodule update --init --recursive (in {project_root})")
-        subprocess.run([git, "submodule", "update", "--init", "--recursive"],
-                       cwd=str(project_root), check=True)
+        run_or_raise([git, "submodule", "update", "--init", "--recursive"],
+                     tag="REPAIR", operation="git submodule update", capture=False,
+                     cwd=str(project_root))
     else:
         raise RuntimeError(f"vendored_deps_missing repair: unknown kind {kind!r}")
 
@@ -245,11 +249,7 @@ def _printsrcinfo(pkgbuild_dir: Path) -> str | None:
     if makepkg is None:
         return None
     try:
-        r = subprocess.run(
-            [makepkg, "--printsrcinfo"],
-            cwd=str(pkgbuild_dir),
-            capture_output=True, text=True, timeout=30,
-        )
+        r = run.probe([makepkg, "--printsrcinfo"], cwd=str(pkgbuild_dir), timeout=30)
     except subprocess.SubprocessError:
         return None
     if r.returncode != 0:
@@ -369,7 +369,8 @@ def _repair_checksum_mismatch(pkgbuild_dir: Path, info: MatchInfo) -> None:
         raise RuntimeError("checksum_mismatch repair: updpkgsums not on PATH "
                            "(install pacman-contrib)")
     _log.info(f"repair: updpkgsums in {pkgbuild_dir}")
-    subprocess.run([updpkgsums], cwd=str(pkgbuild_dir), check=True)
+    run_or_raise([updpkgsums], tag="REPAIR", operation="updpkgsums",
+                 capture=False, cwd=str(pkgbuild_dir))
 
 
 CHECKSUM_MISMATCH = RepairScenario(

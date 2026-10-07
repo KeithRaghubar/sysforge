@@ -30,6 +30,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.git_ops import purge_src
 from sysforge.primitives.net_policy import KIND_KEY_FETCH, KIND_REPO_CHECKOUT, get_policy
+from sysforge.primitives import run
 
 # [BUILD_PREP], not [BUILD]: this module does pre-build *acquisition* (clone the
 # packaging repo via pkgctl, import validpgpkeys) — it never compiles anything.
@@ -68,7 +69,7 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
     _log.info(f"Checking out {name!r} from official repos → {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # noqa: TID251 — pkgctl clone output is streamed line by line
             ["pkgctl", "repo", "clone", "--protocol=https", name],
             cwd=str(dest.parent),
             stdout=subprocess.PIPE,
@@ -123,22 +124,20 @@ def pkgctl_switch_version(dest: Path, version: str, *, timeout: int | None = 60)
     """
     timeout = timeout or None
     try:
-        result = subprocess.run(
+        result = run.capture(
             ["pkgctl", "repo", "switch", version],
             cwd=str(dest),
-            capture_output=True,
-            text=True,
             timeout=timeout,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
-    except FileNotFoundError:
-        raise RuntimeError(
-            "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
-        ) from None
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"pkgctl repo switch {version!r} timed out after {timeout}s"
         ) from None
+    if result is None:
+        raise RuntimeError(
+            "pkgctl not found on PATH. Install it with: sudo pacman -S --needed devtools"
+        )
     if result.returncode != 0:
         raise RuntimeError(
             f"pkgctl repo switch {version!r} failed: {(result.stderr or result.stdout).strip()}"
@@ -170,10 +169,7 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
         asc_files = sorted(keys_dir.glob("*.asc"))
         if asc_files:
             _log.info(f"GPG: importing {len(asc_files)} bundled key(s) from {keys_dir}")
-            r = subprocess.run(
-                ["gpg", "--import", *[str(f) for f in asc_files]],
-                capture_output=True, text=True,
-            )
+            r = run.probe(["gpg", "--import", *[str(f) for f in asc_files]])
             if r.returncode != 0:
                 _log.warn(f"GPG: bundled import failed:\n{r.stderr.strip()}")
             else:
@@ -182,7 +178,7 @@ def import_pgp_keys(pkgmeta: dict, pkgbuild_path: Path) -> None:
     # Step 2: check which keys are still missing
     missing = [
         key for key in keys
-        if subprocess.run(["gpg", "--list-keys", key], capture_output=True).returncode != 0
+        if run.probe(["gpg", "--list-keys", key], text=False).returncode != 0
     ]
 
     if not missing:
@@ -217,10 +213,9 @@ def set_key_fetch_policy(*, auto: bool) -> None:
 
 def _describe_keys(homedir: str) -> list[tuple[str, str]]:
     """``(fingerprint, primary uid)`` for every key in a throwaway keyring."""
-    r = subprocess.run(
+    r = run.probe(
         ["gpg", "--homedir", homedir, "--batch", "--with-colons",
          "--fingerprint", "--list-keys"],
-        capture_output=True, text=True,
     )
     out: list[tuple[str, str]] = []
     fpr = None
@@ -272,10 +267,7 @@ def fetch_pgp_keys(fingerprints: list[str], *, pkgbase: str | None) -> list[str]
     get_policy().check(KIND_KEY_FETCH, pkgbase)
     with tempfile.TemporaryDirectory(prefix="sysforge-gpg-") as home:
         Path(home).chmod(0o700)
-        r = subprocess.run(
-            ["gpg", "--homedir", home, "--batch", "--recv-keys", *fingerprints],
-            capture_output=True, text=True,
-        )
+        r = run.probe(["gpg", "--homedir", home, "--batch", "--recv-keys", *fingerprints])
         if r.returncode != 0:
             _log.warn(f"GPG: keyserver fetch failed:\n{(r.stderr or '').strip()}")
             return []
@@ -294,13 +286,8 @@ def fetch_pgp_keys(fingerprints: list[str], *, pkgbase: str | None) -> list[str]
                 "auto_fetch_pgp_keys = true for unattended runs."
             )
             return []
-        exported = subprocess.run(
-            ["gpg", "--homedir", home, "--batch", "--export", *fprs],
-            capture_output=True,
-        )
-        imported = subprocess.run(
-            ["gpg", "--batch", "--import"], input=exported.stdout, capture_output=True,
-        )
+        exported = run.probe(["gpg", "--homedir", home, "--batch", "--export", *fprs], text=False)
+        imported = run.probe(["gpg", "--batch", "--import"], input=exported.stdout, text=False)
         if exported.returncode != 0 or imported.returncode != 0:
             _log.warn(f"GPG: importing {', '.join(fprs)} into the keyring failed")
             return []

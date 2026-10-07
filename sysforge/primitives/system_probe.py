@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 from sysforge.primitives import diagnostics as diag
+from sysforge.primitives import run
 
 _PACMAN_DB_LOCK = Path("/var/lib/pacman/db.lck")
 _ETC = Path("/etc")
@@ -41,8 +42,8 @@ DEFAULT_MIRRORLIST_STALE_DAYS = 14
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except (FileNotFoundError, OSError):
+        return run.capture(cmd)  # None when the binary is missing
+    except OSError:
         return None
 
 

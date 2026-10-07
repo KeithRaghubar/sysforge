@@ -140,7 +140,7 @@ def built_pkgver(pkgbuild, *, pkgname=None) -> str | None:
     before a successful build deletes it), then the PKGBUILD's static literal.
     ``None`` when none of them can be read statically.
     """
-    from sysforge.primitives.makepkg_wrapper import built_manifest_version
+    from sysforge.build.makepkg_wrapper import built_manifest_version
     from sysforge.primitives.pkgbuild_patcher import PATCHED_PKGBUILD_NAME
     pkgbuild = Path(pkgbuild)
     patched = pkgbuild.parent / PATCHED_PKGBUILD_NAME
@@ -179,9 +179,11 @@ def building_pkgver(pkgbuild) -> str | None:
 
     A VCS PKGBUILD (one defining ``pkgver()``) reads as ``None``: before the
     build its static ``pkgver`` is the *previous* build's value, and the real
-    one is only known once makepkg runs ``pkgver()``. Otherwise as
-    :func:`built_pkgver`. Callers skip the compare on ``None`` rather than
-    refuse on a spurious mismatch.
+    one is only known once makepkg runs ``pkgver()``. Otherwise the static
+    PKGBUILD's ``pkgver-pkgrel`` — unlike :func:`built_pkgver`, never the patched
+    build file or the build manifest, which describe the *previous* build.
+    Callers skip the compare on ``None`` rather than refuse on a spurious
+    mismatch.
     """
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
     try:
@@ -351,6 +353,10 @@ def finish_fdo_build(plan, *, built_dir, pkgver) -> None:
     if plan.mode == "record":
         finish_fdo_record(plan, built_dir=built_dir, pkgver=pkgver)
     elif plan.mode == "use" and plan.profile_store and plan.applied_fingerprint:
+        if kernel_fdo.read_applied(plan.profile_store) == plan.applied_fingerprint:
+            # A reuse of the same profile: the sidecar already says so, and a
+            # rewrite would only move its mtime (3.3.0-B16).
+            return
         try:
             kernel_fdo.write_applied(plan.profile_store, plan.applied_fingerprint)
         except OSError as e:
@@ -409,7 +415,8 @@ def run_fdo_capture(pkgname, propeller, dry_run):
     info = kernel_fdo.read_round(store)
     try:
         vmlinux = kernel_fdo.resolve_vmlinux(
-            record_name, recorded_build_dir=info.build_dir if info else None)
+            record_name, recorded_build_dir=info.build_dir if info else None,
+            propeller=propeller)
     except kernel_fdo.KernelFdoError as e:
         raise RuntimeError(f"[KERNEL] {e}") from e
     sampling = kernel_fdo.detect_branch_sampling()

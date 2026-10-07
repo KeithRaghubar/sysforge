@@ -70,6 +70,28 @@ def test_list_profile_stores_malformed_sidecar_has_no_version(tmp_path, content)
     assert rows[("autofdo", "linux")].collected_version is None
 
 
+@pytest.mark.parametrize("sidecar", ["round.toml", "applied.toml"])
+def test_list_profile_stores_age_ignores_sidecar_mtime(tmp_path, sidecar):
+    """3.3.0-B16: a bookkeeping rewrite must not make an old profile read as new."""
+    import os
+    store = tmp_path / "root" / "autofdo" / "linux"
+    profile = _file(store / "kernel.afdo")
+    os.utime(profile, (1_000_000, 1_000_000))
+    side = _file(store / sidecar)
+    os.utime(side, (2_000_000, 2_000_000))
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(_tcfg(tmp_path))}
+    assert rows[("autofdo", "linux")].mtime == 1_000_000
+
+
+def test_list_profile_stores_sidecar_only_store_still_dated(tmp_path):
+    import os
+    store = tmp_path / "root" / "autofdo" / "linux"
+    side = _file(store / "round.toml")
+    os.utime(side, (2_000_000, 2_000_000))
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(_tcfg(tmp_path))}
+    assert rows[("autofdo", "linux")].mtime == 2_000_000
+
+
 def test_list_profile_stores_empty_when_nothing_collected(tmp_path):
     assert mp.list_profile_stores(_tcfg(tmp_path)) == []
 

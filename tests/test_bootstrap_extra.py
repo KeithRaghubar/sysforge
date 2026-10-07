@@ -630,7 +630,7 @@ class TestHardwareLspciFailure:
                 return MagicMock(returncode=1, stdout="")
             return MagicMock(returncode=0)
 
-        with patch("sysforge.pipeline.stages.hardware.subprocess.run", side_effect=fake_run), \
+        with patch("sysforge.primitives.run.subprocess.run", side_effect=fake_run), \
              patch("sysforge.pipeline.stages.hardware.resolve_state_dir",
                    return_value=(tmp_path, "test")), \
              patch("pathlib.Path.read_text", return_value=cpuinfo):

@@ -448,6 +448,16 @@ def ui(tag: str, message: str) -> None:
     _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
 
 
+def transcript(tag: str, line: str) -> None:
+    """Never printed; always written to log files.
+
+    For a child's output that already reached the terminal raw (forwarded
+    through a pty), so the run log keeps a copy without echoing it twice at
+    any verbosity — e.g. pacman's hook output during an install (3.3.0-B21).
+    """
+    _write_to_files(f"[SYSFORGE][OUT]{tag} {line}\n")
+
+
 def fatal(tag: str, message: str, exit_code: int = 1) -> NoReturn:
     """Print an error message, write to log files, and terminate the process.
 

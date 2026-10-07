@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sysforge.primitives import makepkg_wrapper
+from sysforge.build import makepkg_wrapper
 
 
 @pytest.fixture(autouse=True)
@@ -21,22 +21,19 @@ def _force_non_root(monkeypatch):
 
 @pytest.fixture
 def _capture_run(monkeypatch):
-    """Replace the module's subprocess.run with a capturing stub.
+    """Replace the pacman transaction (``pacman.run_logged_transaction``, the
+    pty seam since 3.3.0-B21) with a capturing stub.
 
     Returns a dict the test reads: ``cmd`` (the argv passed) and a settable
     ``rc`` (the returncode the stub reports, default 0)."""
     box = {"cmd": None, "rc": 0, "calls": 0}
 
-    class _Result:
-        def __init__(self, rc):
-            self.returncode = rc
-
-    def _fake_run(cmd, *a, **kw):
+    def _fake_tx(cmd):
         box["cmd"] = cmd
         box["calls"] += 1
-        return _Result(box["rc"])
+        return box["rc"], []
 
-    monkeypatch.setattr(makepkg_wrapper.subprocess, "run", _fake_run)
+    monkeypatch.setattr(makepkg_wrapper._pacman, "run_logged_transaction", _fake_tx)
     return box
 
 
@@ -125,17 +122,20 @@ def test_install_built_packages_failure_names_artifacts(
         makepkg_wrapper.install_built_packages(tmp_path)
 
 
-def test_install_built_packages_interactive_failure_notes_tty(
-        monkeypatch, _capture_run, tmp_path):
-    """B7: interactive installs (noconfirm=False) inherit stdio, so pacman's
-    output was never captured — the error must say where it went and that a
-    declined prompt also exits 1."""
-    _capture_run["rc"] = 1
+def test_install_built_packages_interactive_failure_carries_captured_tail(
+        monkeypatch, tmp_path):
+    """3.3.0-B21 (supersedes B7's "went to the terminal" note): the install
+    runs on a pty that tees into the run log, so the error carries pacman's
+    last output, and still says a declined prompt exits 1."""
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "run_logged_transaction",
+                        lambda cmd: (1, ["error: target not found: foo"]))
     pkg = Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")
     _fake_artifacts(monkeypatch, [pkg])
 
-    with pytest.raises(RuntimeError, match="terminal"):
+    with pytest.raises(RuntimeError, match="declined") as ei:
         makepkg_wrapper.install_built_packages(tmp_path, noconfirm=False)
+    assert "target not found: foo" in str(ei.value)
 
 
 # --- Failure-tail selection (3.2.0-B14) -------------------------------------

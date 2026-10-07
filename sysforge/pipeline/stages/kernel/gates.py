@@ -15,6 +15,8 @@ Gate 2's kconfig drift check is the subtle one: kconfig silently drops symbols
 whose dependencies are unmet, so a fragment can be "applied" in full and still
 not be present in the built config.
 """
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives import device_probe
@@ -181,6 +183,127 @@ def resolve_built_config(pkgbuild_dir, *, build_dir=None):
     return max(configs, key=lambda p: p.stat().st_mtime)
 
 
+@dataclass(frozen=True)
+class ReusedConfig:
+    """The resolved ``.config`` of a reused (AlreadyBuilt) kernel package.
+
+    ``path`` is set only when it came from a build tree (so the kbuild map can
+    be harvested beside it); an archived config has no tree. ``source`` names
+    where it came from for the gate's log lines.
+    """
+
+    config: dict
+    release: str
+    source: str
+    path: Path | None = None
+
+
+def resolve_reused_config(state_dir, pkgname, pkgbuild_dir, *, build_dir=None):
+    """Find the ``.config`` the reused PKGDEST kernel was built from (3.3.0-B11).
+
+    On AlreadyBuilt there is no fresh tree, but the one that built the package
+    usually survives at ``build_dir`` (the wrapper's ``build_root``, post-rename
+    pkgbase). A later aborted build can leave a different ``.config`` there, so
+    the tree counts only when its ``kernel.release`` equals the release the
+    artifact ships; otherwise the ``kconfig-history`` archive for that release
+    is used. ``None`` when the artifact's release is unknown or neither source
+    matches — the caller then reports the checks as not run.
+    """
+    from sysforge.primitives import kconfig_history
+    from sysforge.build.makepkg_wrapper import built_kernel_artifact_release
+
+    release = built_kernel_artifact_release(pkgbuild_dir)
+    if not release:
+        return None
+    if build_dir is not None:
+        src = Path(build_dir) / "src"
+        configs = list(src.glob("**/.config")) if src.is_dir() else []
+        if configs:
+            cfg = max(configs, key=lambda p: p.stat().st_mtime)
+            tree_release = built_kernel_release(cfg)
+            parsed = kernel_safety.parse_kconfig(cfg) if tree_release == release else None
+            if parsed:
+                return ReusedConfig(parsed, release, f"build tree {cfg.parent}", cfg)
+            if tree_release != release:
+                _log.info(
+                    f"reused kernel: build tree {cfg.parent} is release "
+                    f"{tree_release or 'unknown'}, the package ships {release}; "
+                    "not auditing it")
+    if state_dir is not None:
+        archived = kconfig_history.read(state_dir, pkgname, release)
+        if archived:
+            where = kconfig_history.archive_path(state_dir, pkgname, release)
+            return ReusedConfig(archived, release, f"kconfig-history archive {where}")
+    return None
+
+
+# Gate 2 harvests the built tree's Rust minimums for the next run's preflight
+# (3.0.0-F1): before a build there is no extracted tree to read, so the most
+# recent tree is the best source — the same idea as the kbuild-map cache.
+RUST_MINIMUMS_FILENAME = "kernel_rust_minimums.json"
+
+
+def cache_rust_minimums(state_dir, tree, release):
+    """Best-effort: record ``tree``'s rustc/bindgen minimums with its release."""
+    from sysforge.primitives import toolchain_preflight
+    mins = toolchain_preflight.kernel_rust_minimums(
+        Path(tree) / toolchain_preflight.KERNEL_MIN_TOOL_SCRIPT)
+    if not mins:
+        return
+    try:
+        (Path(state_dir) / RUST_MINIMUMS_FILENAME).write_text(
+            json.dumps({**mins, "release": release}), encoding="utf-8")
+    except OSError as exc:
+        _log.debug(f"could not cache kernel Rust minimums: {exc}")
+
+
+def load_rust_minimums(state_dir):
+    """``(minimums, source)`` from the cache, or ``(None, None)``."""
+    try:
+        data = json.loads((Path(state_dir) / RUST_MINIMUMS_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None, None
+    mins = {k: v for k, v in data.items() if k in ("rustc", "bindgen") and isinstance(v, str)}
+    if not mins:
+        return None, None
+    return mins, f"the {data.get('release') or 'last'} kernel tree"
+
+
+def gate_rust_preflight(fragment_path, state_dir, *, dry_run):
+    """Refuse to build a ``CONFIG_RUST=y`` kernel the host cannot build (3.0.0-F1).
+
+    Runs only when the merged fragment requests ``CONFIG_RUST=y`` — Rust in the
+    kernel stays a user decision, never a sysforge default. Without this, a
+    missing or too-old rustc/bindgen, or missing rust-src, makes kconfig drop
+    the symbol silently during ``olddefconfig`` and the drop is only reported
+    after a full build. Identical on the gcc and llvm paths: ``CONFIG_RUST`` is
+    orthogonal to ``LLVM=1``. A hard failure, downgraded in dry-run.
+    """
+    from sysforge.primitives import toolchain_preflight
+    if fragment_path is None:
+        return
+    try:
+        requested = kernel_safety.parse_kconfig_text(
+            Path(fragment_path).read_text(encoding="utf-8"))
+    except OSError:
+        return
+    if requested.get("CONFIG_RUST") != "y":
+        return
+    mins, source = load_rust_minimums(state_dir) if state_dir is not None else (None, None)
+    check = toolchain_preflight.probe_rust_kernel(mins, source)
+    if check.ok:
+        _log.info(f"Rust kernel preflight: {check.detail}")
+        return
+    report = toolchain_preflight.render_preflight(
+        toolchain_preflight.ToolchainPreflightReport(checks=(check,)))
+    if dry_run:
+        _log.ui(f"{report}\n(dry-run: would abort before the build)")
+        return
+    raise RuntimeError(
+        f"[KERNEL] the kconfig fragment requests CONFIG_RUST=y, but this host "
+        f"cannot build kernel Rust — refusing before the build.\n{report}")
+
+
 def built_kernel_release(config_path):
     """Read the built kernel's release string from kbuild's kernel.release."""
     if config_path is None:
@@ -191,7 +314,7 @@ def built_kernel_release(config_path):
 
 
 def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
-                build_dir=None):
+                build_dir=None, reused=None):
     """Audit the resolved .config before install. Raises on brick unless skipped.
 
     Runs *outside* the install sentinel: a brick abort here leaves the system
@@ -204,7 +327,19 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
     ``state_dir`` is given) is cached for the hardware stage / the next
     fragment write. The parse is best-effort — any failure degrades to the
     curated-only audit, never blocks the gate.
+
+    ``reused`` (AlreadyBuilt only, :func:`resolve_reused_config`) audits the
+    reused package's own config instead of guessing a tree (3.3.0-B11).
     """
+    if build_dir is None and reused is not None:
+        # E2 stays off: reinstalling the package already built rewrites the
+        # running kernel's modules with the same files, so the warning would
+        # fire on every no-change run (the noise this path exists to remove).
+        _gate2_audit_config(reused.config, reused.path, topology,
+                            skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                            source=reused.source, release=reused.release,
+                            warn_running=False)
+        return
     config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
     if config_path is None:
         # A fresh build reported its tree (``build_dir``) yet left no .config
@@ -224,22 +359,32 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         )
         return
 
-    _log.info(f"Gate 2: auditing resolved kernel config {config_path}")
+    _gate2_audit_config(config_path, config_path, topology,
+                        skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                        source=str(config_path),
+                        release=built_kernel_release(config_path))
+
+
+def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
+                        state_dir, source, release, warn_running=True):
+    """Gate 2's audit proper. ``config`` is a path or a parsed dict;
+    ``config_path`` is the ``.config`` inside a kernel tree when there is one
+    (the kbuild map is harvested beside it), else ``None``."""
+    _log.info(f"Gate 2: auditing resolved kernel config {source}")
 
     kconfig_map = None
-    try:
-        kconfig_map = kbuild_map.parse_kbuild_tree(config_path.parent)
-    except Exception as exc:
-        _log.warn(
-            f"Gate 2: kbuild module→kconfig parse failed ({exc}) — "
-            "auditing with the curated table only"
-        )
+    if config_path is not None:
+        try:
+            kconfig_map = kbuild_map.parse_kbuild_tree(config_path.parent)
+        except Exception as exc:
+            _log.warn(
+                f"Gate 2: kbuild module→kconfig parse failed ({exc}) — "
+                "auditing with the curated table only"
+            )
     if kconfig_map and state_dir is not None:
         cache_path = Path(state_dir) / kbuild_map.KBUILD_MAP_FILENAME
         try:
-            kbuild_map.save_map(
-                cache_path, kconfig_map, built_kernel_release(config_path),
-            )
+            kbuild_map.save_map(cache_path, kconfig_map, release)
             _log.info(
                 f"Cached kbuild module→kconfig map "
                 f"({len(kconfig_map)} modules): {cache_path}"
@@ -247,8 +392,11 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         except OSError as exc:
             _log.warn(f"could not cache kbuild map at {cache_path}: {exc}")
 
+    if config_path is not None and state_dir is not None:
+        cache_rust_minimums(state_dir, config_path.parent, release)
+
     devices = device_probe.enumerate_devices(kconfig_map=kconfig_map)
-    findings = kernel_safety.audit_resolved_config(config_path, topology, devices)
+    findings = kernel_safety.audit_resolved_config(config, topology, devices)
     bricks = [f for f in findings if f.is_brick]
 
     for f in findings:
@@ -258,8 +406,8 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
             _log.info(f"  → {f.remediation}")
 
     # E2 — overwriting the running kernel's modules.
-    kver = built_kernel_release(config_path)
-    if kver and kver == kernel_safety.running_kernel_release():
+    kver = release
+    if warn_running and kver and kver == kernel_safety.running_kernel_release():
         _log.warn(
             f"Built kernel release {kver} matches the running kernel — its "
             "/lib/modules entry will be overwritten; reboot before relying on "
@@ -271,7 +419,7 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
             f"[KERNEL] {len(bricks)} boot-critical config problem(s) in the "
             "built kernel — aborting before install so the running system "
             "stays bootable. Fix the kconfig and rebuild, or pass "
-            f"--skip-boot-audit to override. Resolved .config: {config_path}"
+            f"--skip-boot-audit to override. Resolved .config: {source}"
         )
     if bricks:
         _log.warn(
@@ -280,7 +428,7 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         )
 
 
-def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None):
+def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=None):
     """Advisory: warn when options sysforge merged didn't survive into the
     resolved .config.
 
@@ -299,8 +447,15 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None):
     if fragment_path is None:
         return None
 
-    config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
-    if config_path is None:
+    if build_dir is None and reused is not None:
+        # AlreadyBuilt with a verified source for the reused package's config
+        # (3.3.0-B11): check against it and say which one it was.
+        resolved, source = reused.config, reused.source
+    else:
+        config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
+        resolved = (kernel_safety.parse_kconfig(config_path) or {}) if config_path else None
+        source = str(config_path)
+    if resolved is None:
         # B6: WARN, not INFO — on the AlreadyBuilt path there is no build
         # tree at all, so this advisory audit silently never runs exactly
         # where a stale build makes it most relevant. Say so, visibly.
@@ -314,19 +469,18 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None):
     requested = kernel_safety.parse_kconfig_text(
         Path(fragment_path).read_text(encoding="utf-8")
     )
-    resolved = kernel_safety.parse_kconfig(config_path) or {}
     drifts = kernel_safety.diff_requested_kconfig(requested, resolved)
 
     if not drifts:
         _log.info(
             f"kconfig drift check: all {len(requested)} merged option(s) "
-            "survived into the resolved .config"
+            f"survived into the resolved .config ({source})"
         )
         return drifts
 
     _log.warn(
         f"kconfig drift: {len(drifts)} option(s) sysforge merged differ in the "
-        "resolved .config — possibly toggled in `nconfig`, or dropped by "
+        f"resolved .config ({source}) — possibly toggled in `nconfig`, or dropped by "
         "`make olddefconfig` due to unmet dependencies (advisory, not a failure)"
     )
     for d in drifts:
@@ -403,7 +557,9 @@ def kconfig_drift_lines(drifts) -> list[str]:
 
     ``drifts is None`` means the check never ran (no build tree). B6 established
     that this must be said out loud rather than rendered as silence: it is
-    exactly where a stale build makes the check most relevant.
+    exactly where a stale build makes the check most relevant. Since 3.3.0-B11 a
+    reused package's tree or archived config is checked when it matches, so
+    this only fires when neither exists.
     """
     if drifts is None:
         return [

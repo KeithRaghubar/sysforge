@@ -292,3 +292,33 @@ def _assemble_package_set(
             stage_owned_packages[name] = entry
 
     return packages, unrecorded_names, stage_owned_packages
+
+
+def split_toolchain_first(to_build, build_state) -> tuple[list, list]:
+    """Split a build batch into ``(toolchain targets, everything else)`` (3.1.0-B12).
+
+    Normally the toolchain is stage-owned and filtered out of ``update``; with
+    ``--include-stage-owned`` (or a toolchain package named explicitly) it
+    lands in the same batch as the packages it compiles. Those packages are
+    built *by* clang but almost never *depend* on it, so the batch's topo sort
+    has no edge to order them by, and the toolchain fingerprint read before the
+    batch goes stale the moment the new clang installs. The caller builds the
+    first list as its own pass, re-reads the fingerprint, then builds the rest.
+
+    A target is a toolchain target when any of its names (or its pkgbase) is
+    stamped ``owner_stage = "toolchain"`` in build state, or the toolchain
+    config claims it (:func:`load_stage_ownership`, the same policy assembly's
+    filter uses). Order within each list is preserved.
+    """
+    ownership = load_stage_ownership()
+    toolchain, rest = [], []
+    for target in to_build:
+        names = list(getattr(target, "pkgnames", None) or []) or [target.pkgbase]
+        owned = any(
+            (build_state.get(n) or {}).get("owner_stage") == "toolchain"
+            or ownership.owner_of(n, target.pkgbase) == "toolchain"
+            for n in names
+        )
+        (toolchain if owned else rest).append(target)
+    return toolchain, rest
+

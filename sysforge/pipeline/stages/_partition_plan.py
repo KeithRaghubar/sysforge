@@ -10,12 +10,12 @@ plus the existing-partition-table probe. Single home for this logic so it
 isn't duplicated across partition-touching stages/tools.
 """
 
-import subprocess
 import unicodedata
 
 from sysforge import log
 from sysforge.pipeline.stages._bootstrap import BootstrapConfig
 from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives import run
 
 
 def probe_disk_size_bytes(device: str) -> int | None:
@@ -31,10 +31,7 @@ def probe_disk_size_bytes(device: str) -> int | None:
     so the caller can decide (hard-fail for a real run, nominal size for a
     dry-run preview) rather than crashing here.
     """
-    result = subprocess.run(
-        ["lsblk", "--noheadings", "--nodeps", "--bytes", "--output", "SIZE", device],
-        capture_output=True, text=True,
-    )
+    result = run.probe(["lsblk", "--noheadings", "--nodeps", "--bytes", "--output", "SIZE", device])
     if result.returncode != 0:
         return None
     text = result.stdout.strip().splitlines()
@@ -52,10 +49,7 @@ def _has_existing_partitions(device: str) -> bool:
     inability to enumerate shouldn't itself block partitioning; the standard
     plan confirmation still applies.
     """
-    result = subprocess.run(
-        ["lsblk", "--noheadings", "--raw", "--output", "NAME", device],
-        capture_output=True, text=True,
-    )
+    result = run.probe(["lsblk", "--noheadings", "--raw", "--output", "NAME", device])
     if result.returncode != 0:
         return False
     names = [line.strip() for line in result.stdout.splitlines() if line.strip()]

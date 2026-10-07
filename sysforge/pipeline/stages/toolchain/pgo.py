@@ -33,6 +33,7 @@ from sysforge.primitives import prompt
 from sysforge.primitives.makepkg_invoke import BuildAborted
 from sysforge.primitives import pacman
 from sysforge import log
+from sysforge.ui import progress
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -511,69 +512,77 @@ def build_llvm_pgo_inner(
                 )
                 pass2_cc, pass2_cxx = "/usr/bin/clang", "/usr/bin/clang++"
             try:
-                passes.build_pass(
-                    "PGO 3/4 · train (profraw generation, no system install)",
-                    pass2_map,
-                    options,
-                    cc=pass2_cc,
-                    cxx=pass2_cxx,
-                    install=False,
-                    linker_flags_extra=residual_linker_flags,
-                    pgo_build=True,
-                    pgo_env=train_env,
-                    staged_deps=True,
-                    # lld parity (see Pass 2): without it this pass links the
-                    # instrumented stage1 archives under the gcc profile's bfd
-                    # and the bare profile-runtime ref drops out by order.
-                    toolchain_variant="pgo_llvm",
-                )
-                # Training-corpus enrichment (mesa, …). Compiled by the SAME
-                # instrumented stage1 clang and SAME LLVM_PROFILE_FILE so their
-                # codegen profraw lands in pgo_store and merges into
-                # clang.profdata alongside the LLVM self-build's. These targets
-                # are NEVER installed and never become -fprofile-use targets —
-                # they only broaden the corpus toward graphics/C-heavy code the
-                # LLVM self-compilation under-exercises. The merge daemon is
-                # still running here, and the final profdata.merge_profraw sweep below
-                # picks up whatever this adds. staged_deps=True keeps the
-                # no-pacman-mutation invariant (--nodeps, no --syncdeps), so the
-                # extras' makedepends must already be installed. Best-effort: a
-                # corpus build failure (missing makedep, mesa configure quirk)
-                # is logged and the PGO run proceeds with the LLVM-only profile
-                # — enrichment must never brick the toolchain build. A user
-                # abort at the failure menu is NOT a corpus failure: it
-                # propagates and stops the run.
-                #
-                # No residual_linker_flags: the corpus links stage1's *shared*
-                # instrumented libLLVM (which carries its own profile runtime),
-                # not the static .a archives the force-load exists for. Meson
-                # also repeats LDFLAGS on the link line, and a doubled
-                # --whole-archive of the runtime is a duplicate-symbol link
-                # failure. pgo_reuse=False keeps a target's own prior --pgo=use
-                # profile (e.g. pgo-mesa/mesa.profdata) off the corpus build.
-                if corpus_map:
-                    try:
-                        passes.build_pass(
-                            f"PGO 3/4 · corpus enrich ({', '.join(corpus_map)})",
-                            corpus_map,
-                            options,
-                            cc=pass2_cc,
-                            cxx=pass2_cxx,
-                            install=False,
-                            pgo_build=True,
-                            pgo_env=train_env,
-                            staged_deps=True,
-                            toolchain_variant="pgo_llvm",
-                            pgo_reuse=False,
-                        )
-                    except BuildAborted:
-                        raise
-                    except Exception as e:
-                        _log.warn(
-                            f"[PGO] Training-corpus enrichment build failed "
-                            f"({', '.join(corpus_map)}): {e} — continuing with "
-                            "LLVM-only profile data",
-                        )
+                # One counter for all of Pass 3 (train + corpus enrich), so the
+                # corpus builds continue the count instead of restarting it
+                # (3.3.0-B12); the sub-pass names stay as headers.
+                with progress.tracker(
+                        passes.pass_size(pass2_map, corpus_map),
+                        "PGO 3/4 · train") as tick3:
+                    passes.build_pass(
+                        "PGO 3/4 · train (profraw generation, no system install)",
+                        pass2_map,
+                        options,
+                        cc=pass2_cc,
+                        cxx=pass2_cxx,
+                        install=False,
+                        linker_flags_extra=residual_linker_flags,
+                        pgo_build=True,
+                        pgo_env=train_env,
+                        staged_deps=True,
+                        # lld parity (see Pass 2): without it this pass links the
+                        # instrumented stage1 archives under the gcc profile's bfd
+                        # and the bare profile-runtime ref drops out by order.
+                        toolchain_variant="pgo_llvm",
+                        tick=tick3,
+                    )
+                    # Training-corpus enrichment (mesa, …). Compiled by the SAME
+                    # instrumented stage1 clang and SAME LLVM_PROFILE_FILE so their
+                    # codegen profraw lands in pgo_store and merges into
+                    # clang.profdata alongside the LLVM self-build's. These targets
+                    # are NEVER installed and never become -fprofile-use targets —
+                    # they only broaden the corpus toward graphics/C-heavy code the
+                    # LLVM self-compilation under-exercises. The merge daemon is
+                    # still running here, and the final profdata.merge_profraw sweep below
+                    # picks up whatever this adds. staged_deps=True keeps the
+                    # no-pacman-mutation invariant (--nodeps, no --syncdeps), so the
+                    # extras' makedepends must already be installed. Best-effort: a
+                    # corpus build failure (missing makedep, mesa configure quirk)
+                    # is logged and the PGO run proceeds with the LLVM-only profile
+                    # — enrichment must never brick the toolchain build. A user
+                    # abort at the failure menu is NOT a corpus failure: it
+                    # propagates and stops the run.
+                    #
+                    # No residual_linker_flags: the corpus links stage1's *shared*
+                    # instrumented libLLVM (which carries its own profile runtime),
+                    # not the static .a archives the force-load exists for. Meson
+                    # also repeats LDFLAGS on the link line, and a doubled
+                    # --whole-archive of the runtime is a duplicate-symbol link
+                    # failure. pgo_reuse=False keeps a target's own prior --pgo=use
+                    # profile (e.g. pgo-mesa/mesa.profdata) off the corpus build.
+                    if corpus_map:
+                        try:
+                            passes.build_pass(
+                                f"PGO 3/4 · corpus enrich ({', '.join(corpus_map)})",
+                                corpus_map,
+                                options,
+                                cc=pass2_cc,
+                                cxx=pass2_cxx,
+                                install=False,
+                                pgo_build=True,
+                                pgo_env=train_env,
+                                staged_deps=True,
+                                toolchain_variant="pgo_llvm",
+                                pgo_reuse=False,
+                                tick=tick3,
+                            )
+                        except BuildAborted:
+                            raise
+                        except Exception as e:
+                            _log.warn(
+                                f"[PGO] Training-corpus enrichment build failed "
+                                f"({', '.join(corpus_map)}): {e} — continuing with "
+                                "LLVM-only profile data",
+                            )
             finally:
                 stop_event.set()
                 if not options.dry_run:
@@ -713,55 +722,17 @@ def build_llvm_pgo_inner(
         # unless [bolt] enabled; lib32 (4c) is never BOLTed so it is untouched.
         from sysforge.primitives import bolt as _bolt
         _bolt_ldflag = _bolt.emit_relocs_ldflag() if bolt_relocs else None
-        pgo_fps = passes.build_pass(
-            f"PGO optimize · llvm/llvm-libs ({opt})",
-            pgo_map,
-            options,
-            cc=pass3_cc,
-            cxx=pass3_cxx,
-            install=False,
-            compiler_flags_extra=profile_use,
-            linker_flags_extra=_bolt_ldflag,
-            pgo_build=True,
-            pgo_env=build_pgo_env,
-            staged_deps=True,
-            toolchain_variant="pgo_llvm",
-            owner_stage="toolchain",
-            reuse_ctx=_mk_reuse_ctx("build-pgo", []),
-        )
-
-        # 4b's fingerprints feed 4c's Merkle chain; default empty so 4c is safe
-        # when non_pgo_map is empty but lib32_map is not.
-        nonpgo_fps: dict[str, str] = {}
-
-        # Stage the just-built OPTIMIZED libLLVM (+ headers + cmake configs) so
-        # the non-pgo / lib32 sub-passes resolve find_package(LLVM) against the
-        # exact libLLVM that ships. staging3 IS the final artifact (full
-        # configured targets) — unlike stage2 (training) — so steering clang at
-        # it is correct and is the whole point of the split.
-        if non_pgo_map or lib32_map:
-            profdata.remove_staging(staging3, options.dry_run)
-            profdata.extract_built_to_staging(pgo_map, staging3, options.dry_run)
-            # Fail fast if the split-package 'llvm' (cmake config + headers) did
-            # not reach staging3: without LLVMConfig.cmake, the 4b/4c
-            # find_package(LLVM) silently falls back to the live /usr libLLVM and
-            # the non-pgo suite links against the wrong libLLVM → Gate-3
-            # symbol-version brick. Cheaper to catch here than after install.
-            if not options.dry_run:
-                profdata.assert_staging_has_llvm_cmake(staging3)
-
-        # 4b — build the non-pgo suite (clang, lld, …) against staging3's
-        # libLLVM. Set ONLY CMAKE_PREFIX_PATH (mirror Pass 2): the host clang
-        # compiles the source, it must not be forced to *load* the staged libLLVM
-        # via LD_LIBRARY_PATH.
-        if non_pgo_map:
-            build_nonpgo_env = {
-                "LLVM_PROFILE_FILE": "",
-                "CMAKE_PREFIX_PATH": f"{staging3}/usr",
-            }
-            nonpgo_fps = passes.build_pass(
-                f"PGO optimize · clang/lld/... against shipped libLLVM ({opt})",
-                non_pgo_map,
+        # One counter for all of Pass 4 (4a pgo, 4b non-pgo, 4c lib32): the
+        # operator reads the pass as one unit, so its item counter runs
+        # 1..N across the sub-passes instead of restarting per call
+        # (3.3.0-B12). Staging between sub-passes happens inside it.
+        pass4_label = ("PGO optimize (reusing profdata)" if skip_profgen
+                       else "PGO 4/4 · optimize")
+        with progress.tracker(
+                passes.pass_size(pgo_map, non_pgo_map, lib32_map), pass4_label) as tick4:
+            pgo_fps = passes.build_pass(
+                f"PGO optimize · llvm/llvm-libs ({opt})",
+                pgo_map,
                 options,
                 cc=pass3_cc,
                 cxx=pass3_cxx,
@@ -769,51 +740,100 @@ def build_llvm_pgo_inner(
                 compiler_flags_extra=profile_use,
                 linker_flags_extra=_bolt_ldflag,
                 pgo_build=True,
-                pgo_env=build_nonpgo_env,
+                pgo_env=build_pgo_env,
                 staged_deps=True,
                 toolchain_variant="pgo_llvm",
                 owner_stage="toolchain",
-                cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
-                reuse_ctx=_mk_reuse_ctx("build-nonpgo", sorted(pgo_fps.values())),
+                reuse_ctx=_mk_reuse_ctx("build-pgo", []),
+                tick=tick4,
             )
-            # Verify the split actually held: clang/lld must have linked the
-            # staged shipped libLLVM, not the live /usr one. Abort before install
-            # (no sentinel, no rollback) if a std::-bound-to-LLVM ref leaked.
-            profdata.assert_pass_links_shipped_libllvm(
-                non_pgo_map, label="Pass 4b", dry_run=options.dry_run,
-            )
-            # Stage the new clang/lld so a lib32 sub-pass can resolve them too.
-            if lib32_map:
-                profdata.extract_built_to_staging(non_pgo_map, staging3, options.dry_run)
 
-        # 4c — lib32 against staging3 (usually empty; lib32 dropped from PGO in
-        # d191a89). Same CMAKE_PREFIX_PATH steering.
-        if lib32_map:
-            pass3c_env = {
-                "LLVM_PROFILE_FILE": "",
-                "CMAKE_PREFIX_PATH": f"{staging3}/usr",
-            }
-            passes.build_pass(
-                f"PGO optimize · lib32 against shipped libLLVM ({opt})",
-                lib32_map,
-                options,
-                cc=pass3_cc,
-                cxx=pass3_cxx,
-                install=False,
-                compiler_flags_extra=profile_use,
-                pgo_build=True,
-                pgo_env=pass3c_env,
-                staged_deps=True,
-                toolchain_variant="pgo_llvm",
-                owner_stage="toolchain",
-                cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
-                reuse_ctx=_mk_reuse_ctx(
-                    "build-lib32", sorted([*pgo_fps.values(), *nonpgo_fps.values()]),
-                ),
-            )
-            profdata.assert_pass_links_shipped_libllvm(
-                lib32_map, label="Pass 4c (lib32)", dry_run=options.dry_run,
-            )
+            # 4b's fingerprints feed 4c's Merkle chain; default empty so 4c is safe
+            # when non_pgo_map is empty but lib32_map is not.
+            nonpgo_fps: dict[str, str] = {}
+
+            # Stage the just-built OPTIMIZED libLLVM (+ headers + cmake configs) so
+            # the non-pgo / lib32 sub-passes resolve find_package(LLVM) against the
+            # exact libLLVM that ships. staging3 IS the final artifact (full
+            # configured targets) — unlike stage2 (training) — so steering clang at
+            # it is correct and is the whole point of the split.
+            if non_pgo_map or lib32_map:
+                profdata.remove_staging(staging3, options.dry_run)
+                profdata.extract_built_to_staging(pgo_map, staging3, options.dry_run)
+                # Fail fast if the split-package 'llvm' (cmake config + headers) did
+                # not reach staging3: without LLVMConfig.cmake, the 4b/4c
+                # find_package(LLVM) silently falls back to the live /usr libLLVM and
+                # the non-pgo suite links against the wrong libLLVM → Gate-3
+                # symbol-version brick. Cheaper to catch here than after install.
+                if not options.dry_run:
+                    profdata.assert_staging_has_llvm_cmake(staging3)
+
+            # 4b — build the non-pgo suite (clang, lld, …) against staging3's
+            # libLLVM. Set ONLY CMAKE_PREFIX_PATH (mirror Pass 2): the host clang
+            # compiles the source, it must not be forced to *load* the staged libLLVM
+            # via LD_LIBRARY_PATH.
+            if non_pgo_map:
+                build_nonpgo_env = {
+                    "LLVM_PROFILE_FILE": "",
+                    "CMAKE_PREFIX_PATH": f"{staging3}/usr",
+                }
+                nonpgo_fps = passes.build_pass(
+                    f"PGO optimize · clang/lld/... against shipped libLLVM ({opt})",
+                    non_pgo_map,
+                    options,
+                    cc=pass3_cc,
+                    cxx=pass3_cxx,
+                    install=False,
+                    compiler_flags_extra=profile_use,
+                    linker_flags_extra=_bolt_ldflag,
+                    pgo_build=True,
+                    pgo_env=build_nonpgo_env,
+                    staged_deps=True,
+                    toolchain_variant="pgo_llvm",
+                    owner_stage="toolchain",
+                    cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+                    reuse_ctx=_mk_reuse_ctx("build-nonpgo", sorted(pgo_fps.values())),
+                    tick=tick4,
+                )
+                # Verify the split actually held: clang/lld must have linked the
+                # staged shipped libLLVM, not the live /usr one. Abort before install
+                # (no sentinel, no rollback) if a std::-bound-to-LLVM ref leaked.
+                profdata.assert_pass_links_shipped_libllvm(
+                    non_pgo_map, label="Pass 4b", dry_run=options.dry_run,
+                )
+                # Stage the new clang/lld so a lib32 sub-pass can resolve them too.
+                if lib32_map:
+                    profdata.extract_built_to_staging(non_pgo_map, staging3, options.dry_run)
+
+            # 4c — lib32 against staging3 (usually empty; lib32 dropped from PGO in
+            # d191a89). Same CMAKE_PREFIX_PATH steering.
+            if lib32_map:
+                pass3c_env = {
+                    "LLVM_PROFILE_FILE": "",
+                    "CMAKE_PREFIX_PATH": f"{staging3}/usr",
+                }
+                passes.build_pass(
+                    f"PGO optimize · lib32 against shipped libLLVM ({opt})",
+                    lib32_map,
+                    options,
+                    cc=pass3_cc,
+                    cxx=pass3_cxx,
+                    install=False,
+                    compiler_flags_extra=profile_use,
+                    pgo_build=True,
+                    pgo_env=pass3c_env,
+                    staged_deps=True,
+                    toolchain_variant="pgo_llvm",
+                    owner_stage="toolchain",
+                    cmake_llvm_dir=f"{staging3}/usr/lib/cmake/llvm",
+                    reuse_ctx=_mk_reuse_ctx(
+                        "build-lib32", sorted([*pgo_fps.values(), *nonpgo_fps.values()]),
+                    ),
+                    tick=tick4,
+                )
+                profdata.assert_pass_links_shipped_libllvm(
+                    lib32_map, label="Pass 4c (lib32)", dry_run=options.dry_run,
+                )
 
         # Pass 4 is built but NOT installed here — the caller runs the Gate-2
         # ABI audit on the built packages, snapshots the current suite, then

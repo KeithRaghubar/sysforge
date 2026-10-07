@@ -19,6 +19,7 @@ import contextlib
 from sysforge.pipeline.stages.toolchain import config, passes, verify
 
 from sysforge import log
+from sysforge.primitives import run
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -92,10 +93,12 @@ def build_bolt_tools(
     try:
         passes.build_pkg(
             _bolt.PKG_NAME, pkgbuild, options,
-            extra_flags=["--install"],
             toolchain_variant=variant,
             owner_stage="toolchain",
         )
+        # sysforge installs, not makepkg --install (3.4.0-F1).
+        if not options.dry_run:
+            passes.install_built_packages(Path(pkgbuild).parent, noconfirm=True)
     except Exception as e:
         _log.warn(
             f"[BOLT] Pass 5a failed to build llvm-bolt ({e}) — PGO toolchain "
@@ -135,7 +138,6 @@ def run_bolt(
     ``pacman -Qkk clang`` will report it modified — an inherent property of
     post-link optimization, not corruption.
     """
-    import subprocess as _sp
     import tempfile as _tempfile
 
     bcfg = tcfg.bolt
@@ -206,9 +208,8 @@ def run_bolt(
             return
 
         # Smoke-test the BOLTed clang *before* it replaces the system compiler.
-        smoke = _sp.run(
+        smoke = run.probe(
             [str(bolted), "-std=c++17", "-O2", "-c", str(workload), "-o", str(td / "s.o")],
-            capture_output=True, text=True,
         )
         if smoke.returncode != 0 or not (td / "s.o").exists():
             _log.warn(

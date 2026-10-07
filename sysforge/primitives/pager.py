@@ -134,7 +134,7 @@ def maybe_pager(use_pager: bool):
     pager_env = _sanitized_pager_env()
     for cmd in _pager_candidates():
         try:
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # noqa: TID251 — the pager reads our output on a stdin pipe
                 cmd, stdin=subprocess.PIPE, text=True, env=pager_env)
         except (FileNotFoundError, OSError):
             continue

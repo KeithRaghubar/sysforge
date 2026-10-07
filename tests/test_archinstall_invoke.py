@@ -44,3 +44,7 @@ def test_real_run_writes_0600_and_invokes(monkeypatch):
     ai.run_archinstall(_cfg(), dry_run=False)
     assert seen["mode"] == 0o600
     assert "--silent" in seen["cmd"]
+    # 2.6.1-F27: the mountpoint is explicit, so the change summary reads the
+    # same root archinstall installed into.
+    i = seen["cmd"].index("--mountpoint")
+    assert seen["cmd"][i + 1] == "/mnt"

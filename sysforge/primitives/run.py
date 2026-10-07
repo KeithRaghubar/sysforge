@@ -5,7 +5,7 @@
 """
 primitives/run.py — the external-command seam
 
-Two entry points, for the two shapes external commands take here.
+Three entry points, for the shapes external commands take here.
 
 ``run_or_raise`` centralizes "run a command, raise a tagged error with stderr
 on failure" — the pattern that recurs across pipeline stages. The default
@@ -19,6 +19,16 @@ answer including "that tool is not installed". Probes were the reason raw
 raises, which is exactly wrong for a probe — so they got a bare call each, and
 with it a hand-written ``try/except FileNotFoundError`` and no record in the
 run log. ``capture`` gives them a home (3.2.0-F5).
+
+``probe`` is ``capture`` for callers that only branch on ``returncode``: a
+missing binary is a ``CompletedProcess`` with status 127 rather than ``None``,
+so the caller's failure branch covers it (3.2.0-F13).
+
+Since 3.2.0-F13 a ruff ``banned-api`` rule (TID251) forbids ``subprocess.*``
+everywhere except this module, ``pty_runner``, ``privilege`` and
+``sudo_session``. The calls that legitimately stay raw (streaming or
+TTY-inheriting invocations, a privileged command whose status the caller
+inspects, a custom ``preexec_fn``) carry a ``# noqa: TID251`` naming why.
 """
 from __future__ import annotations
 
@@ -108,15 +118,48 @@ def capture(
       decide that?" unanswerable from a log alone.
 
     ``**kwargs`` are forwarded to ``subprocess.run`` (``cwd``, ``env``,
-    ``input``, ...). ``capture_output``/``text``/``check`` are set here and
-    should not be passed.
+    ``input``, ``timeout``, ...). ``check`` is always ``False``;
+    ``capture_output``/``text`` default on and may be overridden (``text=False``
+    for bytes), and an explicit ``stdout``/``stderr`` replaces the capture.
     """
-    kwargs.setdefault("capture_output", True)
+    # A caller routing the streams itself (``stdout=PIPE, stderr=DEVNULL``)
+    # keeps them: subprocess rejects capture_output alongside either.
+    if "stdout" not in kwargs and "stderr" not in kwargs:
+        kwargs.setdefault("capture_output", True)
     kwargs.setdefault("text", True)
     kwargs["check"] = False
-    _log.debug(f"probe: {' '.join(cmd)}")
+    _log.debug(f"probe: {' '.join(str(c) for c in cmd)}")
     try:
         return subprocess.run(cmd, **kwargs)
     except FileNotFoundError:
         _log.debug(f"probe: {cmd[0]} not found on PATH")
         return None
+
+
+# The shell's "command not found" status, used by probe() for a missing binary.
+MISSING_BINARY_RC = 127
+
+
+def probe(
+    cmd: list[str],
+    **kwargs,
+) -> subprocess.CompletedProcess:
+    """:func:`capture`, but never ``None``: a missing binary is a failed command.
+
+    For the many probes that only branch on ``returncode`` (``git rev-parse``,
+    ``pacman -Q``, ``bsdtar -t``): a missing binary comes back as a
+    ``CompletedProcess`` with ``returncode`` :data:`MISSING_BINARY_RC` (127, the
+    shell's command-not-found status), empty ``stdout`` and a ``stderr`` saying
+    so, so the caller's existing non-zero branch handles it — instead of the
+    ``FileNotFoundError`` a bare ``subprocess.run`` raised at every such site.
+    Use :func:`capture` where "not installed" must be told apart from "ran and
+    failed". Same keyword handling as :func:`capture` (3.2.0-F13).
+    """
+    result = capture(cmd, **kwargs)
+    if result is not None:
+        return result
+    text = kwargs.get("text", True)
+    empty = "" if text else b""
+    msg = f"{cmd[0]}: command not found"
+    return subprocess.CompletedProcess(
+        cmd, MISSING_BINARY_RC, empty, msg if text else msg.encode())

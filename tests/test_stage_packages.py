@@ -20,6 +20,20 @@ from sysforge.pipeline.state import PipelineState
 from sysforge.pipeline.stages.base import RunOptions
 
 
+@pytest.fixture(autouse=True)
+def seam_installs(monkeypatch):
+    """3.4.0-F1: the stage installs deps and built packages through the
+    privilege seam itself. Record those steps instead of escalating."""
+    from sysforge import build_core
+    from sysforge.pipeline.stages import packages as _pkgs
+    calls = {"deps": [], "installed": []}
+    monkeypatch.setattr(build_core, "install_missing_repo_deps",
+                        lambda paths, **k: calls["deps"].append((list(paths), k)))
+    monkeypatch.setattr(_pkgs, "install_built_packages",
+                        lambda d, **k: calls["installed"].append(Path(d)))
+    return calls
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -629,3 +643,39 @@ def test_enable_display_managers_enables_each_dm_once():
         c.args[0] for c in m.call_args_list if "enable" in c.args[0]
     ]
     assert enable_calls.count(["sudo", "systemctl", "enable", "gdm.service"]) == 1
+
+
+
+def test_aur_build_installs_through_the_seam_not_makepkg(tmp_path, seam_installs):
+    """3.4.0-F1: --syncdeps/--install never reach makepkg; sysforge installs the
+    deps before and the package after, through the privilege seam."""
+    from sysforge.pipeline.stages import packages as _pkgs
+    from sysforge.primitives.pacman import BATCH_STRIP_FLAGS
+    pkg_dir = tmp_path / "foo"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    seen = {}
+    with patch.object(_pkgs, "_resolve_pkgbuild", return_value=pkg_dir / "PKGBUILD"), \
+         patch.object(_pkgs, "makepkg_run",
+                      side_effect=lambda pb, options: seen.setdefault(
+                          "strip", options.strip_flags)):
+        _pkgs._build_aur({"name": "foo"}, {}, {}, make_options(state_dir=tmp_path), {})
+    assert set(BATCH_STRIP_FLAGS) <= set(seen["strip"])
+    assert seam_installs["deps"] == [([pkg_dir / "PKGBUILD"], {"exclude": frozenset({"foo"})})]
+    assert seam_installs["installed"] == [pkg_dir]
+
+
+def test_aur_build_already_built_still_installs(tmp_path, seam_installs):
+    from sysforge.build.makepkg_wrapper import AlreadyBuilt
+    from sysforge.pipeline.stages import packages as _pkgs
+    pkg_dir = tmp_path / "foo"
+    pkg_dir.mkdir()
+    (pkg_dir / "PKGBUILD").write_text("pkgname=foo\n")
+
+    def already(pb, options):
+        raise AlreadyBuilt(pb)
+
+    with patch.object(_pkgs, "_resolve_pkgbuild", return_value=pkg_dir / "PKGBUILD"), \
+         patch.object(_pkgs, "makepkg_run", side_effect=already):
+        _pkgs._build_aur({"name": "foo"}, {}, {}, make_options(state_dir=tmp_path), {})
+    assert seam_installs["installed"] == [pkg_dir]

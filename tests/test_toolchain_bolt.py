@@ -152,3 +152,24 @@ def test_bolt_dylib_only_llvm_is_blocked(monkeypatch):
     cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
     run_bolt(toolchain_cfg(bolt={"enabled": True}), cfg, _bolt_opts(), "pgo_llvm")
     assert materialized == [] and built == []  # blocked before any work
+
+
+def test_bolt_pass5a_installs_through_sysforge_not_makepkg(monkeypatch, tmp_path):
+    """3.4.0-F1: makepkg builds llvm-bolt without --install; sysforge installs it."""
+    from sysforge.pipeline.stages.toolchain import bolt as tc_bolt
+    monkeypatch.setattr("sysforge.primitives.bolt.tools_available",
+                        lambda need_perf=False: (False, ["llvm-bolt"]))
+    monkeypatch.setattr("sysforge.primitives.bolt.standalone_build_viable", lambda *a, **k: True)
+    monkeypatch.setattr("sysforge.primitives.bolt.materialize_pkgbuild",
+                        lambda d, v: tmp_path / "llvm-bolt" / "PKGBUILD")
+    monkeypatch.setattr(tc_bolt.verify, "query_pacman_versions", lambda names: {"llvm": "22.1.8-1"})
+    events = []
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.passes.build_pkg",
+                        lambda *a, **k: events.append(("build", k.get("extra_flags"))))
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.passes.install_built_packages",
+                        lambda d, **k: events.append(("install", d, k)))
+    tc_bolt.build_bolt_tools(toolchain_cfg(bolt={"enabled": True}),
+                             {"paths": {"pkgbuild_src_dir": str(tmp_path)}},
+                             _bolt_opts(), "pgo_llvm")
+    assert events[0] == ("build", None)
+    assert events[1] == ("install", tmp_path / "llvm-bolt", {"noconfirm": True})

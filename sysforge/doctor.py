@@ -28,7 +28,6 @@ Public API:
 from __future__ import annotations
 
 import re
-import subprocess
 import tomllib
 from collections import deque
 from collections.abc import Callable
@@ -152,14 +151,8 @@ def _detect_gpu_vendors_via_lspci() -> list[str]:
     Run `lspci -nn` and map VGA/3D-controller lines to vendor names.
     Returns an empty list if lspci is missing or fails.
     """
-    try:
-        result = subprocess.run(
-            ["lspci", "-nn"],
-            capture_output=True, text=True, check=False,
-        )
-    except FileNotFoundError:
-        return []
-    if result.returncode != 0:
+    result = run.probe(["lspci", "-nn"])
+    if result.returncode != 0:  # includes lspci missing (127)
         return []
     vendors: list[str] = []
     seen: set[str] = set()
@@ -244,10 +237,7 @@ def _check_depends(depends: list[str], ldconfig_set: set[str],
             pkg_specs.append(entry)
 
     if pkg_specs:
-        result = subprocess.run(
-            ["pacman", "-T", *pkg_specs],
-            capture_output=True, text=True,
-        )
+        result = run.probe(["pacman", "-T", *pkg_specs])
         # pacman -T: exit 0 all satisfied; exit 127 some missing; stdout lists them.
         if result.returncode != 0:
             for line in result.stdout.splitlines():
@@ -1551,6 +1541,7 @@ def _apply_rebuilds(
 
 from sysforge.primitives.config import load_config as _load_config  # noqa: E402
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup  # noqa: E402
+from sysforge.primitives import run
 
 
 def _add_system_axis_flags(p):

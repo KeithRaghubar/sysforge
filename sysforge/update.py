@@ -36,11 +36,15 @@ Phases:
 Public API:
     cmd_update(args)
 """
+import argparse
 import os
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from typing import Any
 from pathlib import Path
 
 from sysforge import log
@@ -83,7 +87,7 @@ from sysforge.primitives.llvm_state import (
 from sysforge.primitives.llvm_state import (
     render_preflight as render_llvm_preflight,
 )
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.pacman import (
     checkupdates_map,
     diff_installed,
@@ -118,6 +122,7 @@ from sysforge.primitives.toolchain_preflight import (
     run_preflight as run_toolchain_preflight,
 )
 from sysforge.ui import progress as _ui_progress  # noqa: E402
+from sysforge.update_assemble import split_toolchain_first
 from sysforge.update_assemble import _assemble_package_set
 from sysforge.update_result import _UpdateResult
 from sysforge.update_summary import (
@@ -766,105 +771,165 @@ def _failure_exit_code(
     return 0
 
 
-def _cmd_update_body(args) -> int:
-    # ── Phase 0: Init ─────────────────────────────────────────────────────
+@dataclass
+class UpdateRun:
+    """The state one ``sysforge update`` run accumulates across its phases (3.2.0-F3).
+
+    ``_cmd_update_body`` is the ordered list of phase functions in
+    :data:`_PHASES`; each takes this record, reads what earlier phases left on
+    it and writes what later ones need. A phase returns an exit code to end
+    the run early (a dry-run or report gate, "nothing to rebuild", an abort)
+    or ``None`` to continue. Grouped by the phase that first sets each field.
+    """
+
+    # Phase 0: inputs, state and config
+    args: argparse.Namespace
+    timer: PhaseTimer = field(default_factory=PhaseTimer)
+    install_only: bool = False
+    offline: bool = False
+    state_dir: Path = field(init=False)  # set by _phase_init
+    bs: BuildState = field(init=False)  # set by _phase_init
+    active_variant: str | None = None
+    active_fingerprint: str | None = None
+    all_installed: dict[str, str] = field(default_factory=dict)
+    unified_log_active: bool = False
+    unified_log_path: Path = field(init=False)  # set by _phase_init
+    config: dict = field(default_factory=dict)
+    build_cfg: dict = field(default_factory=dict)
+    overrides_by_name: dict[str, dict] = field(default_factory=dict)
+    review_mode: str = "auto"
+    system_upgrade: bool = False
+    # Phase 1-2: package set and source sync
+    stage_owned_packages: Any = None
+    unrecorded_names: set[str] = field(default_factory=set)
+    pkgbase_map: dict[str, list[str]] = field(default_factory=dict)
+    pkgbase_entry: dict[str, dict] = field(default_factory=dict)
+    rpc_version_by_base: dict[str, str] = field(default_factory=dict)
+    sync_failures: dict = field(default_factory=dict)
+    pacman_updates_map: dict[str, str] | None = None
+    # Phase 3-4: version verdicts and drift
+    skip_sync_check: bool = False
+    results: list[_UpdateResult] = field(default_factory=list)
+    _rebuild_tc_drift: bool = False
+    _rebuild_fl_drift: bool = False
+    drifted: list[tuple[str, str, str]] = field(default_factory=list)
+    # Phase 5: build
+    to_build: list[_UpdateResult] = field(default_factory=list)
+    pending_pacman_upgrade: list[_UpdateResult] = field(default_factory=list)
+    cleansrc_failures: dict[str, str] = field(default_factory=dict)
+    frozen_sync_pkgs: dict[str, str] = field(default_factory=dict)
+    sysupgrade_pending: bool = False
+    built_pkgs: list[str] = field(default_factory=list)
+    failed_pkgs: list[str] = field(default_factory=list)
+    pgo_skipped_pkgs: list[str] = field(default_factory=list)
+    review_skipped_pkgs: list[str] = field(default_factory=list)
+    install_failed: bool = False
+    not_installed: dict[str, str] = field(default_factory=dict)
+    outcome: build_core.BuildOutcome | None = None
+
+
+def _phase_init(run: UpdateRun) -> int | None:
+    """Phase 0: Init."""
     _ui_progress.phase("loading state and config")
-    timer = PhaseTimer()
-    install_only = getattr(args, "install_only", False)
-    offline = getattr(args, "offline", False) or install_only
-    if install_only:
-        args.offline = True
-    if not offline:
+    run.timer = PhaseTimer()
+    run.install_only = getattr(run.args, "install_only", False)
+    run.offline = getattr(run.args, "offline", False) or run.install_only
+    if run.install_only:
+        run.args.offline = True
+    if not run.offline:
         fetch_aur_name_cache()
 
-    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-    bs = BuildState(state_dir)
+    run.state_dir, _ = resolve_state_dir(getattr(run.args, "state_dir", None))
+    run.bs = BuildState(run.state_dir)
 
     # External-install demotion: a source-built package reinstalled from the
     # repo via `pacman -S` (buildstate hook target, minus sysforge's own
     # pacman -U self-install targets) is demoted back to a plain pacman marker
     # so this run doesn't rebuild it from source and undo the user's switch.
-    _reconcile_external_demotions(bs)
+    _reconcile_external_demotions(run.bs)
 
     # Active toolchain variant — stamped onto every rebuild via BuildOptions
     # and used below to surface drift between installed packages' recorded
     # variant and what's active now. ``"system"`` means the toolchain stage
     # has never run on this state dir; treat as a benign no-op (no stamp).
-    _pstate = PipelineState(state_dir)
-    active_variant = get_toolchain_variant(_pstate)
+    _pstate = PipelineState(run.state_dir)
+    run.active_variant = get_toolchain_variant(_pstate)
     # Companion to active_variant (Q9): identity of the active toolchain's
     # compiler, computed once. Stamped onto every rebuild below and compared
     # against each package's recorded fingerprint to catch a same-variant
     # toolchain rebuild (fresh codegen, unchanged soname). None when variant is
     # "system" (no toolchain stage run — nothing to compare).
-    active_fingerprint = get_toolchain_fingerprint(_pstate)
+    run.active_fingerprint = get_toolchain_fingerprint(_pstate)
 
     # Superset sync: build_state.toml carries an entry for every installed
     # package (pacman-mode marker for those sysforge didn't build), so that
     # every `pacman -Q` name has a known state and zombie entries left by
     # prior parser runs (e.g. literal ``$_pkgname`` keys) are pruned.
-    all_installed = get_all_installed_packages()
+    run.all_installed = get_all_installed_packages()
     try:
-        sync_result = bs.sync_with_installed(all_installed)
+        sync_result = run.bs.sync_with_installed(run.all_installed)
     except OSError as e:
         _log.warn(f"build_state sync failed: {e}")
     else:
         if isinstance(sync_result, tuple) and len(sync_result) == 2:
             added, removed = sync_result
             if added or removed:
-                bs.save()
+                run.bs.save()
                 _log.info(f"build_state sync: +{added} pacman-mode, -{removed} stale")
 
     # Unified log — always on, always truncate.
-    unified_log_active = not getattr(args, "dry_run", False)
-    unified_log_path = (
-        Path(args.log_dir) if getattr(args, "log_dir", None) else state_dir
+    run.unified_log_active = not getattr(run.args, "dry_run", False)
+    run.unified_log_path = (
+        Path(run.args.log_dir) if getattr(run.args, "log_dir", None) else run.state_dir
     ) / "sysforge-update.log"
-    if unified_log_active:
+    if run.unified_log_active:
         try:
-            log.open_unified_log(unified_log_path, purge=True)
-            _log.info(f"Unified log: {unified_log_path}")
+            log.open_unified_log(run.unified_log_path, purge=True)
+            _log.info(f"Unified log: {run.unified_log_path}")
         except OSError as e:
-            unified_log_active = False
+            run.unified_log_active = False
             _log.warn(
-                f"Cannot write unified log to {unified_log_path}: {e} — "
+                f"Cannot write unified log to {run.unified_log_path}: {e} — "
                 f"logging to terminal only"
             )
 
-    config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
-    config = load_config(config_paths=config_paths) or {}
-    if getattr(args, "packages", None):
-        config["packages_file"] = args.packages
+    config_paths = ([Path(run.args.profile_conf)]
+                    if getattr(run.args, "profile_conf", None) else None)
+    run.config = load_config(config_paths=config_paths) or {}
+    if getattr(run.args, "packages", None):
+        run.config["packages_file"] = run.args.packages
 
-    packages_path = resolve_packages_path(config)
-    build_cfg, overrides_by_name = _load_overrides(packages_path)
+    packages_path = resolve_packages_path(run.config)
+    run.build_cfg, run.overrides_by_name = _load_overrides(packages_path)
 
     # PKGBUILD review gate mode (runs inside build_core.build_and_install):
     # "auto" by default — changed sources are auto-accepted with a logged
     # notice so a plain `update` stays unattended. --review opts into the
     # interactive diff prompt; --no-review / [build] review = false in
     # packages.toml skips the gate entirely.
-    if getattr(args, "no_review", False) or build_cfg.get("review", True) is False:
-        review_mode = "off"
-    elif getattr(args, "review", False):
-        review_mode = "prompt"
+    if getattr(run.args, "no_review", False) or run.build_cfg.get("review", True) is False:
+        run.review_mode = "off"
+    elif getattr(run.args, "review", False):
+        run.review_mode = "prompt"
     else:
-        review_mode = "auto"
+        run.review_mode = "auto"
 
     # 3.0.0-F4: the trailing `pacman -Syu` (Phase 6.5) is an update-run
     # option, not a consequence of `repo_mode`. Off by default, so a plain
     # run behaves exactly as before; --no-sysupgrade is the explicit-off leg
     # that outranks the config default (same shape as --no-review).
-    if getattr(args, "no_sysupgrade", False):
-        system_upgrade = False
+    if getattr(run.args, "no_sysupgrade", False):
+        run.system_upgrade = False
     else:
-        system_upgrade = resolve_flag_default(
-            args, "sysupgrade", build_cfg, "system_upgrade")
+        run.system_upgrade = resolve_flag_default(
+            run.args, "sysupgrade", run.build_cfg, "system_upgrade")
 
-    # ── Phase 1: Package set assembly ─────────────────────────────────────
+
+def _phase_assemble(run: UpdateRun) -> int | None:
+    """Phase 1: Package set assembly."""
     _ui_progress.phase("assembling package set")
-    packages, unrecorded_names, stage_owned_packages = _assemble_package_set(
-        args, bs, config, build_cfg, overrides_by_name,
+    packages, run.unrecorded_names, run.stage_owned_packages = _assemble_package_set(
+        run.args, run.bs, run.config, run.build_cfg, run.overrides_by_name,
     )
 
     if not packages:
@@ -873,7 +938,7 @@ def _cmd_update_body(args) -> int:
         # packages recorded by `sysforge build` with no override). Every
         # phase in between no-ops on an empty package set.
         _has_source_built_entries = any(
-            e.get("build_mode") == BUILD_MODE_SOURCE for e in bs.all_packages().values()
+            e.get("build_mode") == BUILD_MODE_SOURCE for e in run.bs.all_packages().values()
         )
         if not _has_source_built_entries:
             print(
@@ -883,38 +948,41 @@ def _cmd_update_body(args) -> int:
             )
             return 0
 
-    pkgbase_map, pkgbase_entry = group_by_pkgbase(packages)
+    run.pkgbase_map, run.pkgbase_entry = group_by_pkgbase(packages)
 
-    # ── Phase 1.5: LLVM safety pre-flight (informational) ─────────────────
-    if not getattr(args, "no_llvm_preflight", False):
-        llvm_report = collect_llvm_state(list(pkgbase_map.keys()), config)
+
+def _phase_llvm_preflight(run: UpdateRun) -> int | None:
+    """Phase 1.5: LLVM safety pre-flight (informational)."""
+    if not getattr(run.args, "no_llvm_preflight", False):
+        llvm_report = collect_llvm_state(list(run.pkgbase_map.keys()), run.config)
         if llvm_report.states:
             _log.ui(render_llvm_preflight(llvm_report))
 
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's
     # SourceMetaCache holds the latest AUR RPC Version per pkgbase.
-    rpc_version_by_base = {
+    run.rpc_version_by_base = {
         pb: meta["rpc_version"]
         for pb, meta in get_scheduler().cache.all().items()
         if meta.get("rpc_version")
     }
 
-    # ── Phase 2: Source sync ──────────────────────────────────────────────
-    with timer.phase("source sync"):
-        sync_failures = _sync_sources(pkgbase_map, pkgbase_entry, args)
+
+def _phase_source_sync(run: UpdateRun) -> int | None:
+    """Phase 2: Source sync."""
+    with run.timer.phase("source sync"):
+        run.sync_failures = _sync_sources(run.pkgbase_map, run.pkgbase_entry, run.args)
 
     # Pacman fast-path: one ``checkupdates`` call covers every pacman-class
     # repo package in scope. Only run it when at least one pacman-class
     # entry exists — skip the subprocess otherwise so default-mode runs
     # (``repo_mode = "pacman"``) pay nothing for this feature.
     has_pacman_class = any(
-        e.get("repo_class") == "pacman" for e in pkgbase_entry.values()
+        e.get("repo_class") == "pacman" for e in run.pkgbase_entry.values()
     )
-    pacman_updates_map: dict[str, str] | None
-    if has_pacman_class and not offline:
-        pacman_updates_map = checkupdates_map()
-        if pacman_updates_map is None:
+    if has_pacman_class and not run.offline:
+        run.pacman_updates_map = checkupdates_map()
+        if run.pacman_updates_map is None:
             _log.warn(
                 "checkupdates unavailable — pacman-class repo packages will "
                 "be reported as SKIPPED_NO_CHECKUPDATES; install pacman-contrib"
@@ -922,13 +990,15 @@ def _cmd_update_body(args) -> int:
     else:
         # Offline or no pacman-class packages — pass an empty dict so the
         # worker takes the "no upgrade pending" branch (UP_TO_DATE).
-        pacman_updates_map = {} if has_pacman_class else None
+        run.pacman_updates_map = {} if has_pacman_class else None
 
-    # ── Phase 3: Version check ────────────────────────────────────────────
-    skip_sync_check = offline
-    results: list[_UpdateResult] = []
 
-    force_devel = getattr(args, "devel", False)
+def _phase_version_check(run: UpdateRun) -> int | None:
+    """Phase 3: Version check."""
+    run.skip_sync_check = run.offline
+    run.results = []
+
+    force_devel = getattr(run.args, "devel", False)
     # Per-pkgbase upstream-commit cache for the --devel ls-remote short-circuit.
     # Read once before fan-out so worker threads don't all touch BuildState.
     # Field is only populated for single-git-source VCS packages that have
@@ -936,56 +1006,60 @@ def _cmd_update_body(args) -> int:
     # means the worker falls back to the full evaluate_vcs_pkgver path.
     built_commit_by_base: dict[str, str | None] = {}
     if force_devel:
-        for pkgbase, pkgnames in pkgbase_map.items():
+        for pkgbase, pkgnames in run.pkgbase_map.items():
             for pn in pkgnames:
-                rec = bs.get(pn)
+                rec = run.bs.get(pn)
                 if rec is not None:
                     sha = rec.get("built_upstream_commit")
                     if sha:
                         built_commit_by_base[pkgbase] = sha
                         break
-    timer.start("version check")
+    run.timer.start("version check")
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {
             pool.submit(
                 _check_one_pkgbase, pkgbase, pkgnames,
-                pkgbase_entry[pkgbase], sync_failures, all_installed,
-                unrecorded_names, skip_sync_check, rpc_version_by_base,
+                run.pkgbase_entry[pkgbase], run.sync_failures, run.all_installed,
+                run.unrecorded_names, run.skip_sync_check, run.rpc_version_by_base,
                 force_devel,
                 built_commit_by_base.get(pkgbase),
-                pacman_updates_map,
+                run.pacman_updates_map,
             ): pkgbase
-            for pkgbase, pkgnames in sorted(pkgbase_map.items())
+            for pkgbase, pkgnames in sorted(run.pkgbase_map.items())
         }
         with _ui_progress.tracker(len(futures), "version check") as _tick:
             for fut in as_completed(futures):
                 _tick(futures[fut])
                 result = fut.result()
                 if result is not None:
-                    results.append(result)
+                    run.results.append(result)
 
-    results.sort(key=lambda r: r.pkgbase)
+    run.results.sort(key=lambda r: r.pkgbase)
     # 3.2.0-B31: name the members actually driving each split pkgbase and
     # flag any member a stock repo package displaced, so the summary can say
     # why a replaced package's pkgbase is still being rebuilt.
-    annotate_split_members(results, pkgbase_entry, all_installed)
-    timer.stop()
+    annotate_split_members(run.results, run.pkgbase_entry, run.all_installed)
+    run.timer.stop()
 
-    # ── Phase 4: Summary + dry-run gate ───────────────────────────────────
+
+def _phase_summary(run: UpdateRun) -> int | None:
+    """Phase 4: Summary + dry-run gate."""
     # --versions renders its own focused table below and would otherwise print
     # two overlapping reports for one walk (3.1.0-F6).
-    if not getattr(args, "versions", False):
-        _print_summary(results, args)
+    if not getattr(run.args, "versions", False):
+        _print_summary(run.results, run.args)
 
     _ui_progress.phase("checking toolchain and flag drift")
-    timer.start("drift detection")
+    run.timer.start("drift detection")
     # --rebuild-on-drift (or [update] rebuild_on_drift) is the umbrella that
     # opts into both drift axes; CLI flags still win over config. Resolved
     # before the drift advisories below so each can tell the user whether a
     # rebuild is already going to happen (3.1.0-B2).
-    _rebuild_all_drift, _rebuild_tc_drift, _rebuild_fl_drift = _resolve_drift_axes(args)
+    _rebuild_all_drift, run._rebuild_tc_drift, run._rebuild_fl_drift = _resolve_drift_axes(run.args)
 
-    # ── Phase 4.25: Toolchain-variant drift ───────────────────────────────
+
+def _phase_toolchain_drift(run: UpdateRun) -> int | None:
+    """Phase 4.25: Toolchain-variant drift."""
     # Compare each result's recorded toolchain_variant (from build_state)
     # against the active toolchain. Drift means "the installed binary was
     # produced under a different compiler identity than is active now".
@@ -995,10 +1069,10 @@ def _cmd_update_body(args) -> int:
     # (pkgbase, recorded_variant, reason). The reason distinguishes the two
     # cases the drift check now folds together: a different variant name, or a
     # same-variant toolchain rebuild caught by the fingerprint (Q9).
-    drifted: list[tuple[str, str, str]] = []
-    if active_variant != "system":
+    run.drifted = []
+    if run.active_variant != "system":
         seen_bases: set[str] = set()
-        for r in results:
+        for r in run.results:
             if r.pkgbase in seen_bases:
                 continue
             seen_bases.add(r.pkgbase)
@@ -1006,15 +1080,15 @@ def _cmd_update_body(args) -> int:
             # — toolchain stamping is per-pkgname but the build that produced
             # them is per-pkgbase, so all entries in a split package agree.
             for name in r.pkgnames:
-                rec = bs.get(name) or {}
+                rec = run.bs.get(name) or {}
                 rec_variant = rec.get("toolchain_variant")
                 if rec_variant is None:
                     continue
-                if rec_variant != active_variant:
-                    drifted.append((
+                if rec_variant != run.active_variant:
+                    run.drifted.append((
                         r.pkgbase, rec_variant,
                         f"built under a different variant than active "
-                        f"({active_variant})",
+                        f"({run.active_variant})",
                     ))
                 else:
                     # Same variant name: flag only when both fingerprints are
@@ -1023,33 +1097,35 @@ def _cmd_update_body(args) -> int:
                     # exist. This is the same-variant, same-soname, different-
                     # codegen case (e.g. a fresh-profdata PGO rebuild).
                     rec_fp = rec.get("toolchain_fingerprint")
-                    if (rec_fp and active_fingerprint
-                            and rec_fp != active_fingerprint):
-                        drifted.append((
+                    if (rec_fp and run.active_fingerprint
+                            and rec_fp != run.active_fingerprint):
+                        run.drifted.append((
                             r.pkgbase, rec_variant,
                             f"toolchain rebuilt since build (same variant: "
                             f"{rec_variant})",
                         ))
                 break
 
-    if drifted:
-        sample = ", ".join(f"{pb} ({rv})" for pb, rv, _ in drifted[:3])
-        more = f" (+{len(drifted) - 3} more)" if len(drifted) > 3 else ""
+    if run.drifted:
+        sample = ", ".join(f"{pb} ({rv})" for pb, rv, _ in run.drifted[:3])
+        more = f" (+{len(run.drifted) - 3} more)" if len(run.drifted) > 3 else ""
         # Only advertise the opt-in flag when it is not already in effect —
         # telling the user to pass a flag whose rebuild is about to run in the
         # same output is what made same-version rebuilds read as spurious
         # reinstalls (3.1.0-B2).
         _hint = ("rebuilding (--rebuild-on-toolchain-drift)"
-                 if _rebuild_tc_drift else
+                 if run._rebuild_tc_drift else
                  "Pass --rebuild-on-toolchain-drift to rebuild, or "
                  "--explain-drift to list.")
         _log.ui(
-            f"toolchain drift: {len(drifted)} package(s) built under a "
-            f"different toolchain than active ({active_variant}): {sample}{more}. "
+            f"toolchain drift: {len(run.drifted)} package(s) built under a "
+            f"different toolchain than active ({run.active_variant}): {sample}{more}. "
             f"{_hint}"
         )
 
-    # ── Phase 4.3: Flag drift ─────────────────────────────────────────────
+
+def _phase_flag_drift(run: UpdateRun) -> int | None:
+    """Phase 4.3: Flag drift."""
     # Re-resolve the current profile for each profiled package and diff the
     # serialized flags against what was recorded at build time. Same
     # detect-and-report contract as toolchain drift above: surfaced always,
@@ -1063,13 +1139,13 @@ def _cmd_update_body(args) -> int:
     _flag_cgroups = None
     _flag_ptokens = None
     _flag_sysconf = None
-    for r in results:
+    for r in run.results:
         if r.pkgbase in _flag_seen:
             continue
         _flag_seen.add(r.pkgbase)
         entry = None
         for name in r.pkgnames:
-            entry = bs.get(name)
+            entry = run.bs.get(name)
             if entry is not None:
                 break
         if not entry or entry.get("build_mode") != BUILD_MODE_SOURCE:
@@ -1082,7 +1158,7 @@ def _cmd_update_body(args) -> int:
             _flag_ptokens = load_preserved_system_tokens()
             _flag_sysconf = parse_system_makepkg_conf()
         fd = resolve_flag_drift(
-            entry, config, _flag_cgroups,
+            entry, run.config, _flag_cgroups,
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
         )
@@ -1103,9 +1179,9 @@ def _cmd_update_body(args) -> int:
     # Detect/report and --explain-drift only: promotion to NEEDS_REBUILD needs
     # an entry in this run's walk, so out-of-walk drifters get a `sysforge
     # build` / owning-stage hint instead.
-    _fold_filter = set(getattr(args, "pkgnames", None) or [])
+    _fold_filter = set(getattr(run.args, "pkgnames", None) or [])
     fold_drifted: dict[str, str | None] = {}  # pkgbase -> owner_stage
-    _fold_map, _fold_entry = group_by_pkgbase(bs.all_packages())
+    _fold_map, _fold_entry = group_by_pkgbase(run.bs.all_packages())
     for pkgbase, pkgnames in sorted(_fold_map.items()):
         if pkgbase in _flag_seen:
             continue
@@ -1120,7 +1196,7 @@ def _cmd_update_body(args) -> int:
             _flag_ptokens = load_preserved_system_tokens()
             _flag_sysconf = parse_system_makepkg_conf()
         fd = resolve_flag_drift(
-            entry, config, _flag_cgroups,
+            entry, run.config, _flag_cgroups,
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
         )
@@ -1136,13 +1212,13 @@ def _cmd_update_body(args) -> int:
     if flag_drifted:
         sample = ", ".join(pb for pb, _ in flag_drifted[:3])
         more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
-        if _rebuild_fl_drift:
+        if run._rebuild_fl_drift:
             # State what this run will actually rebuild, and separately what
             # drifted but needs another command — a hint picked from the flag
             # alone promised rebuilds the promotion below never queues
             # (3.2.0-B40). The opt-in hint stays suppressed (3.1.0-B2).
             queued, not_queued = _partition_flag_drift(
-                [pb for pb, _ in flag_drifted], results, fold_drifted,
+                [pb for pb, _ in flag_drifted], run.results, fold_drifted,
             )
             _parts = []
             if queued:
@@ -1165,43 +1241,43 @@ def _cmd_update_body(args) -> int:
                 "--rebuild-on-flag-drift to rebuild, or --explain-drift to list."
             )
 
-    if getattr(args, "versions", False):
+    if getattr(run.args, "versions", False):
         # 3.1.0-F6 — read-only report at the same seam as --explain-drift: the
         # walk has already produced `results`, so this costs nothing extra.
         # Stage-owned packages come from the advisory path (not
         # --include-stage-owned) because only that path carries the owning
         # stage, which is what makes a toolchain/kernel row actionable.
         versions_stage_owned = _detect_stage_owned_updates(
-            stage_owned_packages,
-            all_installed=all_installed,
-            sync_failures=sync_failures,
-            rpc_version_by_base=rpc_version_by_base,
-            pacman_updates_map=pacman_updates_map,
-            skip_sync_check=skip_sync_check,
-            offline=offline,
+            run.stage_owned_packages,
+            all_installed=run.all_installed,
+            sync_failures=run.sync_failures,
+            rpc_version_by_base=run.rpc_version_by_base,
+            pacman_updates_map=run.pacman_updates_map,
+            skip_sync_check=run.skip_sync_check,
+            offline=run.offline,
         )
         render_versions_report(
-            results,
+            run.results,
             versions_stage_owned,
-            devel_resolved=bool(getattr(args, "devel", False)),
+            devel_resolved=bool(getattr(run.args, "devel", False)),
             emit=_log.ui,
         )
-        _emit_timings(timer, args)
+        _emit_timings(run.timer, run.args)
         return 0
 
-    if getattr(args, "explain_drift", False):
-        if not drifted:
+    if getattr(run.args, "explain_drift", False):
+        if not run.drifted:
             print(
                 f"[SYSFORGE] No toolchain drift. Active variant: "
-                f"{active_variant}."
+                f"{run.active_variant}."
             )
         else:
             print(
-                f"[SYSFORGE] {len(drifted)} package(s) built under a "
+                f"[SYSFORGE] {len(run.drifted)} package(s) built under a "
                 f"different toolchain than active "
-                f"({active_variant}):"
+                f"({run.active_variant}):"
             )
-            for pkgbase, rec_variant, reason in sorted(drifted):
+            for pkgbase, rec_variant, reason in sorted(run.drifted):
                 print(f"  {pkgbase:<40}  recorded={rec_variant}  ({reason})")
         if not flag_drifted:
             print("[SYSFORGE] No flag drift.")
@@ -1214,18 +1290,18 @@ def _cmd_update_body(args) -> int:
                 print(f"  {pkgbase}")
                 for line in diffs:
                     print(line)
-        _emit_timings(timer, args)
+        _emit_timings(run.timer, run.args)
         return 0
 
-    if getattr(args, "dry_run", False):
-        _emit_timings(timer, args)
+    if getattr(run.args, "dry_run", False):
+        _emit_timings(run.timer, run.args)
         return 0
 
-    if _rebuild_tc_drift and drifted:
-        drifted_bases = {pb for pb, _, _ in drifted}
+    if run._rebuild_tc_drift and run.drifted:
+        drifted_bases = {pb for pb, _, _ in run.drifted}
         promoted = 0
         unbuildable = 0
-        for r in results:
+        for r in run.results:
             if r.pkgbase in drifted_bases and r.action == "UP_TO_DATE":
                 if r.pkgbuild_path is None:
                     unbuildable += 1
@@ -1246,11 +1322,11 @@ def _cmd_update_body(args) -> int:
                 "— skipped"
             )
 
-    if _rebuild_fl_drift and flag_drifted:
+    if run._rebuild_fl_drift and flag_drifted:
         flag_bases = {pb for pb, _ in flag_drifted}
         promoted = 0
         unbuildable = 0
-        for r in results:
+        for r in run.results:
             if r.pkgbase in flag_bases and r.action == "UP_TO_DATE":
                 if r.pkgbuild_path is None:
                     unbuildable += 1
@@ -1270,29 +1346,31 @@ def _cmd_update_body(args) -> int:
                 "package(s) have no resolvable PKGBUILD — skipped"
             )
 
-    timer.stop()
+    run.timer.stop()
 
-    # ── Phase 5: Build ────────────────────────────────────────────────────
+
+def _phase_build(run: UpdateRun) -> int | None:
+    """Phase 5: Build."""
     # _check_one_pkgbase already resolved VCS pkgver() under --devel and set
     # NEEDS_REBUILD / UP_TO_DATE / DEVEL_EVAL_FAILED accordingly. The plain
     # NEEDS_REBUILD filter here therefore picks up genuinely-stale -git
     # packages and excludes up-to-date ones.
-    to_build = [r for r in results if r.action == "NEEDS_REBUILD"]
-    pending_pacman_upgrade = [
-        r for r in results if r.action == "NEEDS_PACMAN_UPGRADE"
+    run.to_build = [r for r in run.results if r.action == "NEEDS_REBUILD"]
+    run.pending_pacman_upgrade = [
+        r for r in run.results if r.action == "NEEDS_PACMAN_UPGRADE"
     ]
 
     # Exclude packages that failed source sync (cleansrc refusal, etc.)
-    cleansrc_failures = {k: msg for k, (status, msg) in sync_failures.items()
+    run.cleansrc_failures = {k: msg for k, (status, msg) in run.sync_failures.items()
                          if status == STATUS_PURGE_REFUSED}
     # Source-freeze denials (3.0.0-F2): a blocker like cleansrc refusal, but
     # a distinct reason — kept in its own map so it isn't mislabeled as a
     # cleansrc failure in the summary, while still counting as a build
     # failure (non-zero exit) below.
-    frozen_sync_pkgs = {k: msg for k, (status, msg) in sync_failures.items()
+    run.frozen_sync_pkgs = {k: msg for k, (status, msg) in run.sync_failures.items()
                         if status == STATUS_FROZEN}
-    if sync_failures:
-        to_build = [r for r in to_build if r.pkgbase not in sync_failures]
+    if run.sync_failures:
+        run.to_build = [r for r in run.to_build if r.pkgbase not in run.sync_failures]
 
     # New-2 (review): a run where every candidate was refused by the source
     # freeze must not take this early "nothing to rebuild" exit — that is
@@ -1305,38 +1383,38 @@ def _cmd_update_body(args) -> int:
     # otherwise-idle run must fall through to Phase 6.5 rather than print
     # "Nothing to rebuild." and exit. Offline runs never dispatch it, so the
     # early exit still applies there.
-    sysupgrade_pending = system_upgrade and not offline
-    if (not to_build and not pending_pacman_upgrade and not frozen_sync_pkgs
-            and not sysupgrade_pending):
+    run.sysupgrade_pending = run.system_upgrade and not run.offline
+    if (not run.to_build and not run.pending_pacman_upgrade and not run.frozen_sync_pkgs
+            and not run.sysupgrade_pending):
         _ui_progress.phase(None)
         print("[SYSFORGE] Nothing to rebuild.")
-        _emit_timings(timer, args)
-        _raise_if_frozen(frozen_sync_pkgs)
+        _emit_timings(run.timer, run.args)
+        _raise_if_frozen(run.frozen_sync_pkgs)
         return 0
 
     pkgdest = get_pkgdest()
     built_pkg_files: list = []
-    built_pkgs: list[str] = []
-    failed_pkgs: list[str] = []
-    pgo_skipped_pkgs: list[str] = []
-    review_skipped_pkgs: list[str] = []
-    install_failed = False
-    not_installed: dict[str, str] = {}  # pkgbase -> reason (3.2.0-B32)
-    outcome = None  # only set on the build_and_install path (Task 3: F38)
+    run.built_pkgs = []
+    run.failed_pkgs = []
+    run.pgo_skipped_pkgs = []
+    run.review_skipped_pkgs = []
+    run.install_failed = False
+    run.not_installed = {}  # pkgbase -> reason (3.2.0-B32)
+    run.outcome = None  # only set on the build_and_install path (Task 3: F38)
 
-    if not to_build:
+    if not run.to_build:
         # Nothing to source-build, but pacman-class upgrades are pending —
         # skip Phase 5 (source build) and fall through to Phase 6.5
         # (pacman -Syu) below. Bypass install_only/normal-build branching.
         pass
-    elif install_only:
+    elif run.install_only:
         # Skip the whole build loop: no makedep batching, no AUR-dep resolution,
         # no makepkg invocation. For each result the version-check filter has
         # already proved is newer than installed, look for a matching artifact
         # at exactly that pkgbuild_ver in PKGDEST and queue it for install.
         pkgbase_of: dict = {}
-        with _ui_progress.tracker(len(to_build), "scanning") as _tick:
-            for result in to_build:
+        with _ui_progress.tracker(len(run.to_build), "scanning") as _tick:
+            for result in run.to_build:
                 _tick(result.pkgbase)
                 search_dir = pkgdest if pkgdest else (
                     result.pkgbuild_path.parent if result.pkgbuild_path else None
@@ -1351,7 +1429,7 @@ def _cmd_update_body(args) -> int:
                         f"({existing[0].name})"
                     )
                     built_pkg_files.extend(existing)
-                    built_pkgs.append(result.pkgbase)
+                    run.built_pkgs.append(result.pkgbase)
                     pkgbase_of.update((f, result.pkgbase) for f in existing)
                 else:
                     _log.info(
@@ -1360,10 +1438,10 @@ def _cmd_update_body(args) -> int:
                     )
         # Install the queued pre-built artifacts (no build happened).
         built_pkg_files, refused = build_core.install_built(
-            built_pkg_files, state_dir=state_dir)
-        install_failed = bool(refused)
-        not_installed = build_core.not_installed_by_pkgbase(refused, pkgbase_of)
-        if not built_pkg_files and built_pkgs and not install_failed:
+            built_pkg_files, state_dir=run.state_dir)
+        run.install_failed = bool(refused)
+        run.not_installed = build_core.not_installed_by_pkgbase(refused, pkgbase_of)
+        if not built_pkg_files and run.built_pkgs and not run.install_failed:
             _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
     else:
         # ── Phase 4.5: Toolchain pre-flight ───────────────────────────────
@@ -1372,7 +1450,7 @@ def _cmd_update_body(args) -> int:
         # missing `rustup target add ...` when run interactively; otherwise
         # prints a fix block and aborts the batch.
         _ui_progress.phase("toolchain preflight")
-        if not _toolchain_preflight_for_batch(to_build, config, args):
+        if not _toolchain_preflight_for_batch(run.to_build, run.config, run.args):
             print("[SYSFORGE] Toolchain pre-flight failed — aborting batch.",
                   file=sys.stderr)
             sys.exit(1)
@@ -1382,50 +1460,76 @@ def _cmd_update_body(args) -> int:
         # passes sync_source=False because Phase 2 already synced sources via
         # the scheduler. `to_build` elements (_UpdateResult) are duck-typed as
         # BuildTargets (pkgbase / pkgnames / pkgbuild_path / source / ...).
-        outcome = build_core.build_and_install(
-            to_build,
-            config=config,
-            sync_source=False,
-            interactive=getattr(args, "interactive", False),
-            no_cleanbuild=getattr(args, "no_cleanbuild", False),
-            profile_conf=getattr(args, "profile_conf", None),
-            state_dir=state_dir,
-            pkg_log=not getattr(args, "no_pkg_log", False),
-            persist_log=resolve_flag_default(args, "persist_log", build_cfg, "persist_log"),
-            log_dir=Path(args.log_dir) if getattr(args, "log_dir", None) else None,
-            cache_report=resolve_flag_default(args, "cache_report", build_cfg, "cache_report"),
-            extra_flags=(
-                expand_makepkg_flags(args.makepkg)
-                if getattr(args, "makepkg", None) else None
-            ),
-            active_variant=active_variant,
-            toolchain_fingerprint=active_fingerprint,
-            pkgdest=pkgdest,
-            review=review_mode,
-            timer=timer,
-        )
-        if outcome.aborted:
+        def _build(targets, fingerprint):
+            return build_core.build_and_install(
+                targets,
+                config=run.config,
+                sync_source=False,
+                interactive=getattr(run.args, "interactive", False),
+                no_cleanbuild=getattr(run.args, "no_cleanbuild", False),
+                profile_conf=getattr(run.args, "profile_conf", None),
+                state_dir=run.state_dir,
+                pkg_log=not getattr(run.args, "no_pkg_log", False),
+                persist_log=resolve_flag_default(
+                    run.args, "persist_log", run.build_cfg, "persist_log"),
+                log_dir=Path(run.args.log_dir) if getattr(run.args, "log_dir", None) else None,
+                cache_report=resolve_flag_default(
+                    run.args, "cache_report", run.build_cfg, "cache_report"),
+                extra_flags=(
+                    expand_makepkg_flags(run.args.makepkg)
+                    if getattr(run.args, "makepkg", None) else None
+                ),
+                active_variant=run.active_variant,
+                toolchain_fingerprint=fingerprint,
+                pkgdest=pkgdest,
+                review=run.review_mode,
+                timer=run.timer,
+            )
+
+        # 3.1.0-B12: a toolchain package in the batch (only reachable via
+        # --include-stage-owned or by naming it) builds and installs as its
+        # own pass first. Then the fingerprint is re-read from the compiler
+        # now on disk, so the rest builds against — and is stamped with — the
+        # new toolchain, instead of a mix of old and new under a stale stamp.
+        toolchain_first, to_build_rest = split_toolchain_first(
+            run.to_build, BuildState(run.state_dir))
+        if toolchain_first and to_build_rest:
+            _log.ui(
+                f"[SYSFORGE] Building {len(toolchain_first)} toolchain package(s) "
+                f"first ({', '.join(t.pkgbase for t in toolchain_first)}), then "
+                f"the {len(to_build_rest)} package(s) they compile"
+            )
+            run.outcome = _build(toolchain_first, run.active_fingerprint)
+            if not run.outcome.aborted:
+                run.active_fingerprint = get_toolchain_fingerprint(PipelineState(run.state_dir))
+                run.outcome = build_core.merge_outcomes(
+                    run.outcome, _build(to_build_rest, run.active_fingerprint))
+        else:
+            run.outcome = _build(run.to_build, run.active_fingerprint)
+        if run.outcome.aborted:
             # User aborted at the PKGBUILD review gate — build_core already
             # printed the abort line; nothing was built or installed. A
             # mixed run (some packages frozen, some buildable) must not let
             # this early return swallow the freeze denial — same silent-
             # success shape as the "Nothing to rebuild" route at :1034.
-            _raise_if_frozen(frozen_sync_pkgs)
+            _raise_if_frozen(run.frozen_sync_pkgs)
             # 3.0.0-B4: packages that failed to build *before* the operator
             # aborted at a later target's review gate still count — the abort
             # exits early but does not un-fail them.
-            return _failure_exit_code(failed_pkgs=outcome.failed_pkgs)
-        built_pkgs = outcome.built_pkgs
-        failed_pkgs = outcome.failed_pkgs
-        pgo_skipped_pkgs = outcome.pgo_skipped_pkgs
-        review_skipped_pkgs = outcome.review_skipped
-        built_pkg_files = outcome.built_pkg_files
-        install_failed = outcome.install_failed
-        not_installed = outcome.not_installed
-        if not built_pkg_files and built_pkgs and not install_failed:
+            return _failure_exit_code(failed_pkgs=run.outcome.failed_pkgs)
+        run.built_pkgs = run.outcome.built_pkgs
+        run.failed_pkgs = run.outcome.failed_pkgs
+        run.pgo_skipped_pkgs = run.outcome.pgo_skipped_pkgs
+        run.review_skipped_pkgs = run.outcome.review_skipped
+        built_pkg_files = run.outcome.built_pkg_files
+        run.install_failed = run.outcome.install_failed
+        run.not_installed = run.outcome.not_installed
+        if not built_pkg_files and run.built_pkgs and not run.install_failed:
             _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
 
-    # ── Phase 6.5: Bulk pacman upgrade (pacman-class repo packages) ────────
+
+def _phase_install_and_report(run: UpdateRun) -> int:
+    """Phase 6.5: Bulk pacman upgrade (pacman-class repo packages)."""
     # Source-built artifacts are installed first so the `IgnoreGroup =
     # sf-build` line in /etc/pacman.conf (added by `sysforge setup`) keeps
     # `pacman -Syu` from clobbering them with upstream repo binaries. We
@@ -1435,12 +1539,12 @@ def _cmd_update_body(args) -> int:
     # Hand the bottom row back before pacman -Syu — it's fully interactive
     # (confirmation prompt, its own progress bars).
     _ui_progress.phase(None)
-    pacman_upgrade_pkgs = sorted(r.pkgbase for r in pending_pacman_upgrade)
+    pacman_upgrade_pkgs = sorted(r.pkgbase for r in run.pending_pacman_upgrade)
     pacman_upgrade_failed = False
     system_upgrade_ran = False
     sysupgrade_changes: dict[str, tuple[str | None, str | None]] = {}
-    if (pacman_upgrade_pkgs or sysupgrade_pending) and not offline:
-        noconfirm = getattr(args, "noconfirm", False)
+    if (pacman_upgrade_pkgs or run.sysupgrade_pending) and not run.offline:
+        noconfirm = getattr(run.args, "noconfirm", False)
         cmd = privileged_argv(["pacman", "-Syu"])
         if noconfirm:
             cmd.append("--noconfirm")
@@ -1461,7 +1565,7 @@ def _cmd_update_body(args) -> int:
         # than what a second resolver predicted. Best-effort by construction —
         # a failed probe must never fail an otherwise-successful upgrade.
         capture_report = system_upgrade_ran and not getattr(
-            args, "no_sysupgrade_report", False
+            run.args, "no_sysupgrade_report", False
         )
         before_snapshot: dict[str, str] = {}
         if capture_report:
@@ -1471,8 +1575,8 @@ def _cmd_update_body(args) -> int:
                 _log.debug("system-upgrade report: pre-transaction snapshot failed")
                 capture_report = False
         import subprocess as _subprocess
-        with timer.phase("pacman -Syu"):
-            rc = _subprocess.run(cmd).returncode
+        with run.timer.phase("pacman -Syu"):
+            rc = _subprocess.run(cmd).returncode  # noqa: TID251 — pacman -Syu is interactive and owns the TTY
         if capture_report:
             try:
                 sysupgrade_changes = diff_installed(
@@ -1491,63 +1595,63 @@ def _cmd_update_body(args) -> int:
     # build_core.build_and_install when --cache-report is set.)
 
     # Sync failures from cleansrc refusals count as build failures.
-    failed_pkgs.extend(sorted(cleansrc_failures))
+    run.failed_pkgs.extend(sorted(run.cleansrc_failures))
     # Frozen sync denials are blockers too (3.0.0-F2) — must count toward a
     # non-zero exit like PURGE_REFUSED, not print nothing and exit 0.
-    failed_pkgs.extend(sorted(frozen_sync_pkgs))
+    run.failed_pkgs.extend(sorted(run.frozen_sync_pkgs))
 
     # review_skipped_pkgs are inside to_build (they reached the gate), so add
     # them back into the skipped count.
-    skipped = (len(results) - len(to_build) - len(pending_pacman_upgrade)
-               + len(review_skipped_pkgs))
-    if install_only:
-        skipped += len(to_build) - len(built_pkgs) - len(failed_pkgs)
-    installed_deps = outcome.installed_deps if outcome is not None else []
+    skipped = (len(run.results) - len(run.to_build) - len(run.pending_pacman_upgrade)
+               + len(run.review_skipped_pkgs))
+    if run.install_only:
+        skipped += len(run.to_build) - len(run.built_pkgs) - len(run.failed_pkgs)
+    installed_deps = run.outcome.installed_deps if run.outcome is not None else []
     stage_owned_updates = _detect_stage_owned_updates(
-        stage_owned_packages,
-        all_installed=all_installed,
-        sync_failures=sync_failures,
-        rpc_version_by_base=rpc_version_by_base,
-        pacman_updates_map=pacman_updates_map,
-        skip_sync_check=skip_sync_check,
-        offline=offline,
+        run.stage_owned_packages,
+        all_installed=run.all_installed,
+        sync_failures=run.sync_failures,
+        rpc_version_by_base=run.rpc_version_by_base,
+        pacman_updates_map=run.pacman_updates_map,
+        skip_sync_check=run.skip_sync_check,
+        offline=run.offline,
     )
     summary = _build_result_summary(
-        results=results,
-        built_pkgs=built_pkgs,
-        failed_pkgs=failed_pkgs,
+        results=run.results,
+        built_pkgs=run.built_pkgs,
+        failed_pkgs=run.failed_pkgs,
         pacman_upgrade_pkgs=pacman_upgrade_pkgs,
         installed_deps=installed_deps,
-        pgo_skipped_pkgs=pgo_skipped_pkgs,
-        cleansrc_failures=sorted(cleansrc_failures),
-        install_only=install_only,
+        pgo_skipped_pkgs=run.pgo_skipped_pkgs,
+        cleansrc_failures=sorted(run.cleansrc_failures),
+        install_only=run.install_only,
         pacman_upgrade_failed=pacman_upgrade_failed,
         skipped=skipped,
         stage_owned_updates=stage_owned_updates,
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=sysupgrade_changes,
-        not_installed=not_installed,
-        layout_findings=outcome.layout_findings if outcome is not None else [],
+        not_installed=run.not_installed,
+        layout_findings=run.outcome.layout_findings if run.outcome is not None else [],
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.
     _print_result_summary(summary, emit=_log.ui)
     _emit_restart_notice(emit=_log.ui)
 
-    _emit_timings(timer, args)
+    _emit_timings(run.timer, run.args)
 
-    if unified_log_active:
+    if run.unified_log_active:
         log.close_unified_log(
-            success=(not failed_pkgs and not install_failed
+            success=(not run.failed_pkgs and not run.install_failed
                      and not pacman_upgrade_failed),
             persist=True,
         )
-        _log.ui(f"[SYSFORGE] Unified log: {unified_log_path}")
+        _log.ui(f"[SYSFORGE] Unified log: {run.unified_log_path}")
 
     # Clear sentinels that our own Phase 5 / Phase 6.5 pacman transactions
     # may have dropped this run; the start-of-cmd_update consume already
     # surfaced anything left by transactions outside sysforge.
-    _consume_pacman_hook_sentinels(silent=True, prune_boot_entries=not _read_only_run(args))
+    _consume_pacman_hook_sentinels(silent=True, prune_boot_entries=not _read_only_run(run.args))
 
     # 3.0.0-F2 (Important-4, narrowed per New-1 review): a source-freeze
     # denial is a blocker, not a skip — it must not print a summary line and
@@ -1558,17 +1662,42 @@ def _cmd_update_body(args) -> int:
     # sentinel work above has already run, so raise last. RuntimeError is the
     # runner's established "exit 1" seam (verbs/runner.py catches it around
     # execute()).
-    _raise_if_frozen(frozen_sync_pkgs)
+    _raise_if_frozen(run.frozen_sync_pkgs)
 
     # 3.0.0-B4: everything else that failed (build failures, cleansrc
     # PURGE_REFUSED denials, a failed pacman -U install, a failed pacman
     # -Syu) becomes the exit code rather than a RuntimeError — reported, but
     # without arming the sentinel recovery prompt the freeze path wants.
     return _failure_exit_code(
-        failed_pkgs=failed_pkgs,
-        install_failed=install_failed,
+        failed_pkgs=run.failed_pkgs,
+        install_failed=run.install_failed,
         pacman_upgrade_failed=pacman_upgrade_failed,
     )
+
+# The update run, in order. Each phase is a function of the run record, so
+# "which phase did this fail in" is a stack frame, not a comment search.
+_PHASES: tuple[Callable[[UpdateRun], int | None], ...] = (
+    _phase_init,
+    _phase_assemble,
+    _phase_llvm_preflight,
+    _phase_source_sync,
+    _phase_version_check,
+    _phase_summary,
+    _phase_toolchain_drift,
+    _phase_flag_drift,
+    _phase_build,
+    _phase_install_and_report,
+)
+
+
+def _cmd_update_body(args) -> int:
+    run = UpdateRun(args=args)
+    for phase in _PHASES:
+        rc = phase(run)
+        if rc is not None:
+            return rc
+    raise AssertionError("the last update phase always returns an exit code")
+
 
 
 # ---------------------------------------------------------------------------

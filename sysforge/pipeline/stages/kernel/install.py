@@ -30,7 +30,7 @@ def run_mkinitcpio(dry_run):
         _log.ui("[dry-run] would run: sudo mkinitcpio -P")
         return
     _log.info("Running mkinitcpio -P")
-    result = subprocess.run(privileged_argv(["mkinitcpio", "-P"]))
+    result = subprocess.run(privileged_argv(["mkinitcpio", "-P"]))  # noqa: TID251 — privileged; mkinitcpio output streams, status inspected
     if result.returncode != 0:
         raise RuntimeError(f"[KERNEL] mkinitcpio -P failed (exit {result.returncode})")
 
@@ -56,7 +56,7 @@ def update_bootloader(bootloader, dry_run):
         return
 
     _log.info(f"Updating bootloader: {label}")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd)  # noqa: TID251 — privileged bootloader update streams, status inspected
     if result.returncode != 0:
         _log.warn(
             f"{label} exited {result.returncode} — bootloader may already be current; "

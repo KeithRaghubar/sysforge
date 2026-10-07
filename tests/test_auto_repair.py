@@ -62,11 +62,11 @@ class TestVendoredDeps:
         info = ar.MatchInfo(detail={"kind": "meson"})
         with patch("sysforge.primitives.auto_repair.shutil.which",
                    return_value="/usr/bin/meson"), \
-             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+             patch("sysforge.primitives.auto_repair.run_or_raise") as run:
             ar._repair_vendored_deps(tmp_path, info)
         run.assert_called_once_with(
-            ["/usr/bin/meson", "subprojects", "download"],
-            cwd=str(project), check=True,
+            ["/usr/bin/meson", "subprojects", "download"], tag="REPAIR",
+            operation="meson subprojects download", capture=False, cwd=str(project),
         )
 
     def test_repair_meson_raises_without_project(self, tmp_path):
@@ -95,11 +95,11 @@ class TestVendoredDeps:
                                     "project_root": str(root)})
         with patch("sysforge.primitives.auto_repair.shutil.which",
                    return_value="/usr/bin/git"), \
-             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+             patch("sysforge.primitives.auto_repair.run_or_raise") as run:
             ar._repair_vendored_deps(tmp_path, info)
         run.assert_called_once_with(
             ["/usr/bin/git", "submodule", "update", "--init", "--recursive"],
-            cwd=str(root), check=True,
+            tag="REPAIR", operation="git submodule update", capture=False, cwd=str(root),
         )
 
     def test_repair_git_submodule_raises_when_git_absent(self, tmp_path):
@@ -317,10 +317,11 @@ class TestChecksumMismatch:
         monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
         with patch("sysforge.primitives.auto_repair.shutil.which",
                    return_value="/usr/bin/updpkgsums"), \
-             patch("sysforge.primitives.auto_repair.subprocess.run") as run:
+             patch("sysforge.primitives.auto_repair.run_or_raise") as run:
             ar.CHECKSUM_MISMATCH.repair(tmp_path, info)
         run.assert_called_once_with(
-            ["/usr/bin/updpkgsums"], cwd=str(tmp_path), check=True,
+            ["/usr/bin/updpkgsums"], tag="REPAIR", operation="updpkgsums",
+            capture=False, cwd=str(tmp_path),
         )
 
 

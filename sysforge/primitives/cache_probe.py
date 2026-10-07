@@ -36,6 +36,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.render import fmt_bytes as _fmt_bytes
+from sysforge.primitives import run
 
 _log = log.get_logger("CACHE")
 
@@ -49,8 +50,8 @@ _SESSION_RECORDS: list[dict] = []
 def _run_command(cmd: list[str]) -> str | None:
     """Run a command and return stdout, or None on failure/timeout."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
+        result = run.capture(cmd, timeout=10)
+        if result is not None and result.returncode == 0:
             return result.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass

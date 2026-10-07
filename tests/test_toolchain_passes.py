@@ -119,36 +119,49 @@ def test_build_pass_staged_deps_adds_nodeps_and_strips_syncdeps(tmp_path):
     assert "--syncdeps" in rec["strip_flags"]
     assert "-s" in rec["strip_flags"]
 
-def test_build_pass_default_keeps_syncdeps_for_pass1a(tmp_path):
-    """staged_deps=False (default, Pass 1): no --nodeps, no strip_flags.
-
-    Pass 1 builds against the live system, so --syncdeps must stay so
-    that any missing build deps (cmake, ninja, python, z3, ...) get
-    installed normally before the build starts.
-    """
+def test_build_pass_live_pass_strips_syncdeps_and_installs_deps_itself(tmp_path, monkeypatch):
+    """staged_deps=False (Pass 1, the single pass): makepkg never runs sudo
+    (3.4.0-F1). --syncdeps is stripped, no --nodeps is added, and sysforge
+    installs the missing repo deps itself first — never a pass member."""
+    from sysforge import build_core
+    from sysforge.primitives.makepkg_flags import SYNC_FLAGS
     pkgbuild = make_pkgbuild(tmp_path, "llvm")
-    pkgbuild_map = {"llvm": pkgbuild}
+    pkgbuild_map = {"llvm": pkgbuild, "llvm-libs": pkgbuild}
+    order = []
+    monkeypatch.setattr(build_core, "install_missing_repo_deps",
+                        lambda paths, **k: order.append(("deps", paths, k["exclude"])))
 
-    captured = []
     def fake_run(pb, options=None):
-        captured.append({
-            "extra_flags": list(options.extra_flags or []) if options else [],
-            "strip_flags": options.strip_flags if options else None,
-        })
+        order.append(("build", list(options.extra_flags or []), options.strip_flags))
 
     options = make_options(dry_run=False,
                            makepkg_flags=["--syncdeps", "--noconfirm"])
-
     with patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run):
-        build_pass(
-            "PGO 1/4 · instrument llvm",
-            pkgbuild_map, options,
-            install=False, pgo_build=True,  # staged_deps defaults False
-        )
+        build_pass("PGO 1/4 · instrument llvm", pkgbuild_map, options,
+                   install=False, pgo_build=True)
 
-    rec = captured[0]
-    assert "--nodeps" not in rec["extra_flags"]
-    assert rec["strip_flags"] is None
+    (kind, paths, exclude), (bkind, flags, strip) = order
+    assert (kind, bkind) == ("deps", "build")
+    assert paths == [pkgbuild] and exclude == frozenset({"llvm", "llvm-libs"})
+    assert "--nodeps" not in flags and "--install" not in flags
+    assert strip == SYNC_FLAGS
+
+
+def test_build_pass_install_goes_through_sysforge_not_makepkg(tmp_path, monkeypatch):
+    """install=True: makepkg gets no --install; sysforge installs after the build."""
+    from sysforge.pipeline.stages.toolchain import passes
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    seen = []
+    monkeypatch.setattr(passes, "install_built_packages",
+                        lambda d, **k: seen.append(("install", d, k)))
+    with patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
+               side_effect=lambda pb, options=None: seen.append(
+                   ("build", list(options.extra_flags or [])))):
+        build_pass("x", {"llvm": pkgbuild}, make_options(dry_run=False, makepkg_flags=[]),
+                   install=True, staged_deps=True)
+    assert seen[0][0] == "build" and "--install" not in seen[0][1]
+    assert seen[1] == ("install", pkgbuild.parent, {"noconfirm": True})
+
 
 def test_build_pass_without_reuse_returns_empty_and_builds(tmp_path):
     """No reuse ctx (passes 1/2/3, single-pass, gcc path): unchanged behavior."""
@@ -340,3 +353,28 @@ def test_reuse_cache_path_survives_pgo_store_purge(tmp_path):
 
     assert cache_path.exists(), "reuse cache must survive the pgo_store purge"
     assert pgo_store not in cache_path.parents
+
+
+# 3.3.0-B12: a caller-supplied tick counts on the caller's tracker.
+def test_build_pass_with_tick_reuses_callers_tracker(tmp_path):
+    from sysforge.ui import progress
+    maps = {"llvm": make_pkgbuild(tmp_path, "llvm"),
+            "llvm-libs": make_pkgbuild(tmp_path, "llvm"),   # split: same dir
+            "clang": make_pkgbuild(tmp_path, "clang")}
+    ticked = []
+
+    def no_tracker(*a, **k):
+        raise AssertionError("build_pass opened its own tracker despite tick=")
+
+    options = make_options(dry_run=False, makepkg_flags=[])
+    with patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch.object(progress, "tracker", no_tracker):
+        build_pass("sub-pass", maps, options, install=False, tick=ticked.append)
+    assert ticked == ["llvm", "clang"]
+
+
+def test_pass_size_counts_unique_dirs_across_maps(tmp_path):
+    from sysforge.pipeline.stages.toolchain.passes import pass_size
+    a = {"llvm": make_pkgbuild(tmp_path, "llvm"), "llvm-libs": make_pkgbuild(tmp_path, "llvm")}
+    b = {"clang": make_pkgbuild(tmp_path, "clang")}
+    assert pass_size(a, b, {}) == 2

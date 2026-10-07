@@ -667,7 +667,7 @@ def test_already_built_propagates_through_run_build(tmp_path):
     (`sysforge update --all --devel` surfaced the raw makepkg error).
     """
     from contextlib import contextmanager
-    from sysforge.primitives.makepkg_wrapper import _run_build
+    from sysforge.build.makepkg_wrapper import _run_build
 
     pb = tmp_path / "PKGBUILD"
     pb.write_text("pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
@@ -680,13 +680,13 @@ def test_already_built_propagates_through_run_build(tmp_path):
         raise AlreadyBuilt(pb)
 
     with (
-        patch("sysforge.primitives.makepkg_wrapper.patch_pkgbuild_groups",
+        patch("sysforge.build.makepkg_wrapper.patch_pkgbuild_groups",
               return_value=pb),
-        patch("sysforge.primitives.makepkg_wrapper.emit_makepkg_conf",
+        patch("sysforge.build.makepkg_wrapper.emit_makepkg_conf",
               side_effect=fake_emit),
-        patch("sysforge.primitives.makepkg_wrapper.resolve_env_vars",
+        patch("sysforge.build.makepkg_wrapper.resolve_env_vars",
               return_value={}),
-        patch("sysforge.primitives.makepkg_wrapper._invoke_with_retry",
+        patch("sysforge.build.makepkg_wrapper._invoke_with_retry",
               side_effect=raise_already_built),
     ):
         try:

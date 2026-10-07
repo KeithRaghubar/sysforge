@@ -29,14 +29,15 @@ from pathlib import Path
 
 from sysforge.primitives import config
 from sysforge.primitives import diagnostics as diag
+from sysforge.primitives import run
 
 _CATEGORY = "rust"
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except (FileNotFoundError, OSError):
+        return run.capture(cmd)  # None when the binary is missing
+    except OSError:
         return None
 
 
@@ -102,6 +103,38 @@ def _rustup_active() -> str | None:
     if proc is None or proc.returncode != 0 or not proc.stdout.strip():
         return None
     return proc.stdout.splitlines()[0].strip()
+
+
+def rustc_provenance() -> str:
+    """Where the ``rustc`` a build will run comes from, in one phrase (3.0.0-F1).
+
+    Names the resolved path, who owns it (a pacman package, rustup, or a
+    user-local rustup install) and, for rustup, the active toolchain — plus
+    every other ``rustc`` later on ``PATH`` that it shadows, which is the usual
+    reason the operator's idea of "my rustc" is not the one a build uses.
+    """
+    first = _which("rustc")
+    if first is None:
+        return "no rustc on PATH"
+    owner = _owner_pkg(first)
+    if owner == "rustup" or (owner is None and _is_rustup_layout(first)):
+        active = _rustup_active()
+        kind = "rustup" if owner == "rustup" else "rustup, user-local"
+        desc = f"{first} ({kind}: {active.split()[0] if active else 'toolchain unknown'})"
+    else:
+        desc = f"{first} ({'pacman: ' + owner if owner else 'unowned'})"
+    shadowed = []
+    seen = {Path(first).resolve()}
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = Path(d) / "rustc"
+        if d and cand.is_file() and os.access(cand, os.X_OK):
+            real = cand.resolve()
+            if real not in seen:
+                seen.add(real)
+                shadowed.append(str(cand))
+    if shadowed:
+        desc += f", shadowing {', '.join(shadowed)}"
+    return desc
 
 
 def _rust_pkg_version() -> str:

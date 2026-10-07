@@ -60,10 +60,10 @@ def run_tty_argv(argv: list[str]) -> int:
     try:
         with progress_hooks.hooks().yield_terminal("child"):
             if tty_fd is not None:
-                result = subprocess.run(
+                result = subprocess.run(  # noqa: TID251 — editor owns the TTY
                     argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
             else:
-                result = subprocess.run(argv)
+                result = subprocess.run(argv)  # noqa: TID251 — editor owns the TTY
         return result.returncode
     except FileNotFoundError:
         return -1

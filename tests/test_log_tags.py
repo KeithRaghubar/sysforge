@@ -62,7 +62,7 @@ import sysforge.primitives.makepkg_conf as makepkg_conf
 import sysforge.primitives.makepkg_env as makepkg_env
 import sysforge.primitives.makepkg_invoke as makepkg_invoke
 import sysforge.primitives.makepkg_flags as makepkg_flags
-import sysforge.primitives.makepkg_wrapper as makepkg_wrapper
+import sysforge.build.makepkg_wrapper as makepkg_wrapper
 import sysforge.primitives.pacman as pacman
 import sysforge.primitives.pkgbuild_patcher as pkgbuild_patcher
 import sysforge.primitives.profile as profile

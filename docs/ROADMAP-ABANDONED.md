@@ -30,6 +30,23 @@ checking against.
 
 ---
 
+- **`3.3.0-F4` — pause the progress bar on a sudo prompt inside forwarded build output — decided
+  against 2026-10-07.** Proposed setting a `SUDO_PROMPT` sentinel in makepkg's environment and
+  detecting it in `pty_runner`'s partial-line buffer, pausing the tracker clock until the child's
+  next output. The premise was wrong: sudo writes its password prompt to the controlling terminal
+  (`/dev/tty`), not to stdout, and `pty_runner` spawns children without `setsid`, so their
+  controlling terminal stays the operator's real one. The prompt never enters the forwarded stream
+  and no sentinel would ever be seen. Two alternatives were weighed: watching `/proc` for a
+  childless `sudo` descendant (works, but a heuristic that can only react after the prompt has
+  already collided with the bar), and `PACMAN_AUTH=(sudo -n)` (never prompts, but turns a lapsed
+  credential into a failed build). Superseded by `3.4.0-F1`, which removes the cause instead:
+  makepkg never escalates (its `-s`/`-i` are stripped on every path and sysforge installs
+  dependencies and artifacts through the privilege seam), and `build`/`update` hold a sudo
+  keepalive, so no prompt can arise inside build output at all. Would reopen only if a build path
+  ever has to let makepkg escalate again.
+
+---
+
 - **`1.2.0-F20` — rule `priority` auto-calculation from condition specificity — decided against
   2026-07-25.** Would have derived a baseline 0–99 score per `[[rules]]` entry from how many
   conditions it AND's together (CSS-specificity analogue), making `priority` optional and reserving

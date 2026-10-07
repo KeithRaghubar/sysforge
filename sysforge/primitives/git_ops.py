@@ -35,6 +35,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.net_policy import KIND_SOURCE_FETCH, get_policy
+from sysforge.primitives import run
 
 _log = log.get_logger("GIT")
 
@@ -100,21 +101,17 @@ def git_fetch_and_compare(
         if limiter is not None:
             from sysforge.primitives.rate_limit import run_throttled_git
             return run_throttled_git(cmd, limiter, timeout=timeout)
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return run.probe(cmd, timeout=timeout)
 
     # 1. Is this a git repo at all?
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"], text=False)
     if r.returncode != 0:
         return GitFetchOutcome(status="not_a_repo", head_before=None, head_after=None)
 
     # 2. Is there a tracking branch?
-    r = subprocess.run(
+    r = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse",
          "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
     )
     if r.returncode != 0:
         _log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping fetch")
@@ -141,9 +138,8 @@ def git_fetch_and_compare(
     # carry only PKGBUILD/metadata, so a full fetch is cheap; ``--unshallow``
     # also self-heals any repo previously shallowed by the old ``--depth=1``
     # path.
-    shallow = subprocess.run(
+    shallow = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--is-shallow-repository"],
-        capture_output=True, text=True,
     ).stdout.strip() == "true"
     fetch_cmd = ["git", "-C", str(pkgbuild_dir), "fetch"]
     if shallow:
@@ -183,10 +179,10 @@ def git_fetch_and_compare(
         )
 
     # 5. Can we fast-forward? (HEAD is ancestor of FETCH_HEAD AND working tree is clean)
-    ancestor = subprocess.run(
+    ancestor = run.probe(
         ["git", "-C", str(pkgbuild_dir), "merge-base",
          "--is-ancestor", "HEAD", "FETCH_HEAD"],
-        capture_output=True,
+        text=False,
     )
     if ancestor.returncode != 0 or git_is_dirty(pkgbuild_dir):
         if ancestor.returncode != 0:
@@ -217,10 +213,7 @@ def git_fetch_and_compare(
         )
 
     # 6. Fast-forward merge.
-    merge = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "merge", "--ff-only", "FETCH_HEAD"],
-        capture_output=True, text=True,
-    )
+    merge = run.probe(["git", "-C", str(pkgbuild_dir), "merge", "--ff-only", "FETCH_HEAD"])
     if merge.returncode != 0:
         combined = ((merge.stdout or "") + (merge.stderr or "")).strip()
         _log.warn(f"{pkgbuild_dir.name}: ff-merge failed: {combined}")
@@ -237,10 +230,7 @@ def git_fetch_and_compare(
 
 
 def _rev_parse(pkgbuild_dir: Path, ref: str) -> str | None:
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "rev-parse", ref],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "rev-parse", ref])
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
@@ -251,10 +241,7 @@ def _local_user_email(pkgbuild_dir: Path) -> str | None:
 
     Empty string / missing config → None. Whitespace is stripped.
     """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "config", "--get", "user.email"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "config", "--get", "user.email"])
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip()
     return None
@@ -289,33 +276,29 @@ def classify_head_vs_upstream(
     ``HEAD..@{u}`` respectively (both 0 for ``clean``; ``n_local`` is the
     "ahead" count for ``ahead``).
     """
-    is_repo = subprocess.run(
+    is_repo = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
+        text=False,
     ).returncode == 0
     if not is_repo:
         return "not_a_repo", 0, 0
 
-    has_head = subprocess.run(
+    has_head = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--verify", "--quiet", "HEAD"],
-        capture_output=True,
+        text=False,
     ).returncode == 0
     if not has_head:
         return "no_head", 0, 0
 
-    upstream = subprocess.run(
+    upstream = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse",
          "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-        capture_output=True, text=True,
     )
     if upstream.returncode != 0:
         return "no_tracking", 0, 0
 
     def _count(spec: str) -> int:
-        r = subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), "rev-list", "--count", spec],
-            capture_output=True, text=True,
-        )
+        r = run.probe(["git", "-C", str(pkgbuild_dir), "rev-list", "--count", spec])
         if r.returncode != 0:
             return 0
         n = r.stdout.strip()
@@ -338,10 +321,9 @@ def classify_head_vs_upstream(
         # treat any divergent commit as the operator's work.
         return "diverged_user", n_local, n_upstream
 
-    r = subprocess.run(
+    r = run.probe(
         ["git", "-C", str(pkgbuild_dir), "log",
          "--format=%ae", "@{u}..HEAD"],
-        capture_output=True, text=True,
     )
     if r.returncode != 0:
         return "diverged_user", n_local, n_upstream
@@ -367,10 +349,9 @@ def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
     git error or unexpected diff line makes this return False so the
     surrounding dirty check keeps protecting the operator's work.
     """
-    r = subprocess.run(
+    r = run.probe(
         ["git", "-C", str(pkgbuild_dir),
          "diff", "-U0", "--no-color", "--", path],
-        capture_output=True, text=True,
     )
     if r.returncode != 0:
         return False
@@ -396,10 +377,9 @@ def _uncommitted_dirty_paths(pkgbuild_dir: Path, *, is_vcs: bool) -> list[str]:
     pkgver=/pkgrel= lines (the pkgver() auto-bump), and any change to the
     generated ``.SRCINFO``. Returns an empty list on git error.
     """
-    r = subprocess.run(
+    r = run.probe(
         ["git", "-C", str(pkgbuild_dir), "status",
          "--short", "--untracked-files=no"],
-        capture_output=True, text=True,
     )
     if r.returncode != 0 or not r.stdout.strip():
         return []
@@ -482,10 +462,7 @@ def head_reachable_from_remote(pkgbuild_dir: Path) -> bool:
     and must not block a purge. Local-only commits (not on any remote ref)
     still refuse.
     """
-    r = subprocess.run(
-        ["git", "-C", str(pkgbuild_dir), "branch", "-r", "--contains", "HEAD"],
-        capture_output=True, text=True,
-    )
+    r = run.probe(["git", "-C", str(pkgbuild_dir), "branch", "-r", "--contains", "HEAD"])
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
@@ -552,9 +529,9 @@ def purge_src(
     if not pkgbuild_dir.exists():
         return
 
-    is_git = subprocess.run(
+    is_git = run.probe(
         ["git", "-C", str(pkgbuild_dir), "rev-parse", "--git-dir"],
-        capture_output=True,
+        text=False,
     ).returncode == 0
 
     if is_git and not force:

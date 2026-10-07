@@ -116,7 +116,7 @@ def test_build_failed_error_carries_diagnosis():
     """The abort RuntimeError preserves .diagnosis/.captured_output recovered
     from the failed build's side-car logs."""
     from sysforge.primitives.build_diag import FixSuggestion
-    from sysforge.primitives.makepkg_wrapper import _build_failed_error
+    from sysforge.build.makepkg_wrapper import _build_failed_error
 
     import subprocess as _sp
     cause = _sp.CalledProcessError(4, "makepkg")
@@ -150,7 +150,7 @@ def test_build_failed_error_aborted_is_distinguishable():
 # _maybe_patch_build_linker
 # ---------------------------------------------------------------------------
 
-from sysforge.primitives import makepkg_wrapper
+from sysforge.build import makepkg_wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +448,39 @@ def test_cosmic_git_regression_mold_to_lld(tmp_path, monkeypatch):
     text = p.read_text()
     assert "fuse-ld=mold" not in text
     assert "link-arg=-fuse-ld=lld" in text
+
+
+def test_run_records_build_time_without_paused_prompt_time(tmp_path, monkeypatch):
+    """3.3.0-F1: a build that sat at a prompt does not record the wait as build
+    time, or it would skew every later ETA median."""
+    import time as _time
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.primitives import progress_hooks
+    from sysforge.build.makepkg_wrapper import BuildOptions
+
+    clock = {"wall": 1000.0, "paused": 0.0}
+    monkeypatch.setattr(_time, "time", lambda: clock["wall"])
+
+    real = progress_hooks.hooks()
+
+    class _Hooks:
+        def paused_seconds(self):
+            return clock["paused"]
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(progress_hooks, "hooks", lambda: _Hooks())
+
+    def fake_build(*a, **k):
+        clock["wall"] += 130     # 30s of work + 100s waiting on the user
+        clock["paused"] += 100
+
+    recorded = {}
+    monkeypatch.setattr(mw, "_run_build", fake_build)
+    monkeypatch.setattr(mw, "_record_build_state",
+                        lambda *a, **k: recorded.setdefault("elapsed", a[6]))
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=probe\npkgver=1\npkgrel=1\n")
+    mw.run(pkgbuild, options=BuildOptions(update=False, pkg_log=False))
+    assert recorded["elapsed"] == 30

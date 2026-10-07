@@ -13,6 +13,7 @@ counted as unknown, never guessed — the number never overstates history.
 
 Public API:
     estimate_seconds(names, build_state) -> (est_seconds, n_known, n_unknown)
+    per_target_seconds(targets, build_state) -> list[int | None]
     format_estimate(names, build_state) -> str | None
     format_estimate_vs_actual(estimated_s, actual_s) -> str
 """
@@ -20,7 +21,8 @@ from __future__ import annotations
 
 from statistics import median
 
-__all__ = ["estimate_seconds", "format_estimate", "format_estimate_vs_actual"]
+__all__ = ["estimate_seconds", "format_estimate", "format_estimate_vs_actual",
+           "per_target_seconds"]
 
 
 def _fmt_hms(seconds: int) -> str:
@@ -34,6 +36,34 @@ def _fmt_hms(seconds: int) -> str:
     return f"~{mins // 60}h {mins % 60:02d}m"
 
 
+def _median_seconds(entry) -> int | None:
+    ring = [
+        int(s)
+        for s in (entry or {}).get("build_seconds", "").split(",")
+        if s.strip().isdigit()
+    ]
+    return int(median(ring)) if ring else None
+
+
+def per_target_seconds(targets, build_state) -> list[int | None]:
+    """Each build target's median duration, in the order given (3.3.0-F1).
+
+    ``targets`` is one list of pkgnames per build — a split package is one
+    target, so it is counted once, taking the first member with history.
+    ``None`` for a target never built before: the live ETA then falls back to
+    the in-run mean for it rather than guessing.
+    """
+    out: list[int | None] = []
+    for pkgnames in targets:
+        secs = None
+        for name in pkgnames:
+            secs = _median_seconds(build_state.get(name))
+            if secs is not None:
+                break
+        out.append(secs)
+    return out
+
+
 def estimate_seconds(names, build_state) -> tuple[int, int, int]:
     """Sum per-pkgbase median durations. Returns
     (estimated_seconds, n_with_history, n_unknown), both counts by distinct
@@ -44,12 +74,7 @@ def estimate_seconds(names, build_state) -> tuple[int, int, int]:
         base = (entry or {}).get("pkgbase", name)
         if base in seen_base_median:
             continue
-        ring = [
-            int(s)
-            for s in (entry or {}).get("build_seconds", "").split(",")
-            if s.strip().isdigit()
-        ]
-        seen_base_median[base] = int(median(ring)) if ring else None
+        seen_base_median[base] = _median_seconds(entry)
     est = sum(v for v in seen_base_median.values() if v is not None)
     known = sum(1 for v in seen_base_median.values() if v is not None)
     unknown = sum(1 for v in seen_base_median.values() if v is None)

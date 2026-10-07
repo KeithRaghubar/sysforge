@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import run
 _log = log.get_logger("ABI")
 
 
@@ -132,10 +133,7 @@ def _list_sos_in_pkg(pkg_path: Path) -> list[str]:
     libfoo.so.1`` link, or a hardlinked driver alias, is the same ELF as a
     member already listed.
     """
-    result = subprocess.run(
-        ["bsdtar", "-t", "-v", "-f", str(pkg_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["bsdtar", "-t", "-v", "-f", str(pkg_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         _log.warn(f"bsdtar list failed for {pkg_path.name}: {result.stderr.strip()}")
         return []
@@ -168,9 +166,9 @@ def _extract_sos(pkg_path: Path, members: list[str], dest: Path) -> list[Path]:
     # actually extracts (otherwise Gate 2 sees zero shared objects and passes
     # vacuously). exist_ok keeps the existing-dir caller working.
     dest.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
+    result = run.probe(
         ["bsdtar", "-x", "-f", str(pkg_path), "-C", str(dest)] + members,
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode != 0:
         _log.warn(f"bsdtar extract failed: {result.stderr.strip()}")
@@ -210,10 +208,7 @@ def _parse_nm_undefined(nm_output: str) -> set[tuple[str, str]]:
 
 def _undefined_versioned(so_path: Path) -> set[tuple[str, str]]:
     """Return set of (symbol, version) pairs that are undefined with a version requirement."""
-    result = subprocess.run(
-        ["nm", "-D", str(so_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["nm", "-D", str(so_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return set()
     return _parse_nm_undefined(result.stdout)
@@ -221,10 +216,7 @@ def _undefined_versioned(so_path: Path) -> set[tuple[str, str]]:
 
 def needed_sonames(so_path: Path) -> list[str]:
     """Return NEEDED sonames from the dynamic section of so_path."""
-    result = subprocess.run(
-        ["readelf", "-d", str(so_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["readelf", "-d", str(so_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return []
     return _RE_NEEDED.findall(result.stdout)
@@ -264,10 +256,7 @@ def _parse_verneed(version_info: str) -> dict[str, set[str]]:
 
 def _verneed_map(so_path: Path) -> dict[str, set[str]]:
     """Return {version_name: {bound NEEDED soname}} for so_path, or {} on failure."""
-    result = subprocess.run(
-        ["readelf", "--version-info", str(so_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["readelf", "--version-info", str(so_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return {}
     return _parse_verneed(result.stdout)
@@ -286,10 +275,7 @@ def _is_optional_llvm_target_init(sym: str, ver: str) -> bool:
 
 def _elf_class(so_path: Path) -> str:
     """Return 'ELF32' or 'ELF64' for so_path; empty string on failure."""
-    result = subprocess.run(
-        ["readelf", "-h", str(so_path)],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["readelf", "-h", str(so_path)], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return ""
     for line in result.stdout.splitlines():
@@ -319,10 +305,7 @@ def _build_ldconfig_map() -> dict[tuple[str, str], str]:
     false-positive "undefined symbol" findings (different mangling for
     unsigned int vs unsigned long).
     """
-    result = subprocess.run(
-        ["ldconfig", "-p"],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["ldconfig", "-p"], stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return {}
     mapping: dict[tuple[str, str], str] = {}
@@ -367,10 +350,7 @@ def _exported_versioned(lib_path: str,
     """Return set of (symbol, version) exported by lib_path; results are cached."""
     if lib_path in cache:
         return cache[lib_path]
-    result = subprocess.run(
-        ["nm", "-D", lib_path],
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["nm", "-D", lib_path], stdin=subprocess.DEVNULL)
     exports: set[tuple[str, str]] = set()
     if result.returncode == 0:
         exports = _parse_nm_exports(result.stdout)
@@ -382,10 +362,7 @@ def _demangle(symbols: list[str]) -> dict[str, str]:
     """Run c++filt on a list of mangled names; return {mangled: demangled}."""
     if not symbols:
         return {}
-    result = subprocess.run(
-        ["c++filt"] + symbols,
-        capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL,
-    )
+    result = run.probe(["c++filt"] + symbols, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return {s: s for s in symbols}
     demangled = result.stdout.splitlines()

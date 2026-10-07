@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from sysforge.primitives import mesa_pgo
+from sysforge.primitives import run as run_seam
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ def test_merge_no_profraw_reuses_existing_profdata(tmp_path, monkeypatch):
     def explode(*a, **kw):  # llvm-profdata must not be touched
         raise AssertionError("merge invoked despite an existing profdata + no raw")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", explode)
+    monkeypatch.setattr(run_seam.subprocess, "run", explode)
     assert mesa_pgo.merge_profraw(tmp_path) == out
     assert out.read_text() == "merged-already"
 
@@ -121,7 +122,7 @@ def test_merge_success_invokes_llvm_profdata(tmp_path, monkeypatch):
         Path(argv[out_idx]).write_text("merged")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
     out = mesa_pgo.merge_profraw(tmp_path)
     assert out == tmp_path / mesa_pgo.PROFDATA_NAME
     assert out.read_text() == "merged"
@@ -145,7 +146,7 @@ def test_merge_prunes_profraw_after_success(tmp_path, monkeypatch):
         Path(argv[out_idx]).write_text("merged")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
     out = mesa_pgo.merge_profraw(tmp_path)
     assert out.read_text() == "merged"
     # Raw inputs gone; only the merged profdata remains.
@@ -171,7 +172,7 @@ def test_merge_folds_existing_profdata(tmp_path, monkeypatch):
         Path(argv[out_idx]).write_text("remerged")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
     mesa_pgo.merge_profraw(tmp_path)
     # The prior profdata path is among the merge *inputs* (not just the
     # --output target), so accumulated signal survives the raw being pruned.
@@ -186,7 +187,7 @@ def test_merge_tool_failure_raises_with_stderr(tmp_path, monkeypatch):
     (tmp_path / "a.profraw").write_text("x")
     monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
     monkeypatch.setattr(
-        mesa_pgo.subprocess,
+        run_seam.subprocess,
         "run",
         lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "corrupt profile"),
     )
@@ -285,7 +286,7 @@ def test_merge_profraw_names_output_per_package(tmp_path, monkeypatch):
         Path(argv[out_idx]).write_text("merged")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
     out = mesa_pgo.merge_profraw(store, pkgbase="foo")
     assert out == store / "foo.profdata"
 
@@ -301,7 +302,7 @@ def _fake_merge(monkeypatch):
         Path(argv[argv.index("--output") + 1]).write_text("merged")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(mesa_pgo.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
 
 
 def test_merge_records_the_collected_version_sidecar(tmp_path, monkeypatch):

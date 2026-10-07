@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives import kernel_safety as ks
@@ -368,6 +370,79 @@ def test_verify_boot_artifacts_none_bootloader_skips_entry(tmp_path, monkeypatch
 # ---------------------------------------------------------------------------
 # check_dkms_for_kernel
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _no_host_pacman_log(monkeypatch, tmp_path):
+    """Never read the host's pacman.log (3.3.0-B20 reads it for hook failures)."""
+    monkeypatch.setattr(ks, "_PACMAN_LOG", tmp_path / "no-pacman.log")
+
+
+_SCRIPTLET = "[2026-10-06T13:08:28-0400] [ALPM-SCRIPTLET] "
+_DKMS_CMD = "dkms install --no-depmod nvidia/615.71.09 -k {kver}"
+# Lines as the libalpm DKMS hook writes them to pacman.log on a failed build.
+_HOOK_LOG = (
+    "[2026-10-06T13:07:01-0400] [ALPM] running '70-dkms-install.hook'...\n"
+    + _SCRIPTLET + "==> " + _DKMS_CMD + "\n"
+    + _SCRIPTLET + "Error! Bad return status for module build on kernel: {kver} (x86_64)\n"
+    + _SCRIPTLET + "==> WARNING: `" + _DKMS_CMD + "' exited 10\n"
+)
+
+
+def _hook_env(monkeypatch, tmp_path, *, log, headers=True, kver="7.2.8-sf"):
+    out = "nvidia/615.71.09, 7.2.7-sf, x86_64: installed\n"
+    monkeypatch.setattr(ks, "_run", lambda cmd: _completed(out))
+    monkeypatch.setattr(ks, "_MODULES_DIR", tmp_path / "modules")
+    if headers:
+        (tmp_path / "modules" / kver / "build" / "include").mkdir(parents=True)
+    if log is not None:
+        (tmp_path / "pacman.log").write_text(log)
+    monkeypatch.setattr(ks, "_PACMAN_LOG", tmp_path / "pacman.log")
+    monkeypatch.setattr(ks, "_DKMS_TREE", Path("/var/lib/dkms"))
+    return kver
+
+
+def test_dkms_hook_failure_says_ran_and_failed(monkeypatch, tmp_path):
+    kver = _hook_env(monkeypatch, tmp_path, log=_HOOK_LOG.format(kver="7.2.8-sf"))
+    (f,) = ks.check_dkms_for_kernel(kver)
+    assert "failed to build" in f.message and "exited 10" in f.message
+    assert "/var/lib/dkms/nvidia/615.71.09/build/make.log" in f.remediation
+    assert "overwrites" in f.remediation
+    assert "`sudo dkms install nvidia/615.71.09 -k 7.2.8-sf`" in f.remediation
+
+
+def test_dkms_headers_present_no_hook_line_keeps_today(monkeypatch, tmp_path):
+    kver = _hook_env(monkeypatch, tmp_path, log="[x] [ALPM] transaction completed\n")
+    (f,) = ks.check_dkms_for_kernel(kver)
+    assert "is not built for kernel" in f.message and "make.log" not in f.remediation
+
+
+def test_dkms_headers_absent_keeps_install_headers_wording(monkeypatch, tmp_path):
+    kver = _hook_env(monkeypatch, tmp_path, log=_HOOK_LOG.format(kver="7.2.8-sf"),
+                     headers=False)
+    (f,) = ks.check_dkms_for_kernel(kver)
+    assert f.remediation.startswith("Install `7.2.8-sf` headers")
+
+
+def test_dkms_hook_failure_for_other_kernel_or_module_ignored(monkeypatch, tmp_path):
+    other = (_HOOK_LOG.format(kver="7.2.9-other")
+             + _HOOK_LOG.format(kver="7.2.8-sf").replace("nvidia/", "zfs/"))
+    kver = _hook_env(monkeypatch, tmp_path, log=other)
+    (f,) = ks.check_dkms_for_kernel(kver)
+    assert "is not built for kernel" in f.message
+
+
+def test_dkms_later_clean_attempt_supersedes_failure(monkeypatch, tmp_path):
+    kver = "7.2.8-sf"
+    log = _HOOK_LOG.format(kver=kver) + (
+        f"[t] [ALPM-SCRIPTLET] ==> dkms install --no-depmod nvidia/615.71.09 -k {kver}\n")
+    _hook_env(monkeypatch, tmp_path, log=log)
+    assert ks.dkms_hook_failure("nvidia", kver) is None
+
+
+def test_dkms_hook_failure_unreadable_log_is_none(monkeypatch, tmp_path):
+    _hook_env(monkeypatch, tmp_path, log=None)
+    assert ks.dkms_hook_failure("nvidia", "7.2.8-sf") is None
+
 
 def test_dkms_module_not_built_for_kernel(monkeypatch):
     out = "nvidia/570.86.16, 7.0.9-arch1-1, x86_64: installed\n"

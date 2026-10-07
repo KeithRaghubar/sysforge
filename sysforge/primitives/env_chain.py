@@ -81,6 +81,7 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from sysforge.primitives import run
 
 
 # ---------------------------------------------------------------------------
@@ -314,13 +315,10 @@ def _read_systemd_user_env() -> dict[str, str]:
     if not os.environ.get("XDG_RUNTIME_DIR"):
         return {}
     try:
-        result = subprocess.run(
-            ["systemctl", "--user", "show-environment"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        result = run.capture(["systemctl", "--user", "show-environment"], timeout=5)
+    except subprocess.TimeoutExpired:
         return {}
-    if result.returncode != 0:
+    if result is None or result.returncode != 0:
         return {}
     out: dict[str, str] = {}
     for line in result.stdout.splitlines():

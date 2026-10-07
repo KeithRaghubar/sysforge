@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from sysforge import build_core
-from sysforge.primitives import aur_resolve
+from sysforge.build import aur_deps
 from sysforge.ui import progress
 
 
@@ -37,4 +37,4 @@ def test_prepare_deps_refuses_inside_a_tracker():
 def test_build_resolved_deps_refuses_inside_a_tracker():
     expected = "build_resolved_deps called inside tracker 'building'"
     with progress.tracker(2, "building"), pytest.raises(RuntimeError, match=expected):
-        aur_resolve.build_resolved_deps([object()])  # type: ignore[list-item]
+        aur_deps.build_resolved_deps([object()])  # type: ignore[list-item]

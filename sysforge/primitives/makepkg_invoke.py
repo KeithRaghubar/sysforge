@@ -45,7 +45,7 @@ from sysforge.primitives.makepkg_env import (
     _logdest_tail,
     resolve_build_python,
 )
-from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.privilege import ensure_credentials, privileged_argv
 from sysforge.primitives.makepkg_flags import (
     INSTALL_FLAGS,
     resolve_effective_linker,
@@ -104,6 +104,9 @@ class AlreadyBuilt(Exception):
     """
     def __init__(self, pkgbuild_path: Path):
         self.pkgbuild_path = pkgbuild_path
+        # Set by makepkg_wrapper on the way out: the tree the reused package
+        # was built in (``build_root``), or None when unknown (3.3.0-B11).
+        self.build_dir: Path | None = None
         super().__init__(f"package already built: {pkgbuild_path}")
 
 # Markers that open a real failure block, in the vocabulary the build tools
@@ -401,7 +404,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # Exit-code signals (13 → AlreadyBuilt, 8 → install failure) still fire.
     if interactive:
         try:
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # noqa: TID251 — interactive makepkg with its own preexec_fn
                 cmd, cwd=build_dir, env=env,
                 preexec_fn=make_child_preexec(child_mem_cap),
             )
@@ -930,8 +933,9 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                     if response == "s":
                         while True:
                             _makepkg_log.ui("Refreshing sudo credentials...")
-                            subprocess.run(["sudo", "-v"])
-                            result = subprocess.run(
+                            # Prompts only if needed, with the bar yielded (3.3.0-F3).
+                            ensure_credentials()
+                            result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
                                 privileged_argv(["pacman", "-U", "--noconfirm"])
                                 + [str(p) for p in built_pkgs]
                             )

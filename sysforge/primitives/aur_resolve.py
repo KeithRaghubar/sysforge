@@ -15,12 +15,10 @@ installed before packages that depend on it.
 Public API:
     resolve_aur_deps(pkgbuild_path, config, fetch=True) -> list[ResolvedDep]
     resolve_aur_deps_batch(pkgbuild_paths, config, fetch=True) -> list[ResolvedDep]
-    build_resolved_deps(deps, build_options, config) -> list[str]
+    (building the resolved deps lives in sysforge.build.aur_deps — 3.2.0-F4)
 """
 from __future__ import annotations
 
-import subprocess
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,6 +26,7 @@ from sysforge import log
 from sysforge.primitives.aur import aur_info, repo_packages
 from sysforge.primitives.config import find_pkgbuild
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives import run
 
 # [AUR_RESOLVE], not [RESOLVE]: this resolves the transitive AUR *dependency
 # graph* (build order), a different operation from the `resolve` verb's
@@ -93,10 +92,7 @@ def _get_missing_deps(dep_specs: list[str]) -> list[str]:
     """Return dep specs not satisfied on the local system (pacman -T)."""
     if not dep_specs:
         return []
-    result = subprocess.run(
-        ["pacman", "-T"] + dep_specs,
-        capture_output=True, text=True,
-    )
+    result = run.probe(["pacman", "-T"] + dep_specs)
     if result.returncode == 0:
         return []
     return [s.strip() for s in result.stdout.splitlines() if s.strip()]
@@ -372,81 +368,3 @@ def resolve_all_deps(
     aur_deps = [visited[name] for name in order]
     other_deps = [d for d in visited.values() if d.source != "aur"]
     return aur_deps + other_deps
-
-
-# ---------------------------------------------------------------------------
-# Public API — building
-# ---------------------------------------------------------------------------
-
-def build_resolved_deps(
-    deps: list[ResolvedDep],
-    *,
-    profile_conf: str | None = None,
-    cc_override: str | None = None,
-    cxx_override: str | None = None,
-    ld_override: str | None = None,
-    state_dir: Path | None = None,
-    interactive: bool = False,
-) -> list[str]:
-    """Build and install AUR deps in topological order.
-
-    Each dep is built via makepkg_wrapper.run() with ``-i`` (install)
-    appended so it is available for subsequent deps. ``interactive`` is threaded
-    through so a ``build --interactive`` run keeps live output / prompts for the
-    dependency builds too, not only the main target.
-
-    Returns list of successfully built dep names.
-    """
-    from sysforge.primitives import progress_hooks
-
-    # Opens the "AUR dep" tracker; refuse before any build (3.3.0-F2).
-    progress_hooks.hooks().require_no_tracker("build_resolved_deps")
-    from sysforge.primitives.makepkg_wrapper import (
-        BuildOptions,
-        run as makepkg_run,
-    )
-
-    aur_deps = [
-        (d, d.pkgbuild_path) for d in deps
-        if d.source == "aur" and d.pkgbuild_path is not None
-    ]
-    if not aur_deps:
-        return []
-
-    _log.ui(f"Building {len(aur_deps)} AUR dependency(ies) before main package")
-
-    built: list[str] = []
-    with progress_hooks.hooks().tracker(len(aur_deps), "AUR dep") as _tick:
-        for i, (dep, dep_pkgbuild) in enumerate(aur_deps):
-            req = ", ".join(dep.required_by)
-            _tick(dep.name)
-            _log.ui(f"  [{i + 1}/{len(aur_deps)}] {dep.name} (required by {req})")
-
-            opts = BuildOptions(
-                extra_flags=["-i"],
-                profile_conf=profile_conf,
-                cc_override=cc_override,
-                cxx_override=cxx_override,
-                ld_override=ld_override,
-                state_dir=state_dir,
-                init_session=(i == 0),
-                pkg_log=False,
-                interactive=interactive,
-            )
-            _dep_start = time.time()
-            makepkg_run(dep_pkgbuild, options=opts)
-            built.append(dep.name)
-            # Under the build sandbox a dep installed on the host is invisible
-            # to the next container; register its artifacts so the seam can
-            # hand them back in as ``-I``. Inert while the sandbox is off.
-            from sysforge.primitives.build_sandbox import register_artifacts
-            from sysforge.primitives.makepkg_artifacts import _find_built_packages
-            from sysforge.primitives.pacman import get_pkgdest
-            _dep_dest = get_pkgdest() or dep_pkgbuild.parent
-            register_artifacts(
-                p for p in _find_built_packages(_dep_dest)
-                if p.stat().st_mtime >= _dep_start
-            )
-
-    _log.ui(f"All {len(built)} dependency(ies) built and installed")
-    return built

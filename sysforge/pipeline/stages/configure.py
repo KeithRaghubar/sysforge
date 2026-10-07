@@ -74,7 +74,7 @@ def _chroot(target: str, cmd: list[str], check: bool = True) -> subprocess.Compl
     """Run a command inside arch-chroot <target>."""
     full_cmd = ["arch-chroot", target] + cmd
     _log.info(f"chroot: {' '.join(cmd)}")
-    return subprocess.run(full_cmd, check=check)
+    return subprocess.run(full_cmd, check=check)  # noqa: TID251 — arch-chroot command streams to the TTY; caller picks check
 
 
 # ---------------------------------------------------------------------------
@@ -366,9 +366,9 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
     extract_root = build_host / f"sysforge-{pkgver}"
     shutil.copytree(target_src, extract_root)
     tarball = build_host / f"sysforge-{pkgver}.tar.gz"
-    subprocess.run(
+    run_or_raise(
         ["tar", "-C", str(build_host), "-czf", str(tarball), f"sysforge-{pkgver}"],
-        check=True,
+        tag="CONFIGURE", operation="tar", capture=False,
     )
     shutil.rmtree(extract_root)
     shutil.copy(pkgbuild, build_host / "PKGBUILD")

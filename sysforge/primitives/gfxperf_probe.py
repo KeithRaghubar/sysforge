@@ -29,6 +29,7 @@ from sysforge.primitives import pacman
 from sysforge.primitives.graphics_probe import (
     SEV_ERROR, SEV_INFO, SEV_WARN, GraphicsFinding,
 )
+from sysforge.primitives import run
 
 __all__ = ["check_gfxperf", "GraphicsFinding", "SEV_ERROR", "SEV_WARN", "SEV_INFO"]
 
@@ -43,10 +44,7 @@ def _read_text(path: Path) -> str | None:
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
     """Run a command; return None if the binary is missing."""
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        return None
+    return run.capture(cmd)  # None when the binary is missing
 
 
 # ---------------------------------------------------------------------------

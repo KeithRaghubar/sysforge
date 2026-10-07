@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives import pacman
+from sysforge.primitives import run
 
 
 SEV_ERROR = "error"
@@ -58,10 +59,7 @@ def _read_text(path: Path) -> str | None:
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
     """Run a command; return None if binary is missing."""
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        return None
+    return run.capture(cmd)  # None when the binary is missing
 
 
 def _kernel_major_minor() -> tuple[int, int] | None:

@@ -32,7 +32,7 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.makepkg_wrapper import _parse_built_pkg_filename
+from sysforge.primitives.makepkg_artifacts import _parse_built_pkg_filename
 from sysforge.primitives.net_policy import (
     KIND_VCS_PEEK,
     KIND_VCS_RESOLVE,
@@ -40,6 +40,7 @@ from sysforge.primitives.net_policy import (
     get_policy,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives import run
 
 _log = log.get_logger("VCS_PKGVER")
 
@@ -92,15 +93,12 @@ def evaluate_vcs_pkgver(
         return None
 
     try:
-        resolve = subprocess.run(
-            _RESOLVE_CMD, cwd=pkgbuild_dir, capture_output=True,
-            text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        _log.warn(f"{pkgbuild_dir}: makepkg not on PATH")
-        return None
+        resolve = run.capture(_RESOLVE_CMD, cwd=pkgbuild_dir, timeout=timeout)
     except subprocess.TimeoutExpired:
         _log.warn(f"{pkgbuild_dir}: pkgver() resolve timed out after {timeout}s")
+        return None
+    if resolve is None:
+        _log.warn(f"{pkgbuild_dir}: makepkg not on PATH")
         return None
 
     if resolve.returncode != 0:
@@ -115,10 +113,7 @@ def evaluate_vcs_pkgver(
         return None
 
     try:
-        listing = subprocess.run(
-            _PACKAGELIST_CMD, cwd=pkgbuild_dir, capture_output=True,
-            text=True, timeout=30,
-        )
+        listing = run.probe(_PACKAGELIST_CMD, cwd=pkgbuild_dir, timeout=30)
     except subprocess.TimeoutExpired:
         _log.warn(f"{pkgbuild_dir}: makepkg --packagelist timed out")
         return None
@@ -284,15 +279,12 @@ def peek_upstream_commit(
                 break
 
     try:
-        result = subprocess.run(
-            ["git", "ls-remote", url, ref],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        _log.warn(f"{pkgbuild_dir}: git not on PATH for ls-remote peek")
-        return None
+        result = run.capture(["git", "ls-remote", url, ref], timeout=timeout)
     except subprocess.TimeoutExpired:
         _log.warn(f"{pkgbuild_dir}: git ls-remote {url} timed out after {timeout}s")
+        return None
+    if result is None:
+        _log.warn(f"{pkgbuild_dir}: git not on PATH for ls-remote peek")
         return None
 
     if result.returncode != 0:
@@ -334,11 +326,8 @@ def read_built_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 10) -> str 
     if not src_dir.is_dir():
         return None
     try:
-        result = subprocess.run(
-            ["git", "-C", str(src_dir), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        result = run.probe(["git", "-C", str(src_dir), "rev-parse", "HEAD"], timeout=timeout)
+    except subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None

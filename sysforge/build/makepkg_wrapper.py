@@ -101,7 +101,9 @@ from sysforge.primitives.pkgbuild_meta import (
     parse_pkgbuild,
 )
 from sysforge.primitives import kconfig_plan
-from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives import progress_hooks
+from sysforge.primitives import pacman as _pacman
+from sysforge.primitives.privilege import ensure_credentials, privileged_argv
 from sysforge.primitives.pkgbuild_patcher import (
     RENAME_SUFFIX,
     apply_patch_pkgbuild,
@@ -155,6 +157,7 @@ from sysforge.primitives.profile import (
     resolve_profile,
     variant_env_overlay,
 )
+from sysforge.primitives import run as run_seam
 
 # ---------------------------------------------------------------------------
 # Built-package install
@@ -283,6 +286,29 @@ def built_manifest_version(pkgbuild_dir, pkgname: str) -> str | None:
     return None
 
 
+def built_kernel_artifact_release(pkgbuild_dir) -> str | None:
+    """The kernel release this build's PKGDEST artifact ships, or ``None``.
+
+    Read from the package's own ``usr/lib/modules/<release>/vmlinuz`` member,
+    so it names what ``pacman -U`` will actually install — the reference a
+    reused (AlreadyBuilt) kernel's build tree or archived ``.config`` must
+    match before a gate trusts it (3.3.0-B11). Scoped like the install
+    (:func:`_artifacts_for_pkgbuild`); a listing failure reads as unknown.
+    """
+
+    for pkg in _artifacts_for_pkgbuild(pkgbuild_dir):
+        # --fast-read stops at the first match: one member, not the whole list.
+        res = run_seam.capture(["bsdtar", "-t", "-q", "-f", str(pkg),
+                           "usr/lib/modules/*/vmlinuz"])
+        if res is None or res.returncode != 0:
+            continue
+        for line in res.stdout.splitlines():
+            parts = line.strip().split("/")
+            if len(parts) == 5 and parts[:3] == ["usr", "lib", "modules"] and parts[3]:
+                return parts[3]
+    return None
+
+
 def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     """Return only the artifacts in PKGDEST that belong to ``pkgbuild_dir``.
 
@@ -373,11 +399,9 @@ def _capture_built_manifest(patched_pkgbuild_path) -> None:
     """
     patched = Path(patched_pkgbuild_path)
     try:
-        r = subprocess.run(
-            ["makepkg", "-p", patched.name, "--packagelist"],
-            cwd=str(patched.parent), capture_output=True, text=True, timeout=60,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        r = run_seam.probe(["makepkg", "-p", patched.name, "--packagelist"],
+                           cwd=str(patched.parent), timeout=60)
+    except (subprocess.SubprocessError, OSError):
         return
     if r.returncode != 0:
         return
@@ -411,20 +435,20 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     cmd += [str(p) for p in pkgs]
     _build_log.ui(
         f"Installing built package(s): {', '.join(p.name for p in pkgs)}")
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        # B7: pacman inherits stdio here, so its output was never captured —
-        # name the artifacts and (interactive) where the output went, or the
-        # failure is undiagnosable from the log after the fact.
+    ensure_credentials()  # any prompt lands with the bar yielded (3.3.0-F3)
+    # On a pty, teeing into the run log: pacman's hooks (DKMS, mkinitcpio,
+    # bootloader) print only to the terminal and exit 0 even when they fail,
+    # so without this a failed hook left no record at all (3.3.0-B21).
+    returncode, tail = _pacman.run_logged_transaction(cmd)
+    if returncode != 0:
         msg = (
-            f"pacman -U failed (exit {result.returncode}) installing "
+            f"pacman -U failed (exit {returncode}) installing "
             f"{', '.join(p.name for p in pkgs)}"
         )
         if not noconfirm:
-            msg += (
-                " — pacman's output went to the terminal (not captured); "
-                "note a declined pacman prompt also exits 1"
-            )
+            msg += " (a declined pacman prompt also exits 1)"
+        if tail:
+            msg += "; last output:\n  " + "\n  ".join(tail)
         raise RuntimeError(msg)
     # B9: the build-time manifest has served its purpose — drop it so a later
     # unrelated build in the same dir doesn't read a stale artifact list.
@@ -997,7 +1021,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         # the renamed names.
         if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
-    except AlreadyBuilt:
+    except AlreadyBuilt as exc:
         # PKGDEST already holds this build's renamed artifacts from a prior run,
         # so makepkg refused to rebuild — no fresh build ran and the success-path
         # capture above was skipped. But the decoupled install step still needs
@@ -1010,6 +1034,12 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         already_built = True
         if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
+        # The tree the reused package was built in, by the same rule a fresh
+        # build reports (profile BUILDDIR, post-rename pkgbase), so the kernel
+        # gates can find it instead of guessing (3.3.0-B11). Whether it still
+        # matches the artifact is the caller's check.
+        exc.build_dir = build_root(
+            resolved_profile, _built_pkgbase(pkgmeta, rename or local_rename, pkgbuild_path))
         raise
     except RuntimeError:
         raise
@@ -1539,6 +1569,9 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
 
         import time as _time
         _build_start = _time.time()
+        # Time spent paused at a prompt (recovery menu, sudo) is not build
+        # time; subtract it so it cannot skew later ETA medians (3.3.0-F1).
+        _paused_start = progress_hooks.hooks().paused_seconds()
         # Stage exemption from the build sandbox (3.1.0-F7). The toolchain and
         # kernel stages build *against*, and install *into*, the host they are
         # upgrading: a staged LLVM built in a container links against that
@@ -1578,7 +1611,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 rename_pkgbase_to=options.rename_pkgbase_to,
             )
         build_success = True
-        build_elapsed = int(_time.time() - _build_start)
+        _paused = progress_hooks.hooks().paused_seconds() - _paused_start
+        build_elapsed = max(0, int(_time.time() - _build_start - _paused))
 
         # Post-build: abort if profraw files are accumulating outside PGO pass 2.
         # This catches instrumented LLVM binaries leaking onto the system after a

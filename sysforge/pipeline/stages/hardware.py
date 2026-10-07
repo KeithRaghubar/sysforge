@@ -39,7 +39,6 @@ stage — kconfig entries are simply skipped.
 """
 
 import re
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -57,6 +56,7 @@ from sysforge.primitives.hardware_probe import (  # noqa: F401
     parse_gpu_vendors,
 )
 import contextlib
+from sysforge.primitives import run
 
 
 # ---------------------------------------------------------------------------
@@ -432,9 +432,7 @@ class HardwareStage(Stage):
         )
 
         # --- GPU / NVMe via lspci ---
-        lspci_result = subprocess.run(
-            ["lspci"], capture_output=True, text=True
-        )
+        lspci_result = run.probe(["lspci"])
         if lspci_result.returncode != 0:
             _log.warn(
                 f"lspci failed (exit {lspci_result.returncode}) — GPU and NVMe detection skipped",

@@ -19,9 +19,9 @@ from unittest.mock import patch
 import pytest
 
 from sysforge.primitives import makepkg_pgo
-from sysforge.primitives import makepkg_wrapper as mw
+from sysforge.build import makepkg_wrapper as mw
 from sysforge.primitives.build_lock import build_lock
-from sysforge.primitives.makepkg_wrapper import BuildOptions
+from sysforge.build.makepkg_wrapper import BuildOptions
 
 
 def _store() -> Path:

@@ -397,7 +397,7 @@ def existing_images(boot_dir: Path | None = None) -> set[str]:
 
 def _run(*args, **kwargs):
     """Indirection so tests can intercept every subprocess boot_entries issues."""
-    return subprocess.run(*args, **kwargs)
+    return subprocess.run(*args, **kwargs)  # noqa: TID251 — this module's single test-intercept seam; callers pass privileged argv
 
 
 def check_boot_path(run=None) -> None:

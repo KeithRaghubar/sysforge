@@ -14,7 +14,6 @@ package that shadows a repo name can be replaced by ``pacman -Syu`` without
 warning, and discovering that after a reboot is how a machine stops booting.
 """
 from pathlib import Path
-import subprocess
 
 from sysforge.primitives.config import load_sysforge_toml
 from sysforge.primitives.config import resolve_repo_track
@@ -25,6 +24,7 @@ from sysforge.primitives.source_sync import get_scheduler
 from sysforge.pipeline.stages.kernel import constants
 
 from sysforge import log
+from sysforge.primitives import run
 
 _log = log.get_logger("KERNEL")
 
@@ -50,11 +50,8 @@ def probe_installed_bootloader():
         return found
 
     try:
-        result = subprocess.run(
-            ["pacman", "-Qq", "systemd", "grub"],
-            capture_output=True, text=True, check=False,
-        )
-    except (FileNotFoundError, OSError):
+        result = run.probe(["pacman", "-Qq", "systemd", "grub"])
+    except OSError:
         return found
     for line in result.stdout.splitlines():
         name = line.strip()

@@ -29,6 +29,28 @@ branch, no hand-rolled `["sudo", ...]` list.
   path for future code, and routing an escalation through it must not replace a
   site whose tests patch that site's own `subprocess.run`.
 
+- **`ensure_credentials() -> bool`** — the one place a password prompt sysforge
+  raises itself is made (`3.3.0-F3`). It probes `_credentials_cached()` (`sudo -n
+  true`, stdin closed); cached credentials return at once with no yield.
+  Otherwise it runs `sudo -v` inside `progress_hooks.hooks().yield_terminal("prompt")`,
+  so the progress bar is blanked and an open tracker's clock is paused while the
+  operator types, and the wait never reads as build time. `run_privileged` calls it
+  first, `sudo_session.authenticate` delegates to it, and the install entry points
+  that run real escalations (`pacman.batch_install_pkgs`, the just-in-time install
+  inside the `building` tracker, `batch_install_makedeps`, `install_repo_pkgs`,
+  `makepkg_wrapper.install_built_packages`) call it right before their
+  `subprocess.run`. It is deliberately **not** called from `privileged_argv`:
+  that also builds argv a `--dry-run` only prints, and a probe there could prompt
+  for a password during a dry run. The suite stubs `_credentials_cached` to
+  "cached" by default (`tests/conftest.py::_isolate_sudo_probe`), so no test
+  probes the host's sudo. No sudo runs *inside* a build any more (`3.4.0-F1`):
+  makepkg's `--install`/`-i` and `--syncdeps`/`-s` are stripped on every path
+  (`build_core`'s batch flags, toolchain `build_pass`, the kernel stage, the
+  bootstrap `packages` stage, AUR dependency builds) and sysforge does both steps
+  itself through this seam. That matters because sudo writes its prompt to the
+  controlling terminal (`/dev/tty`), not to the child's output, so a prompt from
+  inside a forwarded makepkg could never be seen, paused for or kept off the bar.
+
 This mirrors the streaming/returncode carve-out already established by
 `primitives/run.py` for the general subprocess seam (STD row 17):
 `run_privileged` is to `privileged_argv` what `run_or_raise` is to a raw
@@ -96,8 +118,9 @@ allowlisted by the `privilege_seam` checker anywhere in the tree.
 
 Two entry points:
 
-- `authenticate()` — run the `sudo -v` probe with inherited stdio and return
-  whether credentials are usable. A no-op returning `True` when already root.
+- `authenticate()` — make credentials usable via `privilege.ensure_credentials`
+  (probe, then `sudo -v` with inherited stdio and the bar yielded only if sudo
+  would prompt) and return whether they are. A no-op returning `True` when already root.
   The return value is the point: a prompt left unanswered until `passwd_timeout`
   fires makes sudo exit non-zero **without ever exec'ing the target command**, so
   a caller can distinguish "not authorized, nothing happened" from "ran and
@@ -112,9 +135,17 @@ Two entry points:
 Why it exists: a stage that builds for hours and then installs with
 `sudo pacman -U` from the same process authenticates at stage entry and finds its
 timestamp long expired by install time, so an unattended run stops on a prompt
-that then goes stale. Both long-building stages now use it — the toolchain
-stage's four-pass PGO sequence (tag `PGO`) and the kernel stage's
-build → audit → install window (tag `KERNEL`). The daemon began life private to
+that then goes stale. Three long-building paths use it — the toolchain
+stage's four-pass PGO sequence (tag `PGO`), the kernel stage's
+build → audit → install window (tag `KERNEL`), and `build_core.build_and_install`
+(tag `BUILD`, the engine under `build` and `update`, `3.4.0-F1`), which
+authenticates once right before dependency prep and holds the keepalive until it
+returns, so AUR dependency installs, just-in-time sibling installs and the final
+`pacman -U` never prompt mid-run. Its credential scope is per call
+(`_holds_build_credentials`, a context variable carrying the call's `ExitStack`),
+so the keepalive is entered at the first point sudo is needed and released on
+every return path; a refused or timed-out prompt aborts before anything is built,
+and root skips it. The daemon began life private to
 the toolchain stage; a second copy in the kernel stage is exactly the drift the
 one-home invariants exist to prevent.
 

@@ -290,3 +290,26 @@ def test_pinned_derived_target_still_counted(monkeypatch, tmp_path):
     out = rust_probe.collect_pin_findings({}, [], derived=["a", "b"])
     assert [f.check_id for f in out] == ["rust-pin-survey"]
     assert "2 pinned" in out[0].message
+
+
+def test_rustc_provenance_names_rustup_toolchain_and_shadowed_rustc(tmp_path, monkeypatch):
+    """3.0.0-F1: the kernel Rust refusal says which rustc wins and what it hides."""
+    from sysforge.primitives import rust_probe
+    first, second = tmp_path / "cargo-bin", tmp_path / "usr-bin"
+    for d in (first, second):
+        d.mkdir()
+        (d / "rustc").write_text("#!/bin/sh\n")
+        (d / "rustc").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{first}:{second}")
+    monkeypatch.setattr(rust_probe, "_owner_pkg", lambda p: "rustup")
+    monkeypatch.setattr(rust_probe, "_rustup_active",
+                        lambda: "nightly-x86_64-unknown-linux-gnu (default)")
+    got = rust_probe.rustc_provenance()
+    assert got == (f"{first}/rustc (rustup: nightly-x86_64-unknown-linux-gnu), "
+                   f"shadowing {second}/rustc")
+
+
+def test_rustc_provenance_none_on_path(monkeypatch, tmp_path):
+    from sysforge.primitives import rust_probe
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert rust_probe.rustc_provenance() == "no rustc on PATH"

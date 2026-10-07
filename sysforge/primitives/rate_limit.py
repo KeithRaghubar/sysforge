@@ -49,6 +49,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sysforge import log
+from sysforge.primitives import run
 _rl_log = log.get_logger("RATELIMIT")
 
 
@@ -182,7 +183,7 @@ def run_throttled_git(
     decide what to do with transient errors.
     """
     limiter.wait_before_fetch()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    result = run.probe(cmd, timeout=timeout)
     if result.returncode != 0:
         stderr = result.stderr or ""
         if any(marker in stderr for marker in RATE_LIMIT_GIT_ERRORS):

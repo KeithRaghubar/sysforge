@@ -68,6 +68,11 @@ def _toolchain_gates_clean(monkeypatch, tmp_path):
     from sysforge.primitives import toolchain_safety as _ts
 
     monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: [], raising=True)
+    # 3.4.0-F1: a staged_deps=False pass pre-installs missing repo deps itself
+    # (pacman -T against the host, then sudo pacman -S). Never from a test;
+    # tests of that step re-patch it.
+    from sysforge import build_core as _bc
+    monkeypatch.setattr(_bc, "install_missing_repo_deps", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(_ts, "check_build_space", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(_ts, "check_multilib_enabled", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda *a, **k: None, raising=True)

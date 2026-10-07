@@ -46,6 +46,7 @@ filesystem existence checks in :func:`require_profile` / :func:`resolve_vmlinux`
 and the ``/proc/cpuinfo`` read in :func:`detect_branch_sampling` (injectable for
 tests).
 """
+import contextlib
 import hashlib
 import mmap
 import os
@@ -57,7 +58,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives.artifacts import toml_escape
-from sysforge.primitives.makepkg_pgo import ROUND_SIDECAR, resolve_method_store
+from sysforge.primitives.makepkg_pgo import (
+    APPLIED_SIDECAR, ROUND_SIDECAR, resolve_method_store,
+)
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 
@@ -237,7 +240,10 @@ def _write_sidecar(store: Path, name: str, lines: list[str]) -> Path:
         tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         tmp.replace(path)  # os.replace: atomic within one filesystem
     except BaseException:
-        tmp.unlink(missing_ok=True)
+        # The cleanup shares the write's directory, so it can fail the same
+        # way; never let its error replace the one that matters (3.3.0-B18).
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
         raise
     return path
 
@@ -278,9 +284,9 @@ def file_sha256(path: Path) -> str:
 
 
 # Applied-profile sidecar (R21): the fingerprint of the profile files the last
-# successful `use` install of this store's role consumed. Kernel-only, so it
-# lives here; ROUND_SIDECAR stays in makepkg_pgo because `state profiles` reads it.
-APPLIED_SIDECAR = "applied.toml"
+# successful `use` install of this store's role consumed. The name is declared in
+# makepkg_pgo beside ROUND_SIDECAR (`state profiles` dates stores ignoring both);
+# this module stays its one writer and reader.
 
 
 def _applied_inputs(store: Path, *, propeller: bool) -> list[Path]:
@@ -554,7 +560,7 @@ def _scan_vmlinux(path: Path, banner: bytes) -> tuple[bool, bool]:
 
 def resolve_vmlinux(pkgname: str, *, recorded_build_dir: Path | None = None,
                     builddir: Path | None = None, proc_version: str | None = None,
-                    running_release: str | None = None) -> Path:
+                    running_release: str | None = None, propeller: bool = False) -> Path:
     """The ``vmlinux`` of the kernel that is running *now*, for the converter.
 
     Candidates: the record tree recorded in ``round.toml`` (the profile's
@@ -564,7 +570,9 @@ def resolve_vmlinux(pkgname: str, *, recorded_build_dir: Path | None = None,
     the banner carries host, compiler and timestamp, so it separates two builds
     of one release. A match must also carry debug info (a ``.debug_info``
     section name): the converters cannot use a stripped image, such as the
-    -headers package's copy. Raises :class:`KernelFdoError` rather than guessing.
+    -headers package's copy. Raises :class:`KernelFdoError` rather than guessing;
+    every recovery command it names carries the round's own flags, so a round-2
+    operator is never sent back to round 1 (``propeller``, 3.3.0-B17).
     """
     from sysforge.primitives.pacman import get_builddir
 
@@ -576,6 +584,8 @@ def resolve_vmlinux(pkgname: str, *, recorded_build_dir: Path | None = None,
     sys_bd = builddir if builddir is not None else get_builddir()
     if sys_bd:
         roots.append(Path(sys_bd) / pkgname)
+    record_cmd = ("`sysforge run kernel --autofdo=record"
+                  f"{' --propeller' if propeller else ''}`")
     candidates: list[Path] = []
     for root in roots:
         src = root / "src"
@@ -587,8 +597,7 @@ def resolve_vmlinux(pkgname: str, *, recorded_build_dir: Path | None = None,
     if not candidates:
         raise KernelFdoError(
             f"the profiling kernel's build tree is gone (was ~/builds wiped?), so "
-            f"there is no vmlinux for {pkgname}. Re-run `sysforge run kernel "
-            "--autofdo=record`."
+            f"there is no vmlinux for {pkgname}. Re-run {record_cmd}."
         )
     if not banner:
         raise KernelFdoError(
@@ -609,7 +618,7 @@ def resolve_vmlinux(pkgname: str, *, recorded_build_dir: Path | None = None,
             f"the running kernel ({running}) matches only {stripped}, which has no "
             "debug info (the -headers copy is stripped), so the converter cannot use "
             f"it. If this is {pkgname}, its build tree is gone (was ~/builds wiped?): "
-            "re-run `sysforge run kernel --autofdo=record`. Otherwise reboot into "
+            f"re-run {record_cmd}. Otherwise reboot into "
             f"{pkgname} and re-run capture.")
     raise KernelFdoError(
         f"not booted into {pkgname} (running: {running}). Reboot into the "

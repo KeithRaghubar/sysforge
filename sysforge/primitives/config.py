@@ -777,18 +777,23 @@ def _rewrite_makepkg_conf_text(text: str, mapping: dict[str, str]) -> str:
 def set_makepkg_conf_keys(path, mapping: dict[str, str], dest=None) -> str:
     """Read ``path``, set each key in ``mapping``, write the result to ``dest``.
 
-    ``dest`` defaults to ``path`` (in-place). Passing a separate ``dest`` lets a
-    caller read a root-owned ``/etc/makepkg.conf`` and stage the rewrite to a
-    user-writable temp file for a later ``sudo cp``. Returns the rewritten text.
+    ``dest`` defaults to ``path``: an in-place rewrite goes through
+    :func:`atomic_write.replace_file` (atomic, symlink- and mode-preserving,
+    escalating for a root-owned ``/etc/makepkg.conf``; 2.6.1-F21). A separate
+    ``dest`` just receives the text. Returns the rewritten text.
     """
+    from sysforge.primitives import atomic_write
+
     path = Path(path)
-    dest = Path(dest) if dest is not None else path
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
     new_text = _rewrite_makepkg_conf_text(text, mapping)
-    dest.write_text(new_text, encoding="utf-8")
+    if dest is None:
+        atomic_write.replace_file(path, new_text, tag="CONFIG")
+    else:
+        Path(dest).write_text(new_text, encoding="utf-8")
     return new_text
 
 

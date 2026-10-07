@@ -650,3 +650,63 @@ def test_single_pass_setup_isolates_build_paths(tmp_path):
         "PGO build lock must be tmp-scoped, not /var/tmp"
     assert str(resolve_pgo_store(tcfg)).startswith(str(tmp_path)), \
         "pgo_store must be tmp-scoped"
+
+
+def _record_trackers(monkeypatch):
+    """Replace progress.tracker with a recorder: [(prefix, total, [labels])]."""
+    import contextlib
+    from sysforge.ui import progress
+    opened = []
+
+    @contextlib.contextmanager
+    def fake_tracker(total, prefix):
+        labels = []
+        opened.append((prefix, total, labels))
+        yield labels.append
+
+    monkeypatch.setattr(progress, "tracker", fake_tracker)
+    return opened
+
+
+def test_split_pass4_counts_once_across_sub_passes(tmp_path, monkeypatch):
+    """3.3.0-B12: Pass 4's three sub-passes (4a/4b/4c) share one counter."""
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    non_pgo_map = {"clang": make_pkgbuild(builds, "clang"),
+                   "lld": make_pkgbuild(builds, "lld")}
+    lib32_map = {"lib32-llvm": make_pkgbuild(builds, "lib32-llvm")}
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = pgo_store / "clang.profdata"
+    profdata.write_bytes(b"fake")
+    options = make_options(dry_run=False, rebuild_profdata=False,
+                           state_dir=tmp_path / "state")
+    opened = _record_trackers(monkeypatch)
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "profdata.validate_pgo_environment"), \
+         patch(T + "profdata.check_existing_profdata", return_value=("ready", str(profdata))), \
+         patch(T + "pgo.pgo_confirm"), \
+         patch(T + "passes.makepkg_run"), \
+         patch(T + "profdata.extract_built_to_staging"), \
+         patch(T + "profdata.assert_staging_has_llvm_cmake"), \
+         patch(T + "profdata.assert_pass_links_shipped_libllvm"), \
+         patch(T + "profdata.remove_staging"), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        build_llvm_pgo_inner(pgo_map, non_pgo_map, lib32_map,
+                             tmp_path / "s1", tmp_path / "s2", tmp_path / "s3",
+                             pgo_store, options)
+    assert opened == [("PGO optimize (reusing profdata)", 4,
+                       ["llvm", "clang", "lld", "lib32-llvm"])]
+
+
+def test_full_pgo_run_one_tracker_per_logical_pass(tmp_path, monkeypatch):
+    """3.3.0-B12: every counter runs 1..total exactly once, and Pass 4 (split
+    across sub-passes) is a single tracker rather than one per call."""
+    opened = _record_trackers(monkeypatch)
+    _run_pgo(tmp_path, ["llvm", "llvm-libs"], ["clang", "lld"], ["lib32-llvm"])
+    pass4 = [o for o in opened if o[0].startswith("PGO 4/4")]
+    assert len(pass4) == 1 and pass4[0][1] == 5  # llvm + llvm-libs dirs, clang, lld, lib32
+    train = [o for o in opened if o[0].startswith("PGO 3/4")]
+    assert [p for p, *_ in train] == ["PGO 3/4 · train"]
+    for prefix, total, labels in opened:
+        assert len(labels) == total, (prefix, total, labels)

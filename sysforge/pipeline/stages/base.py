@@ -124,12 +124,12 @@ class Stage:
     # (2.6.1-F24).
     reports_changes: bool = False
     # Root the snapshots are taken against. None = the live root; the install
-    # stage resolves a target root (2.6.1-F27). Target-root support is not
-    # implemented yet — a stage that sets this today gets
-    # pacman.get_installed_facts(root=...) raising NotImplementedError, which
-    # surfaces as a permanently-UNKNOWN change summary ("change summary
-    # unavailable (...)") until 2.6.1-F27 lands.
+    # stage reads its mounted target (2.6.1-F27).
     change_root: str | None = None
+    # True when there is no meaningful before-state: the install stage writes a
+    # freshly partitioned disk, so every row is an addition. The runner then
+    # starts from an empty snapshot instead of reading the root before run().
+    change_before_empty: bool = False
 
     def run(self, config, state, options, /):
         """

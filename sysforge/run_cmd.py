@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 
 from sysforge.primitives.config import load_config
-from sysforge.primitives.makepkg_wrapper import expand_makepkg_flags
+from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup
 from sysforge.verbs.helpers import PACKAGES_FILE_HELP, load_config_with_overrides
 

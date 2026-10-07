@@ -67,3 +67,15 @@ def test_format_estimate_vs_actual_signed_percent():
     assert "estimated ~2h 15m" in line
     assert "actual ~2h 30m" in line
     assert "+11%" in line
+
+
+def test_per_target_seconds_in_order_with_unknowns():
+    """3.3.0-F1: one median per target, a split package counted once."""
+    from sysforge.primitives.build_estimate import per_target_seconds
+    bs = {
+        "mesa": {"pkgbase": "mesa", "build_seconds": "1100,1200,1300"},
+        "lib32-mesa": {"pkgbase": "lib32-mesa", "build_seconds": ""},
+        "llvm-libs": {"pkgbase": "llvm", "build_seconds": "900"},
+    }
+    targets = [["mesa"], ["newpkg"], ["llvm", "llvm-libs"], ["lib32-mesa"]]
+    assert per_target_seconds(targets, bs) == [1200, None, 900, None]

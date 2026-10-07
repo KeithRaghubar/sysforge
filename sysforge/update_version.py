@@ -24,6 +24,7 @@ from sysforge.update_result import _UpdateResult
 from sysforge.update_common import _SYNC_STATUS_TO_ACTION, _is_vcs
 from sysforge.primitives.version import format_version, vercmp
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.pkgbuild_patcher import PATCHED_PKGBUILD_NAME
 from sysforge.primitives.vcs_pkgver import evaluate_vcs_pkgver, peek_upstream_commit
 
 _log = log.get_logger("UPDATE")
@@ -72,7 +73,7 @@ def _produced_pkgnames(pkgbuild_path: Path, pkgnames: list[str]) -> list[str]:
     unparseable, or names no member of this pkgbase — a filter that returns
     nothing is a filter that misread the PKGBUILD, not proof of zero members.
     """
-    patched = pkgbuild_path.parent / "PKGBUILD.sysforge"
+    patched = pkgbuild_path.parent / PATCHED_PKGBUILD_NAME
     if not patched.exists():
         return pkgnames
     try:

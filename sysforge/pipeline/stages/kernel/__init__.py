@@ -168,6 +168,7 @@ from sysforge.pipeline.stages.kernel.install import (  # noqa: F401
 )
 from sysforge.pipeline.stages.kernel.gates import (  # noqa: F401
     KCONFIG_DIFF_CAP,
+    ReusedConfig,
     built_kernel_release,
     gate1_preflight,
     gate2_audit,
@@ -177,6 +178,7 @@ from sysforge.pipeline.stages.kernel.gates import (  # noqa: F401
     kconfig_drift_lines,
     record_and_diff_kconfig,
     resolve_built_config,
+    resolve_reused_config,
 )
 from sysforge.pipeline.stages.kernel.stage import (  # noqa: F401
     KernelStage,
@@ -193,6 +195,7 @@ __all__ = [
     "KCONFIG_UI_TARGETS",
     "FdoPlan",
     "KernelStage",
+    "ReusedConfig",
     "SYNC_BLOCKING_STATUSES",
     "VALID_BOOTLOADERS",
     "VALID_COMPILERS",
@@ -233,6 +236,7 @@ __all__ = [
     "resolve_kconfig_targets",
     "resolve_keep_hotplug_drivers",
     "resolve_names",
+    "resolve_reused_config",
     "resolve_source",
     "resolve_subpackages",
     "run_fdo_capture",

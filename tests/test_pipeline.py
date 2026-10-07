@@ -29,7 +29,7 @@ from sysforge.primitives.profile import (
     resolve_profile,
     resolve_groups,
 )
-from sysforge.primitives.makepkg_wrapper import emit_makepkg_conf
+from sysforge.build.makepkg_wrapper import emit_makepkg_conf
 
 
 # ---------------------------------------------------------------------------

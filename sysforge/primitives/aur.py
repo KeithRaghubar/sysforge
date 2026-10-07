@@ -66,6 +66,7 @@ from sysforge.primitives.build_prep import (
     pkgctl_switch_version,
 )
 from sysforge.primitives.net_policy import KIND_AUR_CLONE, get_policy
+from sysforge.primitives import run
 
 # One module, one tag. The RPC-query/clone narration previously logged under a
 # separate [MANIFEST] tag, but it is the same concern as the name-cache refresh
@@ -200,7 +201,7 @@ def repo_packages(names: list[str]) -> set[str]:
     """
     if not names:
         return set()
-    result = subprocess.run(["pacman", "-Si", *names], capture_output=True, text=True)
+    result = run.probe(["pacman", "-Si", *names])
     found: set[str] = set()
     for line in result.stdout.splitlines():
         m = _re.match(r"^Name\s*:\s*(\S+)", line)
@@ -211,7 +212,7 @@ def repo_packages(names: list[str]) -> set[str]:
 
 def is_repo_package(name: str) -> bool:
     """Return True if name exists in any pacman sync DB."""
-    result = subprocess.run(["pacman", "-Si", name], capture_output=True)
+    result = run.probe(["pacman", "-Si", name], text=False)
     return result.returncode == 0
 
 
@@ -252,12 +253,7 @@ def aur_clone(
 
     for attempt in range(2):
         try:
-            result = subprocess.run(
-                ["git", "clone", *extra, url, str(dest)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            result = run.probe(["git", "clone", *extra, url, str(dest)], timeout=timeout)
         except subprocess.TimeoutExpired:
             shutil.rmtree(dest, ignore_errors=True)
             if attempt == 0:

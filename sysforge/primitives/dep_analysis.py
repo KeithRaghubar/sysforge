@@ -24,7 +24,17 @@ from pathlib import Path
 
 from sysforge.primitives.failure import handle_failure
 from sysforge import log
+from sysforge.primitives import run
 _log = log.get_logger("DEP")
+
+
+def _seam_run(cmd, **kwargs):
+    """Default ``run_fn``: the run seam, keeping the injectable contract that
+    a missing binary raises ``FileNotFoundError`` (3.2.0-F13)."""
+    result = run.capture(cmd, **kwargs)
+    if result is None:
+        raise FileNotFoundError(cmd[0])
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -52,16 +62,11 @@ def _default_ldconfig_fn():
     Run ldconfig -p and return its stdout as a string.
     Returns empty string on failure (e.g. ldconfig not found).
     """
-    try:
-        result = subprocess.run(
-            ["ldconfig", "-p"],
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout
-    except FileNotFoundError:
+    result = run.capture(["ldconfig", "-p"])
+    if result is None:
         _log.warn("ldconfig not found — skipping soname checks")
         return ""
+    return result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +400,7 @@ def check_makedep_runtime(makedepends, config, pkgname="unknown",
     Returns list of (makedep, issue_str) tuples for failures.
     """
     if run_fn is None:
-        run_fn = subprocess.run
+        run_fn = _seam_run
 
     findings = []
     for dep in makedepends:

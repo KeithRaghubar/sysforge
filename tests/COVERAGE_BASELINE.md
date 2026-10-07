@@ -26,7 +26,7 @@ Suite at baseline: **5673 tests passing**, total **88.5%**.
 | `sysforge/update.py` | 89.3% |
 | `sysforge/build_core.py` | 93.4% |
 | `sysforge/doctor.py` | 88.9% |
-| `sysforge/primitives/makepkg_wrapper.py` | 78.2% |
+| `sysforge/build/makepkg_wrapper.py` | 78.2% |
 | `sysforge/primitives/aur.py` | 96.6% |
 | `sysforge/primitives/profile.py` | 94.1% |
 | `sysforge/primitives/resource_guard.py` | 100.0% |

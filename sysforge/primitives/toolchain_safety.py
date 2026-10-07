@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+from sysforge.primitives import run
 
 SEV_ERROR = "error"
 SEV_WARN = "warn"
@@ -102,12 +103,7 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess | None:
     Guards every external command so a missing tool degrades to "no finding"
     rather than raising — the same contract the doctor probes rely on.
     """
-    try:
-        return subprocess.run(
-            cmd, capture_output=True, text=True, check=False, **kwargs
-        )
-    except FileNotFoundError:
-        return None
+    return run.capture(cmd, **kwargs)  # None when the binary is missing
 
 
 # ---------------------------------------------------------------------------

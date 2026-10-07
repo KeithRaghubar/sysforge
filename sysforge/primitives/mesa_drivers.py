@@ -44,7 +44,6 @@ Public API:
     resolve_or_detect_mesa_drivers(sysforge_toml_path, hardware_profile_path)
         -> dict[str, list[str]] | None
 """
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -57,6 +56,7 @@ from sysforge.primitives.hardware_tables import (
     MESA_MANDATORY_GALLIUM,
     MESA_MANDATORY_VULKAN,
 )
+from sysforge.primitives import run
 
 _log = log.get_logger("MESA")
 
@@ -179,9 +179,10 @@ def _detect_mesa_drivers_live() -> dict[str, list[str]]:
     but ``derive_mesa_drivers`` still returns the mandatory software baseline.
     """
     try:
-        lspci = subprocess.run(["lspci"], capture_output=True, text=True)
-        gpu_vendors = parse_gpu_vendors(lspci.stdout) if lspci.returncode == 0 else []
-    except (FileNotFoundError, OSError):
+        lspci = run.capture(["lspci"])
+        gpu_vendors = (parse_gpu_vendors(lspci.stdout)
+                       if lspci is not None and lspci.returncode == 0 else [])
+    except OSError:
         gpu_vendors = []
     return derive_mesa_drivers(gpu_vendors)
 

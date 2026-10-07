@@ -1095,3 +1095,99 @@ def test_a_recovery_menu_prompt_pauses_an_open_tracker(monkeypatch):
         advance(10)
         assert prompt.prompt_choice("[r]etry/[s]kip? ", choices=("r", "s")) == "s"
         assert _composed() == "[SYSFORGE][PROGRESS] [1/2] building · mesa · 10s"
+
+
+# --- Per-item expected durations (3.3.0-F1) ----------------------------------
+
+def test_expected_eta_shows_from_the_first_item(monkeypatch):
+    """With history there is no need to wait for two completions."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(3, "building", expected=[1200, 30, 30]) as tick:
+        tick("mesa")
+        advance(200)
+        # mesa 1200-200 left + 30 + 30
+        assert _composed() == "[SYSFORGE][PROGRESS] [1/3] building · mesa · 3m20s · ~17m40s left"
+
+
+def test_expected_eta_stays_steady_across_a_large_completion(monkeypatch):
+    """A 20-minute package finishing must not swing the figure for the small
+    ones behind it: each counts at its own median, never a batch mean."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(4, "building", expected=[30, 1200, 30, 30]) as tick:
+        tick("lib-a")
+        advance(30)
+        tick("mesa")
+        advance(1200)
+        tick("lib-b")
+        # Old mean projection would read (1230/2)*2 = ~20m30s here.
+        assert _composed() == "[SYSFORGE][PROGRESS] [3/4] building · lib-b · 20m30s · ~1m00s left"
+        advance(10)
+        assert _composed().endswith("· ~50s left")
+
+
+def test_expected_item_overrun_counts_as_zero_not_negative(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(2, "building", expected=[30, 60]) as tick:
+        tick("a")
+        advance(500)       # a overruns its 30s median
+        assert _composed().endswith("· ~1m00s left")   # only b remains
+        tick("b")
+        advance(90)        # last item overruns: estimate dropped
+        assert "left" not in _composed()
+
+
+def test_expected_unknown_item_uses_in_run_mean_once_available(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(4, "building", expected=[10, 10, None, 100]) as tick:
+        tick("a")
+        advance(10)
+        tick("b")
+        # one completion: no mean yet for the unknown item → withheld
+        assert "left" not in (_composed() or "")
+        advance(10)
+        tick("c")
+        # mean 10s; c in flight at 10 + d 100
+        assert _composed().endswith("· ~1m50s left")
+
+
+def test_no_history_batch_matches_the_mean_projection(monkeypatch):
+    """expected all-None is today's behaviour, byte for byte."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.tracker(4, "sync", expected=[None] * 4) as tick:
+        tick("a")
+        advance(10)
+        tick("b")
+        advance(10)
+        tick("c")
+        assert _composed() == "[SYSFORGE][PROGRESS] [3/4] sync · c · 20s · ~20s left"
+
+
+def test_expected_with_wrong_length_is_ignored(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.tracker(3, "b", expected=[1, 2]):
+        assert progress._bar.tracker.expected is None
+
+
+def test_paused_seconds_accumulates_with_or_without_a_tracker(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    start = progress.paused_seconds()
+    with progress.yield_terminal("prompt"):
+        advance(40)
+        assert progress.paused_seconds() - start == 40   # in progress counts
+    advance(5)
+    with progress.tracker(1, "b"), progress.yield_terminal("prompt"):
+        advance(15)
+    assert progress.paused_seconds() - start == 55

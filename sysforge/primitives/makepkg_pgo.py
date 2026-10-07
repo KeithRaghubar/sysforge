@@ -154,6 +154,12 @@ _PER_TARGET_METHODS = frozenset({"pgo", "autofdo", "propeller", "bolt"})
 
 # Kernel FDO round sidecar written next to the profile (3.3.0-B14).
 ROUND_SIDECAR = "round.toml"
+# Kernel FDO applied-profile sidecar (written via kernel_fdo.write_applied).
+# Declared here beside ROUND_SIDECAR so a store's age can ignore both.
+APPLIED_SIDECAR = "applied.toml"
+# Bookkeeping files that never date a store: a store's age is its *profile's*
+# age, so rewriting a sidecar must not reset it (3.3.0-B16).
+_BOOKKEEPING_SIDECARS = frozenset({ROUND_SIDECAR, APPLIED_SIDECAR})
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,11 @@ def _store_entry(method: str, target: str | None, path: Path) -> StoreEntry | No
     if not files:
         return None
     stats = [p.stat() for p in files]
+    # Date from the profile artifacts; fall back to every file only for a store
+    # holding nothing but sidecars, so it still lists with some age.
+    dating = [s for p, s in zip(files, stats, strict=True)
+              if p.name not in _BOOKKEEPING_SIDECARS
+              and not p.name.endswith(".tmp")] or stats
     version = None
     for sidecar in sorted(path.glob("*.profdata.version")):
         version = sidecar.read_text(encoding="utf-8").strip() or None
@@ -187,7 +198,7 @@ def _store_entry(method: str, target: str | None, path: Path) -> StoreEntry | No
     return StoreEntry(
         method=method, target=target, path=path,
         size_bytes=sum(s.st_size for s in stats),
-        mtime=max(s.st_mtime for s in stats),
+        mtime=max(s.st_mtime for s in dating),
         collected_version=version,
     )
 

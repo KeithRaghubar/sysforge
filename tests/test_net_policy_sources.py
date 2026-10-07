@@ -94,7 +94,7 @@ def test_warning_is_wired_at_the_shared_makepkg_seam():
     import inspect
 
     from sysforge import build_core
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     assert "warn_ungated_sources" in inspect.getsource(makepkg_wrapper.run)
     assert "warn_ungated_sources" not in inspect.getsource(build_core)

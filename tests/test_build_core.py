@@ -19,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sysforge import build_core
@@ -127,7 +129,7 @@ def test_prepare_deps_preinstalls_makedeps_and_builds_aur(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps") as mk_install,
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=aur_deps),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps") as build_aur,
+        patch("sysforge.build.aur_deps.build_resolved_deps") as build_aur,
     ):
         build_core.prepare_deps(
             [target.pkgbuild_path], {},
@@ -155,7 +157,7 @@ def test_prepare_deps_threads_interactive_to_aur_dep_build(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps"),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=aur_deps),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps") as build_aur,
+        patch("sysforge.build.aur_deps.build_resolved_deps") as build_aur,
     ):
         build_core.prepare_deps(
             [target.pkgbuild_path], {},
@@ -176,7 +178,7 @@ def test_prepare_deps_defaults_dep_build_noninteractive(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps"),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=aur_deps),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps") as build_aur,
+        patch("sysforge.build.aur_deps.build_resolved_deps") as build_aur,
     ):
         build_core.prepare_deps(
             [target.pkgbuild_path], {},
@@ -188,7 +190,7 @@ def test_prepare_deps_defaults_dep_build_noninteractive(tmp_path):
 def test_build_resolved_deps_threads_interactive_into_build_options(tmp_path):
     """``build_resolved_deps(interactive=True)`` must set ``interactive`` on the
     per-dep BuildOptions handed to makepkg_wrapper.run."""
-    from sysforge.primitives import aur_resolve
+    from sysforge.build import aur_deps as aur_deps_mod
 
     dep_dir = tmp_path / "some-aur-lib"
     dep_dir.mkdir()
@@ -203,9 +205,36 @@ def test_build_resolved_deps_threads_interactive_into_build_options(tmp_path):
     def fake_run(pkgbuild_path, options=None):
         seen["options"] = options
 
-    with patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run):
-        aur_resolve.build_resolved_deps(deps, interactive=True)
+    installs = []
+    with patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run), \
+         patch("sysforge.build.makepkg_wrapper.install_built_packages",
+               side_effect=lambda d, **k: installs.append((d, k))):
+        aur_deps_mod.build_resolved_deps(deps, interactive=True)
     assert seen["options"].interactive is True
+    # 3.4.0-F1: makepkg never installs; sysforge does, honouring interactive.
+    assert "-i" not in (seen["options"].extra_flags or [])
+    assert installs == [(dep_dir, {"noconfirm": False})]
+
+
+def test_build_resolved_deps_installs_an_already_built_dependency(tmp_path):
+    """A dependency PKGDEST already holds is installed, not left missing."""
+    from sysforge.build import aur_deps as aur_deps_mod
+    from sysforge.build.makepkg_wrapper import AlreadyBuilt
+    dep_dir = tmp_path / "lib"
+    dep_dir.mkdir()
+    (dep_dir / "PKGBUILD").write_text("pkgname=lib\n")
+    deps = [SimpleNamespace(name="lib", source="aur", pkgbuild_path=dep_dir / "PKGBUILD",
+                            required_by=["app"])]
+    installs = []
+
+    def already(pb, options=None):
+        raise AlreadyBuilt(pb)
+
+    with patch("sysforge.build.makepkg_wrapper.run", side_effect=already), \
+         patch("sysforge.build.makepkg_wrapper.install_built_packages",
+               side_effect=lambda d, **k: installs.append(d)):
+        assert aur_deps_mod.build_resolved_deps(deps) == ["lib"]
+    assert installs == [dep_dir]
 
 
 def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
@@ -229,7 +258,7 @@ def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps") as mk_install,
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=[]),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps"),
+        patch("sysforge.build.aur_deps.build_resolved_deps"),
     ):
         build_core.prepare_deps([target.pkgbuild_path], {})
 
@@ -258,7 +287,7 @@ def test_prepare_deps_preinstalls_repo_runtime_depends(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps") as mk_install,
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=[]),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps"),
+        patch("sysforge.build.aur_deps.build_resolved_deps"),
     ):
         build_core.prepare_deps([target.pkgbuild_path], {})
 
@@ -281,7 +310,7 @@ def test_prepare_deps_makedep_failure_is_nonfatal(tmp_path):
               side_effect=RuntimeError("boom")),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=[]) as resolve,
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps"),
+        patch("sysforge.build.aur_deps.build_resolved_deps"),
     ):
         build_core.prepare_deps([target.pkgbuild_path], {})
     resolve.assert_called_once()  # reached despite the makedep failure
@@ -318,7 +347,7 @@ def test_prepare_deps_review_abort_returns_false(tmp_path):
         for p in _dep_gate_patches([dep]):
             stack.enter_context(p)
         build_aur = stack.enter_context(
-            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+            patch("sysforge.build.aur_deps.build_resolved_deps"))
         rd = stack.enter_context(
             patch("sysforge.build_core.review_deps",
                   return_value=build_core.DECISION_ABORT))
@@ -350,7 +379,7 @@ def test_prepare_deps_review_accept_builds_deps(tmp_path):
         for p in _dep_gate_patches([dep]):
             stack.enter_context(p)
         build_aur = stack.enter_context(
-            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+            patch("sysforge.build.aur_deps.build_resolved_deps"))
         rd = stack.enter_context(
             patch("sysforge.build_core.review_deps", return_value="accept"))
         proceed = build_core.prepare_deps(
@@ -375,7 +404,7 @@ def test_prepare_deps_review_auto_passes_interactive_false(tmp_path):
         for p in _dep_gate_patches([dep]):
             stack.enter_context(p)
         stack.enter_context(
-            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+            patch("sysforge.build.aur_deps.build_resolved_deps"))
         rd = stack.enter_context(
             patch("sysforge.build_core.review_deps", return_value="accept"))
         build_core.prepare_deps(
@@ -395,7 +424,7 @@ def test_prepare_deps_review_off_never_consults_gate(tmp_path):
         for p in _dep_gate_patches([dep]):
             stack.enter_context(p)
         stack.enter_context(
-            patch("sysforge.primitives.aur_resolve.build_resolved_deps"))
+            patch("sysforge.build.aur_deps.build_resolved_deps"))
         rd = stack.enter_context(patch("sysforge.build_core.review_deps"))
         proceed = build_core.prepare_deps(
             [target.pkgbuild_path], {},
@@ -443,7 +472,7 @@ def test_prepare_deps_records_installed_aur_deps(tmp_path):
         patch("sysforge.build_core.batch_install_makedeps"),
         patch("sysforge.primitives.aur_resolve.resolve_aur_deps_batch",
               return_value=aur_deps),
-        patch("sysforge.primitives.aur_resolve.build_resolved_deps",
+        patch("sysforge.build.aur_deps.build_resolved_deps",
               return_value=["libaurdep"]),
     ):
         collector: list[str] = []
@@ -484,7 +513,7 @@ def _patch_build_env(*, run_side_effect, snapshot_return, install_capture):
     list to splat into ``with``."""
     return [
         patch("sysforge.build_core.prepare_deps"),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=run_side_effect),
+        patch("sysforge.build.makepkg_wrapper.run", side_effect=run_side_effect),
         patch("sysforge.build_core.snapshot_pkg_dir", return_value=snapshot_return),
         patch("sysforge.build_core.get_all_installed_packages", return_value={}),
         patch("sysforge.build_core.filter_pkgs_to_installed",
@@ -635,7 +664,7 @@ def test_build_and_install_records_failure(tmp_path):
 
 
 def test_build_and_install_pgo_skip(tmp_path):
-    from sysforge.primitives.makepkg_wrapper import PGOBuildSkipped
+    from sysforge.build.makepkg_wrapper import PGOBuildSkipped
     target = _make_target(tmp_path)
 
     def fake_run(pkgbuild_path, options=None):
@@ -662,7 +691,7 @@ def test_build_and_install_emits_cache_report_when_requested(tmp_path):
 
     with (
         patch("sysforge.build_core.prepare_deps"),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run),
         patch("sysforge.build_core.snapshot_pkg_dir", return_value=frozenset({artifact})),
         patch("sysforge.build_core.get_all_installed_packages", return_value={}),
         patch("sysforge.build_core.filter_pkgs_to_installed",
@@ -764,7 +793,7 @@ def _ordered_build_env(events):
 
     return [
         patch("sysforge.build_core.prepare_deps"),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run),
         patch("sysforge.build_core.snapshot_pkg_dir",
               side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
         patch("sysforge.build_core.get_all_installed_packages", return_value={}),
@@ -926,7 +955,7 @@ def test_intra_batch_failed_dep_dependent_still_builds(tmp_path):
         )
 
     env[1] = patch(
-        "sysforge.primitives.makepkg_wrapper.run", side_effect=failing_run
+        "sysforge.build.makepkg_wrapper.run", side_effect=failing_run
     )
     with _ctx(env + [
         patch("sysforge.build_core._record_build_failure"),
@@ -963,7 +992,7 @@ def test_build_and_install_resolves_system_pkgdest(tmp_path):
     installs = []
     with _ctx([
         patch("sysforge.build_core.prepare_deps"),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run),
         patch("sysforge.build_core.snapshot_pkg_dir",
               side_effect=lambda d: snapshot_dirs.append(Path(d))
               or frozenset(Path(d).glob("*.pkg.tar*"))),
@@ -1710,7 +1739,7 @@ def test_build_and_install_installs_when_the_skew_gate_is_clean(tmp_path):
 
 def test_build_and_install_gates_a_reused_already_built_artifact(tmp_path):
     """The broken artifact from an earlier run is what "already built" reuses."""
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    from sysforge.build.makepkg_wrapper import AlreadyBuilt
 
     def already_built(_artifact):
         raise AlreadyBuilt("foo")
@@ -1763,7 +1792,7 @@ def test_build_and_install_isolates_conflict_and_reverts_its_state(tmp_path):
     ])
     env = [
         patch("sysforge.build_core.prepare_deps"),
-        patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+        patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run),
         patch("sysforge.build_core.snapshot_pkg_dir",
               side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
         patch("sysforge.build_core.get_all_installed_packages",
@@ -1801,7 +1830,7 @@ def test_reused_artifact_install_restores_its_reverted_record(tmp_path):
     The rerun gets "already built", reuses the v2 artifact, and pacman installs
     it. The record must say v2 with that build's flags, not stay at v1."""
     from sysforge.primitives.build_state import BuildState
-    from sysforge.primitives.makepkg_wrapper import AlreadyBuilt
+    from sysforge.build.makepkg_wrapper import AlreadyBuilt
 
     state = tmp_path / "state"
     bs = BuildState(state)
@@ -1826,7 +1855,7 @@ def test_reused_artifact_install_restores_its_reverted_record(tmp_path):
     def run(fake_run, install_ok):
         env = [
             patch("sysforge.build_core.prepare_deps"),
-            patch("sysforge.primitives.makepkg_wrapper.run", side_effect=fake_run),
+            patch("sysforge.build.makepkg_wrapper.run", side_effect=fake_run),
             patch("sysforge.build_core.snapshot_pkg_dir",
                   side_effect=lambda d: frozenset(Path(d).glob("*.pkg.tar*"))),
             patch("sysforge.build_core.get_all_installed_packages",
@@ -1957,3 +1986,120 @@ def test_build_and_install_carries_layout_findings_to_the_outcome(tmp_path):
                return_value=[])]):
         outcome = build_core.build_and_install([target], config={}, sync_source=False)
     assert outcome.layout_findings == ["foo.pkg: etc/pam.d/x/y is nested"]
+
+
+def test_build_and_install_passes_per_target_medians_in_build_order(tmp_path):
+    """3.3.0-F1: the `building` tracker gets each target's own median, in the
+    order the loop ticks them (after intra-batch ordering)."""
+    from sysforge.primitives.build_state import BuildState
+    state = tmp_path / "state"
+    bs = BuildState(state)
+    bs.record("big", "1", "1", "0", "big", tmp_path / "big", build_mode="source_built")
+    bs.record("small", "1", "1", "0", "small", tmp_path / "small",
+              build_mode="source_built")
+    bs._data["big"]["build_seconds"] = "1200,1300"
+    bs._data["small"]["build_seconds"] = "30"
+    bs.save()
+    targets = [_make_target(tmp_path, "big"), _make_target(tmp_path, "small"),
+               _make_target(tmp_path, "new")]
+    seen = {}
+
+    @contextlib.contextmanager
+    def spy_tracker(total, prefix, expected=None):
+        seen.update(total=total, prefix=prefix, expected=expected)
+        yield lambda *a, **k: None
+
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(run_side_effect=lambda *a, **k: None,
+                                  snapshot_return=[], install_capture=lambda f: True):
+            stack.enter_context(p)
+        stack.enter_context(patch.object(build_core._ui_progress, "tracker", spy_tracker))
+        build_core.build_and_install(targets, config={}, sync_source=False,
+                                     review="auto", state_dir=state)
+    assert seen == {"total": 3, "prefix": "building", "expected": [1250, 30, None]}
+
+
+def test_merge_outcomes_concatenates_in_pass_order_and_shares_phase_records():
+    """3.1.0-B12: two sequential passes report as one."""
+    from sysforge.build_core import BuildOutcome, merge_outcomes
+    shared = []
+    a = BuildOutcome(built_pkgs=["llvm"], built_pkg_files=[Path("l.pkg")],
+                     not_installed={"x": "why"}, phase_records=shared)
+    b = BuildOutcome(built_pkgs=["foo"], failed_pkgs=["bar"], install_failed=True,
+                     phase_records=shared)
+    m = merge_outcomes(a, b)
+    assert m.built_pkgs == ["llvm", "foo"] and m.failed_pkgs == ["bar"]
+    assert m.built_pkg_files == [Path("l.pkg")] and m.not_installed == {"x": "why"}
+    assert m.install_failed and not m.aborted and m.phase_records is shared
+
+
+# ---------------------------------------------------------------------------
+# 3.4.0-F1 — makepkg never escalates; sysforge holds sudo for the whole build
+# ---------------------------------------------------------------------------
+
+def test_install_missing_repo_deps_excludes_members_and_aur(tmp_path):
+    deps = ["cmake", "llvm-libs", "aurthing"]
+    with patch("sysforge.build_core.collect_builddeps", return_value=deps), \
+         patch("sysforge.build_core.filter_missing_deps", side_effect=lambda d: list(d)), \
+         patch("sysforge.build_core.repo_packages",
+               side_effect=lambda d: {n for n in d if n != "aurthing"}), \
+         patch("sysforge.build_core.batch_install_makedeps") as inst:
+        build_core.install_missing_repo_deps(
+            [tmp_path / "PKGBUILD"], exclude=frozenset({"llvm-libs"}))
+    inst.assert_called_once_with(["cmake"])
+
+
+def test_build_and_install_authenticates_once_and_keeps_sudo_warm(tmp_path, monkeypatch):
+    from sysforge.primitives import sudo_session
+    events = []
+    monkeypatch.setattr(build_core.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: events.append("auth") or True)
+
+    @contextlib.contextmanager
+    def fake_keepalive(*, tag, enabled=True):
+        events.append(f"keepalive+{tag}")
+        yield
+        events.append("keepalive-")
+
+    monkeypatch.setattr(sudo_session, "keepalive", fake_keepalive)
+    target = _make_target(tmp_path)
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(run_side_effect=lambda *a, **k: events.append("build"),
+                                  snapshot_return=[], install_capture=lambda f: True):
+            stack.enter_context(p)
+        stack.enter_context(patch("sysforge.build_core.prepare_deps",
+                                  side_effect=lambda *a, **k: events.append("deps") or True))
+        build_core.build_and_install([target], config={}, sync_source=False,
+                                     review="off", state_dir=tmp_path / "state")
+    assert events[:3] == ["auth", "keepalive+BUILD", "deps"]
+    assert "build" in events and events[-1] == "keepalive-"
+
+
+def test_build_and_install_refused_sudo_builds_nothing(tmp_path, monkeypatch):
+    from sysforge.primitives import sudo_session
+    monkeypatch.setattr(build_core.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: False)
+    built = []
+    target = _make_target(tmp_path)
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(run_side_effect=lambda *a, **k: built.append(1),
+                                  snapshot_return=[], install_capture=lambda f: True):
+            stack.enter_context(p)
+        with pytest.raises(RuntimeError, match="nothing was built or installed"):
+            build_core.build_and_install([target], config={}, sync_source=False,
+                                         review="off", state_dir=tmp_path / "state")
+    assert built == []
+
+
+def test_build_and_install_as_root_never_touches_sudo(tmp_path, monkeypatch):
+    from sysforge.primitives import sudo_session
+    monkeypatch.setattr(build_core.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(sudo_session, "authenticate",
+                        lambda: (_ for _ in ()).throw(AssertionError("authenticated as root")))
+    target = _make_target(tmp_path)
+    with contextlib.ExitStack() as stack:
+        for p in _patch_build_env(run_side_effect=lambda *a, **k: None,
+                                  snapshot_return=[], install_capture=lambda f: True):
+            stack.enter_context(p)
+        build_core.build_and_install([target], config={}, sync_source=False,
+                                     review="off", state_dir=tmp_path / "state")

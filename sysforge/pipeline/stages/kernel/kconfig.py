@@ -14,7 +14,6 @@ The lsmod snapshot is union-merged across runs rather than replaced, because a
 device that was not plugged in during this boot still needs its driver.
 """
 from pathlib import Path
-import subprocess
 import tomllib
 
 from sysforge.pipeline.stages.kernel import config
@@ -65,7 +64,7 @@ def capture_lsmod_snapshot(state_dir, dry_run):
         _log.ui(f"[dry-run] would capture lsmod snapshot → {snapshot_path}")
         return
 
-    result = subprocess.run(["lsmod"], capture_output=True, text=True)
+    result = run.probe(["lsmod"])
     if result.returncode != 0:
         _log.warn(
             f"lsmod failed (exit {result.returncode}) — skipping snapshot"
@@ -122,6 +121,7 @@ def stage_lsmod_snapshot(kernel_cfg, state_dir, dry_run):
 # ---------------------------------------------------------------------------
 
 import re as _re
+from sysforge.primitives import run
 
 _KCONFIG_OPTION_RE = _re.compile(r"^CONFIG_[A-Z0-9_]+$")
 

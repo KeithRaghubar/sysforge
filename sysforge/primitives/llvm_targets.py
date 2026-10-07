@@ -46,7 +46,6 @@ Public API:
     resolve_or_detect_llvm_targets(toolchain_toml_path, hardware_profile_path)
         -> list[str] | None
 """
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -57,6 +56,7 @@ from sysforge.primitives.hardware_probe import (
     parse_gpu_vendors,
 )
 from sysforge.primitives.hardware_tables import SYSTEM_LIBLLVM_CONSUMER_TARGETS
+from sysforge.primitives import run
 
 _log = log.get_logger("LLVM")
 
@@ -167,9 +167,10 @@ def _detect_llvm_targets_live() -> list[str]:
     being absent too (``FileNotFoundError``), not only a non-zero exit, so
     callers on a machine without pciutils don't raise."""
     try:
-        lspci = subprocess.run(["lspci"], capture_output=True, text=True)
-        gpu_vendors = parse_gpu_vendors(lspci.stdout) if lspci.returncode == 0 else []
-    except (FileNotFoundError, OSError):
+        lspci = run.capture(["lspci"])
+        gpu_vendors = (parse_gpu_vendors(lspci.stdout)
+                       if lspci is not None and lspci.returncode == 0 else [])
+    except OSError:
         gpu_vendors = []
     return derive_llvm_targets(detect_host_arch(), gpu_vendors)
 

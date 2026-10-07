@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.pipeline.stages.hardware import derive_mesa_drivers
-from sysforge.primitives.makepkg_wrapper import _maybe_patch_mesa_drivers
+from sysforge.build.makepkg_wrapper import _maybe_patch_mesa_drivers
 from sysforge.primitives.mesa_drivers import (
     resolve_mesa_drivers,
     resolve_or_detect_mesa_drivers,
@@ -206,7 +206,7 @@ def test_resolve_or_detect_off_short_circuits_no_subprocess(tmp_path):
     """Switch off → None and lspci is never run."""
     sf = tmp_path / "sysforge.toml"
     _write_sysforge(sf, filter_drivers=False)
-    with patch("sysforge.primitives.mesa_drivers.subprocess.run") as mock_run:
+    with patch("sysforge.primitives.run.subprocess.run") as mock_run:
         assert resolve_or_detect_mesa_drivers(
             sf, tmp_path / "missing-hw.toml"
         ) is None
@@ -218,7 +218,7 @@ def test_resolve_or_detect_prefers_profile(tmp_path):
     hw = tmp_path / "hardware_profile.toml"
     _write_sysforge(sf, filter_drivers=True)
     _write_hardware(hw, gallium=["radeonsi"], vulkan=["amd"])
-    with patch("sysforge.primitives.mesa_drivers.subprocess.run") as mock_run:
+    with patch("sysforge.primitives.run.subprocess.run") as mock_run:
         result = resolve_or_detect_mesa_drivers(sf, hw)
     assert result == {
         "gallium": ["radeonsi", *_BASE_GALLIUM],
@@ -236,7 +236,7 @@ def test_resolve_or_detect_falls_back_to_live(tmp_path):
         stdout="01:00.0 VGA compatible controller: NVIDIA Corporation Foo\n",
     )
     with patch(
-        "sysforge.primitives.mesa_drivers.subprocess.run",
+        "sysforge.primitives.run.subprocess.run",
         return_value=fake_lspci,
     ):
         result = resolve_or_detect_mesa_drivers(sf, tmp_path / "missing-hw.toml")
@@ -256,7 +256,7 @@ def test_resolve_or_detect_override_rides_on_top_of_live(tmp_path):
         stdout="01:00.0 VGA compatible controller: NVIDIA Corporation Foo\n",
     )
     with patch(
-        "sysforge.primitives.mesa_drivers.subprocess.run",
+        "sysforge.primitives.run.subprocess.run",
         return_value=fake_lspci,
     ):
         result = resolve_or_detect_mesa_drivers(sf, tmp_path / "missing-hw.toml")
@@ -270,7 +270,7 @@ def test_resolve_or_detect_lspci_failure_is_non_fatal(tmp_path):
     _write_sysforge(sf, filter_drivers=True)
     fake_lspci = SimpleNamespace(returncode=1, stdout="")
     with patch(
-        "sysforge.primitives.mesa_drivers.subprocess.run",
+        "sysforge.primitives.run.subprocess.run",
         return_value=fake_lspci,
     ):
         result = resolve_or_detect_mesa_drivers(sf, tmp_path / "missing-hw.toml")
@@ -556,7 +556,7 @@ def test_maybe_patch_mesa_filters_when_on(tmp_path):
         tmp_path, filter_drivers=True, gallium=["radeonsi"], vulkan=["amd"]
     )
     pkgmeta = {"globals": {"pkgname": ["mesa", "lib32-mesa"]}}
-    with patch("sysforge.primitives.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
+    with patch("sysforge.build.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
         result = _maybe_patch_mesa_drivers(
             pkgbuild, pkgmeta, state_dir_override=state_dir
         )
@@ -572,7 +572,7 @@ def test_maybe_patch_mesa_noop_when_off(tmp_path):
         tmp_path, filter_drivers=False, gallium=["radeonsi"], vulkan=["amd"]
     )
     pkgmeta = {"globals": {"pkgname": "mesa"}}
-    with patch("sysforge.primitives.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
+    with patch("sysforge.build.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
         result = _maybe_patch_mesa_drivers(
             pkgbuild, pkgmeta, state_dir_override=state_dir
         )
@@ -585,7 +585,7 @@ def test_maybe_patch_mesa_skips_non_mesa(tmp_path):
         tmp_path, filter_drivers=True, gallium=["radeonsi"], vulkan=["amd"]
     )
     pkgmeta = {"globals": {"pkgname": "htop"}}
-    with patch("sysforge.primitives.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
+    with patch("sysforge.build.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
         result = _maybe_patch_mesa_drivers(
             pkgbuild, pkgmeta, state_dir_override=state_dir
         )
@@ -599,7 +599,7 @@ def test_maybe_patch_mesa_includes_lib32(tmp_path):
         tmp_path, filter_drivers=True, gallium=["radeonsi"], vulkan=["amd"]
     )
     pkgmeta = {"globals": {"pkgname": "lib32-mesa"}}
-    with patch("sysforge.primitives.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
+    with patch("sysforge.build.makepkg_wrapper.SYSFORGE_TOML_PATH", sf):
         result = _maybe_patch_mesa_drivers(
             pkgbuild, pkgmeta, state_dir_override=state_dir
         )
@@ -621,9 +621,9 @@ def test_maybe_patch_mesa_live_detect_fallback(tmp_path):
         stdout="0d:00.0 VGA compatible controller: Advanced Micro Devices AMD Radeon\n",
     )
     with patch(
-        "sysforge.primitives.makepkg_wrapper.SYSFORGE_TOML_PATH", sf
+        "sysforge.build.makepkg_wrapper.SYSFORGE_TOML_PATH", sf
     ), patch(
-        "sysforge.primitives.mesa_drivers.subprocess.run", return_value=fake_lspci
+        "sysforge.primitives.run.subprocess.run", return_value=fake_lspci
     ):
         result = _maybe_patch_mesa_drivers(
             pkgbuild, pkgmeta, state_dir_override=state_dir

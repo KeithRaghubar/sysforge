@@ -23,8 +23,18 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives import run
 
 _log = log.get_logger("PROV")
+
+
+def _seam_run(cmd, **kwargs):
+    """Default ``run_fn``: the run seam, keeping the injectable contract that
+    a missing binary raises ``FileNotFoundError`` (3.2.0-F13)."""
+    result = run.capture(cmd, **kwargs)
+    if result is None:
+        raise FileNotFoundError(cmd[0])
+    return result
 
 # Accepts both a raw depends entry (libfoo.so[=N[.M][-ARCH]]) and an
 # already-resolved soname (libfoo.so.2). Same shape as dep_analysis._SONAME_RE
@@ -55,7 +65,7 @@ def sync_files_db() -> bool:
     if not shutil.which("pacman"):
         return False
     try:
-        result = subprocess.run(privileged_argv(["pacman", "-Fy"]))
+        result = subprocess.run(privileged_argv(["pacman", "-Fy"]))  # noqa: TID251 — privileged files-DB refresh streams, status inspected
     except FileNotFoundError:
         return False
     return result.returncode == 0
@@ -99,7 +109,7 @@ def suggest_for_soname(entry: str, *, lib32: bool = False,
     re-recommend packages the user already has installed.
     """
     if run_fn is None:
-        run_fn = subprocess.run
+        run_fn = _seam_run
 
     query = _soname_query_path(entry, lib32)
     if query is None:

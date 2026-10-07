@@ -127,7 +127,7 @@ def _touch_pkg(d, name):
 
 
 def test_find_artifacts_uses_pkgdest_when_set(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "linux-custom"
     pkgbuild_dir.mkdir()
@@ -142,7 +142,7 @@ def test_find_artifacts_uses_pkgdest_when_set(tmp_path, monkeypatch):
 
 
 def test_find_artifacts_falls_back_to_pkgbuild_dir(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "linux-custom"
     art = _touch_pkg(pkgbuild_dir, "linux-custom-6.10-1-x86_64.pkg.tar.zst")
@@ -153,7 +153,7 @@ def test_find_artifacts_falls_back_to_pkgbuild_dir(tmp_path, monkeypatch):
 
 
 def test_find_artifacts_unions_and_dedups(tmp_path, monkeypatch):
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "linux-custom"
     pkgdest = tmp_path / "pkgs"
@@ -172,7 +172,7 @@ def test_artifacts_scoped_to_built_manifest(tmp_path, monkeypatch):
     the install set precisely — no stale same-name versions, no unrelated
     linux-* kernels, even though the PKGBUILD in the dir is the un-renamed
     upstream one (linux) whose pkgname prefix-matches everything."""
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "linux"
     pkgbuild_dir.mkdir()
@@ -202,7 +202,7 @@ def test_artifacts_scoped_to_built_manifest(tmp_path, monkeypatch):
 def test_artifacts_without_manifest_falls_back_to_pkgname_scope(tmp_path, monkeypatch):
     """No manifest (non-kernel build, or capture failed) → the existing
     pkgname scoping still applies; fall back never installs nothing."""
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "htop"
     pkgbuild_dir.mkdir()
@@ -221,7 +221,7 @@ def test_post_build_abi_check_scoped_to_this_build(tmp_path, monkeypatch):
     A shared PKGDEST holds every historical build of every package; handing
     the whole glob to the checker ran nm/readelf over ~1100 unrelated archives
     after a one-package build."""
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "cosmic-greeter-git"
     pkgbuild_dir.mkdir()
@@ -248,7 +248,7 @@ def test_capture_built_manifest_writes_basenames(tmp_path, monkeypatch):
     (full PKGDEST paths → basenames) against the patched PKGBUILD."""
     import subprocess as _sp
 
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     patched = tmp_path / "PKGBUILD.sysforge"
     patched.write_text("pkgname=linux-sysforge\npkgver=7.1.2\n")
@@ -275,7 +275,7 @@ def test_capture_built_manifest_best_effort_on_makepkg_failure(tmp_path, monkeyp
     """A non-zero makepkg leaves no sidecar (install falls back to scoping)."""
     import subprocess as _sp
 
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     patched = tmp_path / "PKGBUILD.sysforge"
     patched.write_text("pkgname=x\n")
@@ -289,9 +289,7 @@ def test_capture_built_manifest_best_effort_on_makepkg_failure(tmp_path, monkeyp
 
 def test_install_built_packages_removes_manifest(tmp_path, monkeypatch):
     """2.1.0-B9: the sidecar is dropped after a successful install."""
-    import subprocess as _sp
-
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "linux"
     pkgbuild_dir.mkdir()
@@ -302,10 +300,7 @@ def test_install_built_packages_removes_manifest(tmp_path, monkeypatch):
     manifest.write_text(art.name + "\n")
 
     monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
-    monkeypatch.setattr(
-        makepkg_wrapper.subprocess, "run",
-        lambda cmd, **kw: _sp.CompletedProcess(cmd, 0, stdout="", stderr=""),
-    )
+    # pacman itself is the autouse `pacman_tx` recorder (exit 0).
     installed = makepkg_wrapper.install_built_packages(pkgbuild_dir)
     assert installed == [art]
     assert not manifest.exists()
@@ -411,7 +406,7 @@ def test_kernel_gate2_missing_tree_without_fresh_build_only_warns(tmp_path, monk
     ({}, None, "checkout"),
 ])
 def test_built_pkgbase_follows_makepkg_naming(tmp_path, pkgmeta, rename, expected):
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild = tmp_path / "checkout" / "PKGBUILD"
     assert makepkg_wrapper._built_pkgbase(pkgmeta, rename, pkgbuild) == expected
@@ -420,7 +415,7 @@ def test_built_pkgbase_follows_makepkg_naming(tmp_path, pkgmeta, rename, expecte
 def test_post_build_layout_check_scoped_to_this_build(tmp_path, monkeypatch):
     """3.2.0-F15: the payload-layout lint sees only this build's artifacts,
     same scoping rule as the ABI report (3.2.0-B29)."""
-    from sysforge.primitives import makepkg_wrapper
+    from sysforge.build import makepkg_wrapper
 
     pkgbuild_dir = tmp_path / "cosmic-greeter-git"
     pkgbuild_dir.mkdir()

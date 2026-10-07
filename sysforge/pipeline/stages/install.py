@@ -16,7 +16,7 @@ from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap
 from sysforge.pipeline.stages._partition_plan import _confirm, probe_disk_size_bytes
 from sysforge.primitives.archinstall_config import build_archinstall_config
-from sysforge.primitives.archinstall_invoke import run_archinstall
+from sysforge.primitives.archinstall_invoke import TARGET_ROOT, run_archinstall
 
 _log = log.get_logger("INSTALL")
 
@@ -30,6 +30,13 @@ class InstallStage(Stage):
     name = "install"
     description = "Disk + base install via archinstall"
     depends_on = []
+    # Change summary of the installed target (2.6.1-F27): a manifest of what
+    # pacstrap put on the new system, every row an addition. Read from the
+    # still-mounted target; if it is not readable the summary says so (UNKNOWN)
+    # rather than reporting "no changes".
+    reports_changes = True
+    change_root = str(TARGET_ROOT)
+    change_before_empty = True
 
     def run(self, config, state, options):  # noqa: ARG002
         cfg = load_bootstrap()

@@ -24,6 +24,7 @@ import re
 import subprocess
 
 from sysforge.primitives import diagnostics as diag
+from sysforge.primitives import run
 
 # "Direct firmware load for <name> failed with error -2" /
 # "firmware: failed to load <name> (-2)"
@@ -34,8 +35,8 @@ _RE_FW_FAILED = re.compile(
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except (FileNotFoundError, OSError):
+        return run.capture(cmd)  # None when the binary is missing
+    except OSError:
         return None
 
 

@@ -12,13 +12,13 @@ import copy
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.archinstall_config import ARCHINSTALL_SCHEMA_VERSION
 from sysforge.primitives.run import run_or_raise
+from sysforge.primitives import run
 
 _log = log.get_logger("INSTALL")
 
@@ -35,7 +35,9 @@ def _redact(cfg_dict: dict) -> dict:
 
 def _warn_on_version_drift() -> None:
     try:
-        out = subprocess.run(["archinstall", "--version"], capture_output=True, text=True)
+        out = run.capture(["archinstall", "--version"])
+        if out is None:
+            return
         ver = (out.stdout or out.stderr).strip().split()[-1]
     except Exception:  # noqa: BLE001 — version probe is best-effort
         return
@@ -47,6 +49,13 @@ def _warn_on_version_drift() -> None:
         )
 
 
+# Where archinstall mounts the target. archinstall's own default, passed
+# explicitly so the install stage's change summary (2.6.1-F27) reads the same
+# root archinstall installed into. ``--silent`` skips the post-install menu and
+# never unmounts, so the target is still mounted when this returns.
+TARGET_ROOT = Path("/mnt")
+
+
 def run_archinstall(cfg_dict: dict, *, dry_run: bool) -> None:
     if shutil.which("archinstall") is None:
         raise RuntimeError(
@@ -56,7 +65,8 @@ def run_archinstall(cfg_dict: dict, *, dry_run: bool) -> None:
     if dry_run:
         print("[dry-run] archinstall config (passwords redacted):")
         print(json.dumps(_redact(cfg_dict), indent=2))
-        print("[dry-run] would run: archinstall --config <tmp> --silent")
+        print("[dry-run] would run: archinstall --config <tmp> "
+              f"--mountpoint {TARGET_ROOT} --silent")
         return
 
     _warn_on_version_drift()
@@ -67,7 +77,7 @@ def run_archinstall(cfg_dict: dict, *, dry_run: bool) -> None:
             json.dump(cfg_dict, f)
         _log.ui("Running archinstall (this partitions the disk and installs the base system)...")
         run_or_raise(
-            ["archinstall", "--config", path, "--silent"],
+            ["archinstall", "--config", path, "--mountpoint", str(TARGET_ROOT), "--silent"],
             tag="INSTALL", operation="archinstall", capture=False,
             hint="Check the archinstall log for the failing step.",
         )

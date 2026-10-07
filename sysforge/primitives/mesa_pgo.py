@@ -35,7 +35,6 @@ whole feature is gated on the LLVM toolchain upstream); everything else is pure.
 """
 import contextlib
 import shutil
-import subprocess
 import tomllib
 from pathlib import Path
 
@@ -43,6 +42,7 @@ from sysforge import log
 from sysforge.primitives.makepkg_pgo import resolve_method_store
 from sysforge.primitives.paths import TOOLCHAIN_PATH
 from sysforge.primitives.version import vercmp
+from sysforge.primitives import run
 
 _log = log.get_logger("MESAPGO")
 
@@ -271,11 +271,7 @@ def merge_profraw(
     tmp = out.with_suffix(out.suffix + ".tmp")
     inputs = ([str(out)] if out.exists() else []) + [str(p) for p in profraw]
     _log.ui(f"Merging {len(profraw)} {pkgbase} .profraw file(s) → {out}")
-    result = subprocess.run(
-        [profdata_tool, "merge", "--output", str(tmp), *inputs],
-        capture_output=True,
-        text=True,
-    )
+    result = run.probe([profdata_tool, "merge", "--output", str(tmp), *inputs])
     if result.returncode != 0:
         tmp.unlink(missing_ok=True)
         raise MesaPgoError(

@@ -47,7 +47,6 @@ Public API:
                   interactive=True)      -> str (DECISION_*)
     review_deps(deps, interactive=True)  -> str (accept | abort | clean)
 """
-import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +56,7 @@ _log = log.get_logger("REVIEW")
 
 from sysforge.primitives.pager import maybe_pager  # noqa: E402
 from sysforge.primitives.prompt import prompt_key  # noqa: E402
+from sysforge.primitives import run
 
 # git's well-known empty-tree object id: the diff base for a first review
 # (no reviewed_commit recorded), so a brand-new clone gets a full-content
@@ -73,11 +73,8 @@ DECISION_NO_GIT = "no_git"
 def _git(pkgbuild_dir: Path, *args: str) -> str | None:
     """Run git in ``pkgbuild_dir``; return stdout, or None on any failure."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(pkgbuild_dir), *args],
-            capture_output=True, text=True,
-        )
-    except (OSError, FileNotFoundError):
+        proc = run.probe(["git", "-C", str(pkgbuild_dir), *args])
+    except OSError:
         return None
     if proc.returncode != 0:
         return None

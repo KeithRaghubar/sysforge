@@ -32,6 +32,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from sysforge.primitives import run
 
 SEV_ERROR = "error"
 SEV_WARN = "warn"
@@ -44,6 +45,8 @@ _PROC_MOUNTS = Path("/proc/mounts")
 _CRYPTTAB = Path("/etc/crypttab")
 _MDSTAT = Path("/proc/mdstat")
 _MKINITCPIO_CONF = Path("/etc/mkinitcpio.conf")
+_PACMAN_LOG = Path("/var/log/pacman.log")
+_DKMS_TREE = Path("/var/lib/dkms")
 
 # A kernel/initramfs image smaller than this is almost certainly truncated.
 _MIN_IMAGE_BYTES = 1_000_000
@@ -79,10 +82,7 @@ def _read_text(path: Path) -> str | None:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
-    try:
-        return subprocess.run(cmd, capture_output=True, text=True, check=False)
-    except FileNotFoundError:
-        return None
+    return run.capture(cmd)  # None when the binary is missing
 
 
 # ---------------------------------------------------------------------------
@@ -669,13 +669,46 @@ def _dkms_module_in_tree(mod: str, kver: str) -> bool:
         return False
 
 
+# The libalpm DKMS hook's own lines in pacman.log: every attempt opens with the
+# command, and only a failure adds the WARNING line naming its exit status.
+_DKMS_HOOK_RE = re.compile(
+    r"\[ALPM-SCRIPTLET\] ==> (?:WARNING: `)?dkms install --no-depmod "
+    r"(?P<mod>[^/\s]+)/(?P<ver>\S+) -k (?P<kver>[^\s']+)"
+    r"(?:' exited (?P<rc>\d+))?\s*$")
+
+
+def dkms_hook_failure(mod: str, kver: str) -> tuple[int, str] | None:
+    """``(exit status, module version)`` when the pacman hook's *latest*
+    ``dkms install`` of ``mod`` for ``kver`` failed, else ``None`` (3.3.0-B20).
+
+    A failed hook build only prints a WARNING; pacman still exits 0, so the
+    log is the one place the attempt is recorded. A later attempt that logged
+    no failure supersedes an earlier one. Unreadable log → ``None``.
+    """
+    try:
+        text = _PACMAN_LOG.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    last: tuple[int, str] | None = None
+    for line in text.splitlines():
+        if "dkms install --no-depmod" not in line:
+            continue
+        m = _DKMS_HOOK_RE.search(line)
+        if not m or m["mod"] != mod or m["kver"] != kver:
+            continue
+        last = (int(m["rc"]), m["ver"]) if m["rc"] else None
+    return last
+
+
 def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
     """Flag DKMS modules not built+installed for kernel release ``kver``.
 
     A DKMS module that hasn't rebuilt against the new kernel won't load on
     reboot — for nvidia that's a black screen, for zfs-on-root a brick. We
     can't tell root-criticality here, so these are degraded (warn) findings.
-    Returns nothing when dkms is absent or reports no modules.
+    Returns nothing when dkms is absent or reports no modules. When ``kver``'s
+    headers are present and the pacman hook's latest build of a module failed,
+    the finding says so and names the build log (:func:`dkms_hook_failure`).
     """
     r = _run(["dkms", "status"])
     if r is None or r.returncode != 0 or not r.stdout.strip():
@@ -713,11 +746,29 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
             present_for[mod].add(mod_kver)
 
     findings: list[KernelFinding] = []
+    headers = (_MODULES_DIR / kver / "build" / "include").is_dir()
     for mod, kvers in sorted(present_for.items()):
         if kver not in kvers:
             ver = version_of.get(mod)
             cmd = (f"sudo dkms install {mod}/{ver} -k {kver}" if ver
                    else f"sudo dkms autoinstall -k {kver}")
+            failed = dkms_hook_failure(mod, kver) if headers else None
+            if failed is not None:
+                # The automatic build ran and failed: say so, and point at the
+                # evidence before the retry overwrites it (3.3.0-B20).
+                rc, hook_ver = failed
+                make_log = _DKMS_TREE / mod / (ver or hook_ver) / "build" / "make.log"
+                findings.append(KernelFinding(
+                    SEV_WARN, f"dkms:{mod}",
+                    f"DKMS module {mod!r} failed to build for kernel {kver}: the "
+                    f"pacman hook ran `dkms install` and it exited {rc}. It will "
+                    "not load on the new kernel.",
+                    f"Copy the build log {make_log} first (the next `dkms install` "
+                    f"overwrites it), then retry: `{cmd}`. "
+                    "nvidia → black screen; zfs root → unbootable.",
+                    is_brick=False,
+                ))
+                continue
             findings.append(KernelFinding(
                 SEV_WARN, f"dkms:{mod}",
                 f"DKMS module {mod!r} is not built for kernel {kver} — it "

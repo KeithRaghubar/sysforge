@@ -526,3 +526,45 @@ def test_vmlinux_only_stripped_match_refuses_specifically(tmp_path):
     msg = str(ei.value)
     assert "no debug info" in msg and "--autofdo=record" in msg
     assert "not booted" not in msg
+
+
+# 3.3.0-B18: a cleanup that fails the same way the write did must not mask it.
+def test_sidecar_write_and_cleanup_failure_raises_the_write_error(tmp_path, monkeypatch):
+    def boom_replace(a, b):
+        raise PermissionError(13, "write denied")
+
+    def boom_unlink(self, missing_ok=False):
+        raise OSError(5, "unlink I/O error")
+
+    monkeypatch.setattr(kernel_fdo.os, "replace", boom_replace)
+    monkeypatch.setattr(kernel_fdo.Path, "unlink", boom_unlink)
+    with pytest.raises(PermissionError, match="write denied"):
+        kernel_fdo.write_round(tmp_path, pkgver="1-1", build_dir=None)
+
+
+# 3.3.0-B17: every capture refusal names the round's own record command.
+@pytest.mark.parametrize("propeller,expected", [
+    (False, "`sysforge run kernel --autofdo=record`"),
+    (True, "`sysforge run kernel --autofdo=record --propeller`"),
+])
+def test_vmlinux_stripped_refusal_names_round_record_command(tmp_path, propeller, expected):
+    _vmlinux(tmp_path / "rec", BANNER, debug=False)
+    with pytest.raises(kernel_fdo.KernelFdoError) as ei:
+        kernel_fdo.resolve_vmlinux(
+            "linux-sysforge-profiling", recorded_build_dir=tmp_path / "rec",
+            builddir=tmp_path / "none", proc_version=BANNER, running_release="x",
+            propeller=propeller)
+    assert f"re-run {expected}." in str(ei.value)
+
+
+@pytest.mark.parametrize("propeller,expected", [
+    (False, "`sysforge run kernel --autofdo=record`"),
+    (True, "`sysforge run kernel --autofdo=record --propeller`"),
+])
+def test_vmlinux_tree_gone_refusal_names_round_record_command(tmp_path, propeller, expected):
+    with pytest.raises(kernel_fdo.KernelFdoError) as ei:
+        kernel_fdo.resolve_vmlinux(
+            "linux-sysforge-profiling", recorded_build_dir=None,
+            builddir=tmp_path / "none", proc_version=BANNER, running_release="x",
+            propeller=propeller)
+    assert f"Re-run {expected}." in str(ei.value)

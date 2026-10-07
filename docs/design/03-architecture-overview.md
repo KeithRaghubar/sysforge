@@ -11,11 +11,17 @@ Three layers:
 │  Python DAG orchestrator                │
 │  checkpoint/resume across stages        │
 ├─────────────────────────────────────────┤
+│  Build                                  │
+│  makepkg wrapper (per-package           │
+│  lifecycle), AUR dependency builds      │
+├─────────────────────────────────────────┤
 │  Primitives                             │
-│  PKGBUILD parser, makepkg wrapper,      │
+│  PKGBUILD parser, makepkg invocation,   │
 │  dep analysis, flag extraction          │
 └─────────────────────────────────────────┘
 ```
+
+**The build layer** (`sysforge/build/`, `3.2.0-F4`) holds the code that *coordinates* many primitives to build one package: `makepkg_wrapper` (prepare, invoke, artifact discovery, build-state recording, install; thirty sysforge imports and three reaches into pipeline state when it lived in `primitives/`) and `aur_deps.build_resolved_deps` (building the resolved AUR graph, split from `primitives/aur_resolve`, which keeps the leaf work of *resolving* it). It sits above primitives and below the verbs, `build_core` and the pipeline stages. `primitives/` must not import it, with the same guard and shrinking-allowlist rule as `sysforge.pipeline`/`sysforge.ui` (`tests/test_module_layering.py`). The move left no re-export shim in `primitives/`, because a shim would itself be the forbidden upward import. The helpers primitives needed from the wrapper were already defined in their own primitive homes (`makepkg_artifacts._parse_built_pkg_filename`, `makepkg_pgo._resolve_pgo_state`), so those callers now import them there. `build_core.py` stays a top-level module beside the layer; `BuildOptions` remains the single argument surface and `build_core.build_and_install` the sole package-loop caller.
 
 **Import direction:** `cli.py` → `verbs/registry.py` + `verbs/runner.py` → command modules (`update.py`, `packages_cmd.py`, `resolve.py`, …) → `primitives/*`. Each command module defines a `*Verb(Verb)` subclass, including its argparse surface, alongside its existing helpers; the registry assembles the parser from them and the runner dispatches uniformly across them. No command module imports from another command module — shared operations live in `verbs/shared.py`, and `tests/test_module_layering.py` enforces the rule rather than leaving it to convention (3.2.0-F8). See [CLI Verb Framework](#cli-verb-framework).
 

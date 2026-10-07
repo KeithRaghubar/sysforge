@@ -9,9 +9,9 @@ Public API:
     vercmp(ver_a, ver_b) -> int      Compare two Arch version strings (-1, 0, 1)
     format_version(globals_) -> str  Assemble epoch:pkgver-pkgrel from PKGBUILD globals
 """
-import subprocess
 
 from sysforge import log
+from sysforge.primitives import run
 _log = log.get_logger("VERSION")
 
 
@@ -23,14 +23,9 @@ def vercmp(ver_a: str, ver_b: str) -> int:
     Returns -1 (a < b), 0 (equal), or 1 (a > b).
     Raises RuntimeError if vercmp is not found or returns unexpected output.
     """
-    try:
-        result = subprocess.run(
-            ["vercmp", ver_a, ver_b],
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        raise RuntimeError("vercmp not found on PATH — is pacman installed?") from None
+    result = run.capture(["vercmp", ver_a, ver_b])
+    if result is None:
+        raise RuntimeError("vercmp not found on PATH — is pacman installed?")
 
     stdout = result.stdout.strip()
     try:

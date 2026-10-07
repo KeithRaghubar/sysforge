@@ -1289,55 +1289,45 @@ def test_save_sysforge_toml_ui_writes_directly_when_writable(tmp_path, monkeypat
     assert tomllib.loads(target.read_text())["ui"]["editor"] == "vim"
 
 
-def test_save_sysforge_toml_ui_falls_back_to_sudo_cp(tmp_path, monkeypatch):
-    import subprocess as sp
-
+def test_save_sysforge_toml_ui_escalates_through_atomic_write(tmp_path, monkeypatch):
+    """An unwritable /etc/sysforge is written via the privilege seam as an
+    install-then-rename of the staged content (2.6.1-F21)."""
     import sysforge.pipeline.stages.reconfigure as rc
-    rodir = tmp_path / "etc"
-    rodir.mkdir()
-    target = rodir / "sysforge.toml"
+    from sysforge.primitives import atomic_write
+    target = tmp_path / "etc" / "sysforge.toml"
+    target.parent.mkdir()
     target.write_text("")
-    rodir.chmod(0o555)  # parent unwritable → direct write raises PermissionError
-    try:
-        monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
-        monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
-        target.chmod(0o444)
-        calls = []
+    monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
+    monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
+    monkeypatch.setattr(atomic_write, "_replace_direct",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "no")))
+    calls = []
 
-        def fake_run(argv, **kw):
-            calls.append(argv)
-            assert argv[:2] == ["sudo", "cp"]
-            staged = Path(argv[2])
-            assert tomllib.loads(staged.read_text())["ui"]["editor"] == "vim"
-            return sp.CompletedProcess(argv, 0)
+    def fake(argv, **k):
+        if argv[0] == "install":
+            assert tomllib.loads(Path(argv[-2]).read_text())["ui"]["editor"] == "vim"
+        calls.append(argv)
+    monkeypatch.setattr(atomic_write, "run_privileged", fake)
+    rc._save_sysforge_toml_ui("editor", "vim")
+    assert [c[0] for c in calls] == ["install", "mv"]
+    assert calls[1][-1] == str(target)
 
-        monkeypatch.setattr(rc.subprocess, "run", fake_run)
+
+def test_save_sysforge_toml_ui_escalation_failure_raises(tmp_path, monkeypatch):
+    import sysforge.pipeline.stages.reconfigure as rc
+    from sysforge.primitives import atomic_write
+    target = tmp_path / "sysforge.toml"
+    target.write_text("")
+    monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
+    monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
+    monkeypatch.setattr(atomic_write, "_replace_direct",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(13, "no")))
+
+    def fail(argv, **k):
+        raise RuntimeError("[RECONFIGURE] install failed (exit 1)")
+    monkeypatch.setattr(atomic_write, "run_privileged", fail)
+    with pytest.raises(OSError):
         rc._save_sysforge_toml_ui("editor", "vim")
-        assert len(calls) == 1
-        assert calls[0][3] == str(target)
-    finally:
-        rodir.chmod(0o755)
-
-
-def test_save_sysforge_toml_ui_sudo_cp_failure_raises(tmp_path, monkeypatch):
-    import subprocess as sp
-
-    import sysforge.pipeline.stages.reconfigure as rc
-    rodir = tmp_path / "etc"
-    rodir.mkdir()
-    target = rodir / "sysforge.toml"
-    target.write_text("")
-    rodir.chmod(0o555)
-    try:
-        monkeypatch.setattr(rc, "SYSFORGE_TOML_PATH", target)
-        monkeypatch.setattr(rc, "load_sysforge_toml", lambda: {})
-        target.chmod(0o444)
-        monkeypatch.setattr(rc.subprocess, "run",
-                            lambda argv, **kw: sp.CompletedProcess(argv, 1))
-        with pytest.raises(OSError):
-            rc._save_sysforge_toml_ui("editor", "vim")
-    finally:
-        rodir.chmod(0o755)
 
 
 def test_chain_display_states_precedence_direction():

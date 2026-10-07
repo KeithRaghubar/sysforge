@@ -50,9 +50,13 @@ class ProgressHooks(Protocol):
         ...
 
     def tracker(
-        self, total: int, prefix: str,
+        self, total: int, prefix: str, expected: list[int | None] | None = None,
     ) -> contextlib.AbstractContextManager[Any]:
-        """Context manager yielding a ``tick(label)`` callable."""
+        """Context manager yielding a ``tick(label)`` callable.
+
+        ``expected`` optionally gives each item's expected seconds, in tick
+        order (``None`` for an item with no history), for the ETA (3.3.0-F1).
+        """
         ...
 
     def yield_terminal(
@@ -71,6 +75,14 @@ class ProgressHooks(Protocol):
 
     def require_no_tracker(self, owner: str) -> None:
         """Refuse to start *owner*, which opens a tracker, inside one."""
+        ...
+
+    def paused_seconds(self) -> float:
+        """Monotonic total of seconds the display has spent paused (prompts).
+
+        A caller timing work subtracts the delta across its span, so a wait on
+        the user is not recorded as work (3.3.0-F1).
+        """
         ...
 
 
@@ -97,7 +109,8 @@ class _NoOpHooks:
         pass
 
     @contextlib.contextmanager
-    def tracker(self, total: int, prefix: str) -> Iterator[_NoOpTick]:
+    def tracker(self, total: int, prefix: str,
+                expected: list[int | None] | None = None) -> Iterator[_NoOpTick]:
         yield _NoOpTick()
 
     @contextlib.contextmanager
@@ -113,6 +126,9 @@ class _NoOpHooks:
 
     def require_no_tracker(self, owner: str) -> None:
         pass
+
+    def paused_seconds(self) -> float:
+        return 0.0
 
 
 _NO_OP: Any = _NoOpHooks()
