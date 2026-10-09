@@ -82,6 +82,7 @@ _ENTRY_KEYS = (
     "reviewed_commit",
     "origin_pkgbase",
     "build_seconds",
+    "sandboxed",
 )
 
 # build_mode values. "source_built" replaced the legacy "profiled" token (which
@@ -206,7 +207,8 @@ class BuildState:
                toolchain_fingerprint: str | None = None,
                reviewed_commit: str | None = None,
                origin_pkgbase: str | None = None,
-               build_seconds: int | None = None) -> None:
+               build_seconds: int | None = None,
+               sandboxed: bool | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -267,6 +269,13 @@ class BuildState:
         entry, which is keyed by the stock upstream base (``llvm``) not the
         renamed one. None for un-renamed builds. Sticky like the other
         provenance fields.
+
+        ``sandboxed`` (3.4.0-B3) is whether the build actually ran inside the
+        build sandbox — the policy the invocation seam used, after the profile
+        override and the stage exemption. Read by flag drift's ``sandboxed``
+        sub-axis. Serialized as a native TOML bool. Sticky like the other
+        provenance fields; absent on entries written before the field existed,
+        which flag drift reads as "unknown, not drifted".
         """
         entry = {
             "pkgver": pkgver,
@@ -321,6 +330,13 @@ class BuildState:
             entry["origin_pkgbase"] = origin_pkgbase
         elif "origin_pkgbase" in prior:
             entry["origin_pkgbase"] = prior["origin_pkgbase"]
+        # ``sandboxed`` (3.4.0-B3): whether the build actually ran in the
+        # container. Sticky like the toolchain fields: a repair/backfill caller
+        # that does not know passes None and keeps the prior value.
+        if sandboxed is not None:
+            entry["sandboxed"] = bool(sandboxed)
+        elif "sandboxed" in prior:
+            entry["sandboxed"] = prior["sandboxed"]
         # build_seconds — a bounded ring (last 5 whole-second build durations,
         # newest last) serialized as a CSV string, so a per-package build-time
         # estimate can take the outlier-robust median. A None caller (backfill /
@@ -617,9 +633,14 @@ class BuildState:
             escaped = pkgname.replace("\\", "\\\\").replace('"', '\\"')
             lines.append(f'["{escaped}"]')
             for key in _ENTRY_KEYS:
-                if key in entry:
-                    val = _toml_escape(entry[key])
-                    lines.append(f'{key} = "{val}"')
+                if key not in entry:
+                    continue
+                if isinstance(entry[key], bool):
+                    # Native TOML bool: a quoted "False" reads back truthy.
+                    lines.append(f"{key} = {'true' if entry[key] else 'false'}")
+                    continue
+                val = _toml_escape(entry[key])
+                lines.append(f'{key} = "{val}"')
             lines.append("")
         if self._failures:
             lines.append("# Build failures (cleared on the next successful build).")

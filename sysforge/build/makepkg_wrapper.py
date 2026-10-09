@@ -1153,6 +1153,17 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
     build_elapsed is the measured wall-clock build duration in whole seconds,
     threaded into BuildState.record(build_seconds=...) (1.2.0-F21).
     """
+    from sysforge.primitives import build_sandbox as _sandbox
+    # Taken before anything can return or raise, so every exit path consumes
+    # it: provenance describes exactly one build (3.4.0-B3). A sandboxed build
+    # compiled with the container's compiler, which recorded_toolchain resolves
+    # against the run-wide host values.
+    _prov = _sandbox.take_provenance()
+    if _prov is not None:
+        _variant, _fingerprint = _sandbox.recorded_toolchain(
+            _prov, options.toolchain_variant, options.toolchain_fingerprint)
+    else:
+        _variant, _fingerprint = options.toolchain_variant, options.toolchain_fingerprint
     try:
         from sysforge.primitives.paths import resolve_state_dir
         from sysforge.primitives.build_state import BUILD_MODE_SOURCE, BuildState
@@ -1244,11 +1255,12 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                 built_upstream_commit=upstream_commit,
                 source=options.source,
                 owner_stage=options.owner_stage,
-                toolchain_variant=options.toolchain_variant,
-                toolchain_fingerprint=options.toolchain_fingerprint,
+                toolchain_variant=_variant,
+                toolchain_fingerprint=_fingerprint,
                 reviewed_commit=_reviewed,
                 origin_pkgbase=origin_pkgbase,
                 build_seconds=build_elapsed,
+                sandboxed=_prov is not None,
             )
         bs.save()
         _build_log.info(f"Recorded build state for {pkgbase!r}")

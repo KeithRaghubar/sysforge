@@ -735,3 +735,20 @@ def test_resolve_flag_default_cli_true_overrides_config_false():
         resolve_flag_default(_ns(abi_check=True), "abi_check", {"abi_check": False}, "abi_check")
         is True
     )
+
+
+def test_parse_makepkg_conf_text_last_assignment_wins_and_exports_count():
+    """The file-free parser the sandbox's container-conf audit uses (3.4.0-F2):
+    last assignment wins, export lines count, multi-line arrays stay whole."""
+    from sysforge.primitives.config import parse_makepkg_conf_text
+    text = (
+        'PKGDEST="/home/u/packages"\n'
+        "DLAGENTS=('file::/usr/bin/curl -qgC - -o %o %u'\n"
+        "          'https::/usr/bin/curl -qgb \"\" -fLC - -o %o %u')\n"
+        "export RUSTC_WRAPPER=sccache\n"
+        "PKGDEST=/pkgdest\n"
+    )
+    parsed = parse_makepkg_conf_text(text)
+    assert parsed["PKGDEST"] == "/pkgdest"
+    assert parsed["RUSTC_WRAPPER"] == "sccache"
+    assert parsed["DLAGENTS"].startswith("(") and "https::" in parsed["DLAGENTS"]

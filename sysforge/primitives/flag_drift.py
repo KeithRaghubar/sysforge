@@ -21,7 +21,8 @@ Public API:
     diff_flags(stored, current) -> list[str]
     resolve_flag_drift(entry, config, conflict_groups, system_conf_path=None,
                        system_assignments=None,
-                       preserved_system_tokens=None) -> FlagDriftResult
+                       preserved_system_tokens=None,
+                       sandbox_policy=None) -> FlagDriftResult
 """
 from __future__ import annotations
 
@@ -96,9 +97,34 @@ def diff_flags(stored: str, current: str) -> list[str]:
     return diffs
 
 
+def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[str]:
+    """``  sandboxed: <old> → <new>`` when the recorded sandbox state differs.
+
+    The ``sandboxed`` sub-axis (3.4.0-B3). Current state comes from the same
+    ``for_profile`` resolution the invocation seam uses; a stage-owned build is
+    always suppressed onto the host. A record without the field is unknown and
+    never drifts, so an upgrade does not flag every pre-existing entry.
+    """
+    if policy is None or "sandboxed" not in entry:
+        return []
+    from sysforge.primitives.build_sandbox import for_profile
+
+    # Mirror makepkg_wrapper's suppression predicate exactly: a kernel build
+    # (by build_mode or owner_stage) or a toolchain-stage build always runs on
+    # the host, so it is recorded sandboxed=False.
+    suppressed = (build_mode == "kernel"
+                  or entry.get("owner_stage") in ("kernel", "toolchain"))
+    current = False if suppressed else for_profile(policy, resolved).enabled
+    stored = bool(entry["sandboxed"])
+    if stored == current:
+        return []
+    return [f"  sandboxed: {stored!r} {arrow()} {current!r}"]
+
+
 def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
                        system_conf_path=None, system_assignments=None,
-                       preserved_system_tokens=None) -> FlagDriftResult:
+                       preserved_system_tokens=None,
+                       sandbox_policy=None) -> FlagDriftResult:
     """Compare one recorded build's stored flags against a fresh resolution.
 
     ``entry`` is a ``build_state.toml`` record for a pkgbase; it must carry
@@ -117,6 +143,13 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
     packages should hoist them. Pass ``preserved_system_tokens={}`` to compare
     raw resolved profiles.
 
+    ``sandbox_policy`` (the process-wide ``build_sandbox`` policy) enables the
+    ``sandboxed`` sub-axis (3.4.0-B3): a recorded ``sandboxed`` that differs
+    from what a fresh build would do is a drift line in the same vocabulary.
+    It is judged even for ``!buildflags`` and pre-flag-tracking entries, because
+    the sandbox changes output where conf flags do not reach. ``None`` disables
+    it.
+
     Never raises on a bad PKGBUILD: a parse failure is reported as
     ``STATUS_PARSE_ERROR`` with the message in ``error`` so callers can decide how
     to surface it.
@@ -129,24 +162,19 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
         return FlagDriftResult(status=STATUS_NO_PKGBUILD, pkgbuild_path=pkgbuild_path)
 
     stored_flags = entry.get("flags_string")
-    if not stored_flags:
+    # The no-flags short-circuit used to come first; it now waits for the
+    # sandbox sub-axis below, which needs the resolved profile. A record with
+    # neither flags nor a sandbox field still returns NO_FLAGS without parsing.
+    if not stored_flags and (sandbox_policy is None or "sandboxed" not in entry):
         return FlagDriftResult(status=STATUS_NO_FLAGS, pkgbuild_path=pkgbuild_path)
 
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
     except Exception as e:  # noqa: BLE001 — best-effort; reported, not raised
+        if not stored_flags:
+            return FlagDriftResult(status=STATUS_NO_FLAGS, pkgbuild_path=pkgbuild_path)
         return FlagDriftResult(
             status=STATUS_PARSE_ERROR, pkgbuild_path=pkgbuild_path, error=str(e),
-        )
-
-    # options=('!buildflags'): makepkg discards CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS
-    # from the conf entirely, so the resolved profile flags never reach the
-    # build. A change in those flags cannot affect the built package, so flag
-    # drift must not fire a rebuild here (F9).
-    if option_disabled(pkgmeta, "buildflags"):
-        return FlagDriftResult(
-            status=STATUS_BUILDFLAGS_IGNORED, pkgbuild_path=pkgbuild_path,
-            stored_flags=stored_flags,
         )
 
     matched = match_rules(pkgmeta, config.get("rules", []))
@@ -158,6 +186,29 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
         pkgmeta, matched, config, conflict_groups,
         extracted_profile=extracted_profile,
     )
+    # 3.4.0-B3: judged before the !buildflags / no-flags returns, because the
+    # sandbox changes output even where makepkg ignores conf flags.
+    sandbox_diff = _sandbox_diff(entry, resolved, sandbox_policy, build_mode=build_mode)
+
+    if not stored_flags:
+        if sandbox_diff:
+            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sandbox_diff,
+                                   pkgbuild_path=pkgbuild_path)
+        return FlagDriftResult(status=STATUS_NO_FLAGS, pkgbuild_path=pkgbuild_path)
+
+    # options=('!buildflags'): makepkg discards CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS
+    # from the conf entirely, so the resolved profile flags never reach the
+    # build. A change in those flags cannot affect the built package, so flag
+    # drift must not fire a rebuild here (F9) — but the sandbox still can.
+    if option_disabled(pkgmeta, "buildflags"):
+        if sandbox_diff:
+            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sandbox_diff,
+                                   stored_flags=stored_flags,
+                                   pkgbuild_path=pkgbuild_path)
+        return FlagDriftResult(
+            status=STATUS_BUILDFLAGS_IGNORED, pkgbuild_path=pkgbuild_path,
+            stored_flags=stored_flags,
+        )
     # The kernel verdict must match makepkg_wrapper's at record time
     # (`build_mode == "kernel" or owner_stage == "kernel"`), or a stage-owned
     # kernel build would drift against itself; owner_stage is persisted in
@@ -177,7 +228,7 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
             line for line in stored_flags.splitlines()
             if line.partition("=")[0].strip() not in KERNEL_CLEAN_KEYS
         )
-    diffs = diff_flags(stored_flags, current_flags)
+    diffs = diff_flags(stored_flags, current_flags) + sandbox_diff
     return FlagDriftResult(
         status=STATUS_DRIFTED if diffs else STATUS_IN_SYNC,
         diffs=diffs,

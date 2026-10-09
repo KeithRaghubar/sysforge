@@ -97,6 +97,7 @@ Both `sysforge build` and `sysforge pipeline` accept `--profile-conf FILE` to su
 | `[security]` | `sandbox_chroot_dir` | `~/chroot` | Where the clean chroot lives; `<dir>/root` must already exist (`mkarchroot <dir>/root base-devel`). Tilde-expanded |
 | `[security]` | `sandbox_clean` | `true` | Sync a pristine copy of the chroot before each build (`makechrootpkg -c`). `false` reuses the working copy — faster, but a previous build's leftovers stay visible to the next one |
 | `[security]` | `sandbox_update` | `true` | Update the working copy before building (`makechrootpkg -u`), so a build never links against a stale chroot |
+| `[security]` | `sandbox_local_repo` | `true` | Publish the host's installed source-built packages into the read-only local repo `[sysforge-local]` that the sandbox chroot lists first, so a sandboxed build links against the versions this host runs (`3.1.0-F10`). `false` leaves dependencies outside the run's own builds to the stock repos |
 | `[security]` | `auto_fetch_pgp_keys` | `false` | Keyserver fetches of `validpgpkeys` missing from the keyring (`3.1.0-F8`). `false`: each key's fingerprint, owner and requesting pkgbase are shown and the import needs a TTY confirmation; a non-interactive run imports nothing (fails closed — makepkg then reports the missing key). `true`: import unattended for batch runs, still shown. Either way the fetch obeys `freeze_sources` (`KIND_KEY_FETCH`). Installed once by `cli.main` (`build_prep.set_key_fetch_policy`) |
 
 ### Typed stage configs

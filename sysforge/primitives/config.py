@@ -676,16 +676,13 @@ _MAKEPKG_ASSIGN_RE = _re.compile(
 SYSTEM_MAKEPKG_CONF = Path("/etc/makepkg.conf")
 
 
-def _parse_one_makepkg_conf(path: Path) -> dict:
-    """Parse a single makepkg.conf file into {key: raw_value_string}."""
-    if not path.exists():
-        return {}
-    try:
-        text = path.read_text(encoding="utf-8")
-    except PermissionError:
-        _log.warn(f"Cannot read {path} — skipping")
-        return {}
+def parse_makepkg_conf_text(text: str) -> dict:
+    """Parse makepkg.conf *text* into {key: raw_value_string}, last assignment winning.
 
+    The file-free core of :func:`_parse_one_makepkg_conf`, shared with the
+    sandbox's container-conf audit (3.4.0-F2), which judges a conf that exists
+    only as a string. ``export KEY=…`` lines count as assignments. Never logs.
+    """
     result = {}
     for m in _MAKEPKG_ASSIGN_RE.finditer(text):
         key = m.group("key")
@@ -721,7 +718,20 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
                 value = value + "\n" + "\n".join(extra)
 
         result[key] = value
+    return result
 
+
+def _parse_one_makepkg_conf(path: Path) -> dict:
+    """Parse a single makepkg.conf file into {key: raw_value_string}."""
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except PermissionError:
+        _log.warn(f"Cannot read {path} — skipping")
+        return {}
+
+    result = parse_makepkg_conf_text(text)
     _log.info(f"Parsed {len(result)} keys from {path}")
     _log.debug("System makepkg.conf key=value pairs:\n" +
                "\n".join(f"  {k}={v}" for k, v in result.items()))

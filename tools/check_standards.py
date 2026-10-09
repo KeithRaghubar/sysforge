@@ -52,6 +52,9 @@ Groups:
     privilege_seam  Escalation discipline: root-escalating argv routes through
                     primitives/privilege.py; raw ["sudo", ...] outside it is an
                     error (probe/drop-priv forms allowlisted).
+    local_repo      The sandbox's local repo (STD row 29): no read-write mount
+                    literal (`-d`, `--bind=`) — arch-nspawn mounts it read-only —
+                    and named only by its home, primitives/local_repo.py.
     deprecations    Deprecation registry discipline (STD row 24): every record in
                     primitives/deprecations.py has a presence proof (a
                     warn_used call site for compat, a resolvable anchor for a
@@ -924,6 +927,61 @@ def check_privilege_seam(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: local_repo  (the sandbox's local pacman repo — STD row 29, 3.1.0-F10)
+# ===========================================================================
+
+_LOCAL_REPO_HOME = "sysforge/primitives/local_repo.py"
+_LOCAL_REPO_NAME = "sysforge-local"
+
+
+def _string_constants(tree: ast.AST) -> list[tuple[int, str]]:
+    return [(n.lineno, n.value) for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
+def check_local_repo(repo: Path) -> list[Finding]:
+    """The local repo is never mounted writable and has exactly one home.
+
+    arch-nspawn mounts the repo itself, read-only, from the ``file://`` Server
+    in the managed block; sysforge must add no mount of its own, and a ``-d`` or
+    ``--bind=`` (read-write) literal would let one malicious build plant a
+    package every later sandboxed build installs. Any other module naming the
+    repo is a second writer of the chroot's pacman.conf block. First-repo
+    ordering is pinned by tests/test_local_repo.py (unit + a real-pacman
+    regression), not here.
+    """
+    findings: list[Finding] = []
+    home = repo / _LOCAL_REPO_HOME
+    if not home.is_file():
+        return [Finding("local_repo", "error", _LOCAL_REPO_HOME,
+                        "the local repo's home module is missing")]
+    try:
+        consts = _string_constants(ast.parse(home.read_text(encoding="utf-8")))
+    except SyntaxError:
+        return findings  # fail-safe, as elsewhere
+    for lineno, value in consts:
+        if value == "-d" or value.startswith("--bind="):
+            findings.append(Finding(
+                "local_repo", "error", f"{_LOCAL_REPO_HOME}:{lineno}",
+                "local repo adds a read-write mount; arch-nspawn already mounts "
+                "it read-only from the file:// Server"))
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        rel = py.relative_to(repo).as_posix()
+        if rel == _LOCAL_REPO_HOME:
+            continue
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            continue
+        for lineno, value in _string_constants(tree):
+            if _LOCAL_REPO_NAME in value:
+                findings.append(Finding(
+                    "local_repo", "error", f"{rel}:{lineno}",
+                    f"names the {_LOCAL_REPO_NAME} repo outside {_LOCAL_REPO_HOME}"))
+    return findings
+
+
+# ===========================================================================
 # Group: distro_portability  (Arch-derivative portability — STD row 23)
 # ===========================================================================
 
@@ -1590,6 +1648,7 @@ GROUPS = {
     "roadmap_ids":    check_roadmap_ids,
     "run_seam":       check_run_seam,
     "privilege_seam": check_privilege_seam,
+    "local_repo":     check_local_repo,
     "distro_portability": check_distro_portability,
     "deprecations":   check_deprecations,
     "semver_bump":    check_semver_bump,

@@ -24,6 +24,7 @@ flag transforms and env resolvers it draws on stay in ``makepkg_flags`` /
 import contextlib
 import contextvars
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -194,6 +195,12 @@ def select_failure_tail(lines: list, limit: int) -> list:
     return [*head, f"... {omitted} line(s) omitted ...", *tail]
 
 
+def _sandbox_state_dir():
+    """The state dir the local repo lives under (3.1.0-F10); a seam for tests."""
+    from sysforge.primitives.paths import resolve_state_dir
+    return resolve_state_dir(None)[0]
+
+
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
@@ -206,6 +213,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     """
     pkgbuild_path = Path(pkgbuild_path).resolve()
     build_dir = pkgbuild_path.parent
+    # A failed build must never inherit an earlier success's provenance (3.4.0-B3).
+    build_sandbox.clear_provenance()
 
     env = os.environ.copy()
 
@@ -305,6 +314,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # fork of the command, not another prefix entry — see build_sandbox.
     sandbox = build_sandbox.for_profile(build_sandbox.get_policy(), resolved_profile)
     sandbox_cleanup = None
+    on_success = None
     if sandbox.enabled:
         # Raises SandboxUnavailable rather than falling back to a host build:
         # a security opt-in that silently degrades is worse than one that stops.
@@ -319,8 +329,24 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # and before anything that would need undoing if the resolver refuses
         # (3.2.0-B19 raises SandboxUnavailable).
         from sysforge.primitives.pacman import get_pkgdest
+        # 3.1.0-F10: before install_args and provision_toolchain, so a missing
+        # clang resolves from [sysforge-local] and the -I set sees a fresh repo.
+        # The block is also the mount: arch-nspawn binds every file:// Server
+        # read-only from the host. Off, the block is removed, or arch-nspawn
+        # would keep mounting a repo nothing syncs any more. All of these raise
+        # SandboxUnavailable before anything needs undoing.
+        from sysforge.primitives import local_repo
+        if sandbox.local_repo:
+            _state = _sandbox_state_dir()
+            local_repo.ensure_chroot_section(sandbox, _state)
+            local_repo.sync(_state, get_pkgdest())
+        else:
+            local_repo.remove_chroot_section(sandbox)
         install_pkgs = build_sandbox.install_args(
-            pkgbuild_path, search_dir=get_pkgdest())
+            pkgbuild_path, search_dir=get_pkgdest(),
+            # The toolchain -I is part of F10 and gated with it.
+            exports=(extra_env or {}) if sandbox.local_repo else None,
+            conf_path=conf_path)
         # The chroot is base-devel, which is gcc + binutils; a profile that
         # resolved to LLVM exports CC=clang into it and every C build dies in
         # configure (3.2.0-B4). Both channels the container is handed are
@@ -349,8 +375,16 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Only the profile-resolved injections are re-exported — never the
         # whole inherited environment, which is the user's shell, not a build
         # input, and has no business crossing into the container.
-        chroot_conf.write_text(
-            build_sandbox.chroot_conf_text(conf_path, exports=extra_env))
+        _chroot_text = build_sandbox.chroot_conf_text(conf_path, exports=extra_env)
+        # After every provisioning step, so it judges the chroot as the build
+        # will see it (3.4.0-F2). Raises before the canonical swap below, so a
+        # refusal has nothing to undo but the scratch dir.
+        try:
+            build_sandbox.audit_chroot_conf(_chroot_text, sandbox)
+        except build_sandbox.SandboxUnavailable:
+            shutil.rmtree(conf_dir, ignore_errors=True)
+            raise
+        chroot_conf.write_text(_chroot_text)
         chroot_conf.chmod(0o644)
 
         # The canonical-name swap (3.2.0-B1): makechrootpkg builds the
@@ -372,6 +406,21 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # artifacts back where the host path leaves them.
         env = build_sandbox.chroot_env(env)
         env.update(build_sandbox.dest_env_from_conf(conf_path))
+        # 3.4.0-B3: after a successful build, fingerprint the compiler the
+        # container actually used — the named working copy's — without running
+        # it. makepkg's default `cc` is gcc when the profile exports no CC.
+        try:
+            _cc_name = Path(shlex.split(str((extra_env or {}).get("CC") or "gcc"))[0]).name
+        except (ValueError, IndexError):
+            _cc_name = "gcc"
+
+        def _capture_provenance(_pol=sandbox, _cc=_cc_name):
+            from sysforge.primitives.build_fingerprint import static_identity
+            build_sandbox.set_provenance(build_sandbox.SandboxProvenance(
+                cc_name=_cc,
+                copy_identity=static_identity(build_sandbox.copy_compiler(_pol, _cc)),
+            ))
+        on_success = _capture_provenance
         cmd = prefix + build_sandbox.build_argv(
             sandbox, flags,
             conf_dir_name=conf_dir.name, install_pkgs=install_pkgs,
@@ -445,6 +494,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             # Deliberate dynamic attr, read via getattr by callers.
             cpe.captured_output = []  # pyright: ignore[reportAttributeAccessIssue]
             raise cpe
+        if on_success is not None:
+            on_success()
         return
 
     # Non-interactive branch: attach makepkg's stdout+stderr to a pty so child
@@ -628,6 +679,10 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # matched. Deliberate dynamic attr, read via getattr by callers.
         cpe.diagnosis = _suggestions  # pyright: ignore[reportAttributeAccessIssue]
         raise cpe
+
+    if on_success is not None:
+        on_success()
+
 
 class BuildAborted(RuntimeError):
     """The user chose 'abort' at a build-failure/install-failure menu.

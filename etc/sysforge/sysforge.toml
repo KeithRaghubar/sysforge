@@ -249,11 +249,11 @@ freeze_sources = false
 # browser profiles at build time, which is how the AUR supply-chain campaigns
 # actually work.
 #
-# Scope: the container resolves build deps from the stock repos, not from
-# what you have installed. Packages built earlier in the SAME run are injected
-# automatically; a dep built in an earlier run, or a source-built package ahead
-# of the repos, is not — the container uses the repo version instead. Best
-# suited to untrusted AUR leaf packages whose deps all come from repos.
+# Dependencies: the container resolves build deps through its own pacman.conf.
+# With sandbox_local_repo (below, on by default) the packages you built from
+# source are published to it at the versions you have installed, so a sandboxed
+# build links against what this host runs. Packages built earlier in the SAME
+# run are injected automatically.
 # Requires devtools and a clean chroot root: mkarchroot ~/chroot/root base-devel
 # Default off — the host path is the tested default. When on, a build that
 # cannot be isolated fails rather than quietly running unsandboxed.
@@ -269,6 +269,15 @@ sandbox_clean = true
 # Update the working copy before building (-u), so a build never links against
 # a stale chroot.
 sandbox_update = true
+# Publish the packages you built from source, at the versions you have
+# installed, into a local pacman repo ([sysforge-local], under the state dir)
+# that the sandbox chroot lists first and mounts read-only. A sandboxed build
+# then links against the versions this host runs instead of the stock repos'.
+# Adds a [sysforge-local] block to <sandbox_chroot_dir>/root/etc/pacman.conf;
+# other tools using that chroot see the repo too, so keep the state dir while
+# the block is there. Off: the block is removed on the next sandboxed build and
+# deps not built in this run come from the stock repos.
+sandbox_local_repo = true
 
 # PGP keys a PKGBUILD names in validpgpkeys but your keyring lacks are fetched
 # from a keyserver only with consent: sysforge shows each key's fingerprint,

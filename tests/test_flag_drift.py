@@ -396,3 +396,85 @@ def test_stage_owned_kernel_entry_does_not_drift_against_itself(tmp_path):
         system_conf_path=_SYS_CONF, preserved_system_tokens=_PTOKENS,
     )
     assert r.status == STATUS_IN_SYNC, r.diffs
+
+
+# ---------------------------------------------------------------------------
+# sandboxed sub-axis (3.4.0-B3)
+# ---------------------------------------------------------------------------
+
+from sysforge.primitives.build_sandbox import SandboxPolicy
+
+_ON = SandboxPolicy(enabled=True)
+_OFF = SandboxPolicy(enabled=False)
+
+
+def _entry(d, **kw):
+    e = {"build_mode": "source_built", "pkgbuild_dir": str(d), "flags_string": _BARE_FLAGS}
+    e.update(kw)
+    return e
+
+
+def test_sandbox_mismatch_drifts(tmp_path):
+    r = _drift(_entry(_pkgbuild(tmp_path), sandboxed=False), sandbox_policy=_ON)
+    assert r.status == STATUS_DRIFTED
+    assert any("sandboxed" in line and "False" in line and "True" in line for line in r.diffs)
+
+
+def test_sandbox_match_is_in_sync(tmp_path):
+    r = _drift(_entry(_pkgbuild(tmp_path), sandboxed=True), sandbox_policy=_ON)
+    assert r.status == STATUS_IN_SYNC
+
+
+def test_sandbox_unknown_never_drifts(tmp_path):
+    r = _drift(_entry(_pkgbuild(tmp_path)), sandbox_policy=_ON)
+    assert r.status == STATUS_IN_SYNC
+
+
+def test_sandbox_axis_off_without_a_policy(tmp_path):
+    r = _drift(_entry(_pkgbuild(tmp_path), sandboxed=False))
+    assert r.status == STATUS_IN_SYNC
+
+
+def test_stage_owned_compares_against_host(tmp_path):
+    e = _entry(_pkgbuild(tmp_path), sandboxed=False, owner_stage="toolchain")
+    assert _drift(e, sandbox_policy=_ON).status == STATUS_IN_SYNC
+
+
+def test_buildflags_ignored_package_still_drifts_on_sandbox(tmp_path):
+    d = tmp_path / "go-thing"
+    d.mkdir()
+    (d / "PKGBUILD").write_text(
+        "pkgname=go-thing\npkgver=1\npkgrel=1\noptions=('!buildflags')\n")
+    r = _drift(_entry(d, sandboxed=False), sandbox_policy=_ON)
+    assert r.status == STATUS_DRIFTED
+    assert len(r.diffs) == 1 and "sandboxed" in r.diffs[0]
+
+
+def test_no_flags_package_still_drifts_on_sandbox(tmp_path):
+    d = _pkgbuild(tmp_path)
+    r = _drift({"build_mode": "source_built", "pkgbuild_dir": str(d), "sandboxed": False},
+               sandbox_policy=_ON)
+    assert r.status == STATUS_DRIFTED
+
+
+def test_profile_override_honoured(tmp_path):
+    cfg = {"rules": [{"pkgnames": ["htop"], "profile": "boxed"}],
+           "defaults": {"profile": "bare"},
+           "profiles": {"bare": {"CFLAGS": "-O2"},
+                        "boxed": {"CFLAGS": "-O2", "sandbox_builds": True}},
+           "conflict_groups": {}}
+    r = _drift(_entry(_pkgbuild(tmp_path), sandboxed=True), config=cfg, sandbox_policy=_OFF)
+    assert not any("sandboxed" in line for line in r.diffs)
+
+
+def test_kernel_build_mode_without_owner_stage_compares_against_host(tmp_path):
+    """Review #4: the record site suppresses on build_mode == "kernel" too
+    (makepkg_wrapper's kernel_build), so drift must not compute True for it."""
+    cfg = {"rules": [{"pkgnames": ["htop"], "profile": "k"}],
+           "defaults": {"profile": "bare"},
+           "profiles": {"bare": {"CFLAGS": "-O2"},
+                        "k": {"CFLAGS": "-O2", "build_mode": "kernel"}},
+           "conflict_groups": {}}
+    e = _entry(_pkgbuild(tmp_path), sandboxed=False)
+    r = _drift(e, config=cfg, sandbox_policy=_ON)
+    assert not any("sandboxed" in line for line in r.diffs), r.diffs

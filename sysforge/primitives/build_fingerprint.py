@@ -36,6 +36,7 @@ Public API:
     hash_file(path) / hash_obj(obj)            -> str | None / str
     source_commit(pkgbuild_dir)                -> str | None
     clang_identity(cc)                         -> str
+    static_identity(cc_path)                   -> str   (never executes the compiler)
 """
 import hashlib
 import json
@@ -164,6 +165,29 @@ def resolve_libllvm(cc):
             return matches[0]
     return None
 
+
+def static_identity(cc_path) -> str:
+    """Identity of the compiler at *cc_path* that never executes it.
+
+    For a compiler inside a chroot copy, which cannot be run on the host (it
+    would load the host's libraries). Size + nanosecond mtime of the driver, and
+    of the ``libLLVM.so*`` beside it when there is one — pacman restores mtimes
+    from the package archive, so the same package file installed on the host and
+    in the container yields the same string (3.4.0-B3). Never raises.
+    """
+    try:
+        st = Path(cc_path).stat()
+    except OSError:
+        return "none"
+    parts = [f"size={st.st_size}", f"mtime={st.st_mtime_ns}"]
+    so = resolve_libllvm(cc_path)
+    if so is not None:
+        try:
+            lst = Path(so).stat()
+            parts.append(f"libllvm={lst.st_size}:{lst.st_mtime_ns}")
+        except OSError:
+            pass
+    return "|".join(parts)
 
 def toolchain_fingerprint(method, cc) -> str:
     """Opaque identity string for the active toolchain, selected by ``method``.

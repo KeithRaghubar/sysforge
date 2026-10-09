@@ -175,22 +175,26 @@ with `sandbox_builds` in `profiles.toml`. Builds that cannot be isolated stop wi
 rather than quietly running unsandboxed, and `run toolchain` / `run kernel` are never
 sandboxed — both build against the host they are upgrading.
 
-**Know the trade-off before turning it on.** The container has its own `pacman.conf` and
-resolves build dependencies from the **stock repos**, not from what you have installed. That
-means:
+**How dependencies resolve.** The container has its own `pacman.conf`, so on its own it would
+resolve build dependencies from the stock repos rather than from what you have installed.
+sysforge closes that gap two ways:
 
-- **Locally-built dependencies are invisible to it.** Packages built earlier *in the same run*
-  are injected automatically, so an `update` across a whole stack works; a one-off
-  `sysforge build <pkg>` whose deps you built last week will fail to resolve them.
-- **Versions can diverge from your host.** If you build a package from source ahead of the
-  repos (a source-built toolchain, a `-git` checkout), the container builds against the repo
-  version instead, and the result may not match what your host actually runs.
+- Packages built earlier *in the same run* are injected into the container directly.
+- Everything else you built from source is published to a local pacman repo,
+  `[sysforge-local]`, at the versions you actually have installed. The chroot lists it ahead of
+  the stock repos and mounts it read-only, so a sandboxed build links against what your host
+  runs, including your own toolchain. This is on by default whenever the sandbox is on; set
+  `sandbox_local_repo = false` under `[security]` to resolve those dependencies from the stock
+  repos instead. It adds a `[sysforge-local]` block to `<sandbox_chroot_dir>/root/etc/pacman.conf`.
+  Other tools that use the same chroot see that repo too (read-only), so keep sysforge's state
+  directory in place while the block is there; turning the setting off removes the block on the
+  next sandboxed build.
 
-What is *not* lost is the benefit of your optimized packages themselves: those live in the
-installed binaries on your host, and a dependent built in the container still runs against
-them. Sandboxing is therefore a good fit for **untrusted AUR leaf packages whose dependencies
-all come from repos** — which is the threat it exists for — and a poor fit for a self-built
-stack. Leave it off (the default) or scope it to a profile that matches those packages.
+A sandboxed build still differs from a host build in one way that is a feature: only the
+dependencies a PKGBUILD declares are installed, so a package can't silently pick up an optional
+library that merely happens to be on your system. `build_state.toml` records whether each
+package was built in the sandbox, and `sysforge update --explain-drift` lists packages built
+the other way after you change the setting (`--rebuild-on-flag-drift` rebuilds them).
 
 New to profile-guided optimization? [docs/guides/pgo.md](docs/guides/pgo.md) walks through
 package PGO (mesa), toolchain PGO, and kernel AutoFDO/Propeller step by step, including how

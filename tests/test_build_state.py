@@ -8,6 +8,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives.build_state import BuildState, parse_pacman_version
@@ -1124,3 +1126,43 @@ def test_save_is_silent_when_the_disk_copy_is_older(tmp_path, capsys):
     mine.save()
 
     assert "stale" not in "".join(capsys.readouterr())
+
+
+# ---------------------------------------------------------------------------
+# sandboxed (3.4.0-B3)
+# ---------------------------------------------------------------------------
+
+def test_record_sandboxed_field(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0", pkgbase="htop",
+              pkgbuild_dir=Path("/tmp/x"), sandboxed=True)
+    assert bs.get("htop")["sandboxed"] is True
+
+
+def test_sandboxed_omitted_when_unknown(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0", pkgbase="htop",
+              pkgbuild_dir=Path("/tmp/x"))
+    assert "sandboxed" not in bs.get("htop")
+
+
+def test_sandboxed_sticky_and_false_is_recorded(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0", pkgbase="htop",
+              pkgbuild_dir=Path("/tmp/x"), sandboxed=False)
+    bs.record(pkgname="htop", pkgver="2", pkgrel="1", epoch="0", pkgbase="htop",
+              pkgbuild_dir=Path("/tmp/x"))
+    assert bs.get("htop")["sandboxed"] is False
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_sandboxed_round_trips_as_a_real_bool(tmp_path, value):
+    """The serializer quotes every field; a quoted "False" would read back as
+    a truthy string and invert flag drift's sandbox comparison."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0", pkgbase="htop",
+              pkgbuild_dir=Path("/tmp/x"), sandboxed=value)
+    bs.save()
+    text = (tmp_path / "build_state.toml").read_text()
+    assert f"sandboxed = {'true' if value else 'false'}" in text
+    assert BuildState(tmp_path).get("htop")["sandboxed"] is value

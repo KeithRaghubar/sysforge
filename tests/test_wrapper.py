@@ -484,3 +484,70 @@ def test_run_records_build_time_without_paused_prompt_time(tmp_path, monkeypatch
     pkgbuild.write_text("pkgname=probe\npkgver=1\npkgrel=1\n")
     mw.run(pkgbuild, options=BuildOptions(update=False, pkg_log=False))
     assert recorded["elapsed"] == 30
+
+
+# ---------------------------------------------------------------------------
+# Sandbox provenance at the record site (3.4.0-B3)
+# ---------------------------------------------------------------------------
+
+def _spy_record(monkeypatch):
+    import sysforge.primitives.build_state as bs_mod
+    captured = {}
+
+    class _SpyState(bs_mod.BuildState):
+        def record(self, *a, **k):
+            captured.update(k)
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
+    return captured
+
+
+def _record(tmp_path, variant="pgo_llvm", fingerprint="fp-host"):
+    from types import SimpleNamespace
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
+                              toolchain_variant=variant, toolchain_fingerprint=fingerprint)
+    pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
+                           "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
+    makepkg_wrapper._record_build_state(pkgbuild, pkgmeta, None, options, rename=None,
+                                        record_build_mode=None, build_elapsed=1)
+
+
+def test_record_site_host_build_records_host_values(tmp_path, monkeypatch):
+    from sysforge.primitives import build_sandbox
+    build_sandbox.clear_provenance()
+    cap = _spy_record(monkeypatch)
+    _record(tmp_path)
+    assert cap["sandboxed"] is False
+    assert (cap["toolchain_variant"], cap["toolchain_fingerprint"]) == ("pgo_llvm", "fp-host")
+
+
+@pytest.mark.parametrize("cc,variant", [("clang", "stock_llvm"), ("gcc", "gcc")])
+def test_record_site_sandboxed_records_the_copy_compiler(tmp_path, monkeypatch, cc, variant):
+    from sysforge.primitives import build_sandbox
+    cap = _spy_record(monkeypatch)
+    build_sandbox.set_provenance(build_sandbox.SandboxProvenance(cc, "size=1|mtime=2"))
+    monkeypatch.setattr(build_sandbox, "_HOST_BIN_DIR", tmp_path / "nohost")
+    _record(tmp_path)
+    assert cap["sandboxed"] is True
+    assert cap["toolchain_variant"] == variant
+    assert cap["toolchain_fingerprint"] == f"sandbox|{cc}|size=1|mtime=2"
+    assert build_sandbox.take_provenance() is None  # consumed
+
+
+def test_record_site_clears_provenance_on_the_no_pkgname_path(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from sysforge.primitives import build_sandbox
+    _spy_record(monkeypatch)
+    build_sandbox.set_provenance(build_sandbox.SandboxProvenance("gcc", "x"))
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("\n")
+    options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
+                              toolchain_variant=None, toolchain_fingerprint=None)
+    makepkg_wrapper._record_build_state(pkgbuild, {"globals": {}}, None, options,
+                                        rename=None, record_build_mode=None, build_elapsed=1)
+    assert build_sandbox.take_provenance() is None

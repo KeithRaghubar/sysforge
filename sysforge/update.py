@@ -102,6 +102,7 @@ from sysforge.primitives.profile import (
     resolve_consumes,
     resolve_profile,
 )
+from sysforge.primitives import build_sandbox
 from sysforge.primitives import restart_probe
 from sysforge.primitives import sudo_session
 from sysforge.primitives.source_sync import (
@@ -1162,6 +1163,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             entry, run.config, _flag_cgroups,
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
+            sandbox_policy=build_sandbox.get_policy(),
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
@@ -1200,6 +1202,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             entry, run.config, _flag_cgroups,
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
+            sandbox_policy=build_sandbox.get_policy(),
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(

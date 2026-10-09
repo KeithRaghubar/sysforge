@@ -306,3 +306,49 @@ def test_version_anchor_avoids_sibling_swallow(tmp_path):
     recorded = bf.record_build(cache, key, "fp1", [tmp_path], ["llvm"])
     assert len(recorded) == 1
     assert recorded[0].name.startswith("llvm-1")
+
+
+# ---------------------------------------------------------------------------
+# static_identity (3.4.0-B3): a compiler identity that never executes it
+# ---------------------------------------------------------------------------
+
+def _bin(root, rel, data: bytes, mtime_ns: int):
+    import os
+    p = root / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(data)
+    os.utime(p, ns=(mtime_ns, mtime_ns))
+    return p
+
+
+def test_static_identity_matches_for_the_same_package_file(tmp_path):
+    """Same bytes and archive mtime under two roots -> same identity (llvm path)."""
+    for root in ("host", "copy"):
+        _bin(tmp_path / root, "usr/bin/clang", b"C" * 10, 1_000)
+        _bin(tmp_path / root, "usr/lib/libLLVM.so.21", b"L" * 99, 2_000)
+    a = bf.static_identity(tmp_path / "host/usr/bin/clang")
+    b = bf.static_identity(tmp_path / "copy/usr/bin/clang")
+    assert a == b and "libllvm=99:2000" in a
+
+
+def test_static_identity_differs_for_a_different_build(tmp_path):
+    _bin(tmp_path / "host", "usr/bin/clang", b"C" * 10, 1_000)
+    _bin(tmp_path / "copy", "usr/bin/clang", b"C" * 11, 1_000)
+    assert bf.static_identity(tmp_path / "host/usr/bin/clang") != \
+        bf.static_identity(tmp_path / "copy/usr/bin/clang")
+
+
+def test_static_identity_gcc_has_no_libllvm_part(tmp_path):
+    p = _bin(tmp_path, "usr/bin/gcc", b"G" * 5, 7)
+    assert bf.static_identity(p) == "size=5|mtime=7"
+
+
+def test_static_identity_absent_binary_is_none(tmp_path):
+    assert bf.static_identity(tmp_path / "usr/bin/clang") == "none"
+
+
+def test_static_identity_never_executes(tmp_path, monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("static_identity executed the compiler")
+    monkeypatch.setattr(bf.run, "probe", _boom)
+    bf.static_identity(_bin(tmp_path, "usr/bin/clang", b"C", 1))

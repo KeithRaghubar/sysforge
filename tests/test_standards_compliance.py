@@ -926,3 +926,43 @@ def test_subprocess_fence_every_raw_call_names_its_reason():
             if m and not re.search(r"[A-Za-z]{3}", m.group(1)):
                 bare.append(f"{py.relative_to(REPO_ROOT)}:{n}")
     assert not bare, f"`# noqa: TID251` without a reason: {bare}"
+
+
+# ---------------------------------------------------------------------------
+# local_repo group (STD row 29, 3.1.0-F10)
+# ---------------------------------------------------------------------------
+
+def _local_repo_tree(tmp_path, src: str, extra: dict | None = None):
+    prim = tmp_path / "sysforge" / "primitives"
+    prim.mkdir(parents=True)
+    (prim / "local_repo.py").write_text(src, encoding="utf-8")
+    for name, text in (extra or {}).items():
+        (prim / name).write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_local_repo_group_is_clean_on_the_real_repo():
+    assert _load_check_standards().check_local_repo(_REPO) == []
+
+
+def test_local_repo_flags_a_writable_mount(tmp_path):
+    repo = _local_repo_tree(tmp_path, 'REPO_NAME = "sysforge-local"\n'
+                                      'def mount_args(s):\n    return ["-d", str(s)]\n')
+    found = _load_check_standards().check_local_repo(repo)
+    assert any("read-write" in f.message for f in found), found
+
+
+def test_local_repo_flags_a_bind_mount(tmp_path):
+    repo = _local_repo_tree(tmp_path, 'REPO_NAME = "sysforge-local"\n'
+                                      'ARG = "--bind=/srv/repo"\n')
+    found = _load_check_standards().check_local_repo(repo)
+    assert any("read-write" in f.message for f in found), found
+
+
+def test_local_repo_flags_a_second_home(tmp_path):
+    repo = _local_repo_tree(
+        tmp_path,
+        'REPO_NAME = "sysforge-local"\ndef mount_args(s):\n    return ["-D", str(s)]\n',
+        extra={"other.py": 'SECTION = "[sysforge-local]"\n'})
+    found = _load_check_standards().check_local_repo(repo)
+    assert any("other.py" in f.location for f in found), found

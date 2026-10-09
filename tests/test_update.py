@@ -3003,3 +3003,46 @@ def test_split_toolchain_first_by_owner_stamp_and_config(tmp_path, monkeypatch):
     first, rest = split_toolchain_first(batch, bs)
     assert [x.pkgbase for x in first] == ["my-clang", "llvm"]
     assert [x.pkgbase for x in rest] == ["foo", "bar"]
+
+
+# ---------------------------------------------------------------------------
+# sandboxed flag-drift sub-axis (3.4.0-B3)
+# ---------------------------------------------------------------------------
+
+def _run_with_sandbox_policy(scenario, *, recorded, **arg_kw):
+    """htop has no recorded flags, so only the sandbox axis can drift it."""
+    from pathlib import Path
+
+    from sysforge.primitives import build_sandbox
+
+    scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    scenario.record("htop", "3.4.1", "1", sandboxed=recorded)
+    build_sandbox.set_policy(build_sandbox.SandboxPolicy(
+        enabled=True, chroot_dir=Path("/nonexistent-chroot")))
+    try:
+        return scenario.run(
+            _make_args(no_toolchain_preflight=True, **arg_kw),
+            installed={"htop": "3.4.1-1"}, foreign={"htop": "3.4.1-1"},
+        )
+    finally:
+        build_sandbox.reset_policy()
+
+
+def test_sandbox_drift_is_promoted_by_rebuild_on_flag_drift(update_scenario):
+    """Built on the host, sandbox now on -> queued like any flag drift."""
+    builds = _run_with_sandbox_policy(update_scenario, recorded=False,
+                                      rebuild_on_flag_drift=True)
+    assert len(builds) == 1
+
+
+def test_sandbox_drift_is_only_reported_without_the_flag(update_scenario, capsys):
+    builds = _run_with_sandbox_policy(update_scenario, recorded=False, explain_drift=True)
+    assert builds == []
+    out = "".join(capsys.readouterr())
+    assert "sandboxed: False" in out and "True" in out
+
+
+def test_matching_sandbox_state_does_not_drift(update_scenario):
+    builds = _run_with_sandbox_policy(update_scenario, recorded=True,
+                                      rebuild_on_flag_drift=True)
+    assert builds == []

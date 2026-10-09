@@ -120,8 +120,6 @@ canonical ordering.
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
-| `3.4.0-F2` | the sandbox refuses a container conf that still names the host | low | medium | minor |
-| `3.1.0-F10` | a sandboxed build links against repo versions, not the versions the host runs | low | large | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -253,44 +251,6 @@ canonical ordering.
 
 ---
 
-- **`3.1.0-F10` — a sandboxed build links against repo versions, not the versions the host runs.**
-  The other half of the sandbox's dependency-scope limit, and the one `3.1.0-F9` (shipped) explicitly
-  does not reach. Even with locally-built artifacts injected, everything *not* injected is resolved from the
-  stock repos inside the container — so on a host whose LLVM is built from source ahead of `extra`,
-  a sandboxed build compiles and links against the repo LLVM and the resulting package may not match
-  what the host actually runs. This is not a lost optimization (a dependency's optimization lives in
-  its own installed binary, which the built package still runs against); it is a **version-agreement**
-  failure, and the failure mode is a broken package rather than a slower one.
-  The standard fix is a local pacman repo: `repo-add` every artifact sysforge builds into a repo
-  directory, and name that repo in the `pacman.conf` the chroot is created with (`mkarchroot -C`),
-  so the container's dependency resolution sees the host's own builds by name and version. Nothing
-  in the tree maintains such a repo today — `resolve_repo_mode`'s `build_from_source` is about where
-  *PKGBUILDs* come from, not about publishing artifacts — so this is a genuinely new surface: a repo
-  directory under the state dir or `PKGDEST`, a `repo-add` call at the same seam that records a
-  successful build, a chroot `pacman.conf` template, and a decision about pruning (a `repo-add`-ed
-  archive grows without bound).
-  Weigh against the alternative of simply leaving the sandbox scoped at AUR leaves: the local repo
-  is the difference between a per-profile opt-in and a mechanism that could reasonably default on.
-  `3.1.0-F9` shipped first as planned and closed the more common failure; its artifact selection is
-  now `makepkg_artifacts.find_artifacts(..., exact_ver=)`, which is what a `repo-add` pass calls to
-  decide *which* build of a package to publish.
-  **Observed break (2026-09-11).** This gap has already caused a broken package, not just a missed
-  optimization. A sandboxed `mesa-sysforge` linked against the repo `llvm-libs 22.1.8-2` while the
-  host ran a PGO `llvm-libs` with **the same pkgver** and different exports. `libgallium` failed to
-  load, and the desktop did not come up after reboot. The immediate cause was injection losing the
-  whole closure (`3.2.0-B18`/`B19`, fixed), and `3.2.0-B20` now blocks the install. That leaves a
-  pkgver-identical skew outside the injection set detected only after a full build. A local repo
-  prevents it at the source, so this entry's "buys reach rather than fixing an active break"
-  rationale is weaker than when it was tagged.
-  *Priority: low · Effort: large · Bump: minor* — the sandbox is usable without it and default-off,
-  so this buys reach rather than fixing an active break; effort is a new artifact-publishing surface
-  plus chroot provisioning and a retention policy, none of which exists today.
-  **Standards home on adoption:** deferred to implementation — a local repo would be the first
-  artifact-*publishing* surface in the tree, so if it lands it needs its own row covering repo
-  layout and the `repo-add`/signature story, rather than extending an existing one.
-
----
-
 - **`3.2.0-F9` — the mesa PGO rebuild suppresses its own staleness diagnostic, so a drifting profile
   is unobservable.** `mesa_pgo.use_flags` appends `-Wno-profile-instr-out-of-date
   -Wno-profile-instr-unprofiled` to every `-fprofile-use` rebuild. The intent is sound and
@@ -412,32 +372,6 @@ canonical ordering.
   *Priority: med · Effort: medium · Bump: minor* — diagnosability; every interactive-stage failure
   currently needs forensic reconstruction.
   **Standards home on adoption:** none.
-
-- **`3.4.0-F2` — the sandbox refuses a container conf that still names the host.** Promoted from
-  `3.2.0-Q1`, which weighed three models for deriving the container's `makepkg.conf` and settled on
-  the middle one. The current model stays: `chroot_conf_text` copies the emitted host conf and
-  applies the five correction sets in `primitives/build_sandbox.py` (`_CHROOT_DEST_KEYS`,
-  `_ENV_EXPORT_DENY`, `_HOST_ONLY_BUILDENV`, `_TOOLCHAIN_PACKAGE`, `_PROFILE_USE_PREFIXES`). What
-  changes is what happens to anything the five sets don't cover. Add an audit pass over the *final*
-  container conf text, after every correction has run, that walks each assignment and export and refuses
-  (`SandboxUnavailable`, through the existing `preflight` refusal path) when it finds either of these:
-  an absolute path that will not exist inside the chroot (not under a mirrored or rewritten prefix,
-  not a standard system path), or a bare binary name in a compiler, linker or `BUILDENV` slot that
-  the chroot's provisioned toolchain will not supply. The refusal names the key, the value and the
-  correction set that would cover it, so a new member of this bug class becomes one readable refusal
-  instead of a build error several layers later. Every member of the class so far (`3.2.0-B2`, `B4`,
-  `B5`, `B6`, `B7`, `B10`, `B12`) named a path or a binary, so this default-denies the detectable
-  subset without enumerating the whole conf surface. **Rejected alternatives:** a full allowlist
-  (a large conf surface that changes between devtools releases, and it fails quietly: a legitimate key silently
-  not crossing shows up as an unexplained difference in build output) and leaving things as they are
-  (correct today, but every new bug in the class is found the slow way). Tests: one fixture per historical bug
-  showing the audit would have refused it, one clean-profile conf (gcc path and llvm path) that
-  must pass, and a test that a path covered by a mirror or rewrite is accepted.
-  *Priority: low · Effort: medium · Bump: minor* — low because the sandbox is opt-in and works for
-  the profiles exercised so far; medium for the path and binary classifiers plus the historical
-  fixture set.
-  **Standards home on adoption:** none new; `docs/design/11-makepkg-wrapper.md` owns the
-  container-conf description and gains the audit step.
 
 - **`3.4.0-F3` — an opt-in, DKMS-safe compile-time kernel hardening set.** Promoted from `3.1.0-Q1`,
   which asked whether sysforge should take a position on kernel hardening. The scope boundary is now

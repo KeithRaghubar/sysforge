@@ -50,7 +50,7 @@ Why this is not just another ``build_throttle.wrapper_argv`` prefix entry
 
 Public API:
     SandboxUnavailable
-    SandboxPolicy(enabled, chroot_dir, clean, update).describe()
+    SandboxPolicy(enabled, chroot_dir, clean, update, local_repo).describe()
     resolve_sandbox(cfg) -> SandboxPolicy
     for_profile(policy, resolved_profile) -> SandboxPolicy
     set_policy(policy) / get_policy() / reset_policy() / suppressed(active)
@@ -59,11 +59,18 @@ Public API:
     build_argv(policy, flags, conf_dir_name, install_pkgs) -> list[str]
     dest_env_from_conf(conf_path) -> dict
     chroot_conf_text(conf_path, exports) -> str
+    audit_chroot_conf(conf_text, policy) -> None   (raises SandboxUnavailable)
     chroot_env(env) -> dict
     mem_cap_applies(policy) -> bool
     missing_toolchain(policy, exports) -> dict
     provision_toolchain(policy, exports) -> None
-    register_artifacts(paths) / install_args(pkgbuild) / reset_session()
+    register_artifacts(paths) / install_args(pkgbuild, ..., exports, conf_path) / reset_session()
+    toolchain_packages(exports, conf_path) -> set
+    installed_artifact(name, search_dir) -> Path | None
+    COPY_NAME; SandboxProvenance(cc_name, copy_identity)
+    set_provenance(p) / take_provenance() / clear_provenance()
+    copy_compiler(policy, cc_name) -> Path
+    recorded_toolchain(prov, host_variant, host_fingerprint) -> (variant, fingerprint)
     resolve_dep_artifacts(pkgbuild, search_dir, state_dir) -> list[Path]
 """
 from __future__ import annotations
@@ -101,6 +108,15 @@ UPSTREAM_STASH_NAME = ".sysforge-upstream-PKGBUILD"
 CHROOT_CONF_NAME = ".sysforge-chroot-makepkg.conf"
 CHROOT_CONF_DIR_PREFIX = ".sysforge-chroot-"
 CHROOT_STARTDIR = "/startdir"
+
+# The working copy's name, passed as ``makechrootpkg -l`` so its path is known
+# rather than inherited from $USER (3.4.0-B3): provenance fingerprints the
+# compiler in <chroot>/<COPY_NAME>, which is what actually built the package.
+COPY_NAME = "sysforge"
+# Where the host's own compiler lives for the provenance comparison. Named
+# explicitly, not resolved via PATH: a ccache wrapper directory first on PATH
+# would fingerprint the wrapper instead of the compiler.
+_HOST_BIN_DIR = Path("/usr/bin")
 
 # Where the container's makepkg.conf must point its dest keys. These are the
 # paths ``makechrootpkg`` creates inside the working copy and moves artifacts
@@ -196,6 +212,10 @@ class SandboxPolicy:
     chroot_dir: Path | None = None
     clean: bool = True
     update: bool = True
+    # 3.1.0-F10: publish the host's installed source-built packages into a
+    # read-only local repo the chroot lists first. False here so a hand-built
+    # policy does nothing new; resolve_sandbox applies the shipped default.
+    local_repo: bool = False
 
     def describe(self) -> str:
         if not self.enabled:
@@ -205,6 +225,8 @@ class SandboxPolicy:
             bits.append("clean")
         if self.update:
             bits.append("update")
+        if self.local_repo:
+            bits.append("local-repo")
         return "on (" + ", ".join(bits) + ")"
 
 
@@ -227,6 +249,7 @@ def resolve_sandbox(cfg: dict) -> SandboxPolicy:
         chroot_dir=Path(raw_dir).expanduser(),
         clean=bool(cfg.get("sandbox_clean", True)),
         update=bool(cfg.get("sandbox_update", True)),
+        local_repo=bool(cfg.get("sandbox_local_repo", True)),
     )
 
 
@@ -774,6 +797,132 @@ def dest_env_from_conf(conf_path: Path) -> dict:
     return out
 
 
+# What the container-conf audit inspects (3.4.0-F2): the keys whose values a
+# tool reads at build time. Package-internal locations (DBGSRCDIR, MAN_DIRS,
+# DOC_DIRS, PURGE_TARGETS, STRIP_DIRS) name paths *inside the package*, not
+# the filesystem, and are deliberately not scanned. This says what to inspect,
+# not what may cross — so it is not the full allowlist 3.4.0-F2 rejected.
+_AUDIT_EXTRA_KEYS = ("BUILDENV",)
+_EXPORT_RE = re.compile(r"^[ \t]*export[ \t]+([A-Za-z_][A-Za-z0-9_]*)=", re.MULTILINE)
+_PREFIX_MAP_RE = re.compile(r"^-f(?:file|debug|macro)-prefix-map=")
+# An absolute path as a whole token, after `=`, or glued to -I/-L.
+_ABS_PATH_RE = re.compile(r"(?:^-[IL]|^|=)(/[^\s'\"=:,]*)")
+# Prefixes a dependency installed into the working copy may legitimately
+# populate after the root was cloned, so absence from root/ proves nothing.
+_DEP_PREFIXES = ("/usr/", "/opt/")
+# The container's own tmpfs (makechrootpkg mounts one); a classification
+# literal, not a temp-file use.
+_CONTAINER_TMP = "/tmp"  # noqa: S108
+_BUILDENV_TOOLS = ("ccache", "distcc")
+
+
+def _audit_tokens(raw: str) -> list[str]:
+    value = raw.strip()
+    if value.startswith("(") and value.endswith(")"):
+        value = value[1:-1]
+    try:
+        words = shlex.split(value, comments=True)
+    except ValueError:
+        words = [value]
+    # A quoted scalar (CFLAGS="-O2 -fuse-ld=lld") is one shell word that the
+    # consuming tool word-splits again, so split each word on whitespace too.
+    return [tok for word in words for tok in word.split()]
+
+
+def _container_has_path(root: Path, path: str) -> bool:
+    if any(path == p or path.startswith(p.rstrip("/") + "/")
+           for p in (*_CHROOT_DEST_KEYS.values(), CHROOT_STARTDIR, _CONTAINER_TMP)):
+        return True
+    if path.startswith(_DEP_PREFIXES):
+        return True
+    return (root / path.lstrip("/")).exists()
+
+
+def _audit_refuse(key: str, value: str, why: str, home: str) -> None:
+    raise SandboxUnavailable(
+        f"refusing to sandbox: the container makepkg.conf sets {key}={value}: {why}. "
+        f"Correction set that should cover it: {home}"
+    )
+
+
+def audit_chroot_conf(conf_text: str, policy: SandboxPolicy) -> None:
+    """Refuse a final container conf that still names the host (3.4.0-F2).
+
+    Runs on :func:`chroot_conf_text`'s output, after provisioning, so it judges
+    the real ``root/`` tree. Two classifiers: an absolute path that will not
+    exist in the container, and a binary in a compiler/linker/BUILDENV slot the
+    chroot does not carry. Each refusal names the key, the value and the
+    correction set that should have covered it, so a new member of the bug class
+    (3.2.0-B2/B4/B6/B7/B10/B12) is one readable stop instead of a build error
+    several layers later. 3.2.0-B5 (a stale chroot database) is outside it.
+    """
+    from sysforge.primitives.config import parse_makepkg_conf_text
+
+    if not policy.enabled or not policy.chroot_dir:
+        return
+    root = policy.chroot_dir / "root"
+    if not root.is_dir():
+        return
+    effective = parse_makepkg_conf_text(conf_text)
+    exported = set(_EXPORT_RE.findall(conf_text))
+
+    def _has_binary(name: str) -> bool:
+        probe = (root / name.lstrip("/")) if name.startswith("/") \
+            else (root / "usr" / "bin" / name)
+        return probe.exists()
+
+    for key in _TOOLCHAIN_ENV_KEYS:
+        # Only exported values reach make/cmake: makepkg exports the *FLAGS
+        # keys, CHOST and MAKEFLAGS and nothing else, so a plain `AR=llvm-ar`
+        # in the copied host conf is inert (found against a live conf).
+        if key not in exported:
+            continue
+        raw = effective.get(key)
+        words = _audit_tokens(raw) if raw else []
+        if words and "$" not in words[0] and not _has_binary(words[0]):
+            home = "_TOOLCHAIN_PACKAGE (provision_toolchain)" \
+                if Path(words[0]).name in _TOOLCHAIN_PACKAGE else "_ENV_EXPORT_DENY"
+            _audit_refuse(key, words[0], "binary not present in the sandbox chroot", home)
+
+    for opt in _audit_tokens(effective.get("BUILDENV", "")):
+        if opt in _BUILDENV_TOOLS and not _has_binary(opt):
+            _audit_refuse("BUILDENV", opt, "accelerator binary not present in the sandbox "
+                          "chroot", "_HOST_ONLY_BUILDENV")
+
+    scanned = [k for k in effective
+               if k.endswith("FLAGS") or k in exported or k in _CHROOT_DEST_KEYS
+               or k in _AUDIT_EXTRA_KEYS]
+    for key in scanned:
+        if key in _TOOLCHAIN_ENV_KEYS or key == "BUILDENV":
+            continue
+        for tok in _audit_tokens(effective[key]):
+            if "$" in tok or _PREFIX_MAP_RE.match(tok):
+                continue
+            if tok.startswith("-fuse-ld="):
+                name = tok.split("=", 1)[1]
+                binary = name if name.startswith("/") else f"ld.{name}"
+                if not _has_binary(binary):
+                    _audit_refuse(key, tok, f"linker {binary} not present in the sandbox "
+                                  "chroot", "_TOOLCHAIN_PACKAGE (provision_toolchain)")
+                continue
+            if key in exported and key.endswith("_WRAPPER") and not tok.startswith(("-", "/")):
+                # A *_WRAPPER value names a binary (RUSTC_WRAPPER=sccache). Other
+                # bare words are policy values (CARGO_PROFILE_RELEASE_LTO=fat).
+                if not _has_binary(tok):
+                    _audit_refuse(key, tok, "binary not present in the sandbox chroot",
+                                  "_ENV_EXPORT_DENY")
+                continue
+            for path in _ABS_PATH_RE.findall(tok):
+                if _container_has_path(root, path):
+                    continue
+                home = ("_PROFILE_USE_PREFIXES (provision_profile_data)"
+                        if _PROFILE_USE_RE.search(" " + tok) else
+                        "_CHROOT_DEST_KEYS" if key in _CHROOT_DEST_KEYS else
+                        "_ENV_EXPORT_DENY")
+                _audit_refuse(key, path, "path does not exist inside the sandbox chroot",
+                              home)
+
+
 def build_argv(
     policy: SandboxPolicy,
     flags: list[str],
@@ -789,6 +938,8 @@ def build_argv(
 
     * No ``sudo`` prefix — ``makechrootpkg`` escalates itself and would lose
       its preserved environment if wrapped (see the module docstring).
+    * ``-l`` names the working copy (:data:`COPY_NAME`) so provenance can
+      fingerprint the compiler that actually built the package (3.4.0-B3).
     * No ``-p`` — the container builds the ``PKGBUILD`` in the bind-mounted
       directory, which :func:`preflight` has already established is the file we
       mean.
@@ -799,8 +950,11 @@ def build_argv(
     ``install_pkgs`` are host artifacts injected into the working copy before
     the build — the run's own already-built dependencies, which the container
     otherwise cannot see.
+
+    The local repo (3.1.0-F10) needs no mount flag here: arch-nspawn binds
+    every ``file://`` Server in the container's pacman.conf read-only.
     """
-    argv = ["makechrootpkg", "-r", str(policy.chroot_dir)]
+    argv = ["makechrootpkg", "-r", str(policy.chroot_dir), "-l", COPY_NAME]
     if policy.clean:
         argv.append("-c")
     if policy.update:
@@ -889,6 +1043,24 @@ def source_built_packages(state_dir=None) -> set:
     return _source_built_packages(state_dir)
 
 
+def installed_artifact(name: str, search_dir):
+    """The artifact in *search_dir* at the version the host runs, or None.
+
+    One reader for both consumers of "which build does the host run": the
+    ``-I`` closure (3.1.0-F9) and the local repo (3.1.0-F10). Never the newest
+    artifact — *search_dir* is a long-lived archive of every build (3.1.0-B1).
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.makepkg_artifacts import find_artifacts
+
+    version = pacman.get_installed_version(name)
+    if not version:
+        return None
+    match = [p for p in find_artifacts(search_dir, [name], exact_ver=version)
+             if not str(p).endswith(".sig")]
+    return Path(match[0]) if match else None
+
+
 def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[Path]:
     """Return locally-built artifacts for *pkgbuild_path*'s source-built deps.
 
@@ -919,12 +1091,11 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
       the isolation boundary — so unlike the sandbox's own refuse-rather-than-
       downgrade rule, a missing file in an archive is not worth a hard stop.
 
-    Does not fix skew against packages outside the injection set; that is
-    ``3.1.0-F10``.
+    Skew against packages outside the injection set is the local repo's job
+    (``primitives/local_repo.py``, 3.1.0-F10).
     """
     from sysforge.primitives import pacman
     from sysforge.primitives.aur_resolve import _strip_version
-    from sysforge.primitives.makepkg_artifacts import find_artifacts
 
     if not pkgbuild_path or not search_dir:
         return []
@@ -978,9 +1149,9 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
         version = pacman.get_installed_version(name)
         if not version:
             continue
-        match = find_artifacts(search_dir, [name], exact_ver=version)
-        if match:
-            found.extend(match)
+        art = installed_artifact(name, search_dir)
+        if art is not None:
+            found.append(art)
             continue
         _log.warn(
             f"sandbox: no built artifact for {name} {version} in {search_dir} "
@@ -990,8 +1161,34 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     return found
 
 
+def toolchain_packages(exports: dict | None, conf_path=None) -> set:
+    """Packages providing the profile's toolchain binaries, present or not.
+
+    The same binaries :func:`missing_toolchain` probes, mapped through
+    :data:`_TOOLCHAIN_PACKAGE`. Used to ``-I`` the host's own toolchain build into
+    the working copy: pacman never replaces an installed package with the same
+    version from another repo, so a root already holding repo clang keeps it
+    unless the exact file is injected (3.1.0-F10).
+    """
+    names = []
+    for key in _TOOLCHAIN_ENV_KEYS:
+        raw = str((exports or {}).get(key) or "").strip()
+        try:
+            words = shlex.split(raw) if raw else []
+        except ValueError:
+            words = []
+        if words:
+            names.append(Path(words[0]).name)
+    if not (exports or {}).get("CC"):
+        names.append("gcc")  # makepkg's default cc
+    flag_values = [(exports or {}).get(k) for k in _LINKER_FLAG_KEYS]
+    flag_values += _conf_flag_values(conf_path)
+    names += [Path(n).name for n in _fuse_ld_names(flag_values)]
+    return {_TOOLCHAIN_PACKAGE[n] for n in names if n in _TOOLCHAIN_PACKAGE}
+
+
 def install_args(pkgbuild_path=None, *, search_dir=None,
-                 state_dir=None) -> list[Path]:
+                 state_dir=None, exports=None, conf_path=None) -> list[Path]:
     """Return the artifacts to ``-I`` into the next container, newest last.
 
     The union of two sources, the session registry winning: packages built
@@ -1007,6 +1204,28 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
         resolved = resolve_dep_artifacts(
             pkgbuild_path, search_dir=search_dir, state_dir=state_dir)
 
+    # 3.1.0-F10: the host's own toolchain build, closure included, so the
+    # working copy compiles with it even when the root holds the same version
+    # from the repos. Gated on *exports* (the caller passes it only with the
+    # local repo on), and on there being anything source-built at all.
+    pkgs = toolchain_packages(exports, conf_path=conf_path) if exports is not None else set()
+    source_built = _source_built_packages(state_dir) if pkgs else set()
+    if source_built:
+        from sysforge.primitives import pacman
+        graph = pacman.get_all_package_depends()
+        seen: set = set()
+        queue = sorted(pkgs)
+        while queue:
+            name = queue.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            queue.extend(graph.get(name, []))
+            if name in source_built and search_dir:
+                art = installed_artifact(name, search_dir)
+                if art is not None and art not in resolved:
+                    resolved.append(art)
+
     session = [p for p in _session.artifacts if p.exists()]
     out = [p for p in resolved if p.exists() and p not in session]
     out.extend(session)
@@ -1014,5 +1233,68 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
 
 
 def reset_session() -> None:
-    """Forget every registered artifact. For tests and between runs."""
+    """Forget every registered artifact and any pending provenance."""
     _session.artifacts.clear()
+    clear_provenance()
+
+
+# ---------------------------------------------------------------------------
+# Build provenance (3.4.0-B3)
+# ---------------------------------------------------------------------------
+#
+# The toolchain identity build_state records is resolved once per run from the
+# host, but a sandboxed build compiles with the chroot's compiler. The seam that
+# ran the build knows which; the record site, several layers up, does not — so
+# the seam parks what it saw here and the record site takes it. Module-global
+# for the same reason as the artifact registry above.
+
+
+@dataclass(frozen=True)
+class SandboxProvenance:
+    """What a successful sandboxed build actually compiled with."""
+
+    cc_name: str
+    copy_identity: str
+
+
+_provenance: SandboxProvenance | None = None
+
+
+def set_provenance(p: SandboxProvenance) -> None:
+    global _provenance
+    _provenance = p
+
+
+def take_provenance() -> SandboxProvenance | None:
+    """Return the pending provenance and clear it — one build, one record."""
+    global _provenance
+    p, _provenance = _provenance, None
+    return p
+
+
+def clear_provenance() -> None:
+    global _provenance
+    _provenance = None
+
+
+def copy_compiler(policy: SandboxPolicy, cc_name: str) -> Path:
+    """The compiler binary in the named working copy."""
+    return policy.chroot_dir / COPY_NAME / "usr" / "bin" / cc_name
+
+
+def recorded_toolchain(prov: SandboxProvenance, host_variant, host_fingerprint):
+    """Resolve the (variant, fingerprint) build_state should record.
+
+    The same package file on host and in the copy has the same static identity,
+    so a match keeps the host's values and toolchain drift behaves as for a host
+    build. A mismatch means the container compiled with a different compiler —
+    the repo one — and records a fingerprint that can never equal a host one, so
+    toolchain drift reports the package.
+    """
+    from sysforge.primitives.build_fingerprint import static_identity
+
+    if prov.copy_identity != "none" \
+            and static_identity(_HOST_BIN_DIR / prov.cc_name) == prov.copy_identity:
+        return host_variant, host_fingerprint
+    variant = "stock_llvm" if "clang" in prov.cc_name else "gcc"
+    return variant, f"sandbox|{prov.cc_name}|{prov.copy_identity}"

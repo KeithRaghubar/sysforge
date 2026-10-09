@@ -32,6 +32,7 @@ isolated, plus the seam that swaps the argv:
      - a stale stash from an interrupted run is refused, never clobbered
 """
 import os
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -197,6 +198,7 @@ def test_build_argv_shape(tmp_path):
                          conf_dir_name=".sysforge-chroot-abc")
     assert argv[0] == "makechrootpkg"
     assert argv[1:3] == ["-r", str(_chroot(tmp_path))]
+    assert argv[3:5] == ["-l", "sysforge"]  # the named working copy (3.4.0-B3)
     assert "-c" in argv and "-u" in argv
     sep = argv.index("--")
     assert argv[sep + 1] == (
@@ -920,7 +922,14 @@ def test_seam_installs_the_missing_toolchain_into_the_chroot(tmp_path):
     (pol.chroot_dir / "root" / "usr" / "bin" / "gcc").write_text("#!/bin/sh\n")
     bs.set_policy(pol)
 
-    with patch("sysforge.primitives.build_sandbox.run_privileged") as run:
+    def _install(argv, **_kw):
+        # What the real `pacman -S clang` leaves behind: the audit (3.4.0-F2)
+        # runs after provisioning and checks the chroot actually has them.
+        for name in ("clang", "clang++"):
+            (pol.chroot_dir / "root" / "usr" / "bin" / name).write_text("#!/bin/sh\n")
+
+    with patch("sysforge.primitives.build_sandbox.run_privileged",
+               side_effect=_install) as run:
         cap = _invoke(pb, conf, {}, extra_env={"CC": "clang", "CXX": "clang++"})
 
     argv = run.call_args[0][0]
@@ -1402,3 +1411,333 @@ def test_seam_refuses_a_generate_build_before_makechrootpkg_runs(tmp_path):
     bs.set_policy(_policy(tmp_path))
     with pytest.raises(bs.SandboxUnavailable, match="profile-generate"):
         _invoke(pb, conf, {})
+
+
+# ---------------------------------------------------------------------------
+# 8. Container-conf audit (3.4.0-F2)
+# ---------------------------------------------------------------------------
+
+def _audit_root(tmp_path, binaries=("gcc", "g++", "curl"), files=()):
+    chroot = _chroot_with(tmp_path, *binaries)
+    for rel in files:
+        p = chroot / "root" / rel.lstrip("/")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    return bs.SandboxPolicy(enabled=True, chroot_dir=chroot)
+
+
+def _final(body: str) -> str:
+    """A container conf as chroot_conf_text emits it: body, then the overrides."""
+    return body + "\n# --- sysforge build sandbox ---\n" + "\n".join(
+        f"{k}={v}" for k, v in bs._CHROOT_DEST_KEYS.items()) + "\n"
+
+
+_STOCK_BODY = (
+    "DLAGENTS=('file::/usr/bin/curl -qgC - -o %o %u'\n"
+    "          'https::/usr/bin/curl -qgb \"\" -fLC - --retry 3 -o %o %u')\n"
+    'CFLAGS="-march=x86-64 -O2 -pipe -fno-plt"\n'
+    'LDFLAGS="-Wl,-O1 -Wl,--sort-common -Wl,-z,relro"\n'
+    'DEBUG_CFLAGS="-g -ffile-prefix-map=$srcdir=${DBGSRCDIR:-/usr/src/debug}/${pkgbase}"\n'
+    "BUILDENV=(!distcc color !ccache check !sign)\n"
+    'DBGSRCDIR="/usr/src/debug"\n'
+    "MAN_DIRS=({usr{,/local}{,/share},opt/*}/{man,info})\n"
+    'PKGDEST="/home/user/packages"\n'
+)
+
+
+def test_audit_passes_the_stock_conf_shape(tmp_path):
+    """Review Focus 1: the shape every real conf has must not refuse."""
+    bs.audit_chroot_conf(_final(_STOCK_BODY), _audit_root(tmp_path))
+
+
+def test_audit_passes_a_clean_llvm_conf(tmp_path):
+    pol = _audit_root(tmp_path, binaries=("clang", "clang++", "ld.lld", "curl"))
+    text = _final(_STOCK_BODY + 'LDFLAGS="-Wl,-O1 -fuse-ld=lld"\n') + \
+        "export CC=clang\nexport CXX=clang++\n"
+    bs.audit_chroot_conf(text, pol)
+
+
+def test_audit_passes_a_clean_gcc_conf(tmp_path):
+    text = _final(_STOCK_BODY) + "export CC=gcc\nexport CXX=g++\n"
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_judges_the_final_assignment_only(tmp_path):
+    """The host PKGDEST in the copied body is superseded by /pkgdest."""
+    bs.audit_chroot_conf(_final('PKGDEST="/home/user/packages"\n'), _audit_root(tmp_path))
+
+
+def test_audit_refuses_b2_ccache_buildenv(tmp_path):
+    text = _final("BUILDENV=(!distcc color ccache check !sign)\n")
+    with pytest.raises(bs.SandboxUnavailable, match="ccache.*_HOST_ONLY_BUILDENV"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_refuses_b2_rustc_wrapper_export(tmp_path):
+    text = _final("") + "export RUSTC_WRAPPER=sccache\n"
+    with pytest.raises(bs.SandboxUnavailable, match="RUSTC_WRAPPER.*_ENV_EXPORT_DENY"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_refuses_b4_missing_compiler(tmp_path):
+    text = _final("") + "export CC=clang\n"
+    with pytest.raises(bs.SandboxUnavailable, match="CC=clang.*_TOOLCHAIN_PACKAGE"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+@pytest.mark.parametrize("key", ["LDFLAGS", "CFLAGS"])
+def test_audit_refuses_b6_b7_missing_fuse_ld_linker(tmp_path, key):
+    text = _final(f'{key}="-O2 -fuse-ld=lld"\n')
+    with pytest.raises(bs.SandboxUnavailable, match="ld.lld.*_TOOLCHAIN_PACKAGE"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_refuses_b10_unmirrored_profile(tmp_path):
+    text = _final('CFLAGS="-O2 -fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata"\n')
+    with pytest.raises(bs.SandboxUnavailable, match="_PROFILE_USE_PREFIXES"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_accepts_a_mirrored_profile(tmp_path):
+    prof = "/var/cache/sysforge/pgo-mesa/mesa.profdata"
+    text = _final(f'CFLAGS="-O2 -fprofile-use={prof}"\n')
+    bs.audit_chroot_conf(text, _audit_root(tmp_path, files=(prof,)))
+
+
+def test_audit_refuses_b12_host_generate_path(tmp_path):
+    text = _final('CFLAGS="-O2 -fprofile-generate=/home/user/sf-state/pgo"\n')
+    with pytest.raises(bs.SandboxUnavailable, match="/home/user/sf-state/pgo"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_accepts_usr_and_opt_paths_absent_from_root(tmp_path):
+    """Deps install into the working copy after the root is cloned."""
+    text = _final('CFLAGS="-O2 -I/usr/include/qt6 -L/opt/cuda/lib64"\n')
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_accepts_container_prefixes(tmp_path):
+    text = _final('CFLAGS="-O2 -fdebug-prefix-map=/home/user/builds=/usr/src/debug"\n'
+                  "export TMPDIR_HINT=/startdir/x\n")
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_ignores_bare_policy_words_in_exports(tmp_path):
+    text = _final("") + "export CARGO_PROFILE_RELEASE_LTO=fat\n"
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_refuses_a_glued_include_outside_dep_prefixes(tmp_path):
+    text = _final('CFLAGS="-O2 -I/home/user/src/hdrs"\n')
+    with pytest.raises(bs.SandboxUnavailable, match="/home/user/src/hdrs"):
+        bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_ignores_package_internal_keys(tmp_path):
+    text = _final('DBGSRCDIR="/srv/odd/debug"\nSTRIP_DIRS=(/weird/bin)\n')
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+def test_audit_is_a_noop_when_disabled(tmp_path):
+    bs.audit_chroot_conf("export CC=nope\n", bs.SandboxPolicy(enabled=False))
+
+
+def test_seam_runs_the_audit_on_the_final_conf(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    with patch.object(bs, "audit_chroot_conf",
+                      side_effect=bs.SandboxUnavailable("audit")) as audit:
+        with pytest.raises(bs.SandboxUnavailable, match="audit"):
+            _invoke(pb, conf, {})
+    text, _pol = audit.call_args.args
+    assert "PKGDEST=/pkgdest" in text
+
+
+def test_audit_ignores_unexported_toolchain_keys(tmp_path):
+    """Found against the live /etc/makepkg.conf: a plain `AR=llvm-ar` is an
+    unexported shell variable — makepkg exports only the *FLAGS keys, CHOST and
+    MAKEFLAGS — so make/cmake never see it and it cannot fail the build."""
+    text = _final("CC=clang\nAR=llvm-ar\nNM=llvm-nm\n") + "export CC=gcc\n"
+    bs.audit_chroot_conf(text, _audit_root(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# 9. Provenance (3.4.0-B3)
+# ---------------------------------------------------------------------------
+
+def test_build_argv_names_the_working_copy(tmp_path):
+    argv = bs.build_argv(_policy(tmp_path), [], conf_dir_name="d")
+    i = argv.index("-l")
+    assert argv[i + 1] == bs.COPY_NAME == "sysforge"
+    assert argv.index("-l") < argv.index("--")
+
+
+def test_take_provenance_returns_and_clears():
+    p = bs.SandboxProvenance(cc_name="clang", copy_identity="size=1|mtime=1")
+    bs.set_provenance(p)
+    assert bs.take_provenance() == p
+    assert bs.take_provenance() is None
+
+
+def test_reset_session_clears_provenance():
+    bs.set_provenance(bs.SandboxProvenance("gcc", "x"))
+    bs.reset_session()
+    assert bs.take_provenance() is None
+
+
+@pytest.mark.parametrize("cc", ["clang", "gcc"])
+def test_recorded_toolchain_same_as_host_keeps_host_values(tmp_path, cc):
+    host_bin = tmp_path / "host" / cc
+    host_bin.parent.mkdir(parents=True)
+    host_bin.write_bytes(b"x")
+    ident = __import__("sysforge.primitives.build_fingerprint",
+                       fromlist=["x"]).static_identity(host_bin)
+    with patch.object(bs, "_HOST_BIN_DIR", tmp_path / "host"):
+        out = bs.recorded_toolchain(bs.SandboxProvenance(cc, ident), "pgo_llvm", "fp-host")
+    assert out == ("pgo_llvm", "fp-host")
+
+
+@pytest.mark.parametrize("cc,variant", [("clang", "stock_llvm"), ("gcc", "gcc")])
+def test_recorded_toolchain_repo_compiler_is_distinct(tmp_path, cc, variant):
+    (tmp_path / "host").mkdir()
+    (tmp_path / "host" / cc).write_bytes(b"host-build")
+    with patch.object(bs, "_HOST_BIN_DIR", tmp_path / "host"):
+        v, fp = bs.recorded_toolchain(bs.SandboxProvenance(cc, "size=3|mtime=9"),
+                                      "pgo_llvm", "fp-host")
+    assert v == variant
+    assert fp == f"sandbox|{cc}|size=3|mtime=9" and fp != "fp-host"
+
+
+def test_seam_captures_provenance_from_the_working_copy(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    pol = _policy(tmp_path)
+    copy_cc = pol.chroot_dir / bs.COPY_NAME / "usr" / "bin" / "clang"
+    copy_cc.parent.mkdir(parents=True)
+    copy_cc.write_bytes(b"repo-clang")
+    (pol.chroot_dir / "root" / "usr" / "bin").mkdir(parents=True, exist_ok=True)
+    (pol.chroot_dir / "root" / "usr" / "bin" / "clang").write_bytes(b"repo-clang")
+    bs.set_policy(pol)
+    _invoke(pb, conf, {}, extra_env={"CC": "clang"})
+    prov = bs.take_provenance()
+    assert prov is not None and prov.cc_name == "clang"
+    assert prov.copy_identity.startswith("size=10|")
+
+
+def test_seam_defaults_cc_to_gcc(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    _invoke(pb, conf, {})
+    assert bs.take_provenance().cc_name == "gcc"
+
+
+def test_seam_host_build_sets_no_provenance(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    _invoke(pb, conf, {})
+    assert bs.take_provenance() is None
+
+
+def test_seam_suppressed_stage_build_sets_no_provenance(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    with bs.suppressed():
+        _invoke(pb, conf, {})
+    assert bs.take_provenance() is None
+
+
+def test_seam_clears_stale_provenance_on_entry(tmp_path):
+    """Review Focus 2: an unrecorded earlier success must not reach a later
+    host build's record."""
+    bs.set_provenance(bs.SandboxProvenance("clang", "stale"))
+    pb, conf = _pkg_and_conf(tmp_path)
+    _invoke(pb, conf, {})
+    assert bs.take_provenance() is None
+
+
+def test_seam_failed_sandboxed_build_sets_no_provenance(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    with patch("sysforge.primitives.makepkg_invoke.run_with_pty", return_value=1), \
+            patch.dict(os.environ, {"PATH": "/usr/bin"}, clear=True), \
+            patch("sysforge.primitives.build_sandbox.shutil.which",
+                  return_value="/usr/bin/makechrootpkg"):
+        with pytest.raises(subprocess.CalledProcessError):
+            invoke_makepkg(pb, conf, {})
+    assert bs.take_provenance() is None
+
+
+# ---------------------------------------------------------------------------
+# 10. Local repo wiring (3.1.0-F10)
+# ---------------------------------------------------------------------------
+
+def test_resolve_sandbox_local_repo_defaults_on():
+    assert bs.resolve_sandbox({}).local_repo is True
+    assert bs.resolve_sandbox({"sandbox_local_repo": False}).local_repo is False
+
+
+def test_hand_built_policy_has_local_repo_off(tmp_path):
+    assert _policy(tmp_path).local_repo is False
+
+
+def test_build_argv_never_mounts_the_repo_itself(tmp_path):
+    """arch-nspawn binds every file:// Server read-only from the host, so the
+    [sysforge-local] block is the mount; a -D here would duplicate it and a
+    -d would open a host write channel (review #1)."""
+    argv = bs.build_argv(_policy(tmp_path), [], conf_dir_name="d")
+    assert "-D" not in argv and "-d" not in argv
+
+
+@pytest.mark.parametrize("cc,pkg", [("clang", "clang"), ("gcc", "gcc")])
+def test_toolchain_packages_maps_binaries(cc, pkg):
+    assert pkg in bs.toolchain_packages({"CC": cc})
+
+
+def test_install_args_adds_source_built_toolchain_closure(tmp_path):
+    clang = tmp_path / "clang-21.1-1-x86_64.pkg.tar.zst"
+    llvm = tmp_path / "llvm-libs-21.1-1-x86_64.pkg.tar.zst"
+    for p in (clang, llvm):
+        p.write_bytes(b"x")
+    arts = {"clang": clang, "llvm-libs": llvm}
+    with patch.object(bs, "_source_built_packages", return_value={"clang", "llvm-libs"}), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value={"clang": ["llvm-libs"], "llvm-libs": []}), \
+            patch.object(bs, "installed_artifact", side_effect=lambda n, d: arts.get(n)):
+        out = bs.install_args(search_dir=tmp_path, exports={"CC": "clang"})
+    assert set(out) == {clang, llvm}
+
+
+def test_seam_syncs_when_local_repo_on(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    from dataclasses import replace
+    bs.set_policy(replace(_policy(tmp_path), local_repo=True))
+    with patch("sysforge.primitives.local_repo.ensure_chroot_section") as ens, \
+            patch("sysforge.primitives.local_repo.sync") as syn, \
+            patch("sysforge.primitives.makepkg_invoke._sandbox_state_dir",
+                  return_value=tmp_path / "state"):
+        cap = _invoke(pb, conf, {})
+    assert ens.called and syn.called
+    assert "-D" not in cap["cmd"] and "-d" not in cap["cmd"]
+
+
+def test_seam_off_switch_neither_syncs_nor_mounts(tmp_path):
+    """Review Focus 5."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))  # local_repo False
+    with patch("sysforge.primitives.local_repo.sync") as syn, \
+            patch("sysforge.primitives.local_repo.remove_chroot_section") as rm:
+        cap = _invoke(pb, conf, {})
+    # A block left from an earlier run would keep a stale repo mounted.
+    assert rm.called and not syn.called and "-D" not in cap["cmd"]
+
+
+def test_seam_sync_refusal_stops_before_the_swap(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    from dataclasses import replace
+    bs.set_policy(replace(_policy(tmp_path), local_repo=True))
+    with patch("sysforge.primitives.local_repo.ensure_chroot_section"), \
+            patch("sysforge.primitives.local_repo.sync",
+                  side_effect=bs.SandboxUnavailable("repo")), \
+            patch("sysforge.primitives.makepkg_invoke._sandbox_state_dir",
+                  return_value=tmp_path / "state"):
+        with pytest.raises(bs.SandboxUnavailable, match="repo"):
+            _invoke(pb, conf, {})
+    assert pb.read_text() == "# fake\n"
