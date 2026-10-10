@@ -260,7 +260,7 @@ design: ## Regenerate DESIGN.md from docs/design/
 	uv run --no-sync python tools/build_design.py
 
 # DESIGN.md drift gate (mirrors the manpage check). Fails if the committed
-# DESIGN.md is out of date with its docs/design/ sources. Wired into preflight.
+# DESIGN.md is out of date with its docs/design/ sources. Run by tools/release.sh.
 check-design: ## Gate: DESIGN.md in sync with docs/design/
 	uv run --no-sync python tools/build_design.py --check
 
@@ -284,7 +284,7 @@ roadmap-view: ## Print the Planned table sorted by SORT=<col> [REVERSE=1] [WIDTH
 	    $(if $(REVERSE),--reverse,) $(if $(WIDTH),--width $(WIDTH),)
 
 # ROADMAP.md summary-table drift gate (mirrors check-design). Also validates that
-# every Planned entry carries a well-formed Priority/Effort tag. Wired into preflight.
+# every Planned entry carries a well-formed Priority/Effort tag. Run by tools/release.sh.
 check-roadmap-table: ## Gate: Planned table fresh and every entry tagged
 	uv run --no-sync python tools/gen_roadmap_table.py --check
 
@@ -343,9 +343,10 @@ sync-config: ## Merge new shipped defaults into the live config dir
 ##@ Release
 pre-release: lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards ## Composite gate: lint, types, tests, all checks
 
-# Read-only fast pre-check over stages 1-4 of docs/RELEASE-CHECKLIST.md. Skips:
+# Read-only readiness report over stages 1-4 of docs/RELEASE-CHECKLIST.md; not a
+# gate (no typecheck or check-* gates). Skips:
 # RUN_COVERAGE=0, RUN_VM_SMOKE=0, RUN_DISTRO_SMOKE=0.
-preflight: ## Read-only release pre-check (stages 1-4 in one pass)
+preflight: ## Read-only release readiness report (stages 1-4, not a gate)
 	bash tools/preflight.sh
 
 release-major: ## Cut a signed major release

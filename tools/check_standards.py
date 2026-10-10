@@ -1592,8 +1592,8 @@ def check_semver_bump(repo: Path,
 # ===========================================================================
 
 # `pre-release` prerequisites deliberately left to the heavier tier: the full
-# suite is minutes, not seconds (docs/RELEASE-CHECKLIST.md "The two gate
-# runners").
+# suite is minutes, not seconds (docs/RELEASE-CHECKLIST.md "Which command
+# does what").
 _RELEASE_GATE_EXEMPT = {"test"}
 _PRE_RELEASE_RE = re.compile(r"^pre-release:([^#\n]*)", re.MULTILINE)
 _RELEASE_MAKE_RE = re.compile(r"\bmake\s+(?:--no-print-directory\s+)?([a-z][\w-]*)")

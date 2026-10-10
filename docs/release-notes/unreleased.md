@@ -96,6 +96,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.4.0-DEV4` — the release checklist now says plainly which command checks what.** Four commands check release readiness, and the old checklist explained only two of them. It also left `make preflight` sounding like the release script's own blocking preflight. `docs/RELEASE-CHECKLIST.md` now opens with an at-a-glance command sequence and a "Which command does what" section: what `make pre-release`, `make ci-local`, `make preflight` and the release script's gates are each for, and a matrix of which checks each one runs. The static-gate stage now runs `make ci-local`, which runs every `pre-release` gate in a clean container, with `pre-release` as the fallback when podman is unavailable. `make preflight` is described as a read-only readiness report, not a gate. It now lints the same three trees as `make lint-py` (`sysforge/`, `tests/` and `tools/`), where it used to lint `sysforge/` only. Its closing reminder, which said it does not run the suite even though its coverage section does, now points to the gates it actually skips. Contributor-only: nothing shipped changes.
+
+---
+
 - **`3.4.0-STD1` — contributor-only (`DEV`) work now gets a release-note entry, under `## Changed`.** Since `3.3.0-STD2`, `DEV` items were kept out of the release notes entirely, and their commit subject was their only record. The notes now record every shipped item. A `DEV` entry is held to the same rule as a `DOC` entry: it may only sit under `## Changed`, so contributor-only work can never imply more than a patch release. `make check-standards` enforces the section.
 
 ## Fixed

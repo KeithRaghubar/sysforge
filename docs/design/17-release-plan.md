@@ -44,7 +44,16 @@ The suite runs as `make coverage`, not `make test`: only the coverage overlay su
 so it is the one run in which no test module skips for a missing package (`3.4.0-DEV2`).
 The job body is `tools/ci.sh`, and `make ci-local` replays it under podman against the working tree
 (read-only mount, `CI=true` set as on the runner), so a red run reproduces without a push. It stays
-advisory (no branch protection) until it has held green for one release cycle.
+advisory (no branch protection) until it has held green for one release cycle. Because it runs the
+`pre-release` set in a strictly cleaner environment, the checklist's static-gate stage uses `make
+ci-local`, with `pre-release` as the fallback where podman is unavailable.
+
+**`make preflight`** (`tools/preflight.sh`) is neither runner nor gate: a read-only readiness report
+over the checklist's first four stages (branch and tree, version markers, lint, chroot, coverage
+ratchet, and the VM and derivative smokes when that infrastructure is up). It never runs
+`typecheck` or the `check-*` gates, and it only warns on missing infrastructure, so its policy stays
+uniform and the version-sensitive cadence rules live in the checklist. The name is easy to confuse
+with the release script's own preflight, which is the blocking gate.
 
 ### AUR publishing process
 

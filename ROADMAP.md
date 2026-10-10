@@ -120,6 +120,7 @@ canonical ordering.
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
 | `3.4.0-F6` | nothing measures whether an optimized build is actually faster than stock | med | large | minor |
+| `3.4.0-DOC2` | user-facing text is full of em-dashes | low | small | patch |
 | `3.4.0-F8` | a version change doesn't show how big the jump is | low | small | minor |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
@@ -450,5 +451,20 @@ canonical ordering.
   guides-track-their-feature rule covers these surfaces as well.
   *Priority: med · Effort: medium · Bump: patch* — med because these are the flags a user meets in
   a routine `update` or kernel run; medium for three guides checked against the current behaviour.
+
+---
+
+- **`3.4.0-DOC2` — user-facing text is full of em-dashes.** Roughly 37 sit in `README.md`, 15 in
+  `docs/guides/pgo.md`, 6 in the hand-written man prose (`man/sysforge.1.scd.in`), about 26 in
+  `--help`/`description` strings under `sysforge/` (which also generate most of the 23 in
+  `man/sysforge.1`), and 4 in completion descriptions. Rewrite each with a comma, colon, period or
+  parentheses as the sentence needs, rather than a blind substitution, then regenerate the man
+  page. Add a `check_standards` guard (with its standards row) that rejects U+2014 in README,
+  `docs/guides/`, the man source, CLI help text and completions, so the sweep holds. Out of scope:
+  the ``- **`<ID>` — <title>.**`` lead that ROADMAP and release notes require and lint enforces.
+  Changing that is a rule change, and would be filed as its own `STD`. Released `v*.md` notes are
+  immutable history.
+  *Priority: low · Effort: small · Bump: patch* — low because this is purely stylistic; small
+  because it is a mechanical sweep plus one lint group.
 
 ### Open questions

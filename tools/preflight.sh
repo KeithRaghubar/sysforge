@@ -3,10 +3,12 @@
 #
 # Run via `make preflight`, or directly: bash tools/preflight.sh
 #
-# This is a fast, read-only pre-check covering stages 1-4 of
-# docs/RELEASE-CHECKLIST.md in one pass. The checklist remains authoritative —
-# in particular for the two version-sensitive rules this script cannot enforce
-# (sections 8 and 9 below).
+# A read-only readiness report over stages 1-4 of docs/RELEASE-CHECKLIST.md
+# ("Which command does what"). It is not a gate: it skips typecheck and the
+# check-* gates (make ci-local / make pre-release run those), and missing
+# infrastructure only warns, so the checklist stays authoritative, in particular
+# for the two version-sensitive rules this script cannot enforce (sections 8
+# and 9 below).
 #
 # Exits 0 when there are no [FAIL]s (warnings allowed), non-zero otherwise.
 
@@ -110,8 +112,10 @@ echo
 # ---------------------------------------------------------------------------
 echo "Lint"
 if command -v ruff >/dev/null 2>&1; then
-    if ruff check sysforge/ >/dev/null 2>&1; then
-        pass "ruff check sysforge/ clean"
+    # lint-py, not a bare `ruff check sysforge/`: the same three trees the
+    # gate lints (standards row 26).
+    if make -s lint-py >/dev/null 2>&1; then
+        pass "ruff clean (sysforge/ tests/ tools/)"
     else
         fail "ruff check failed (run: make lint)"
     fi
@@ -320,5 +324,5 @@ if [[ $FAIL -gt 0 ]]; then
     exit 1
 fi
 echo "Release is ready (modulo any warnings above)."
-echo "Reminder: run 'make test' separately if you haven't already; this script does not run the suite."
+echo "Reminder: this report skips typecheck and the check-* gates; run 'make ci-local' (or 'make pre-release') for those."
 exit 0

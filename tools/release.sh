@@ -752,7 +752,7 @@ cat <<EOF
     (tag, commits, and release tarball are GPG-signed).
 
     Three manual steps remain: push the sha256 commit, then push both AUR
-    repos. The commands live in docs/RELEASE-CHECKLIST.md "Stage 7 —
+    repos. The commands live in docs/RELEASE-CHECKLIST.md "Stage 7:
     Post-release manual steps" (version to substitute: $NEW):
 
     sed -n '/^## Stage 7/,/^---$/p' docs/RELEASE-CHECKLIST.md
