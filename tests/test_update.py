@@ -83,6 +83,10 @@ def _make_args(**kwargs):
         dry_run=False,
         devel=False,
         offline=True,  # skip network in most tests
+        # The real preflight probes the host's compilers: with it on, a test
+        # passes only where clang is installed (3.4.0-DEV1). Preflight
+        # behaviour has its own tests that call it directly.
+        no_toolchain_preflight=True,
         no_pkg_log=True,
         persist_log=False,
         log_dir=None,

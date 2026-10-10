@@ -1140,6 +1140,9 @@ def test_kernel_stage_skips_snapshot_when_disabled(tmp_path):
         mock_snap.assert_not_called()
 
 def test_kernel_stage_dry_run_calls_nothing(tmp_path):
+    # The bootloader probe is a read-only query that falls back to
+    # `pacman -Qq` on a host without /boot markers; pin its answer so the
+    # assertion is about mutation, not about this host's /boot (3.4.0-DEV1).
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
@@ -1148,7 +1151,9 @@ def test_kernel_stage_dry_run_calls_nothing(tmp_path):
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
-         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
+         patch("sysforge.pipeline.stages.kernel.source.probe_installed_bootloader",
+               return_value={"systemd-boot"}):
         KernelStage().run({}, state, make_options(dry_run=True, state_dir=tmp_path / "state"))
         mock_build.assert_not_called()
         mock_sub.assert_not_called()

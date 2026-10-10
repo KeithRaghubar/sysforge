@@ -18,6 +18,19 @@ _FIXTURE_CONF = Path(__file__).parent / "data" / "etc" / "sysforge" / "system_ma
 # Fixture
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _linkers_on_path(monkeypatch):
+    """Every linker a test declares resolves on PATH.
+
+    The emitter downgrades a declared linker it can't find to plain `ld`, so
+    with the real lookup these tests asserted whatever this host had installed
+    (3.4.0-DEV1). A test exercising the missing-linker path patches `which`
+    itself, which overrides this.
+    """
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
 @pytest.fixture
 def sys_conf_path(tmp_path):
     p = tmp_path / "makepkg.conf"

@@ -859,7 +859,9 @@ def test_pgo_stale_staging_purged_at_run_start(tmp_path):
     # PKGBUILD sync "fetches" and then fails to resolve HEAD; stub the sync
     # as every stage test does (3.3.0-DEV1: this test passed only on a sync
     # result cached by an earlier test).
+    # validate_pgo_environment needs a real /usr/bin/clang (3.4.0-DEV1).
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
                side_effect=_pgo_fake_run_factory(pgo_store, call_log)), \

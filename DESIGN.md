@@ -3865,6 +3865,16 @@ the gates — they need a booted VM or a working podman and network, neither of 
 prerequisite of a lint run — but a minor or major release that skips them is untested against a
 real install. See `tools/vm/README.md` and `tools/container/README.md`.
 
+**CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs the host-independent slice of
+`pre-release` — `lint`, the full suite, `check-standards`, `check-design`, `check-shipped`,
+`check-roadmap-table` — on every push and pull request in a fresh `archlinux:base-devel` container,
+as an unprivileged user, with only the core dev tier (`make dev-deps-core`) installed. Its job is
+to catch a test or gate that passes only because of the workstation (clang-forced shell, live
+config, installed extras, one hardware profile); it is not a release gate and holds no signing key.
+The job body is `tools/ci.sh`, and `make ci-local` replays it under podman against the working tree
+(read-only mount, `CI=true` set as on the runner), so a red run reproduces without a push. It stays
+advisory (no branch protection) until it has held green for one release cycle.
+
 ### AUR publishing process
 
 Releases are driven by three Makefile targets — `make release-major`, `make release-minor`, `make release-patch` — each of which calls `tools/release.sh --bump=<level>`. The script handles the full flow end-to-end with a single up-front summary + approval prompt and one mid-run pause for the manual tag push. Phases:
@@ -4050,7 +4060,7 @@ Standards defined outside sysforge, which the project conforms to.
 | 10 | PEP 517 / 518 / 621 / 508 | Python packaging metadata | followed | `pyproject.toml` (hatchling backend, `[project]` table) |
 | 11 | `PKGBUILD(5)` · `.SRCINFO` · `alpm-hooks(5)` · `makepkg.conf` + [Arch package guidelines](https://wiki.archlinux.org/title/Arch_package_guidelines) / [VCS package guidelines](https://wiki.archlinux.org/title/VCS_package_guidelines) | Arch packaging artefacts + conventions; **also** the on-disk shape (`.hook` sections/keys) of *user-authored* pacman hooks that the artifact inventory discovers, adopts, and deploys — sysforge inventories these, not only ships its own | enforced | `pkgbuild-spec-check`/`pkgbuild-edit` skills; `check_shipped` `pkgbuild`/`hooks` groups; `primitives/artifacts.py` (`CLASS_HOOK` discovery/deploy); `primitives/makepkg_conf.py` + `[preserved_system_tokens]` keep the distro's compiler hardening baseline (`FORTIFY_SOURCE`, stack protector, `format-security`) across a wholesale profile flag override, tested in `tests/test_hardening_preservation.py`; `check_shipped` `config_comments` group extends this to the shipped configs' *prose*: no comment may name a `*.toml` or a `[section]` that does not exist, and a key whose validator accepts multiple surface forms must show every form (`_GRAMMAR_DOCS`, a hand-maintained table — widening a `_coerce_*` grammar updates it in the same commit, since no static signal distinguishes an accepted-form branch from any other conditional) |
 | 12 | `man-pages(7)` via scdoc | Manual page | enforced | `make man`; `check_shipped` `manpage` group |
-| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary, plus `DOC`-filed entries confined to `## Changed` (`3.3.0-STD1`) and no `DEV`-filed entries at all (`3.3.0-STD2`); `check_standards` `changelog` group |
+| 13 | [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) | Release notes | enforced | `docs/release-notes/vX.Y.Z.md` + `unreleased.md` accumulator category vocabulary, plus `DOC`- and `DEV`-filed entries confined to `## Changed` (`3.3.0-STD1`, `3.4.0-STD1`); `check_standards` `changelog` group |
 | 14 | [REUSE](https://reuse.software/) / SPDX (license: **MIT**) | Per-file licensing | enforced | SPDX headers + `LICENSES/MIT.txt` + `REUSE.toml`; `check_standards` `spdx` group (`reuse lint`) |
 | 15 | Reproducible builds | Builds SysForge produces | followed | does not strip reproducibility OPTIONS / honours `SOURCE_DATE_EPOCH`; `tests/test_standards_compliance.py` |
 | 16 | OpenPGP signing (RFC 4880) + makepkg `validpgpkeys` | Release provenance (signed commits, tags, tarball) | followed | `tools/release.sh` (signing preflight + `git tag -s` + tarball `.asc`); `check_shipped` `pkgbuild` group (`validpgpkeys` + signature-aware `SKIP`); verified downstream by `makepkg` |
@@ -4120,9 +4130,10 @@ documentation: `docs/guides/`, README, man page) must sit under `## Changed`:
 documentation changes no API, so it may only ever imply a patch bump (row 3), and
 filing a guide under `## Added` would otherwise demand a minor release
 (`3.3.0-STD1`). A `DEV`-filed entry (contributor-only work: tests, tools,
-`Makefile`) is an error anywhere in the notes — the notes are user-facing and their
-sections drive the bump, so a test-isolation fix must not read as a user-visible
-patch. Only the filing (first) ID counts; a `DEV` cross-reference is fine (`3.3.0-STD2`).
+`Makefile`) is held to the same `## Changed` rule for the same reason: the notes
+record every shipped item, but contributor-only work must never imply more than a
+patch (`3.4.0-STD1`, reversing `3.3.0-STD2`'s outright ban). Only the filing (first)
+ID counts; a cross-reference of either type is fine anywhere.
 
 **REUSE / SPDX (14).** SysForge is MIT-licensed (`LICENSE`). First-party source
 files carry per-file SPDX headers (a copyright tag plus the `MIT` license
@@ -4189,7 +4200,8 @@ check since `2.5.1-F4` split the sections), an `## Abandoned` heading back in
 `ROADMAP.md`, a shipped `Q`-typed ID (a `Q` is promoted to `B`/`DEV`/`DOC`/`F`/`STD` first). Warn: sequence gaps within the active
 `pyproject.toml` version prefix. Allocate the next ID with
 `python tools/check_standards.py --next-id <version>-<TYPE>`. Allocation and the gap
-check also read HEAD's commit subjects — a shipped `DEV` item's only record — but the
+check also read HEAD's commit subjects — the only record of a `DEV` item shipped before
+`3.4.0-STD1` — but the
 collision check does not, since a subject that merely files an ID is no shipment
 (`3.3.0-STD2`). Known limitation:
 a release-note that mentions a still-Planned ID in prose (a forward or "see

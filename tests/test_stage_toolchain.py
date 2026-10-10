@@ -367,7 +367,9 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
             Path(cmd[idx + 1]).touch()
         return result
 
+    # validate_pgo_environment needs a real /usr/bin/clang (3.4.0-DEV1).
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \
@@ -495,7 +497,9 @@ def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
             Path(cmd[idx + 1]).touch()
         return result
 
+    # validate_pgo_environment needs a real /usr/bin/clang (3.4.0-DEV1).
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \
@@ -568,7 +572,9 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
             Path(cmd[idx + 1]).touch()
         return result
 
+    # validate_pgo_environment needs a real /usr/bin/clang (3.4.0-DEV1).
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.validate_pgo_environment"), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run), \
          patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}), \
          patch("sysforge.pipeline.stages.toolchain.profdata.pgo_stage_instrumented"), \

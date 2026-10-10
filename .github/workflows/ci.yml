@@ -1,0 +1,30 @@
+# Suite, lint and check-* gates on a clean Arch container (3.4.0-DEV1).
+# Contributor-only, never shipped. Advisory: no branch protection until it has
+# stayed green for one release cycle. The job body is tools/ci.sh; reproduce a
+# red run locally with `make ci-local`.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    container: docker.io/library/archlinux:base-devel
+    steps:
+      # git before checkout: without it actions/checkout falls back to a REST
+      # tarball with no .git, and lint-sh, next-id and the standards gates all
+      # read the repository.
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint, suite and gates
+        run: bash tools/ci.sh "$GITHUB_WORKSPACE"

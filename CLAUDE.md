@@ -26,6 +26,7 @@ make check-shipped   # guard: etc/sysforge, PKGBUILD*, hooks, completions, manpa
 make check-standards
 make sync-config     # adopt new shipped defaults into untracked live config (add-only)
 make container-smoke[-cachyos]  # packaging + portability checks in a container (needs make vm-pkg-stable first)
+make ci-local        # replay the CI job (.github/workflows/ci.yml) in a clean Arch container
 make release-{major,minor,patch}
 ```
 
@@ -76,8 +77,8 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   `## Changed` (patch; lint-enforced). Internal docs (design, CLAUDE.md, ROADMAP) get no ID;
   wrong `--help`/man output is a `B`, since it is CLI behaviour.
 - **`DEV` IDs are for contributor-only work** (only `tests/`, `tools/`, `Makefile`, `.claude/`,
-  dev docs) and **file no release-note entry** (lint-enforced) — the squash-commit subject carries
-  the ID and is the record `next-id` reads. Touching `sysforge/` or a shipped file makes it `B`/`F`.
+  dev docs) and file their release-note entry under `## Changed` only, like `DOC` (lint-enforced,
+  `3.4.0-STD1`). Touching `sysforge/` or a shipped file makes it `B`/`F`.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`
   (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Its flags live

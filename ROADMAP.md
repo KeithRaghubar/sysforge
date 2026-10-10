@@ -55,11 +55,12 @@ and wrong `--help`/man output is a `B`, since it is CLI behaviour.
 `tests/`, `tools/`, the `Makefile`, `.claude/` or dev-only docs (`tools/vm/README.md`
 and the like). Anything under `sysforge/` or a shipped file stays `B`/`F` even when a
 dev problem prompted it, and changing a *rule* (a standards row, a process
-convention) stays `STD`. A `DEV` item **files no release-note entry**: release notes
-are user-facing and their sections drive the derived SemVer bump. Its squash-commit
-subject carries the ID and is its only record, which `make next-id` and the gap
-check read so a shipped `DEV` number is never reissued. `make check-standards`
-rejects a `DEV`-filed release-note entry.
+convention) stays `STD`. A `DEV` item files its release-note entry under
+`## Changed` only, like `DOC`: it changes no API, and the section drives the derived
+SemVer bump, so it may only ever imply a patch (`3.4.0-STD1`; until then `DEV` filed
+no entry, and those items' squash-commit subjects remain their only record, which
+`make next-id` and the gap check still read). `make check-standards` rejects a
+`DEV`-filed entry under any other section.
 
 **Open questions (`Q`) must be resolved before any implementation.** A `Q`
 entry is undecided by definition; investigation/spikes to inform the decision
@@ -113,7 +114,6 @@ canonical ordering.
 | `3.4.0-B11` | the controller's 2 GiB address-space cap leaks into pacman and its hooks, so DKMS fails on LTO kernels | high | small | patch |
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.4.0-DEV1` | the suite only ever runs on one workstation | med | small | patch |
 | `3.4.0-DOC1` | the densest user surfaces have no guide | med | medium | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
@@ -481,22 +481,5 @@ canonical ordering.
   guides-track-their-feature rule covers these surfaces as well.
   *Priority: med · Effort: medium · Bump: patch* — med because these are the flags a user meets in
   a routine `update` or kernel run; medium for three guides checked against the current behaviour.
-
-### Developer tooling
-
-- **`3.4.0-DEV1` — the suite only ever runs on one workstation.** There is no CI. The 5,878 tests,
-  `lint` and the `check-*` gates run only here, under a clang-forced shell environment, a live
-  `~/sf-config` and one hardware profile. A test that passes only because of this host stays
-  hidden until someone else builds the project. Add `.github/workflows/ci.yml` (contributor-only, not
-  shipped): an `archlinux:base-devel` container job that installs the dev deps through `make
-  dev-deps` and runs `make lint test check-standards check-design check-shipped
-  check-roadmap-table` on push and pull request. It runs with no GPG signing, no VM tier and no
-  network-dependent tests beyond what the suite already gates. Fix each environment-coupled test the
-  first run exposes under this item, or file it as its own `DEV`/`B` if the fix touches
-  `sysforge/`. Keep the job advisory (no branch protection) until it has stayed green for one
-  release cycle. The container tier (`tools/container/`) is reused only if its Containerfile fits;
-  `container-smoke` itself needs a built package and stays local.
-  *Priority: med · Effort: small · Bump: patch* — med because host coupling is a live, invisible
-  gap given the tested-hardware scope; small because every gate is already a Make target.
 
 ### Open questions

@@ -7,7 +7,8 @@
         preflight release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
-        container-build container-smoke container-smoke-cachyos container-shell container-clean
+        container-build container-smoke container-smoke-cachyos container-shell container-clean \
+        ci-local
 
 # ---------------------------------------------------------------------------
 # Dev system dependencies (2.6.1-F3)
@@ -51,9 +52,11 @@ DEV_DEPS_ALL = $(DEV_DEPS_CORE) $(DEV_DEPS_PKG) $(DEV_DEPS_VM) \
 # $(call pacman_needed,<packages>) — install only if the set isn't already
 # satisfied, so a complete environment never prompts for sudo. `pacman -Qq`
 # exits non-zero if ANY package is missing; --needed then makes the install a
-# no-op for the ones already present.
+# no-op for the ones already present. PACMAN_FLAGS is for unattended callers
+# (CI passes --noconfirm); interactive installs keep pacman's own prompt.
+PACMAN_FLAGS ?=
 define pacman_needed
-@pacman -Qq $(1) >/dev/null 2>&1 || sudo pacman -S --needed $(1)
+@pacman -Qq $(1) >/dev/null 2>&1 || sudo pacman -S --needed $(PACMAN_FLAGS) $(1)
 endef
 
 VM_DIR ?= $(HOME)/.local/share/sysforge-vm
@@ -87,6 +90,7 @@ help: ## List every target, grouped (this list)
 	@echo
 	@echo "Variables: ARGS= (test/audit)  SORT=/REVERSE=/WIDTH= (roadmap-view)"
 	@echo "           TYPE= (next-id)  BUMP= (check-bump)  VERSION= (check-standards-at)"
+	@echo "           PACMAN_FLAGS= (dev-deps*, e.g. --noconfirm for unattended runs)"
 
 # ---------------------------------------------------------------------------
 # Python dev
@@ -595,3 +599,12 @@ container-shell: ## Open a shell in the test container
 
 container-clean: ## Remove the test container and image
 	./tools/container/harness.sh clean --distro=$(or $(DISTRO),arch)
+
+# Replay the CI job (.github/workflows/ci.yml, 3.4.0-DEV1) against the working
+# tree, uncommitted edits included, in the same base image. The tree is mounted
+# read-only: tools/ci.sh copies it to an unprivileged user before running the
+# gates, so nothing the run writes lands back here. CI=true as on the runner:
+# the progress UI drops to plain mode on it. Needs the container tier.
+ci-local: ## Replay the CI job in a throwaway Arch container
+	podman run --rm -e CI=true -v "$(CURDIR)":/src:ro,Z docker.io/library/archlinux:base-devel \
+	    bash /src/tools/ci.sh /src

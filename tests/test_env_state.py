@@ -803,6 +803,7 @@ def test_sysforge_keys_never_injected():
 def _make_update_args(**overrides):
     defaults = dict(
         offline=True,      # skip network; parallel pull block is no-op
+        no_toolchain_preflight=True,  # host-independent: no compiler probe (3.4.0-DEV1)
         dry_run=False,
         devel=False,
         no_cleanbuild=False,

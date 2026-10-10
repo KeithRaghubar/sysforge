@@ -17,6 +17,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _SCRIPT = Path(__file__).resolve().parents[1] / "tools" / "check_standards.py"
 
 
@@ -243,14 +245,22 @@ def test_doc_cross_reference_outside_changed_is_allowed(tmp_path):
     assert check_standards.check_changelog(tmp_path) == []
 
 
-# --- DEV type (3.3.0-STD2): contributor-only work never files a release note ---
-# Release notes are user-facing and their sections drive the derived SemVer
-# bump; the squash-commit subject is a DEV item's only record.
+# --- DEV type: contributor-only work files under `## Changed` only ---
+# 3.3.0-STD2 kept DEV out of the notes entirely; 3.4.0-STD1 reverses that so
+# the notes record every shipped item. Like DOC it changes no API, so it is
+# confined to the patch-level section and can never inflate the derived bump.
 
-def test_dev_entry_in_release_notes_is_error(tmp_path):
-    _write_notes(tmp_path, "# t\n\n## Fixed\n\n- **`1.0.0-DEV1` — test isolation.** x\n")
+def test_dev_entry_under_changed_is_allowed(tmp_path):
+    _write_notes(tmp_path, "# t\n\n## Changed\n\n- **`1.0.0-DEV1` — test isolation.** x\n")
+    assert check_standards.check_changelog(tmp_path) == []
+
+
+@pytest.mark.parametrize("section", ["Added", "Fixed", "Removed"])
+def test_dev_entry_outside_changed_is_error(tmp_path, section):
+    _write_notes(tmp_path,
+                 f"# t\n\n## {section}\n\n- **`1.0.0-DEV1` — test isolation.** x\n")
     findings = check_standards.check_changelog(tmp_path)
-    assert any("1.0.0-DEV1" in f.message and "release note" in f.message
+    assert any("1.0.0-DEV1" in f.message and "## Changed" in f.message
                for f in findings), findings
 
 

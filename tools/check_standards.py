@@ -299,8 +299,9 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
     Ordering is (version, type, number), so within a cycle `B` precedes `DEV`
     precedes `DOC` precedes `F` precedes `Q` precedes `STD`. An entry with no
     ID is reported rather than silently sorted last: every entry is required
-    to cite its roadmap ID. A `DOC`-filed entry must sit under `## Changed`
-    (3.3.0-STD1); a `DEV` item files no entry at all (3.3.0-STD2).
+    to cite its roadmap ID. A `DOC`- or `DEV`-filed entry must sit under
+    `## Changed` (3.3.0-STD1, 3.4.0-STD1): neither changes an API, so neither
+    may imply more than a patch bump.
     """
     findings: list[Finding] = []
     rel = unreleased.relative_to(repo).as_posix()
@@ -334,13 +335,6 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     "ROADMAP.md entries use",
                 ))
             cur_id = f"{key[0]}.{key[1]}.{key[2]}-{key[3]}{key[4]}"
-            if key[3] == "DEV":
-                findings.append(Finding(
-                    "changelog", "error", f"{rel}:{lineno}",
-                    f"`{cur_id}` is a DEV item filing a release note — "
-                    "contributor-only work (tests, tools, Makefile) gets no "
-                    "release-note entry; its squash-commit subject is the record",
-                ))
             if key[3] == "DOC" and heading != "Changed":
                 findings.append(Finding(
                     "changelog", "error", f"{rel}:{lineno}",
@@ -348,6 +342,14 @@ def _check_accumulator_id_order(repo: Path, unreleased: Path) -> list[Finding]:
                     "user-facing doc changes file under `## Changed` only "
                     "(the section drives the derived SemVer bump, and docs "
                     "change no API)",
+                ))
+            if key[3] == "DEV" and heading != "Changed":
+                findings.append(Finding(
+                    "changelog", "error", f"{rel}:{lineno}",
+                    f"`{cur_id}` is a DEV entry under `## {heading}` — "
+                    "contributor-only work (tests, tools, Makefile) files under "
+                    "`## Changed` only (the section drives the derived SemVer "
+                    "bump, and it changes no API)",
                 ))
             parsed.append((lineno, cur_id, key, lead))
 
@@ -658,8 +660,8 @@ def _gather_ids(repo: Path) -> tuple[dict[str, str], set[str]]:
 def _commit_subject_ids(repo: Path) -> set[str]:
     """IDs cited in HEAD's commit subjects (3.3.0-STD2).
 
-    A shipped `DEV` item never files a release note, so its squash-commit
-    subject is its only record. This feeds allocation and the gap check only,
+    A `DEV` item shipped before 3.4.0-STD1 filed no release note, so its
+    squash-commit subject is its only record. This feeds allocation and the gap check only,
     never the shipped-collision check: a subject that merely *files* an ID
     ("docs: file 3.3.0-F1 …") is not a shipment. Empty outside a git checkout.
     """
@@ -763,7 +765,8 @@ def next_id(repo: Path, prefix: str) -> str:
 
     The sources are ROADMAP.md (planned), docs/ROADMAP-ABANDONED.md (spent —
     an abandoned number is never reissued), docs/release-notes/ (shipped) and
-    HEAD's commit subjects (a shipped `DEV` item's only record, 3.3.0-STD2).
+    HEAD's commit subjects (the only record of a `DEV` item shipped before
+    3.4.0-STD1, which filed no release note).
 
     Accepts either a bare ``<TYPE>`` (e.g. ``F``) — the version is derived from
     ``pyproject.toml`` so the caller can't misattribute the cycle, which is the
