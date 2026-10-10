@@ -121,6 +121,7 @@ canonical ordering.
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
 | `3.4.0-F6` | nothing measures whether an optimized build is actually faster than stock | med | large | minor |
+| `3.4.0-F8` | a version change doesn't show how big the jump is | low | small | minor |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
@@ -409,6 +410,30 @@ canonical ordering.
   **Standards home on adoption:** a new `21-standards.md` row for the JSON output contract:
   adding a field is a minor change, renaming or removing one is major and bumps `schema`. The row
   is enforced by the schema-fixture tests.
+
+---
+
+- **`3.4.0-F8` — a version change doesn't show how big the jump is.** Every `old → new` row
+  (the `update` summary, the post-build change report, the toolchain pre-build list from
+  `3.2.0-B23`, and the LLVM and toolchain pre-flights) looks the same whether it is an epoch
+  change, a major bump, or a pkgrel-only rebuild. In a long `update --devel` summary, the few rows
+  that need a second look are hidden among dozens of `r1234 → r1240` VCS ticks. All six sites
+  already go through `render.version_pair()` (`primitives/render.py`), so the change lives in one
+  place. Classify the pair by the first component that differs on the `[epoch:]pkgver-pkgrel`
+  shape: **epoch**, **major**, **minor**, **patch** (any deeper pkgver component), **pkgrel**
+  (pkgver equal), **vcs** (only a trailing `rN`/`.gHASH` segment moved), **downgrade** (`vercmp`
+  says new < old), and **unknown**, which stays plain. pkgver is not SemVer: dates, `_`/`+`
+  separators and mixed alpha segments must classify, or fall back to unknown, without raising.
+  Make colour opt-in per call (e.g. `version_pair(..., classify=True)`) and map each level to a
+  tint through the same named-colour table `tag_header` uses, gated on `log.use_color()`. That
+  table's rule applies here too: colour in a message body is only safe on `ui()`/`print()`
+  surfaces, and every current caller emits that way. Output with colour off is byte-identical to
+  today. Tests: a classifier table covering each level, including epoch, date pkgvers, a `-git`
+  `r`-count tick and a downgrade; colour-off output unchanged; one call-site test showing a tint
+  under `use_color()`.
+  *Priority: low · Effort: small · Bump: minor* — low because nothing is wrong today, it only makes
+  a long summary faster to read. Small because there is one function to change and the colour
+  gate already exists.
 
 ### Bugs
 
