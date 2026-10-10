@@ -319,12 +319,29 @@ def test_run_seam_allows_list_form(tmp_path):
     (repo / "sysforge").mkdir()
     (repo / "sysforge" / "good.py").write_text(
         "import subprocess\n"
-        "subprocess.run(['pacman', '-Q'])\n",
+        "from sysforge.primitives.resource_guard import lift_for_child\n"
+        "subprocess.run(['pacman', '-Q'], preexec_fn=lift_for_child)\n",
         encoding="utf-8",
     )
     mod = _load_check_standards()
     findings = mod.check_run_seam(repo)
     assert not findings, findings
+
+
+def test_run_seam_flags_spawn_without_preexec(tmp_path):
+    """3.4.0-B11: a spawn with no ``preexec_fn=`` would inherit the controller's
+    2 GiB RLIMIT_AS (pacman -> DKMS -> ld.lld OOM), so it is flagged."""
+    repo = tmp_path
+    (repo / "sysforge").mkdir()
+    (repo / "sysforge" / "capped.py").write_text(
+        "import subprocess as _sp\n"
+        "_sp.Popen(['pacman', '-Syu'])\n",
+        encoding="utf-8",
+    )
+    mod = _load_check_standards()
+    findings = mod.check_run_seam(repo)
+    assert any("capped.py" in f.location and "preexec_fn" in f.message
+               for f in findings), findings
 
 
 def test_run_seam_flags_string_command_via_module_alias(tmp_path):

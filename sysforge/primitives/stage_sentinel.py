@@ -71,6 +71,7 @@ from sysforge import log
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.prompt import is_interactive, prompt_choice
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("SENTINEL")
 
@@ -227,7 +228,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
         return False
 
     try:
-        proc = subprocess.run(recovery_cmd.split(), check=False)  # noqa: TID251 — operator's recovery command runs on the TTY
+        proc = subprocess.run(recovery_cmd.split(), check=False, preexec_fn=lift_for_child)  # noqa: TID251 — operator's recovery command runs on the TTY
     except FileNotFoundError:
         _log.error("Recovery command binary missing — cannot run recovery")
         return False

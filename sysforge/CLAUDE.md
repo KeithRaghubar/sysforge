@@ -42,9 +42,13 @@ Mechanism lives in the cited §DESIGN section.
 - **Build throttle** (nice/ionice/cpu_quota/jobs/mem_limit): `build_throttle.resolve_throttle`;
   channels `wrapper_argv` + `apply_jobs_to_makeflags`. `mem_limit` is dual-mechanism: off the
   cpu_quota path it's an `RLIMIT_AS` clamp via the shared `resource_guard.make_child_preexec(cap)`
-  preexec (the one home replacing all three raw `lift_for_child` sites); with cpu_quota it becomes
-  `-p MemoryMax=` on the systemd-run scope. `resolve_child_mem_cap` arbitrates so the two never
-  double-apply (returns `None` when the scope owns the cap). §Flag/Profile.
+  preexec; with cpu_quota it becomes `-p MemoryMax=` on the systemd-run scope.
+  `resolve_child_mem_cap` arbitrates so the two never double-apply (returns `None` when the scope
+  owns the cap). §Flag/Profile.
+- **Controller rlimit lift**: every child runs without the controller's 2 GiB `RLIMIT_AS`, or
+  `sudo pacman` carries it into DKMS (`3.4.0-B11`). The `run`/`pty_runner` seams default
+  `preexec_fn=lift_for_child`; a raw `subprocess` site passes `preexec_fn=` itself (`run_seam`
+  fails one that doesn't). §primitives-layer `resource_guard.py`.
 - **Replacing an existing config file**: `atomic_write.replace_file` (symlink-, mode- and
   owner-preserving temp-in-dest-dir + rename; escalates via `run_privileged`). Never
   `write_text`/`sudo cp` over a user's or root's config. Creating files with a fixed mode

@@ -87,6 +87,7 @@ from sysforge.primitives.prompt import (
     prompt_key as _prompt_key,
 )
 from sysforge.primitives import run
+from sysforge.primitives.resource_guard import lift_for_child
 
 def _pipeline_stages() -> list[tuple[str, str]]:
     """Lazy import to avoid circular import from stages/__init__.py."""
@@ -437,7 +438,8 @@ def _try_install_editor(editor_cmd: str, options) -> bool:
         editor=editor_cmd,
     ):
         result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-            privileged_argv(["pacman", "-S", "--needed", "--noconfirm", pkg_name])
+            privileged_argv(["pacman", "-S", "--needed", "--noconfirm", pkg_name]),
+            preexec_fn=lift_for_child,
         )
     if result.returncode != 0 or not shutil.which(editor_cmd):
         _log.ui(
@@ -1439,7 +1441,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
         )
         if choice == "y":
             _log.info("Running gpg --refresh-keys (this may take a while)...")
-            r = subprocess.run(["gpg", "--refresh-keys"])  # noqa: TID251 — long network refresh streams its progress
+            r = subprocess.run(["gpg", "--refresh-keys"], preexec_fn=lift_for_child)  # noqa: TID251 — long network refresh streams its progress
             if r.returncode != 0:
                 _log.warn("  gpg --refresh-keys failed")
             else:

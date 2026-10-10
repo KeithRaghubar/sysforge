@@ -35,12 +35,14 @@ import subprocess
 
 from sysforge.primitives import progress_hooks
 from sysforge.primitives.run import run_or_raise
+from sysforge.primitives.resource_guard import lift_for_child
 
 
 def _credentials_cached() -> bool:
     """``sudo -n true``: would sudo run without asking? The auth probe."""
     return subprocess.run(["sudo", "-n", "true"], stdin=subprocess.DEVNULL,
-                          capture_output=True, check=False).returncode == 0
+                          capture_output=True, check=False,
+                          preexec_fn=lift_for_child).returncode == 0
 
 
 def ensure_credentials() -> bool:
@@ -57,7 +59,8 @@ def ensure_credentials() -> bool:
     if os.geteuid() == 0 or _credentials_cached():
         return True
     with progress_hooks.hooks().yield_terminal("prompt"):
-        return subprocess.run(["sudo", "-v"], check=False).returncode == 0
+        return subprocess.run(["sudo", "-v"], check=False,
+                              preexec_fn=lift_for_child).returncode == 0
 
 
 def privileged_argv(argv: list[str], *, noninteractive: bool = False) -> list[str]:

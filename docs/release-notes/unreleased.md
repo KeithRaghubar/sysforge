@@ -164,4 +164,8 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.4.0-B11` — an out-of-tree kernel module now rebuilds when `pacman` upgrades it during a sysforge run.** sysforge limits its own memory use to 2 GiB so a runaway process can't take down the system. That limit was meant for sysforge alone, but every command it started inherited it, through `sudo` and into everything `pacman` ran. On a clang LTO kernel, the DKMS rebuild that `pacman` triggers when it upgrades a driver such as `nvidia-open-dkms` needs more address space than that, so the link failed with `LLVM ERROR: out of memory` while gigabytes were still free. The old module stayed in place, and after a reboot the driver no longer matched its userspace libraries. Every command sysforge starts now runs without the limit: `pacman`, its hooks, `mkinitcpio`, the bootloader update, editors and pagers. A per-build `[build] mem_limit` still applies to builds as before. A standards check now fails any new command that sysforge starts without lifting the limit. If an earlier run left a module out of date, rebuild it once with `sudo dkms install <module>/<version> -k <kernel>`.
+
+---
+
 - **`3.4.0-B12` — the patched `PKGBUILD.sysforge` now says it's regenerated.** When a build fails, sysforge leaves its patched copy, `PKGBUILD.sysforge`, next to your PKGBUILD and names it in the error, so it's the file you're likely to open to fix the PKGBUILD. But sysforge regenerates that copy from `PKGBUILD` before every build, so a fix made there is silently lost on the next build. The copy now starts with a comment saying that, and pointing you to `PKGBUILD`.

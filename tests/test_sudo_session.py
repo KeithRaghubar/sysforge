@@ -13,6 +13,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 from sysforge.primitives import privilege, sudo_session
+from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.sudo_session import (
     SUDO_KEEPALIVE_INTERVAL,
     _keepalive_daemon,
@@ -37,7 +38,8 @@ def test_authenticate_runs_sudo_v_and_reports_success():
          patch("subprocess.run", return_value=_run_result(0)) as mock_run:
         assert authenticate() is True
 
-    mock_run.assert_called_once_with(["sudo", "-v"], check=False)
+    mock_run.assert_called_once_with(["sudo", "-v"], check=False,
+                                     preexec_fn=lift_for_child)
 
 
 def test_authenticate_reports_failure_on_nonzero():

@@ -63,6 +63,7 @@ from sysforge.pipeline.stages._bootstrap import load_bootstrap, BootstrapConfig
 from sysforge.primitives.fs_provision import SYSFORGE_DIR_MODE, SYSFORGE_GROUP
 from sysforge.primitives.pkg_catalog import select_desktop, write_desktop_group
 from sysforge.primitives.prompt import is_interactive
+from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.run import run_or_raise
 
 
@@ -74,7 +75,7 @@ def _chroot(target: str, cmd: list[str], check: bool = True) -> subprocess.Compl
     """Run a command inside arch-chroot <target>."""
     full_cmd = ["arch-chroot", target] + cmd
     _log.info(f"chroot: {' '.join(cmd)}")
-    return subprocess.run(full_cmd, check=check)  # noqa: TID251 — arch-chroot command streams to the TTY; caller picks check
+    return subprocess.run(full_cmd, check=check, preexec_fn=lift_for_child)  # noqa: TID251 — arch-chroot command streams to the TTY; caller picks check
 
 
 # ---------------------------------------------------------------------------

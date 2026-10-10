@@ -47,8 +47,10 @@ Groups:
                 back in ROADMAP.md, a shipped Q-typed ID, and (warn) sequence
                 gaps in the active pyproject version's prefix.
     run_seam    External-command execution discipline: subprocess calls use
-                argv-list form (never a string command), and shell=True carries
-                a justified `# noqa: S602` from the single-site allowlist.
+                argv-list form (never a string command), shell=True carries
+                a justified `# noqa: S602` from the single-site allowlist, and
+                every spawn passes preexec_fn= so it lifts the controller's
+                RLIMIT_AS cap (3.4.0-B11).
     privilege_seam  Escalation discipline: root-escalating argv routes through
                     primitives/privilege.py; raw ["sudo", ...] outside it is an
                     error (probe/drop-priv forms allowlisted).
@@ -808,7 +810,8 @@ _RUN_SEAM_SHELL_ALLOWLIST: frozenset[str] = frozenset()
 
 
 def check_run_seam(repo: Path) -> list[Finding]:
-    """External commands: argv-list form only; shell=True needs a justified noqa."""
+    """External commands: argv-list form only; shell=True needs a justified noqa;
+    every spawn passes ``preexec_fn=`` (lifts the controller's RLIMIT_AS)."""
     findings: list[Finding] = []
     for py in sorted((repo / "sysforge").rglob("*.py")):
         rel = py.relative_to(repo).as_posix()
@@ -857,6 +860,18 @@ def check_run_seam(repo: Path) -> list[Finding]:
                     "run_seam", "error", f"{rel}:{lineno}",
                     "subprocess call with a string command — use argv-list form "
                     "(STD row 17)",
+                ))
+            # (c) every spawn lifts the controller's RLIMIT_AS (3.4.0-B11): the
+            # 2 GiB cap resource_guard.install() puts on sysforge is inherited by
+            # any child that does not undo it — through sudo, into pacman's ALPM
+            # hooks (DKMS -> ld.lld OOM). `preexec_fn=lift_for_child` (or
+            # make_child_preexec) is the undo; the run/pty seams pass it for
+            # their callers, so only raw sites ever need to spell it.
+            if not any(kw.arg == "preexec_fn" for kw in node.keywords):
+                findings.append(Finding(
+                    "run_seam", "error", f"{rel}:{lineno}",
+                    "subprocess spawn without preexec_fn= inherits the controller's "
+                    "RLIMIT_AS cap — pass resource_guard.lift_for_child (STD row 17)",
                 ))
             # (b) shell=True must carry a "noqa: S602" marker and sit in the allowlist
             for kw in node.keywords:

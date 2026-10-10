@@ -39,6 +39,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("FSPROV")
 
@@ -71,7 +72,7 @@ def _run_priv(argv: list[str]) -> None:
     """Run a privileged command via sudo, translating failure into
     FsProvisionError so callers get one exception type to catch."""
     try:
-        subprocess.run(privileged_argv(argv), check=True)  # noqa: TID251 — privileged; CalledProcessError translated to FsProvisionError
+        subprocess.run(privileged_argv(argv), check=True, preexec_fn=lift_for_child)  # noqa: TID251 — privileged; CalledProcessError translated to FsProvisionError
     except FileNotFoundError as e:  # sudo not installed
         raise FsProvisionError(f"sudo not available: {e}") from e
     except subprocess.CalledProcessError as e:

@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from sysforge.primitives import progress_hooks
+from sysforge.primitives.resource_guard import lift_for_child
 
 # Terminal escape sequences a pty child may embed in its output. Because the
 # child sees a tty, compilers emit SGR colors, erase-line (CSI K), and OSC-8
@@ -372,7 +373,8 @@ def run_with_pty(
             stdout=slave_fd,
             stderr=slave_fd,
             close_fds=True,
-            preexec_fn=preexec_fn,
+            # 3.4.0-B11: default to lifting the controller's RLIMIT_AS cap.
+            preexec_fn=preexec_fn or lift_for_child,
         )
         os.close(slave_fd)
         slave_fd = -1

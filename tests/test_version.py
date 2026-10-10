@@ -11,6 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.version import format_version, vercmp
 
 
@@ -30,7 +31,8 @@ def test_vercmp_newer():
         result = vercmp("3.4.1-1", "3.3.0-1")
     assert result == 1
     mock.assert_called_once_with(["vercmp", "3.4.1-1", "3.3.0-1"],
-                                 capture_output=True, text=True, check=False)
+                                 capture_output=True, text=True, check=False,
+                                 preexec_fn=lift_for_child)
 
 
 def test_vercmp_equal():

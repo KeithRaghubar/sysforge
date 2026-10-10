@@ -7,6 +7,7 @@ recovery helper check_and_recover_stale_sentinel().
 from unittest.mock import MagicMock, patch
 
 
+from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.stage_sentinel import (
     StageSentinel,
     check_and_recover_stale_sentinel,
@@ -101,6 +102,7 @@ def test_check_stale_accepted_runs_recovery_and_clears(tmp_path):
     assert result is True
     run_mock.assert_called_once_with(
         ["sudo", "pacman", "-S", "llvm", "llvm-libs"], check=False,
+        preexec_fn=lift_for_child,
     )
     assert StageSentinel(tmp_path).get_active() is None
 

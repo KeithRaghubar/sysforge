@@ -26,6 +26,7 @@ import subprocess
 from dataclasses import dataclass
 
 from sysforge.primitives.config import load_sysforge_toml
+from sysforge.primitives.resource_guard import lift_for_child
 
 
 def run_tty_argv(argv: list[str]) -> int:
@@ -61,9 +62,9 @@ def run_tty_argv(argv: list[str]) -> int:
         with progress_hooks.hooks().yield_terminal("child"):
             if tty_fd is not None:
                 result = subprocess.run(  # noqa: TID251 — editor owns the TTY
-                    argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd)
+                    argv, stdin=tty_fd, stdout=tty_fd, stderr=tty_fd, preexec_fn=lift_for_child)
             else:
-                result = subprocess.run(argv)  # noqa: TID251 — editor owns the TTY
+                result = subprocess.run(argv, preexec_fn=lift_for_child)  # noqa: TID251 — editor owns the TTY
         return result.returncode
     except FileNotFoundError:
         return -1

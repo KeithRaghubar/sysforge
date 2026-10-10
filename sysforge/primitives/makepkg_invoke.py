@@ -53,7 +53,7 @@ from sysforge.primitives.makepkg_flags import (
 )
 from sysforge.primitives.profile import CONF_KEY_MAP
 from sysforge.primitives.prompt import prompt_choice, prompt_text
-from sysforge.primitives.resource_guard import make_child_preexec
+from sysforge.primitives.resource_guard import lift_for_child, make_child_preexec
 from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
 
 _makepkg_log = log.get_logger("MAKEPKG")
@@ -1006,7 +1006,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                             ensure_credentials()
                             result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
                                 privileged_argv(["pacman", "-U", "--noconfirm"])
-                                + [str(p) for p in built_pkgs]
+                                + [str(p) for p in built_pkgs], preexec_fn=lift_for_child
                             )
                             if result.returncode == 0:
                                 _makepkg_log.ui("Install succeeded.")

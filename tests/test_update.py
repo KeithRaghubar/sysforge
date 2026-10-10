@@ -2289,6 +2289,20 @@ def test_sysupgrade_flag_fires_syu_without_pacman_class(update_scenario, capsys)
     assert update_scenario.exit_code == 0
 
 
+def test_syu_child_lifts_controller_rlimit(update_scenario):
+    """3.4.0-B11: pacman -Syu runs with the controller's RLIMIT_AS lifted, so
+    pacman, its ALPM hooks and their children (DKMS -> ld.lld) are uncapped."""
+    from sysforge.primitives import resource_guard
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    fr = update_scenario.fake_run
+    syu = [k for c, k in zip(fr.commands, fr.call_kwargs, strict=True)
+           if "pacman -Syu" in c]
+    assert syu, fr.commands
+    assert syu[0].get("preexec_fn") is resource_guard.lift_for_child
+
+
 def test_sysupgrade_config_default_fires(update_scenario):
     """[build] system_upgrade = true alone enables the trailing -Syu."""
     kw = _up_to_date_scenario(update_scenario)

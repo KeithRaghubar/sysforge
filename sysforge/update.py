@@ -98,6 +98,7 @@ from sysforge.primitives.pacman import (
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.profile import (
     match_rules,
     resolve_consumes,
@@ -1612,7 +1613,7 @@ def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> in
         _hold_credentials(credentials)
         import subprocess as _subprocess
         with run.timer.phase("pacman -Syu"):
-            rc = _subprocess.run(cmd).returncode  # noqa: TID251 — pacman -Syu is interactive and owns the TTY
+            rc = _subprocess.run(cmd, preexec_fn=lift_for_child).returncode  # noqa: TID251 — pacman -Syu is interactive and owns the TTY
         pacman_changed = None
         if before_snapshot is not None:
             try:

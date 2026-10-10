@@ -22,6 +22,8 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
+from sysforge.primitives.resource_guard import lift_for_child
+
 
 def _strip_altscreen_hostile(tokens: list[str]) -> list[str]:
     """Drop ``less``'s alt-screen-hostile options (``-X`` / ``--no-init``).
@@ -135,7 +137,7 @@ def maybe_pager(use_pager: bool):
     for cmd in _pager_candidates():
         try:
             proc = subprocess.Popen(  # noqa: TID251 — the pager reads our output on a stdin pipe
-                cmd, stdin=subprocess.PIPE, text=True, env=pager_env)
+                cmd, stdin=subprocess.PIPE, text=True, env=pager_env, preexec_fn=lift_for_child)
         except (FileNotFoundError, OSError):
             continue
         old_stdout = sys.stdout

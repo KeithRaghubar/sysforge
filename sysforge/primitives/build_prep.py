@@ -31,6 +31,7 @@ from sysforge import log
 from sysforge.primitives.git_ops import purge_src
 from sysforge.primitives.net_policy import KIND_KEY_FETCH, KIND_REPO_CHECKOUT, get_policy
 from sysforge.primitives import run
+from sysforge.primitives.resource_guard import lift_for_child
 
 # [BUILD_PREP], not [BUILD]: this module does pre-build *acquisition* (clone the
 # packaging repo via pkgctl, import validpgpkeys) — it never compiles anything.
@@ -77,6 +78,7 @@ def pkgctl_checkout(name: str, dest: Path, *, timeout: int | None = 60) -> None:
             text=True,
             bufsize=1,
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            preexec_fn=lift_for_child,
         )
     except FileNotFoundError:
         raise RuntimeError(

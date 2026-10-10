@@ -30,6 +30,7 @@ from sysforge.pipeline.stages.toolchain import constants
 
 from sysforge.primitives import prompt
 from sysforge import log
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -320,7 +321,8 @@ def pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> Non
     for p in pkgs:
         _log.info(f"  {p.name}")
     result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs]
+        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs],
+        preexec_fn=lift_for_child,
     )
     if result.returncode != 0:
         raise RuntimeError(

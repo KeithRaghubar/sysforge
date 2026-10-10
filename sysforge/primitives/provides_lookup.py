@@ -24,6 +24,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives import run
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("PROV")
 
@@ -65,7 +66,7 @@ def sync_files_db() -> bool:
     if not shutil.which("pacman"):
         return False
     try:
-        result = subprocess.run(privileged_argv(["pacman", "-Fy"]))  # noqa: TID251 — privileged files-DB refresh streams, status inspected
+        result = subprocess.run(privileged_argv(["pacman", "-Fy"]), preexec_fn=lift_for_child)  # noqa: TID251 — privileged files-DB refresh streams, status inspected
     except FileNotFoundError:
         return False
     return result.returncode == 0

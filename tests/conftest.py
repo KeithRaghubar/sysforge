@@ -375,7 +375,8 @@ class _RunRecorder:
     """
     Programmable stand-in for ``subprocess.run`` installed at the global seam.
 
-    - Records every invocation's argv in ``.calls`` (``.commands`` as strings).
+    - Records every invocation's argv in ``.calls`` (``.commands`` as strings)
+      and its keyword arguments in ``.call_kwargs`` (same order).
     - Returns the first matching programmed response, else ``default``.
     - ``respond(match, ...)``: ``match`` is a substring (vs the joined command),
       an argv-prefix list, or a callable predicate. ``check=True`` raises
@@ -384,6 +385,7 @@ class _RunRecorder:
 
     def __init__(self, real_run=None):
         self.calls = []
+        self.call_kwargs = []
         self.default = _make_proc()
         self._rules = []
         self._passthrough = []
@@ -391,6 +393,7 @@ class _RunRecorder:
 
     def __call__(self, cmd, *args, **kwargs):
         self.calls.append(cmd)
+        self.call_kwargs.append(kwargs)
         for predicate in self._passthrough:
             if predicate(cmd) and self._real_run is not None:
                 return self._real_run(cmd, *args, **kwargs)

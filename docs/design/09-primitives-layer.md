@@ -482,10 +482,11 @@ Probes are why raw `subprocess` calls kept reappearing outside this module despi
 
 Caps the sysforge controller process's virtual address space so a runaway long-running build session (days of pipeline work) cannot balloon memory. Public API:
 
-- `install()` — called once at CLI entry. Sets `RLIMIT_AS` to 2 GiB on the Python process.
-- `lift_for_child()` — returns a `preexec_fn` that restores the address-space limit to `RLIM_INFINITY` for a child process. Used as `preexec_fn=resource_guard.lift_for_child()` on `subprocess` calls whose children legitimately need more than 2 GiB (notably `llvm-profdata merge` in the toolchain stage, which mmaps the full profraw set).
+- `install()` — called once at CLI entry. Sets `RLIMIT_AS` to 2 GiB on the Python process (never above an existing hard limit), saving the original hard limit.
+- `lift_for_child()` — a `preexec_fn` that restores `RLIMIT_AS` to the saved hard limit in the child, best-effort (a raising syscall never aborts the exec).
+- `make_child_preexec(cap)` — `lift_for_child` followed by an optional per-build clamp (`[build] mem_limit`, 2.2.0-F4); `cap=None` is a bare lift. makepkg and `llvm-profdata merge` use it.
 
-The guard is applied to the controller only — makepkg itself is launched through normal subprocess invocation and inherits whatever the shell granted, so it is not affected unless explicitly opted in via `lift_for_child`.
+**The cap is the controller's alone; no child inherits it** (`3.4.0-B11`). rlimits survive `fork`+`exec`, and sudo forwards the caller's by default (`rlimit_as=user`), so a child that does not undo the cap carries it into everything below it. `pacman` passed it on to its ALPM hooks, and a DKMS module link (`ld.lld`, full LTO) failed with `LLVM ERROR: out of memory` while memory was free. So every spawn lifts. The `run` seam (`run_or_raise`, `capture`/`probe`) and `pty_runner.run_with_pty` pass `lift_for_child` by default, and a caller's own `preexec_fn=` replaces it, which is how `make_child_preexec` keeps a `mem_limit` clamp in force. Every raw `subprocess` site passes `preexec_fn=` explicitly. `check_standards` `run_seam` (standards row 17) fails a spawn without one.
 
 ### `makepkg_wrapper.py`
 

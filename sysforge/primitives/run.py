@@ -29,6 +29,13 @@ everywhere except this module, ``pty_runner``, ``privilege`` and
 ``sudo_session``. The calls that legitimately stay raw (streaming or
 TTY-inheriting invocations, a privileged command whose status the caller
 inspects, a custom ``preexec_fn``) carry a ``# noqa: TID251`` naming why.
+
+Every child is spawned with the controller's ``RLIMIT_AS`` cap lifted
+(``resource_guard.lift_for_child``, overridable via ``preexec_fn=``): the 2 GiB
+cap guards the Python controller, and a child that inherits it — through
+``sudo`` into pacman's ALPM hooks, DKMS and ``ld.lld`` — fails out of memory
+with gigabytes free (3.4.0-B11). Raw sites outside the seam pass it themselves;
+``check_standards`` ``run_seam`` flags one that does not.
 """
 from __future__ import annotations
 
@@ -36,6 +43,7 @@ import subprocess
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("RUN")
 
@@ -77,7 +85,8 @@ def run_or_raise(
         kwargs.setdefault("capture_output", True)
         kwargs.setdefault("text", True)
 
-    result = subprocess.run(cmd, **kwargs)
+    result = subprocess.run(
+        cmd, preexec_fn=kwargs.pop("preexec_fn", lift_for_child), **kwargs)
     if result.returncode == 0:
         return result
 
@@ -130,7 +139,8 @@ def capture(
     kwargs["check"] = False
     _log.debug(f"probe: {' '.join(str(c) for c in cmd)}")
     try:
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run(
+            cmd, preexec_fn=kwargs.pop("preexec_fn", lift_for_child), **kwargs)
     except FileNotFoundError:
         _log.debug(f"probe: {cmd[0]} not found on PATH")
         return None

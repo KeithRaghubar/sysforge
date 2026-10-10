@@ -58,6 +58,7 @@ from sysforge.primitives.makepkg_flags import INSTALL_FLAGS, SYNC_FLAGS
 from sysforge.primitives.privilege import ensure_credentials, privileged_argv
 from sysforge.primitives.pty_runner import strip_ansi
 from sysforge.primitives import run
+from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("PACMAN")
 
@@ -685,7 +686,7 @@ def batch_install_pkgs(
                 _log.error(f"  {line}")
             return False
     else:
-        result = subprocess.run(argv, **run_kwargs)  # noqa: TID251 — privileged pacman -U; stderr parsed for file conflicts
+        result = subprocess.run(argv, **run_kwargs, preexec_fn=lift_for_child)  # noqa: TID251 — privileged pacman -U; stderr parsed for file conflicts
         if result.returncode != 0:
             if result.stderr:
                 for line in result.stderr.splitlines():
@@ -822,7 +823,8 @@ def batch_install_makedeps(deps: list) -> None:
     _log.info(f"Batch-installing {len(deps)} missing makedep(s): {deps}")
     ensure_credentials()
     result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + deps
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + deps,
+        preexec_fn=lift_for_child,
     )
     if result.returncode != 0:
         raise RuntimeError(f"makedep install failed (exit {result.returncode})")
@@ -837,7 +839,8 @@ def install_repo_pkgs(names: list) -> None:
     _log.info(f"Installing {len(names)} repo package(s): {names}")
     ensure_credentials()
     result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + list(names)
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + list(names),
+        preexec_fn=lift_for_child,
     )
     if result.returncode != 0:
         raise RuntimeError(f"repo install failed (exit {result.returncode})")
@@ -855,6 +858,7 @@ def remove_pkgs(names: list) -> None:
     subprocess.run(  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
         privileged_argv(["pacman", "-R", "--noconfirm", "--", *names]),
         check=True,
+        preexec_fn=lift_for_child,
     )
 
 
@@ -875,7 +879,7 @@ def reinstall_repo_pkgs(names: list, *, replace: bool = False) -> None:
     argv = ["pacman", "-S", "--noconfirm"]
     if replace:
         argv.append("--ask=4")
-    subprocess.run(privileged_argv([*argv, "--", *names]), check=True)  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
+    subprocess.run(privileged_argv([*argv, "--", *names]), check=True, preexec_fn=lift_for_child)  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
 
 
 def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
@@ -895,7 +899,7 @@ def uninstall_pkgs(names: list, extra_flags: list | None = None) -> None:
     if not names:
         return
     argv = privileged_argv(["pacman", "-Rnsu", *(extra_flags or []), "--", *names])
-    subprocess.run(argv, check=True)  # noqa: TID251 — privileged, interactive confirmation; CalledProcessError is this helper's contract
+    subprocess.run(argv, check=True, preexec_fn=lift_for_child)  # noqa: TID251 — privileged, interactive confirmation; CalledProcessError is this helper's contract
 
 
 def _search(flag: str, term: str) -> str:

@@ -26,6 +26,7 @@ from typing import TypeGuard
 
 from sysforge.primitives import os_release
 from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.resource_guard import lift_for_child
 
 MANAGED_HEADER_PREFIX = "# sysforge-managed"
 ROLES = ("plain", "profiling", "autofdo", "propeller")
@@ -397,7 +398,7 @@ def existing_images(boot_dir: Path | None = None) -> set[str]:
 
 def _run(*args, **kwargs):
     """Indirection so tests can intercept every subprocess boot_entries issues."""
-    return subprocess.run(*args, **kwargs)  # noqa: TID251 — this module's single test-intercept seam; callers pass privileged argv
+    return subprocess.run(*args, **kwargs, preexec_fn=lift_for_child)  # noqa: TID251 — this module's single test-intercept seam; callers pass privileged argv
 
 
 def check_boot_path(run=None) -> None:

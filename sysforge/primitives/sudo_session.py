@@ -39,6 +39,7 @@ from contextlib import contextmanager
 
 from sysforge import log
 from sysforge.primitives import privilege
+from sysforge.primitives.resource_guard import lift_for_child
 
 # How often (seconds) to refresh sudo credentials during a long build.
 # Must stay well under the sudoers default timestamp_timeout (5 minutes); the
@@ -76,7 +77,7 @@ def _keepalive_daemon(stop_event: threading.Event, tag: str) -> None:
     continues rather than raising into a thread nobody is joining for results.
     """
     while not stop_event.wait(SUDO_KEEPALIVE_INTERVAL):
-        if subprocess.run(["sudo", "-v"]).returncode != 0:
+        if subprocess.run(["sudo", "-v"], preexec_fn=lift_for_child).returncode != 0:
             log.warn(
                 f"[{tag}]",
                 "sudo keepalive failed — install step may prompt "

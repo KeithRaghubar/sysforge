@@ -14,7 +14,11 @@ they apply and pinning the best-effort silent-``except`` arms — i.e. that a
 raising syscall never propagates out to fail a build.
 """
 import resource
+import subprocess
+import sys
 from unittest.mock import patch
+
+import pytest
 
 from sysforge.primitives import resource_guard as rg
 
@@ -138,3 +142,37 @@ class TestMakeChildPreexec:
              patch.object(rg.resource, "setrlimit",
                           side_effect=OSError("EPERM")):
             rg.make_child_preexec(24 * 1024 * 1024 * 1024)()  # no exception
+
+
+# A child Python caps itself like the CLI does, spawns ``sh -c 'ulimit -v'``
+# through a seam and prints what the grandchild saw. Run out of process so the
+# cap never lands on the pytest worker itself (3.4.0-B11).
+_SEAM_PROBE = r"""
+import sys
+from pathlib import Path
+from sysforge.primitives import resource_guard, run, pty_runner
+resource_guard.install()
+cmd = ["sh", "-c", "ulimit -v"]
+seam = sys.argv[1]
+if seam == "capture":
+    print(run.capture(cmd).stdout.strip())
+elif seam == "run_or_raise":
+    print(run.run_or_raise(cmd, tag="T").stdout.strip())
+elif seam == "pty":
+    out = []
+    pty_runner.run_with_pty(cmd, cwd=Path.cwd(), env={"PATH": "/usr/bin:/bin"},
+                            line_callback=out.append, forward_bytes=False)
+    print(out[0].strip())
+"""
+
+
+@pytest.mark.skipif(
+    resource.getrlimit(resource.RLIMIT_AS)[1] != resource.RLIM_INFINITY,
+    reason="needs an unbounded RLIMIT_AS hard limit to observe the lift")
+@pytest.mark.parametrize("seam", ["capture", "run_or_raise", "pty"])
+def test_seam_children_run_without_the_controller_cap(seam):
+    """3.4.0-B11: no child of the controller inherits its 2 GiB RLIMIT_AS."""
+    proc = subprocess.run([sys.executable, "-c", _SEAM_PROBE, seam],
+                          capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == "unlimited", proc.stdout
