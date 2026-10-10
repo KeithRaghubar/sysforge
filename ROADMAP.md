@@ -112,12 +112,16 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
+| `3.4.0-DEV1` | the suite only ever runs on one workstation | med | small | patch |
+| `3.4.0-DOC1` | the densest user surfaces have no guide | med | medium | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
+| `3.4.0-F6` | nothing measures whether an optimized build is actually faster than stock | med | large | minor |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
+| `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -351,8 +355,94 @@ canonical ordering.
   so it can land piecemeal.
   **Standards home on adoption:** none new — row 25 governs where the roster prints.
 
+---
+
+- **`3.4.0-F6` — nothing measures whether an optimized build is actually faster than stock.**
+  The project's premise is that profiled, PGO-built packages run faster than the stock Arch build.
+  The toolchain stage spends hours on a PGO pipeline, but nothing compares the result against the
+  stock package, so neither the user nor the project can tell whether a rebuild paid off. Start
+  with the LLVM toolchain, because it already has a workload: `resolve_training_corpus`
+  (`pipeline/stages/toolchain/config.py`). Add a read-only `bench` verb (Inspect tier,
+  `requires_sentinel=False`, since it installs nothing) with a `toolchain` target. It extracts the
+  stock `clang`/`llvm-libs` from the pacman cache (or `pacman -Sw`) into a temporary prefix,
+  compiles the corpus with the stock clang and then with the installed sysforge clang, interleaves
+  the runs (`--runs N`, default small), and reports the median wall time, the spread and the
+  stock/sysforge ratio. Profiling the same corpus the profile was trained on flatters the result,
+  so the report says which corpus it ran, and a `toolchain.toml [bench] corpus` key accepts a
+  held-out one. When the stock and installed versions differ the report says so, and it shows no
+  ratio across a major-version gap. **Report only, never a verdict:** no pass/fail threshold,
+  following the no-machine-calibrated-numbers rule, because a cutoff tuned on one host means
+  nothing on another. Persist the last result per target in the state dir (its own file, keyed by
+  the target and the installed version) so `state profiles` can show the measured gain next to the
+  profile it came from, and a later version bump marks the result stale. Other targets (mesa via a
+  shader-compile replay, the kernel) are follow-ups, not part of this item. Completions and the man
+  page gain the verb in the same change. Tests: the ratio and median computation; the
+  version-mismatch and major-gap paths; the stale-result marking; and the stock-extraction failure
+  path (no cached package and `--offline`), which must report and exit cleanly rather than compare
+  against nothing.
+  *Priority: med · Effort: large · Bump: minor* — med because it is observability on the project's
+  central claim; large for stock-package extraction, an isolated run harness, a new verb and the
+  persisted result.
+  **Standards home on adoption:** none; `docs/design/` gains the verb, and the PGO guide gains a
+  "did it help?" section.
+
+---
+
+- **`3.4.0-F7` — no verb has machine-readable output, so scripts must parse prose meant for
+  people.** `state list`, `doctor` and `update --dry-run` each answer a question a status bar, a
+  notification hook or a timer wrapper would want to ask ("what is drifted?", "what failed?",
+  "what would rebuild?"). Their only output is `ui()` prose, which is reworded freely (the `-vv`
+  roster wording changed in `3.1.0-F1`). Add `--json` to those three. Each emits one JSON
+  document on stdout carrying a top-level `"schema": 1`, and nothing else goes to stdout in that
+  mode: narration goes to stderr or is suppressed, and a stray `ui()` line is a bug. Build each
+  document from the same result objects the human renderer reads (`AxisResult`/`Roster` for
+  `doctor`, the update result model for `--dry-run`, the build_state rows for `state list`), so the
+  two outputs cannot disagree. Exit codes stay unchanged. Out of scope: mutating verbs (`build`,
+  real `update`), whose output is a log and not an answer. Completions and the man page pick up
+  the flag in the same change. Tests: each verb's JSON validates against a committed schema
+  fixture; stdout holds nothing but the document under `-v`/`-vv`; and a `doctor` skip appears in
+  the document as a skip.
+  *Priority: low · Effort: medium · Bump: minor* — low because no current workflow is blocked;
+  it mainly makes the unattended path (`3.0.0-F3`) observable once that lands. Medium for three
+  serializers plus the stdout discipline.
+  **Standards home on adoption:** a new `21-standards.md` row for the JSON output contract:
+  adding a field is a minor change, renaming or removing one is major and bumps `schema`. The row
+  is enforced by the schema-fixture tests.
+
 ### Bugs
 
 ### Documentation
+
+- **`3.4.0-DOC1` — the densest user surfaces have no guide.** `docs/guides/` holds only `pgo.md`
+  and `boot-entries.md`. Three surfaces are flag-heavy enough that `--help` and the man page do
+  not explain how their options fit together. (1) **Drift and rebuilds**: what `update` counts as
+  flag drift versus toolchain drift, `--explain-drift`, `--rebuild-on-flag-drift` and the
+  `--rebuild-on-drift` umbrella, why promotion is off by default, and how the build-state-wide fold
+  reports stage-owned packages. (2) **Source freeze and network policy**: `[security]
+  freeze_sources`, `--frozen`/`--no-frozen`/`--thaw`, what the freeze cannot cover (makepkg's own
+  `source=()` fetches), and `auto_fetch_pgp_keys`. (3) **The kernel stage**: interactive review
+  and the pre-`nconfig` pause, `kconfig_targets`, `--non-interactive`, the diverged-source gate and
+  the boot-safety settings. Write `docs/guides/drift.md`, `freeze.md` and `kernel.md`, each task-led
+  ("I changed a profile — what rebuilds?"), and link them from README. From then on the
+  guides-track-their-feature rule covers these surfaces as well.
+  *Priority: med · Effort: medium · Bump: patch* — med because these are the flags a user meets in
+  a routine `update` or kernel run; medium for three guides checked against the current behaviour.
+
+### Developer tooling
+
+- **`3.4.0-DEV1` — the suite only ever runs on one workstation.** There is no CI. The 5,878 tests,
+  `lint` and the `check-*` gates run only here, under a clang-forced shell environment, a live
+  `~/sf-config` and one hardware profile. A test that passes only because of this host stays
+  hidden until someone else builds the project. Add `.github/workflows/ci.yml` (contributor-only, not
+  shipped): an `archlinux:base-devel` container job that installs the dev deps through `make
+  dev-deps` and runs `make lint test check-standards check-design check-shipped
+  check-roadmap-table` on push and pull request. It runs with no GPG signing, no VM tier and no
+  network-dependent tests beyond what the suite already gates. Fix each environment-coupled test the
+  first run exposes under this item, or file it as its own `DEV`/`B` if the fix touches
+  `sysforge/`. Keep the job advisory (no branch protection) until it has stayed green for one
+  release cycle. The container tier (`tools/container/`) is reused only if its Containerfile fits;
+  `container-smoke` itself needs a built package and stays local.
+  *Priority: med · Effort: small · Bump: patch* — med because host coupling is a live, invisible
+  gap given the tested-hardware scope; small because every gate is already a Make target.
 
 ### Open questions
