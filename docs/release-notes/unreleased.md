@@ -92,6 +92,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.4.0-DEV3` — a graphics-check test no longer depends on the machine running it.** `tests/test_gfxperf_probe.py::test_check_gfxperf_no_gpu_runs_only_agnostic` expected `cpu_governor` among the findings, but read the real `/sys/.../cpufreq/scaling_governor` to get it. The GitHub runner exposes no cpufreq, so the check correctly skipped and the test failed the first full CI run. The test now stubs the governor and `/proc/meminfo` reads, as its roster sibling already did. Contributor-only: nothing shipped changes.
+
+---
+
 - **`3.4.0-STD1` — contributor-only (`DEV`) work now gets a release-note entry, under `## Changed`.** Since `3.3.0-STD2`, `DEV` items were kept out of the release notes entirely, and their commit subject was their only record. The notes now record every shipped item. A `DEV` entry is held to the same rule as a `DOC` entry: it may only sit under `## Changed`, so contributor-only work can never imply more than a patch release. `make check-standards` enforces the section.
 
 ## Fixed

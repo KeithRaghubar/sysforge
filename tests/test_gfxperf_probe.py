@@ -44,6 +44,10 @@ def test_memory_pressure_low_available_info(monkeypatch):
 
 def test_check_gfxperf_no_gpu_runs_only_agnostic(monkeypatch):
     monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
+    # Hermetic: CI VMs expose no cpufreq, which would Skip cpu_governor.
+    monkeypatch.setattr(gp, "_read_text", lambda p: (
+        "schedutil\n" if Path(p) == gp._GOVERNOR_PATH
+        else "MemTotal: 1000 kB\nMemAvailable: 900 kB\n"))
     ids = _ids(gp.check_gfxperf({}, gpu_vendors=[]).findings)
     assert ids == {"cpu_governor", "memory_pressure"}
 
