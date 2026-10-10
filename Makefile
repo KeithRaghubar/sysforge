@@ -35,8 +35,9 @@ REUSE_VERSION   := 6.2.0
 # ---------------------------------------------------------------------------
 
 # Suite, lint (Python + shell), manpage, editable install. `make test` / `lint`
-# / `man` / `dev`.
-DEV_DEPS_CORE      = python-pytest ruff shellcheck scdoc uv git base-devel
+# / `man` / `dev`. zsh runs the shipped zsh completion in
+# tests/test_completions_zsh.py, which skips without it (3.4.0-DEV2).
+DEV_DEPS_CORE      = python-pytest ruff shellcheck scdoc uv git base-devel zsh
 # makechrootpkg — clean-chroot package builds: vm-pkg-*, tools/release.sh.
 DEV_DEPS_PKG       = devtools
 # QEMU test VM: vm-boot, vm-snapshot, vm-console, vm-monitor (socat), …

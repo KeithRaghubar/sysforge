@@ -240,6 +240,14 @@ class SandboxPolicy:
 
 
 _PERMISSIVE = SandboxPolicy(enabled=False)
+
+
+def _chroot_dir(policy: SandboxPolicy) -> Path:
+    """The policy's chroot root. Every policy that reaches a container has one
+    (:func:`resolve_sandbox` always sets it); only the permissive default lacks it."""
+    if policy.chroot_dir is None:
+        raise ValueError("sandbox policy has no chroot_dir")
+    return policy.chroot_dir
 _policy: SandboxPolicy = _PERMISSIVE
 
 DEFAULT_CHROOT_DIR = "~/chroot"
@@ -1448,7 +1456,7 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
     out.extend(session)
 
     linked = llvm_linked(host_only, graph) if repo_rust else set()
-    if linked:
+    if linked and pkgbuild_path is not None:  # repo_rust already implies the path
         dropped = sorted({_artifact_pkgname(p) for p in out} & linked)
         out = [p for p in out if _artifact_pkgname(p) not in linked]
         swap = ({_LIBLLVM_PKG} | toolchain_closure) & linked
@@ -1501,7 +1509,7 @@ def check_install_set(policy: SandboxPolicy, install_pkgs, *, sync_dbs=None,
     goes ahead, as it did before the check existed.
     """
     pkgs = [str(p) for p in install_pkgs or []]
-    root = Path(policy.chroot_dir) / "root"
+    root = _chroot_dir(policy) / "root"
     conf = root / "etc" / "pacman.conf"
     local_db = root / "var" / "lib" / "pacman" / "local"
     if not pkgs or not conf.is_file() or not local_db.is_dir():
@@ -1598,7 +1606,7 @@ def clear_provenance() -> None:
 
 def copy_compiler(policy: SandboxPolicy, cc_name: str) -> Path:
     """The compiler binary in the named working copy."""
-    return policy.chroot_dir / COPY_NAME / "usr" / "bin" / cc_name
+    return _chroot_dir(policy) / COPY_NAME / "usr" / "bin" / cc_name
 
 
 def recorded_toolchain(prov: SandboxProvenance, host_variant, host_fingerprint):

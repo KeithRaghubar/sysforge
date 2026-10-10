@@ -34,6 +34,11 @@ chown -R "$user:$user" "$work"
 # host's leftovers can't make a gate pass.
 runuser -u "$user" -- git -C "$work" clean -fdXq
 
-# -k: one red gate must not hide the others. The run still fails.
+# The `pre-release` set, in its order. -k: one red gate must not hide the
+# others; the run still fails.
+# `coverage`, not `test` (3.4.0-DEV2): it is the complete run. `make test` uses
+# the system pytest, so tests/test_sync_config.py only runs where
+# python-tomlkit happens to be installed; coverage layers tomlkit in.
 runuser -u "$user" -- make -C "$work" -k \
-    lint test check-standards check-design check-shipped check-roadmap-table
+    lint typecheck coverage check-shipped check-personal check-design check-roadmap-table \
+    check-standards

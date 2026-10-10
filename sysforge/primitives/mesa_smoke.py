@@ -160,7 +160,7 @@ def check_egl(*, software: bool = False) -> GraphicsFinding | diag.Skip | None:
     r = _probe(["eglinfo", "-B", "-p", "surfaceless"], env)
     if r is None:
         return diag.Skip("eglinfo not installed (mesa-utils)")
-    if r is _TIMEOUT:
+    if isinstance(r, str):  # _TIMEOUT, the only str _probe returns
         return _failure(check_id, f"eglinfo did not finish within {SMOKE_TIMEOUT_S}s "
                                   "(mesa hung creating an EGL context)")
     m = _RENDERER_RE.search(r.stdout or "")
@@ -183,7 +183,7 @@ def check_vulkan() -> GraphicsFinding | diag.Skip | None:
                {"VK_DRIVER_FILES": ":".join(str(p) for p in icds)})
     if r is None:
         return diag.Skip("vulkaninfo not installed (vulkan-tools)")
-    if r is _TIMEOUT:
+    if isinstance(r, str):  # _TIMEOUT, the only str _probe returns
         return _failure("mesa_vulkan", f"vulkaninfo did not finish within "
                                        f"{SMOKE_TIMEOUT_S}s (mesa hung enumerating devices)")
     devices = _DEVICE_RE.findall(r.stdout or "")

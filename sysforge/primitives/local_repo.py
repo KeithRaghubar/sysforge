@@ -96,8 +96,11 @@ def _read_db(path: Path) -> dict[str, tuple[str, str]]:
         for member in t.getmembers():
             if not member.name.endswith("/desc"):
                 continue
+            fh = t.extractfile(member)
+            if fh is None:  # not a regular file; a desc entry always is
+                continue
             fields, key = {}, None
-            for line in t.extractfile(member).read().decode().splitlines():
+            for line in fh.read().decode().splitlines():
                 if line.startswith("%") and line.endswith("%"):
                     key = line.strip("%")
                 elif line and key:

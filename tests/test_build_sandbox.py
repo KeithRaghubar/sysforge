@@ -2177,3 +2177,15 @@ def test_fetch_repo_packages_refuses_a_name_no_repo_carries(tmp_path):
                return_value=MagicMock(returncode=1, stdout="", stderr="target not found")):
         with pytest.raises(bs.SandboxUnavailable, match="llvm-libs"):
             bs.fetch_repo_packages({"llvm-libs"})
+
+
+# --- 3.4.0-B13: a policy without a chroot fails by name, not as a TypeError ---
+
+def test_copy_compiler_resolves_under_the_chroot(tmp_path):
+    policy = bs.SandboxPolicy(enabled=True, chroot_dir=tmp_path)
+    assert bs.copy_compiler(policy, "clang") == tmp_path / bs.COPY_NAME / "usr/bin/clang"
+
+
+def test_copy_compiler_without_chroot_dir_names_the_problem():
+    with pytest.raises(ValueError, match="no chroot_dir"):
+        bs.copy_compiler(bs.SandboxPolicy(enabled=False), "clang")

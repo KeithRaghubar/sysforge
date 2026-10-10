@@ -1633,8 +1633,9 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # DKMS modules or run its boot audit. One seam for both, keyed on the
         # same owner_stage the rest of the stage-ownership policy reads.
         _stage_owned = kernel_build or options.owner_stage in ("kernel", "toolchain")
-        _staleness_armed = (
+        _staleness_armed = bool(
             _staleness_profdata is not None
+            and _pgo_pkgbase
             and _arm_pgo_staleness(_pgo_pkgbase, options.interactive)
         )
         with build_sandbox.suppressed(_stage_owned):
@@ -1669,7 +1670,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 rename_pkgbase_to=options.rename_pkgbase_to,
             )
         build_success = True
-        if _staleness_armed:
+        # Armed implies both are set; restated so the checker sees it too.
+        if _staleness_armed and _pgo_pkgbase and _staleness_profdata is not None:
             _report_pgo_staleness(_pgo_pkgbase, _staleness_profdata)
         _paused = progress_hooks.hooks().paused_seconds() - _paused_start
         build_elapsed = max(0, int(_time.time() - _build_start - _paused))

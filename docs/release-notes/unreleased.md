@@ -88,6 +88,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.4.0-DEV2` — CI now runs every test and every pre-release check.** The first CI job ran `make test`, which uses the system `pytest`. In the clean container that silently skipped 25 tests: `tests/test_sync_config.py` needs `python-tomlkit` and disappeared from collection, and the zsh completion tests skipped because `zsh` wasn't installed. Both passed on the maintainer's machine only because it happened to have both. CI now runs the suite as `make coverage`, which supplies `tomlkit` without installing it, and `zsh` joins the core dev tools (`make dev-deps-core`). CI also gains `make typecheck` and `make check-personal`, so it now runs every check `make pre-release` does. Contributor-only: nothing shipped changes.
+
+---
+
 - **`3.4.0-STD1` — contributor-only (`DEV`) work now gets a release-note entry, under `## Changed`.** Since `3.3.0-STD2`, `DEV` items were kept out of the release notes entirely, and their commit subject was their only record. The notes now record every shipped item. A `DEV` entry is held to the same rule as a `DOC` entry: it may only sit under `## Changed`, so contributor-only work can never imply more than a patch release. `make check-standards` enforces the section.
 
 ## Fixed
@@ -169,3 +173,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.4.0-B12` — the patched `PKGBUILD.sysforge` now says it's regenerated.** When a build fails, sysforge leaves its patched copy, `PKGBUILD.sysforge`, next to your PKGBUILD and names it in the error, so it's the file you're likely to open to fix the PKGBUILD. But sysforge regenerates that copy from `PKGBUILD` before every build, so a fix made there is silently lost on the next build. The copy now starts with a comment saying that, and pointing you to `PKGBUILD`.
+
+---
+
+- **`3.4.0-B13` — the type checker passes again, so a release can be cut.** `make typecheck` reported 19 errors in recent sandbox, PGO staleness and mesa smoke check code, and the release script refuses to run while it fails. None was a live crash: in each case the code already handled the case correctly, but in a way the checker couldn't follow (a `"timeout"` marker string, an optional value set whenever it was read, a dictionary holding both strings and booleans). The code now states those guarantees in a form the checker can verify. One visible difference: a sandbox build handed no chroot directory now stops with an error saying so, instead of an unrelated `TypeError`.

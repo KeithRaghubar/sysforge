@@ -49,6 +49,7 @@ import tomllib
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sysforge import log
 
@@ -277,7 +278,7 @@ class BuildState:
         provenance fields; absent on entries written before the field existed,
         which flag drift reads as "unknown, not drifted".
         """
-        entry = {
+        entry: dict[str, Any] = {
             "pkgver": pkgver,
             "pkgrel": pkgrel,
             "epoch": epoch,
