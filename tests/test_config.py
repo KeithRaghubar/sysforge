@@ -4,6 +4,8 @@ load_consumes_inference, _parse_one_makepkg_conf, and find_pkgbuild.
 """
 import pytest
 
+from sysforge.primitives import config as cfgmod
+
 from sysforge.primitives.config import (
     ConfigError,
     _parse_one_makepkg_conf,
@@ -752,3 +754,18 @@ def test_parse_makepkg_conf_text_last_assignment_wins_and_exports_count():
     assert parsed["PKGDEST"] == "/pkgdest"
     assert parsed["RUSTC_WRAPPER"] == "sccache"
     assert parsed["DLAGENTS"].startswith("(") and "https::" in parsed["DLAGENTS"]
+
+
+def test_skew_warn_ratio_default_when_absent():
+    assert cfgmod.resolve_pgo_skew_warn_ratio({}) == 0.5
+    assert cfgmod.resolve_pgo_skew_warn_ratio(None) == 0.5
+
+
+def test_skew_warn_ratio_reads_value():
+    assert cfgmod.resolve_pgo_skew_warn_ratio({"pgo": {"skew_warn_ratio": 0.25}}) == 0.25
+    assert cfgmod.resolve_pgo_skew_warn_ratio({"pgo": {"skew_warn_ratio": 1}}) == 1.0
+
+
+@pytest.mark.parametrize("bad", [0, -0.1, 1.5, "half", True])
+def test_skew_warn_ratio_falls_back_on_invalid(bad):
+    assert cfgmod.resolve_pgo_skew_warn_ratio({"pgo": {"skew_warn_ratio": bad}}) == 0.5

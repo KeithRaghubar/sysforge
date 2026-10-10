@@ -189,6 +189,24 @@ def pgo_warns_for(pkgbase: str | None, sysforge_cfg: dict | None) -> bool:
     return pkgbase not in resolve_pgo_allowlist(sysforge_cfg)
 
 
+PGO_SKEW_WARN_RATIO_DEFAULT = 0.5
+
+
+def resolve_pgo_skew_warn_ratio(sysforge_cfg: dict | None) -> float:
+    """``sysforge.toml [pgo] skew_warn_ratio``: the share of a reused profile's
+    functions that may stop matching before the staleness line calls it stale
+    (3.2.0-F9). Default 0.5 — "most of the profile no longer applies", a
+    principle rather than a measurement. Out-of-range or non-numeric values
+    fall back to the default with a warning."""
+    raw = (sysforge_cfg or {}).get("pgo", {}).get(
+        "skew_warn_ratio", PGO_SKEW_WARN_RATIO_DEFAULT)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 < raw <= 1:
+        _log.warn(f"[pgo] skew_warn_ratio = {raw!r} is not a number in (0, 1]; "
+                  f"using {PGO_SKEW_WARN_RATIO_DEFAULT}")
+        return PGO_SKEW_WARN_RATIO_DEFAULT
+    return float(raw)
+
+
 def normalize_package_entry(entry: dict) -> dict:
     """Return ``entry`` unchanged.
 

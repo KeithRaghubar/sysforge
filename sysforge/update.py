@@ -93,6 +93,7 @@ from sysforge.primitives.pacman import (
     diff_installed,
     get_all_installed_packages,
     get_pkgdest,
+    read_pkgname_from_file,
 )
 from sysforge.primitives.paths import resolve_packages_path
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
@@ -652,7 +653,7 @@ def _build_result_summary(
     installed_deps, pgo_skipped_pkgs, cleansrc_failures,
     install_only, pacman_upgrade_failed, skipped, stage_owned_updates,
     system_upgrade_ran=False, sysupgrade_changes=None, not_installed=None,
-    layout_findings=None,
+    layout_findings=None, pgo_staleness_lines=None,
 ) -> ResultSummary:
     """Assemble a ``ResultSummary`` from ``update``'s per-run state.
 
@@ -680,6 +681,7 @@ def _build_result_summary(
         system_upgrade_ran=system_upgrade_ran,
         sysupgrade_changes=dict(sysupgrade_changes or {}),
         layout_findings=list(layout_findings or []),
+        pgo_staleness_lines=list(pgo_staleness_lines or []),
     )
 
 
@@ -1469,6 +1471,9 @@ def _phase_build(run: UpdateRun) -> int | None:
                 targets,
                 config=run.config,
                 sync_source=False,
+                # 3.2.0-F10: update runs the mesa smoke check once, after
+                # its trailing pacman -Syu (_install_and_report).
+                mesa_smoke=False,
                 interactive=getattr(run.args, "interactive", False),
                 no_cleanbuild=getattr(run.args, "no_cleanbuild", False),
                 profile_conf=getattr(run.args, "profile_conf", None),
@@ -1568,6 +1573,9 @@ def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> in
     pacman_upgrade_failed = False
     system_upgrade_ran = False
     sysupgrade_changes: dict[str, tuple[str | None, str | None]] = {}
+    # 3.2.0-F10: what pacman -Syu changed, for the mesa smoke trigger. Empty
+    # when pacman did not run; None when it ran but the snapshot failed.
+    pacman_changed: set[str] | None = set()
     if (pacman_upgrade_pkgs or run.sysupgrade_pending) and not run.offline:
         # 3.4.0-B1: unattended like the rest of update — pacman's defaults
         # answer its prompts (a package conflict defaults to No and aborts the
@@ -1594,30 +1602,45 @@ def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> in
         capture_report = system_upgrade_ran and not getattr(
             run.args, "no_sysupgrade_report", False
         )
-        before_snapshot: dict[str, str] = {}
-        if capture_report:
-            try:
-                before_snapshot = get_all_installed_packages()
-            except Exception:  # noqa: BLE001 — reporting only, never fatal
-                _log.debug("system-upgrade report: pre-transaction snapshot failed")
-                capture_report = False
+        # Taken whenever pacman runs: the summary's change report reads it only
+        # on the flag route, the mesa smoke trigger (3.2.0-F10) on every route.
+        before_snapshot: dict[str, str] | None = None
+        try:
+            before_snapshot = get_all_installed_packages()
+        except Exception:  # noqa: BLE001 — reporting only, never fatal
+            _log.debug("system-upgrade report: pre-transaction snapshot failed")
         _hold_credentials(credentials)
         import subprocess as _subprocess
         with run.timer.phase("pacman -Syu"):
             rc = _subprocess.run(cmd).returncode  # noqa: TID251 — pacman -Syu is interactive and owns the TTY
-        if capture_report:
+        pacman_changed = None
+        if before_snapshot is not None:
             try:
-                sysupgrade_changes = diff_installed(
+                changes = diff_installed(
                     before_snapshot, get_all_installed_packages()
                 )
-                _log.debug(
-                    f"system-upgrade report: {len(sysupgrade_changes)} package(s) changed"
-                )
+                pacman_changed = set(changes)
+                if capture_report:
+                    sysupgrade_changes = changes
+                    _log.debug(
+                        f"system-upgrade report: {len(sysupgrade_changes)} package(s) changed"
+                    )
             except Exception:  # noqa: BLE001 — reporting only, never fatal
                 _log.debug("system-upgrade report: post-transaction snapshot failed")
         if rc != 0:
             _log.error(f"pacman -Syu exited {rc}")
             pacman_upgrade_failed = True
+
+    # 3.2.0-F10: one mesa smoke check per update, after everything is installed.
+    built_names = {
+        n for n in (read_pkgname_from_file(f)
+                    for f in (run.outcome.built_pkg_files if run.outcome else []))
+        if n
+    }
+    smoke_changed = None if pacman_changed is None else built_names | pacman_changed
+    if smoke_changed is None or smoke_changed:
+        from sysforge.primitives import mesa_smoke
+        mesa_smoke.post_install(smoke_changed, run.state_dir)
 
     # (The build cache-probe session report is emitted inside
     # build_core.build_and_install when --cache-report is set.)
@@ -1644,6 +1667,12 @@ def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> in
         skip_sync_check=run.skip_sync_check,
         offline=run.offline,
     )
+    from sysforge.primitives import mesa_pgo
+    from sysforge.primitives.config import load_sysforge_toml, resolve_pgo_skew_warn_ratio
+    _threshold = resolve_pgo_skew_warn_ratio(load_sysforge_toml())
+    pgo_staleness_lines = [mesa_pgo.staleness_line(r, _threshold)
+                     for r in mesa_pgo.take_skew_reports()
+                     if mesa_pgo.is_stale(r, _threshold)]
     summary = _build_result_summary(
         results=run.results,
         built_pkgs=run.built_pkgs,
@@ -1660,6 +1689,7 @@ def _install_and_report(run: UpdateRun, credentials: contextlib.ExitStack) -> in
         sysupgrade_changes=sysupgrade_changes,
         not_installed=run.not_installed,
         layout_findings=run.outcome.layout_findings if run.outcome is not None else [],
+        pgo_staleness_lines=pgo_staleness_lines,
     )
     # Route through _log.ui (not bare print) so the end-of-run summary is
     # mirrored into the unified log the way the old inline block was.

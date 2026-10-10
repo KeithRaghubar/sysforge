@@ -1520,6 +1520,35 @@ def _desc_array(text: str, section: str) -> list[str]:
     return values
 
 
+def get_all_package_fields(
+    *sections: str, root: Path | None = None
+) -> dict[str, dict[str, list[str]]]:
+    """``{pkgname: {section: values}}`` for every installed package, in ONE pass
+    over the local DB (sections like ``"%DEPENDS%"``, ``"%BASE%"``,
+    ``"%PROVIDES%"``).
+
+    Whole-system walks use this instead of per-package readers, each of which
+    re-enumerates the DB root (O(N^2) — 2.6.1-B22). Unreadable entries are
+    skipped, matching the per-package readers' degrade-to-empty contract.
+    """
+    db_root = root or _LOCAL_DB_ROOT
+    if not db_root.is_dir():
+        return {}
+    out: dict[str, dict[str, list[str]]] = {}
+    for entry in db_root.iterdir():
+        # <pkgname>-<pkgver>-<pkgrel>; non-package files (ALPM_DB_VERSION) and
+        # non-directories fall out on the read below rather than costing a stat.
+        parts = entry.name.rsplit("-", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            text = (entry / "desc").read_text()
+        except OSError:
+            continue
+        out[parts[0]] = {s: _desc_array(text, s) for s in sections}
+    return out
+
+
 def get_all_package_depends(root: Path | None = None) -> dict[str, list[str]]:
     """Return ``{pkgname: %DEPENDS%}`` for every installed package, in ONE pass
     over the local DB.
@@ -1531,19 +1560,5 @@ def get_all_package_depends(root: Path | None = None) -> dict[str, list[str]]:
     2,349-package host — 2.6.1-B22). Unreadable entries are skipped, matching
     the per-package reader's degrade-to-empty contract.
     """
-    db_root = root or _LOCAL_DB_ROOT
-    if not db_root.is_dir():
-        return {}
-    out: dict[str, list[str]] = {}
-    for entry in db_root.iterdir():
-        # <pkgname>-<pkgver>-<pkgrel>; non-package files (ALPM_DB_VERSION) and
-        # non-directories fall out on the read below rather than costing a stat.
-        parts = entry.name.rsplit("-", 2)
-        if len(parts) != 3:
-            continue
-        try:
-            text = (entry / "desc").read_text()
-        except OSError:
-            continue
-        out[parts[0]] = _desc_array(text, "%DEPENDS%")
-    return out
+    return {name: f["%DEPENDS%"]
+            for name, f in get_all_package_fields("%DEPENDS%", root=root).items()}

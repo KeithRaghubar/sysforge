@@ -551,3 +551,105 @@ def test_record_site_clears_provenance_on_the_no_pkgname_path(tmp_path, monkeypa
     makepkg_wrapper._record_build_state(pkgbuild, {"globals": {}}, None, options,
                                         rename=None, record_build_mode=None, build_elapsed=1)
     assert build_sandbox.take_provenance() is None
+
+
+def test_arm_pgo_staleness_arms_non_interactive():
+    from sysforge.build import makepkg_wrapper as w
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    assert w._arm_pgo_staleness("mesa", interactive=False) is True
+    assert mesa_pgo.take_skew_count() == set()
+
+
+def test_arm_pgo_staleness_interactive_does_not_arm(capsys):
+    from sysforge import log
+    from sysforge.build import makepkg_wrapper as w
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    saved = log.get_verbosity()
+    try:
+        log.set_verbosity(2)
+        assert w._arm_pgo_staleness("mesa", interactive=True) is False
+    finally:
+        log.set_verbosity(saved)
+    assert mesa_pgo.take_skew_count() is None
+    assert "staleness not measured (interactive build)" in capsys.readouterr().err
+
+
+def test_report_pgo_staleness_prints_and_records(monkeypatch, tmp_path, capsys):
+    from sysforge.build import makepkg_wrapper as w
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    monkeypatch.setattr(mesa_pgo, "profile_function_total", lambda p, **kw: 4)
+    monkeypatch.setattr("sysforge.primitives.config.load_sysforge_toml", lambda: {})
+    mesa_pgo.arm_skew_count()
+    mesa_pgo.observe_line("warning: a.c: function control flow change detected "
+                          "(hash mismatch) f Hash = 1 up to 0 count discarded")
+    mesa_pgo.observe_line("warning: a.c: function control flow change detected "
+                          "(hash mismatch) g Hash = 1 up to 0 count discarded")
+    w._report_pgo_staleness("mesa", tmp_path / "mesa.profdata")
+    out = capsys.readouterr()
+    assert ("PGO profile mesa: 2 of 4 profiled functions no longer match the source (50.0%)"
+            in out.err + out.out)
+    assert "--pgo=record" in out.err + out.out
+    assert [(r.mismatched, r.total) for r in mesa_pgo.take_skew_reports()] == [(2, 4)]
+
+
+def test_report_pgo_staleness_noop_when_unarmed(capsys, tmp_path):
+    from sysforge.build import makepkg_wrapper as w
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    w._report_pgo_staleness("mesa", tmp_path / "mesa.profdata")
+    assert mesa_pgo.take_skew_reports() == []
+
+
+def test_failed_build_disarms_counter():
+    """A PGO build that fails leaves nothing armed for the next build."""
+    from sysforge.build import makepkg_wrapper as w
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    w._arm_pgo_staleness("mesa", interactive=False)
+    w._disarm_pgo_staleness()  # what the wrapper's finally runs
+    mesa_pgo.observe_line("warning: a.c: function control flow change detected "
+                          "(hash mismatch) f Hash = 1")
+    assert mesa_pgo.take_skew_count() is None
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-F9: profile staleness graded on the reuse path (dual-toolchain parity)
+# ---------------------------------------------------------------------------
+
+_MISMATCH_LINE = ("warning: a.c: function control flow change detected (hash mismatch) "
+             "f Hash = 1 up to 0 count discarded [-Wbackend-plugin]")
+
+
+def _run_reuse_build(tmp_path, monkeypatch, cc):
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.build.makepkg_wrapper import BuildOptions
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
+    profdata = tmp_path / "mesa.profdata"
+    profdata.write_text("x")
+    monkeypatch.setattr(mesa_pgo, "reuse_profdata", lambda **kw: profdata)
+    monkeypatch.setattr(mesa_pgo, "profile_function_total", lambda p, **kw: 10)
+    monkeypatch.setattr("sysforge.primitives.config.load_sysforge_toml", lambda: {})
+    monkeypatch.setattr(mw, "_run_build", lambda *a, **k: mesa_pgo.observe_line(_MISMATCH_LINE))
+    monkeypatch.setattr(mw, "_record_build_state", lambda *a, **k: None)
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=mesa\npkgver=1\npkgrel=1\n")
+    mw.run(pkgbuild, options=BuildOptions(update=False, pkg_log=False, cc_override=cc))
+    return mesa_pgo.take_skew_reports()
+
+
+def test_reuse_build_grades_profile_staleness_on_llvm(tmp_path, monkeypatch, capsys):
+    reports = _run_reuse_build(tmp_path, monkeypatch, "clang")
+    assert [(r.pkgbase, r.mismatched, r.total) for r in reports] == [("mesa", 1, 10)]
+    out = capsys.readouterr()
+    assert ("PGO profile mesa: 1 of 10 profiled functions no longer match the source (10.0%)"
+            in out.out + out.err)
+
+
+def test_reuse_build_never_arms_counter_on_gcc(tmp_path, monkeypatch):
+    from sysforge.primitives import mesa_pgo
+    assert _run_reuse_build(tmp_path, monkeypatch, "gcc") == []
+    assert mesa_pgo.take_skew_count() is None

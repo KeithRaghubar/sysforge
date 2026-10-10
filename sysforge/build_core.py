@@ -824,6 +824,21 @@ def _post_install_libllvm_check(installed_files: list) -> list:
     return findings
 
 
+def _post_install_mesa_smoke(installed_files: list, state_dir) -> None:
+    """Hand this install's package names to the mesa smoke check (3.2.0-F10).
+
+    ``mesa_smoke.post_install`` decides whether the mesa stack was touched and
+    holds a source-built member; it is advisory and never raises. ``update``
+    turns this off and calls it once after its trailing ``pacman -Syu``.
+    """
+    if not installed_files:
+        return
+    from sysforge.primitives import mesa_smoke
+    changed = {n for n in (read_pkgname_from_file(f) for f in installed_files) if n}
+    if changed:
+        mesa_smoke.post_install(changed, state_dir)
+
+
 def _refuse_skewed_install(target, findings: list, state_dir, outcome) -> None:
     """Record a target whose artifacts failed :func:`_source_built_abi_skew`."""
     libs = sorted({lib for f in findings for lib in f.libs})
@@ -911,6 +926,7 @@ def build_and_install(
     review: str = "prompt",
     pgo_mode: str | None = None,
     timer: PhaseTimer | None = None,
+    mesa_smoke: bool = True,
 ) -> BuildOutcome:
     """Resolve deps, build every target, then bulk-install — the shared core.
 
@@ -939,6 +955,10 @@ def build_and_install(
     no-op for non-mesa pkgbases (the wrapper gates on ``is_mesa_pkgbase``), so a
     mixed batch only profiles the mesa target. ``use`` earns the ``-sysforge``
     rename (``build_mode = "pgo_mesa"``).
+
+    ``mesa_smoke`` runs the post-install mesa smoke check after the bulk
+    install (3.2.0-F10); ``update`` passes ``False`` and runs it once after its
+    system upgrade.
     """
     # Opens the "building" tracker; refuse before any sync side effect rather
     # than when the nested tracker would open (3.3.0-F2).
@@ -963,6 +983,8 @@ def build_and_install(
     from sysforge.primitives import payload_layout
     reset_session()
     payload_layout.reset_session()
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.reset_skew_session()
 
     # ── PKGBUILD review gate ──────────────────────────────────────────────
     # For the `build` path (sync_source=True) the wrapper's inline sync hasn't
@@ -1308,6 +1330,8 @@ def build_and_install(
     outcome.built_pkg_files = jit_files + installed_now
     outcome.layout_findings = payload_layout.session_findings()
     _post_install_libllvm_check(outcome.built_pkg_files)
+    if mesa_smoke:
+        _post_install_mesa_smoke(outcome.built_pkg_files, state_dir)
     if not_installed:
         outcome.install_failed = True
         outcome.not_installed = not_installed_by_pkgbase(not_installed, {

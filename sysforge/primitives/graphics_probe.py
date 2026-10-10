@@ -18,7 +18,7 @@ absent — missing files, missing commands, and unsupported vendor
 combinations short-circuit silently rather than erroring.
 
 Public API:
-    check_system_graphics(config, *, gpu_vendors=None) -> list[GraphicsFinding]
+    check_system_graphics(config, *, gpu_vendors=None) -> diag.AxisResult
 """
 from __future__ import annotations
 
@@ -28,13 +28,18 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import pacman
+from sysforge.primitives.profile import is_mesa_family
 from sysforge.primitives import run
 
 
 SEV_ERROR = "error"
 SEV_WARN = "warn"
 SEV_INFO = "info"
+
+#: Skip reason for every NVIDIA-only check on a host without an NVIDIA GPU.
+NO_NVIDIA = "no NVIDIA GPU detected"
 
 
 @dataclass(frozen=True)
@@ -106,7 +111,7 @@ def _check_nvidia_modeset() -> GraphicsFinding | None:
     )
 
 
-def _check_nvidia_fbdev() -> GraphicsFinding | None:
+def _check_nvidia_fbdev() -> GraphicsFinding | diag.Skip | None:
     """
     Recommend nvidia-drm.fbdev=1 on kernel >= 6.11. Only emits a finding when
     the fbdev parameter exists in /sys (i.e. the installed driver supports
@@ -114,13 +119,17 @@ def _check_nvidia_fbdev() -> GraphicsFinding | None:
     failure.
     """
     kver = _kernel_major_minor()
-    if kver is None or kver < (6, 11):
-        return None
+    if kver is None:
+        return diag.Skip("kernel version unreadable")
+    if kver < (6, 11):
+        return diag.Skip("kernel older than 6.11")
     sys_path = Path("/sys/module/nvidia_drm/parameters/fbdev")
     if not sys_path.exists():
-        return None
+        return diag.Skip("driver has no fbdev parameter")
     val = _read_text(sys_path)
-    if val is None or val.strip() in ("Y", "1", "y"):
+    if val is None:
+        return diag.Skip("fbdev parameter unreadable")
+    if val.strip() in ("Y", "1", "y"):
         return None
     return GraphicsFinding(
         SEV_WARN, "nvidia_fbdev",
@@ -147,7 +156,7 @@ def _installed_version(pkgname: str) -> str | None:
     return ver.split("-", 1)[0]
 
 
-def _check_nvidia_driver_skew() -> GraphicsFinding | None:
+def _check_nvidia_driver_skew() -> GraphicsFinding | diag.Skip | None:
     """
     NVIDIA's kernel module, userspace utils, and 32-bit userspace utils must
     all be the same upstream driver version. A mismatch here is the single
@@ -164,7 +173,7 @@ def _check_nvidia_driver_skew() -> GraphicsFinding | None:
     lib32 = _installed_version("lib32-nvidia-utils")
 
     if kmod is None and utils is None:
-        return None  # no NVIDIA stack installed
+        return diag.Skip("no NVIDIA driver packages installed")
 
     versions: list[tuple[str, str]] = []
     if kmod is not None:
@@ -188,13 +197,13 @@ def _check_nvidia_driver_skew() -> GraphicsFinding | None:
     )
 
 
-def _check_nvidia_module_loaded(gpu_vendors: list[str]) -> GraphicsFinding | None:
+def _check_nvidia_module_loaded(gpu_vendors: list[str]) -> GraphicsFinding | diag.Skip | None:
     """NVIDIA GPU detected but kernel module not loaded."""
     if "nvidia" not in gpu_vendors:
-        return None
+        return diag.Skip(NO_NVIDIA)
     r = _run(["lsmod"])
     if r is None or r.returncode != 0:
-        return None
+        return diag.Skip("lsmod unavailable")
     for line in r.stdout.splitlines():
         if line.startswith("nvidia "):
             return None
@@ -206,17 +215,17 @@ def _check_nvidia_module_loaded(gpu_vendors: list[str]) -> GraphicsFinding | Non
     )
 
 
-def _check_multilib_enabled(gpu_vendors: list[str]) -> GraphicsFinding | None:
+def _check_multilib_enabled(gpu_vendors: list[str]) -> GraphicsFinding | diag.Skip | None:
     """
     32-bit Steam games need lib32-* Vulkan/GL. [multilib] must be enabled in
     /etc/pacman.conf. Only flagged when an NVIDIA/AMD/Intel GPU is present
     (servers without gaming don't need this).
     """
     if not any(v in gpu_vendors for v in ("nvidia", "amd", "intel")):
-        return None
+        return diag.Skip("no NVIDIA/AMD/Intel GPU detected")
     conf = _read_text(Path("/etc/pacman.conf"))
     if conf is None:
-        return None
+        return diag.Skip("/etc/pacman.conf unreadable")
     # [multilib] section header, not commented out
     if re.search(r"^\s*\[multilib\]", conf, re.MULTILINE):
         return None
@@ -229,12 +238,12 @@ def _check_multilib_enabled(gpu_vendors: list[str]) -> GraphicsFinding | None:
     )
 
 
-def _check_session_type() -> GraphicsFinding | None:
+def _check_session_type() -> GraphicsFinding | diag.Skip | None:
     """Always-info — attaches session context so the report is self-contained."""
     sess = os.environ.get("XDG_SESSION_TYPE", "")
     desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
     if not sess and not desktop:
-        return None
+        return diag.Skip("no XDG session variables set")
     return GraphicsFinding(
         SEV_INFO, "session_type",
         f"session: XDG_SESSION_TYPE={sess or '(unset)'} "
@@ -242,13 +251,13 @@ def _check_session_type() -> GraphicsFinding | None:
     )
 
 
-def _check_xwayland_present(installed: dict[str, str]) -> GraphicsFinding | None:
+def _check_xwayland_present(installed: dict[str, str]) -> GraphicsFinding | diag.Skip | None:
     """
     On a Wayland session, Steam and most games still render through
     XWayland. If xwayland is missing the black-window failure is trivial.
     """
     if os.environ.get("XDG_SESSION_TYPE") != "wayland":
-        return None
+        return diag.Skip("not a Wayland session")
     candidates = ("xwayland", "xwayland-git", "xorg-xwayland", "xorg-xwayland-git")
     if any(c in installed for c in candidates):
         return None
@@ -262,7 +271,7 @@ def _check_xwayland_present(installed: dict[str, str]) -> GraphicsFinding | None
 
 def _check_explicit_sync_protocol(
     gpu_vendors: list[str],
-) -> GraphicsFinding | None:
+) -> GraphicsFinding | diag.Skip | None:
     """
     NVIDIA + Wayland XWayland rendering requires the compositor to
     advertise the `linux-drm-syncobj-v1` protocol — the actual
@@ -279,12 +288,12 @@ def _check_explicit_sync_protocol(
     such global exists.
     """
     if "nvidia" not in gpu_vendors:
-        return None
+        return diag.Skip(NO_NVIDIA)
     if os.environ.get("XDG_SESSION_TYPE") != "wayland":
-        return None
+        return diag.Skip("not a Wayland session")
     r = _run(["wayland-info"])
     if r is None or r.returncode != 0:
-        return None
+        return diag.Skip("wayland-info unavailable")
     text = r.stdout
     if ("wp_linux_drm_syncobj_manager_v1" in text
             or "zwp_linux_explicit_synchronization_v1" in text):
@@ -309,7 +318,7 @@ _STEAM_CONFIG_PATHS = (
 )
 
 
-def _check_steam_gpu_accel() -> GraphicsFinding | None:
+def _check_steam_gpu_accel() -> GraphicsFinding | diag.Skip | None:
     """
     Steam client web views (store, library, friends) render black on
     NVIDIA+Wayland in Steam 1.0.0.85+ when GPUAccelerationEnabled is on.
@@ -335,7 +344,7 @@ def _check_steam_gpu_accel() -> GraphicsFinding | None:
             "'Enable GPU accelerated rendering in web views', then restart "
             "Steam.",
         )
-    return None
+    return diag.Skip("Steam config not found")
 
 
 def _check_mesa_llvm_symbols() -> GraphicsFinding | None:
@@ -371,11 +380,12 @@ def check_system_graphics(
     config,
     *,
     gpu_vendors: list[str] | None = None,
-) -> list[GraphicsFinding]:
+) -> diag.AxisResult:
     """
-    Run all system graphics probes. `gpu_vendors` should be passed by the
+    Run all system graphics probes and return their findings plus the
+    ran/skipped roster (3.1.0-F1). `gpu_vendors` should be passed by the
     caller (doctor.py already has the detected list from `_read_gpu_vendors`);
-    if None, vendor-gated checks are skipped.
+    if None, vendor-gated checks are recorded as skipped.
 
     Findings are returned in a stable order — callers render them verbatim.
     """
@@ -383,27 +393,41 @@ def check_system_graphics(
     gvendors = gpu_vendors or []
     installed = pacman.get_all_installed_packages()
 
+    roster = diag.Roster()
     findings: list[GraphicsFinding] = []
 
-    def _add(f: GraphicsFinding | None) -> None:
+    def _add(check_id: str, result) -> None:
+        f = diag.record(roster, check_id, result)
         if f is not None:
             findings.append(f)
 
-    _add(_check_session_type())
-    _add(_check_xwayland_present(installed))
-    _add(_check_multilib_enabled(gvendors))
+    _add("session_type", _check_session_type())
+    _add("xwayland_present", _check_xwayland_present(installed))
+    _add("multilib_enabled", _check_multilib_enabled(gvendors))
     # GPU-agnostic: mesa's libgallium links libLLVM regardless of vendor, so a
     # broken system libLLVM after a toolchain rebuild bricks the desktop on any
     # GPU. Self-diagnoses the "rebuilt toolchain → black screen" failure mode.
-    _add(_check_mesa_llvm_symbols())
+    _add("mesa_llvm_symbols", _check_mesa_llvm_symbols())
 
-    if "nvidia" in gvendors:
-        _add(_check_nvidia_module_loaded(gvendors))
-        _add(_check_nvidia_modeset())
-        _add(_check_nvidia_fbdev())
-        _add(_check_nvidia_driver_skew())
-        _add(_check_explicit_sync_protocol(gvendors))
+    nvidia = "nvidia" in gvendors
+    _add("nvidia_module_loaded",
+         _check_nvidia_module_loaded(gvendors) if nvidia else diag.Skip(NO_NVIDIA))
+    _add("nvidia_modeset", _check_nvidia_modeset() if nvidia else diag.Skip(NO_NVIDIA))
+    _add("nvidia_fbdev", _check_nvidia_fbdev() if nvidia else diag.Skip(NO_NVIDIA))
+    _add("nvidia_driver_skew",
+         _check_nvidia_driver_skew() if nvidia else diag.Skip(NO_NVIDIA))
+    _add("explicit_sync_protocol",
+         _check_explicit_sync_protocol(gvendors) if nvidia else diag.Skip(NO_NVIDIA))
 
-    _add(_check_steam_gpu_accel())
+    _add("steam_gpu_accel", _check_steam_gpu_accel())
 
-    return findings
+    # 3.2.0-F10: on demand, the same mesa smoke probes the post-install path
+    # runs — ungated by the install trigger, since the user asked.
+    if any(is_mesa_family(n) and not n.startswith("lib32-") for n in installed):
+        from sysforge.primitives import mesa_smoke
+        smoke = mesa_smoke.run_smoke()
+        findings.extend(smoke.findings)
+        if smoke.roster is not None:
+            roster.merge(smoke.roster)
+
+    return diag.AxisResult(findings, roster)

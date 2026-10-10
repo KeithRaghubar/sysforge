@@ -3046,3 +3046,87 @@ def test_matching_sandbox_state_does_not_drift(update_scenario):
     builds = _run_with_sandbox_policy(update_scenario, recorded=True,
                                       rebuild_on_flag_drift=True)
     assert builds == []
+
+
+# ---------------------------------------------------------------------------
+# 3.2.0-F10: one mesa smoke check per update, after the trailing pacman -Syu
+# ---------------------------------------------------------------------------
+
+def _spy_smoke(monkeypatch):
+    from sysforge.primitives import mesa_smoke
+    calls: list = []
+    monkeypatch.setattr(mesa_smoke, "post_install",
+                        lambda changed, state_dir: calls.append(changed))
+    return calls
+
+
+def test_update_runs_smoke_once_after_sysupgrade(update_scenario, monkeypatch):
+    calls = _spy_smoke(monkeypatch)
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    _snapshot_around_syu(
+        update_scenario, monkeypatch,
+        {"htop": "3.3.0-1", "mesa": "24.0-1"},
+        {"htop": "3.3.0-1", "mesa": "24.1-1"},
+    )
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert calls == [{"mesa"}]
+
+
+def test_update_smoke_sees_changes_even_with_report_off(update_scenario, monkeypatch):
+    calls = _spy_smoke(monkeypatch)
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    _snapshot_around_syu(
+        update_scenario, monkeypatch,
+        {"htop": "3.3.0-1", "mesa": "24.0-1"},
+        {"htop": "3.3.0-1", "mesa": "24.1-1"},
+    )
+    update_scenario.run(
+        _make_args(offline=False, sysupgrade=True, no_sysupgrade_report=True), **kw)
+    assert calls == [{"mesa"}]
+
+
+def test_update_smoke_unknown_change_set_when_snapshot_fails(update_scenario, monkeypatch):
+    calls = _spy_smoke(monkeypatch)
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    n = {"calls": 0}
+
+    def _boom():
+        n["calls"] += 1
+        if n["calls"] == 1:
+            return {"htop": "3.3.0-1"}
+        raise RuntimeError("local db unreadable")
+    monkeypatch.setattr("sysforge.update.get_all_installed_packages", _boom)
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert calls == [None]
+    assert update_scenario.exit_code == 0
+
+
+def test_update_skips_smoke_when_nothing_changed(update_scenario, monkeypatch):
+    calls = _spy_smoke(monkeypatch)
+    kw = _up_to_date_scenario(update_scenario)
+    update_scenario.fake_sync()
+    _snapshot_around_syu(update_scenario, monkeypatch,
+                         {"htop": "3.3.0-1", "mesa": "24.0-1"},
+                         {"htop": "3.3.0-1", "mesa": "24.0-1"})
+    update_scenario.run(_make_args(offline=False, sysupgrade=True), **kw)
+    assert calls == []
+
+
+def test_update_disables_build_core_smoke(update_scenario, monkeypatch):
+    from sysforge import build_core
+    seen: list = []
+    real = build_core.build_and_install
+
+    def spy(*a, **k):
+        seen.append(k.get("mesa_smoke"))
+        return real(*a, **k)
+    monkeypatch.setattr(build_core, "build_and_install", spy)
+    installed, foreign = _seed_flag_drift(update_scenario)
+    update_scenario.run(
+        _make_args(rebuild_on_flag_drift=True, no_toolchain_preflight=True),
+        installed=installed, foreign=foreign,
+    )
+    assert seen and all(v is False for v in seen)

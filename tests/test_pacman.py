@@ -1397,3 +1397,16 @@ def test_logged_transaction_nonzero_returns_tail(tmp_path, monkeypatch, pacman_t
     assert rc == 1
     assert tail[-1].endswith("exited 10")
     assert any("answered=y" in line for line in tail)
+
+
+def test_get_all_package_fields_one_pass(tmp_path):
+    from sysforge.primitives import pacman
+    d = tmp_path / "vulkan-swrast-1:26.2.4-1"
+    d.mkdir()
+    (d / "desc").write_text(
+        "%NAME%\nvulkan-swrast\n\n%BASE%\nmesa\n\n"
+        "%DEPENDS%\nllvm-libs\nlibdrm\n\n%PROVIDES%\nvulkan-driver\n\n")
+    out = pacman.get_all_package_fields("%BASE%", "%DEPENDS%", "%PROVIDES%", root=tmp_path)
+    assert out == {"vulkan-swrast": {"%BASE%": ["mesa"],
+                                     "%DEPENDS%": ["llvm-libs", "libdrm"],
+                                     "%PROVIDES%": ["vulkan-driver"]}}

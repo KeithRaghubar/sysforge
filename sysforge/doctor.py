@@ -858,19 +858,22 @@ def _collect_hardware_findings() -> list[diag.Finding]:
     return _with_reboot_hint(diag.adapt_many("hardware", findings))
 
 
-def _collect_graphics_findings(config) -> list[diag.Finding]:
+def _collect_graphics_findings(config) -> diag.AxisResult:
     """System-state graphics/windowing health (kernel/module params, driver
-    version skew, Wayland protocol advertisement, Steam GPU accel, …)."""
+    version skew, Wayland protocol advertisement, Steam GPU accel, …), with the
+    ran/skipped roster (3.1.0-F1)."""
     gpu_vendors = _read_gpu_vendors(config)
-    return diag.adapt_many("graphics", check_system_graphics(config, gpu_vendors=gpu_vendors))
+    res = check_system_graphics(config, gpu_vendors=gpu_vendors)
+    return diag.AxisResult(diag.adapt_many("graphics", res.findings), res.roster)
 
 
-def _collect_gfxperf_findings(config) -> list[diag.Finding]:
+def _collect_gfxperf_findings(config) -> diag.AxisResult:
     """Advisory graphics runtime-degradation checklist (video-decode path, GPU
     power/clock state, CPU governor, frame pacing, thermal/memory snapshots).
     Opt-in via --gfxperf; never contributes an error (WARN/INFO only)."""
     gpu_vendors = _read_gpu_vendors(config)
-    return diag.adapt_many("gfxperf", check_gfxperf(config, gpu_vendors=gpu_vendors))
+    res = check_gfxperf(config, gpu_vendors=gpu_vendors)
+    return diag.AxisResult(diag.adapt_many("gfxperf", res.findings), res.roster)
 
 
 def _collect_distro_findings(*, explicit: bool = False) -> list[diag.Finding]:
@@ -1263,15 +1266,16 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
     axes = [registry[n] for n in axis_names if n in registry]
     # B11: keep the bottom-anchored phase indicator phase-accurate instead of
     # leaving the runner's generic "doctor: starting…" up for the whole sweep.
-    results: dict[str, list[diag.Finding]] = {}
+    results: dict[str, diag.AxisResult] = {}
     for ax in axes:
         progress.phase(f"doctor: {ax.label}")
-        results.update(diag.run_axes([ax]))
+        results[ax.name] = diag.run_axis(ax)
     errors = 0
     for ax in axes:
+        res = results[ax.name]
         errors += diag.render_axis(
-            _log, ax.label, results[ax.name],
-            clean_msg=ax.clean_msg, quiet=args.quiet,
+            _log, ax.label, res.findings,
+            clean_msg=ax.clean_msg, quiet=args.quiet, roster=res.roster,
         )
     return errors
 
@@ -1294,11 +1298,11 @@ def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk) -> int:
         if ax is None:
             continue
         progress.phase(f"doctor: {ax.label}")
-        findings = diag.run_axes([ax])[ax.name]
+        res = diag.run_axis(ax)
         errors += diag.render_axis(
-            _log, ax.label, findings,
+            _log, ax.label, res.findings,
             clean_msg=ax.clean_msg, quiet=args.quiet,
-            grouped=(name == "abi"),
+            grouped=(name == "abi"), roster=res.roster,
         )
     return errors
 

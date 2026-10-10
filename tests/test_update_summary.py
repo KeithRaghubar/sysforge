@@ -316,3 +316,22 @@ def test_not_installed_section_omitted_when_empty(capsys, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     _print_result_summary(_empty(built_pkgs=["a"]))
     assert "NOT installed" not in capsys.readouterr().out
+
+
+def test_summary_prints_pgo_staleness_lines():
+    from sysforge.update_summary import ResultSummary, _print_result_summary
+    lines = []
+    _print_result_summary(ResultSummary(pgo_staleness_lines=[
+        "PGO profile mesa: 60 of 100 profiled functions no longer match the source (60.0%)"
+        " — profile is stale; refresh with `sysforge build mesa --pgo=record`"
+    ]), emit=lines.append)
+    text = "\n".join(lines)
+    assert "PGO profile staleness:" in text
+    assert "60 of 100" in text
+
+
+def test_summary_omits_pgo_staleness_section_when_empty():
+    from sysforge.update_summary import ResultSummary, _print_result_summary
+    lines = []
+    _print_result_summary(ResultSummary(), emit=lines.append)
+    assert "PGO profile staleness:" not in "\n".join(lines)

@@ -32,7 +32,19 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.1.0-F1` — `doctor -vv` says which checks ran and which were skipped.** A check that could not run (a missing `lsmod`, `wayland-info` or `nvidia-smi`, an unreadable config file, no matching GPU) used to look identical to one that passed, so a healthy `doctor --graphics` printed one line and read like a broken axis. The `graphics` and `gfxperf` axes now list `ran:` and `skipped: <check> (<reason>)` at `-vv`. Default output is unchanged. The other axes say at `-vvv` that they don't report a roster yet.
+
+---
+
 - **`3.1.0-F10` — a sandboxed build now links against the versions this host runs.** With `[security] sandbox_builds` on, the build container resolved every dependency sysforge hadn't built in the same run from the stock repos, even when the host ran its own build. On 2026-09-11 that produced a mesa linked against the repo's `llvm-libs 22.1.8-2` while the host ran an optimized build with the same version number, and the desktop did not come up after reboot. sysforge now publishes the packages you built from source, at the versions you have installed, into a local pacman repo, `[sysforge-local]`, under the state directory. The chroot lists it ahead of the stock repos (which is what wins a same-version tie) and mounts it read-only, so a build can read it but never change it, and only packages already installed on the host are ever published. Your own compiler build is also injected into the container, so the sandboxed build compiles with it. The repo holds one file per installed package and is reconciled once per run, with nothing to prune. It adds a `[sysforge-local]` block to the chroot's `pacman.conf`; other tools that share the chroot see the repo too, read-only, so keep sysforge's state directory in place while it's there. It is on by default whenever the sandbox is on; set `sandbox_local_repo = false` under `[security]` to turn it off, which removes the block on the next sandboxed build. If the repo can't be updated, the sandboxed build stops rather than building against the stock repos.
+
+---
+
+- **`3.2.0-F9` — PGO rebuilds report how stale a reused profile has become.** A rebuild that uses a recorded profile now prints `PGO profile <pkg>: N of M profiled functions no longer match the source (x%)`, counted from the compiler's own per-function mismatch warnings against the profile's function total. At or above `[pgo] skew_warn_ratio` in `sysforge.toml` (default `0.5`, most of the profile no longer applies) the line calls the profile stale and points at `--pgo=record`, and the `update` summary repeats it. Builds run with `--interactive` can't be measured and say so at `-vv`. Two warning-suppression flags that never had an effect on these builds were removed.
+
+---
+
+- **`3.2.0-F10` — sysforge checks that an installed mesa can create a context.** After an install that changes something mesa depends on while that set contains a package you built from source (mesa itself, or a dependency such as LLVM or libdrm), sysforge creates an EGL context and enumerates Vulkan devices through mesa, forcing mesa's drivers so an Nvidia host doesn't test the proprietary one, and, if that fails, names the source-built packages to roll back with `sysforge revert-to-stock`. A mesa you built with `--pgo=use` is checked too. It needs no display, so it works headless. It never changes the install or the exit code. `update` runs it once, after its system upgrade, so a stock mesa landing on your own LLVM is checked too. `doctor --graphics` runs the same check whenever mesa is installed. Install `mesa-utils` and `vulkan-tools` to enable it. Validated on Nvidia only, where mesa's software drivers are what runs.
 
 ---
 

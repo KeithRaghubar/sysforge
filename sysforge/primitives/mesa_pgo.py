@@ -34,8 +34,10 @@ covers it. The profraw merge shells out to ``llvm-profdata`` (LLVM only — this
 whole feature is gated on the LLVM toolchain upstream); everything else is pure.
 """
 import contextlib
+import re
 import shutil
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
@@ -138,14 +140,17 @@ def generate_flag(store: Path) -> str:
 
 
 def use_flags(profdata: Path) -> str:
-    """Flags for the optimized (``use``) rebuild: consume the merged profile and
-    demote the inevitable instrumentation-vs-source skew warnings so a mesa built
-    with ``-Werror`` doesn't fail on a slightly-stale profile (out-of-date /
-    unprofiled functions are expected after any upstream churn)."""
-    return (
-        f"-fprofile-use={profdata} "
-        "-Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled"
-    )
+    """The flag for the optimized (``use``) rebuild: consume the merged profile.
+
+    No warning suppression rides along. This is IR PGO, where a function whose
+    control flow changed since collection is reported per function as
+    ``function control flow change detected (hash mismatch) … [-Wbackend-plugin]``
+    and its counts dropped; the ``-Wno-profile-instr-*`` group only governs
+    front-end instrumentation and silenced nothing here. Mesa promotes neither
+    ``backend-plugin`` nor a blanket ``-Werror``, so the warnings cannot fail
+    the build — and :func:`observe_line` counts them (3.2.0-F9).
+    """
+    return f"-fprofile-use={profdata}"
 
 
 def reuse_profdata(
@@ -288,3 +293,96 @@ def merge_profraw(
             p.unlink()
     _log.info(f"Merged mesa profile: {out} ({out.stat().st_size} bytes)")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Profile staleness — how much of a reused profile no longer matches (3.2.0-F9)
+# ---------------------------------------------------------------------------
+
+_SKEW_RE = re.compile(
+    r"(?:warning|error): (?P<file>.+?): function control flow change detected "
+    r"\(hash mismatch\) (?P<fn>\S+) Hash"
+)
+_TOTAL_RE = re.compile(r"^Total functions:\s*(\d+)\s*$", re.MULTILINE)
+
+# Armed by the wrapper for one PGO-consuming build; None = not counting.
+_skew_seen: set[tuple[str, str]] | None = None
+_skew_reports: list["SkewReport"] = []
+
+
+def arm_skew_count() -> None:
+    """Start counting hash-mismatch warnings for the build about to run."""
+    global _skew_seen
+    _skew_seen = set()
+
+
+def observe_line(line: str) -> None:
+    """Fed every build-output line by ``makepkg_invoke``; a no-op unless armed.
+    De-duplicates by (file, function): mesa compiles some files more than
+    once, and ccache replays a cached TU's warnings."""
+    if _skew_seen is None or "hash mismatch" not in line:
+        return
+    m = _SKEW_RE.search(line)
+    if m:
+        _skew_seen.add((m.group("file"), m.group("fn")))
+
+
+def take_skew_count() -> set[tuple[str, str]] | None:
+    """Return the mismatches seen since :func:`arm_skew_count` and disarm."""
+    global _skew_seen
+    seen, _skew_seen = _skew_seen, None
+    return seen
+
+
+@dataclass(frozen=True)
+class SkewReport:
+    pkgbase: str
+    mismatched: int
+    total: int | None
+
+    @property
+    def ratio(self) -> float | None:
+        return self.mismatched / self.total if self.total else None
+
+
+def profile_function_total(profdata: Path, profdata_tool: str = "llvm-profdata") -> int | None:
+    """``Total functions`` from ``llvm-profdata show`` — the staleness denominator."""
+    r = run.capture([profdata_tool, "show", str(profdata)])
+    if r is None or r.returncode != 0:
+        return None
+    m = _TOTAL_RE.search(r.stdout or "")
+    return int(m.group(1)) if m else None
+
+
+def is_stale(report: SkewReport, threshold: float) -> bool:
+    return report.ratio is not None and report.ratio >= threshold
+
+
+def staleness_line(report: SkewReport, threshold: float) -> str:
+    """The ``ui()`` companion to :func:`reuse_notice`."""
+    if report.total:
+        body = (f"{report.mismatched:,} of {report.total:,} profiled functions "
+                f"no longer match the source ({report.ratio:.1%})")
+    else:
+        body = f"{report.mismatched:,} profiled functions no longer match the source"
+    line = f"PGO profile {report.pkgbase}: {body}"
+    if is_stale(report, threshold):
+        line += (f" — profile is stale; refresh with "
+                 f"`sysforge build {report.pkgbase} --pgo=record`")
+    return line
+
+
+def record_skew_report(report: SkewReport) -> None:
+    _skew_reports.append(report)
+
+
+def take_skew_reports() -> list[SkewReport]:
+    out = list(_skew_reports)
+    _skew_reports.clear()
+    return out
+
+
+def reset_skew_session() -> None:
+    global _skew_seen
+    _skew_seen = None
+    _skew_reports.clear()

@@ -39,16 +39,6 @@ def test_generate_flag_bakes_store_path(tmp_path):
     assert mesa_pgo.generate_flag(tmp_path) == f"-fprofile-generate={tmp_path}"
 
 
-def test_use_flags_consume_profile_and_demote_skew_warnings(tmp_path):
-    pd = tmp_path / "mesa.profdata"
-    flags = mesa_pgo.use_flags(pd)
-    assert f"-fprofile-use={pd}" in flags
-    # The instrumentation-vs-source skew warnings must be demoted so a -Werror
-    # mesa doesn't fail on an expected slightly-stale profile.
-    assert "-Wno-profile-instr-out-of-date" in flags
-    assert "-Wno-profile-instr-unprofiled" in flags
-
-
 def test_build_mode_is_optimized():
     from sysforge.primitives.profile import is_optimized_build_mode
 
@@ -355,3 +345,91 @@ def test_reuse_notice_names_the_staleness(tmp_path):
     line = mesa_pgo.reuse_notice(pd, "mesa", "1:26.1.7-1")
     assert "re-applying" in line
     assert "collected against 1:26.1.3-2, building 1:26.1.7-1" in line
+
+
+# Verbatim clang 23.1.1 output for a stale IR-PGO function.
+_MISMATCH = ("warning: src/gallium/drivers/llvmpipe/lp_rast.c: function control flow "
+             "change detected (hash mismatch) lp_rast_triangle Hash = 382993475055910911 "
+             "up to 0 count discarded [-Wbackend-plugin]")
+
+
+@pytest.fixture(autouse=True)
+def _clean_skew_state():
+    mesa_pgo.reset_skew_session()
+    yield
+    mesa_pgo.reset_skew_session()
+
+
+def test_use_flags_has_no_inert_suppressions(tmp_path):
+    assert mesa_pgo.use_flags(tmp_path / "mesa.profdata") == \
+        f"-fprofile-use={tmp_path / 'mesa.profdata'}"
+
+
+def test_observe_counts_unique_file_function_pairs():
+    mesa_pgo.arm_skew_count()
+    mesa_pgo.observe_line(_MISMATCH)
+    mesa_pgo.observe_line(_MISMATCH)  # same TU compiled twice / ccache replay
+    mesa_pgo.observe_line(_MISMATCH.replace("lp_rast_triangle", "lp_rast_clear"))
+    mesa_pgo.observe_line("error: " + _MISMATCH.split("warning: ", 1)[1])
+    mesa_pgo.observe_line("[42/900] Compiling C object foo.o")
+    assert mesa_pgo.take_skew_count() == {
+        ("src/gallium/drivers/llvmpipe/lp_rast.c", "lp_rast_triangle"),
+        ("src/gallium/drivers/llvmpipe/lp_rast.c", "lp_rast_clear"),
+    }
+
+
+def test_observe_is_noop_unarmed():
+    mesa_pgo.observe_line(_MISMATCH)
+    assert mesa_pgo.take_skew_count() is None
+
+
+def test_take_disarms():
+    mesa_pgo.arm_skew_count()
+    assert mesa_pgo.take_skew_count() == set()
+    mesa_pgo.observe_line(_MISMATCH)
+    assert mesa_pgo.take_skew_count() is None
+
+
+def test_profile_function_total_parses(monkeypatch, tmp_path):
+    out = ("Instrumentation level: IR  entry_first = 0\n"
+           "Total functions: 18210\nMaximum function count: 9\n")
+    monkeypatch.setattr(mesa_pgo.run, "capture",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=out))
+    assert mesa_pgo.profile_function_total(tmp_path / "m.profdata") == 18210
+
+
+@pytest.mark.parametrize("result", [
+    None,
+    subprocess.CompletedProcess([], 1, stdout=""),
+    subprocess.CompletedProcess([], 0, stdout="garbage\n"),
+])
+def test_profile_function_total_none_when_unavailable(monkeypatch, tmp_path, result):
+    monkeypatch.setattr(mesa_pgo.run, "capture", lambda cmd, **kw: result)
+    assert mesa_pgo.profile_function_total(tmp_path / "m.profdata") is None
+
+
+def test_staleness_line_below_threshold():
+    r = mesa_pgo.SkewReport("mesa", 412, 18210)
+    assert mesa_pgo.staleness_line(r, 0.5) == \
+        "PGO profile mesa: 412 of 18,210 profiled functions no longer match the source (2.3%)"
+    assert not mesa_pgo.is_stale(r, 0.5)
+
+
+def test_staleness_line_at_threshold_points_at_record():
+    r = mesa_pgo.SkewReport("mesa", 50, 100)
+    line = mesa_pgo.staleness_line(r, 0.5)
+    assert mesa_pgo.is_stale(r, 0.5)
+    assert line.endswith("profile is stale; refresh with `sysforge build mesa --pgo=record`")
+
+
+def test_staleness_line_without_total_is_never_stale():
+    r = mesa_pgo.SkewReport("mesa", 412, None)
+    assert mesa_pgo.staleness_line(r, 0.5) == \
+        "PGO profile mesa: 412 profiled functions no longer match the source"
+    assert not mesa_pgo.is_stale(r, 0.5)
+
+
+def test_skew_reports_drain():
+    mesa_pgo.record_skew_report(mesa_pgo.SkewReport("mesa", 1, 2))
+    assert [r.pkgbase for r in mesa_pgo.take_skew_reports()] == ["mesa"]
+    assert mesa_pgo.take_skew_reports() == []

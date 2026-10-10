@@ -112,43 +112,15 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.1.0-F1` | a clean diagnostics axis reports nothing, so it reads as a broken axis | med | medium | minor |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
-| `3.2.0-F9` | the mesa PGO rebuild suppresses its own staleness diagnostic, so a drifting profile is unobservable | med | medium | minor |
-| `3.2.0-F10` | nothing verifies that a freshly installed locally-built mesa actually initialises | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
+| `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 <!-- END roadmap-table -->
 
 ### Features
-
-- **`3.1.0-F1` — a clean diagnostics axis reports nothing, so it reads as a broken axis.**
-  `sysforge doctor system --graphics` on a healthy NVIDIA/Wayland workstation prints one `[INFO]`
-  line (`session_type`) and `1 finding(s), 0 error(s)` — indistinguishable from an axis whose
-  probes all bailed out. That is not a graphics bug: every probe in
-  `primitives/graphics_probe.py` returns `None` on success (`_check_nvidia_module_loaded`,
-  `_check_multilib_enabled`, `_check_mesa_llvm_symbols`, …), and `_check_session_type` is the lone
-  always-INFO probe, so the visible output is an accident of which check happens to be
-  unconditional rather than a report. The shape is framework-wide — `diag.Axis`
-  (`primitives/diagnostics.py:181`) is a bare callable returning findings, with no notion of which
-  checks ran, which were vendor-gated out (`gpu_vendors` empty ⇒ silently skipped), and which
-  passed; `render_axis` can therefore only print `clean_msg`. So the user cannot distinguish
-  *checked and healthy* from *skipped because the probe found no `lspci`/`lsmod`/`pacman.conf`* —
-  and the vendor-gated skips are the ones most likely to hide a real detection failure upstream of
-  the check. Fix at the framework seam, not per-probe: let a probe report a `ran`/`skipped(reason)`
-  outcome alongside its optional finding, have `Axis` accumulate the roster, and render it under
-  `-v` (per the §Logging rubric — the roster is narration, the findings are the answer), leaving
-  default output unchanged. Doing it in `graphics_probe.py` alone would fork the axis contract that
-  `toolchain`, `hardware`, `cache`, `rust` and `gfxperf` all share.
-  *Priority: med · Effort: medium · Bump: minor* — observability gap that is currently active on a
-  real system; touches the shared `diagnostics` contract and every probe module's return type, but
-  adds no new checks and changes no default-verbosity output.
-  **Standards home on adoption:** none new — row 25 (logging levels) already governs where the
-  roster prints.
-
----
 
 - **`3.0.0-F3` — `update`'s PKGBUILD review gate is silent in exactly the unattended case.** The
   review gate (`primitives/pkgbuild_review.py`) is the codebase's existing supply-chain control: it
@@ -248,80 +220,6 @@ canonical ordering.
   is the migration path, not a separate convenience, which is why the parts ship together.
   **Standards home on adoption:** none new — but the runtime config-write seam from (a) is a
   candidate "one home" row if a third key ever needs it.
-
----
-
-- **`3.2.0-F9` — the mesa PGO rebuild suppresses its own staleness diagnostic, so a drifting profile
-  is unobservable.** `mesa_pgo.use_flags` appends `-Wno-profile-instr-out-of-date
-  -Wno-profile-instr-unprofiled` to every `-fprofile-use` rebuild. The intent is sound and
-  documented — mild instrumentation-vs-source skew is expected after upstream churn, and a mesa built
-  with `-Werror` must not fail on it. The consequence is that the *only* signal distinguishing "a
-  profile with minor drift" from "a profile that no longer describes this source tree" is discarded
-  before anyone can see it, unconditionally and with no floor.
-  This matters more than a suppressed warning normally would, because a badly stale profile is worse
-  than no profile at all: `-fprofile-use` with counters that no longer map to the current functions
-  biases inlining and block layout toward paths that have moved or disappeared, so the "optimized"
-  build can be slower than the stock one while reporting complete success. The failure mode is
-  silent by construction.
-  `3.2.0-B16` added the pkgver sidecar (`<pkgbase>.profdata.version`), which answers "how far has the *version* moved". This entry
-  answers the sharper question the sidecar cannot: how much of the profile still *applies*, which
-  only the compiler knows. The two are complementary — a profile can be one pkgver old and badly
-  skewed, or several old and still broadly valid.
-  Direction: stop discarding the diagnostic and start counting it. Demote the blanket suppressions to
-  `-Wno-error=profile-instr-out-of-date` / `-Wno-error=profile-instr-unprofiled` so the warnings are
-  still emitted but cannot fail a `-Werror` build, then tally them at the existing per-line callback
-  in `invoke_makepkg` (`primitives/makepkg_invoke.py:456`, already the home for build-output
-  classification) and carry the counts into the update summary alongside the other per-package
-  actions. Verify the `-Wno-error=` form against mesa's actual `-Werror` posture before committing to
-  it — if mesa promotes these specifically, the fallback is to keep the suppression and derive
-  coverage out of band from `llvm-profdata show`, which is weaker (it describes the profile, not the
-  profile-against-this-source) but does not touch the build's warning configuration.
-  Whatever the mechanism, the deliverable is the same: a rebuild that reused a profile says how well
-  it fitted, and a skew past a threshold points at `sysforge build mesa --pgo=record`.
-  *Priority: med · Effort: medium · Bump: minor* — med because it is pure observability over a
-  currently-invisible correctness-adjacent regression, not a wrong result; the effort is the flag
-  change plus a counting seam and its summary rendering, and the risk sits in the `-Werror`
-  interaction rather than the code.
-  **Standards home on adoption:** none new — the summary rendering follows the existing logging
-  rubric in `docs/design/12-logging.md` (the count is narration behind `-v`, the skew warning is
-  `warn()`); no external spec is adopted.
-
----
-
-- **`3.2.0-F10` — nothing verifies that a freshly installed locally-built mesa actually initialises.**
-  The graphics guards sysforge has all check *inputs* to the build or *static* properties of the
-  result: `llvm_targets.py:108` refuses to drop the backends mesa links unconditionally,
-  `_ensure_mesa_software_baseline` (`mesa_drivers.py:36`) keeps a software driver in the filtered
-  list, and `graphics_probe._check_mesa_llvm_symbols` differs libgallium's `LLVMInitialize*` symbols
-  against the installed libLLVM. Each is well-placed. Together they still stop short of the question
-  the user actually has after `pacman -U` swaps their GL stack: does it load?
-  Unresolved symbols are one way a locally-built mesa fails and the one already covered. A driver
-  trimmed out of the gallium/vulkan lists, a mismatched `MESA_WHICH_LLVM`, a `-march` past what the
-  running CPU provides, or a PGO rebuild that miscompiled a driver entry point all produce a mesa
-  whose symbols resolve cleanly and which cannot create a context — and the first report of that is
-  a black screen on the next session start, after the build has been declared successful and the
-  stock package replaced.
-  Direction: a post-install smoke check on mesa-family pkgbases (`profile.is_mesa_pkgbase` is the
-  existing gate) that creates and tears down a context — `eglinfo` / `vulkaninfo` are the obvious
-  probes and follow the `_run(...)`-returning-`None`-on-absence shape already used throughout
-  `gfxperf_probe.py`, so a host without them degrades to "not checked" rather than failing. Report
-  through the graphics axis so `sysforge doctor --graphics` gives the same answer on demand. It must
-  be advisory: the package is already installed by the time this runs, so a failure's job is to name
-  the problem and point at `sysforge revert mesa` while the user still has a session, not to attempt
-  an automatic rollback.
-  Scope caveat, stated up front rather than discovered later: this validates only on hardware with a
-  working display path, and — like the rest of the graphics axis — is exercised here on
-  Nvidia/x86_64 only. On a headless host or a build server there is no context to create, so the
-  check must classify that as *skipped*, distinctly from *passed*; conflating the two would make the
-  guard read as coverage it does not have.
-  Related: `3.2.0-F9` covers the PGO-specific quality axis; this covers the load path regardless of
-  how mesa was built, including a plain `source_built` mesa with no profile involved.
-  *Priority: med · Effort: medium · Bump: minor* — med because the uncovered failure modes end in a
-  black screen and the recovery window is the current session; effort is the probe plus its
-  skipped/passed/failed classification and the headless path, not the invocation itself.
-  **Standards home on adoption:** none new — this extends the existing graphics diagnostics axis and
-  its findings vocabulary; the tested-hardware scope note belongs with the other hardware-tier
-  qualifications in `docs/design/`, not in `21-standards.md`.
 
 ---
 
@@ -438,6 +336,20 @@ canonical ordering.
   file, the assembly subtraction, three clearing sites and the reporting.
   **Standards home on adoption:** none new; `docs/design/` gains the opt-out record under the
   update-assembly and revert sections.
+
+---
+
+- **`3.4.0-F5` — sixteen doctor axes still can't say which checks they skipped.** `3.1.0-F1` added
+  the ran/skipped roster (`diag.Skip`, `Roster`, `AxisResult`) and migrated `graphics` and
+  `gfxperf`; every other axis returns a bare finding list, so `-vvv` prints `roster: not reported
+  by this axis` for it and a probe that bailed out still looks the same as one that passed.
+  Migrate the remaining axes (`toolchain`, `rust`, `cache`, `hardware`, `pacman`, `state`, `boot`,
+  `restart`, `storage`, `services`, `audio`, `network`, `integrity`, `distro`, `abi`) one module
+  at a time: `_check_*`-shaped probes change only their "could not check" returns to
+  `diag.Skip`; inline collectors build a `Roster` directly.
+  *Priority: low · Effort: medium · Bump: minor* — observability only; each axis is independent,
+  so it can land piecemeal.
+  **Standards home on adoption:** none new — row 25 governs where the roster prints.
 
 ### Bugs
 

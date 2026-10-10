@@ -25,13 +25,14 @@ Public API:
     adapt(category, obj) / adapt_many(category, objs)
     from_toolchain_check(check, *, category) / from_fix_suggestion(s, *, category)
     error_count(findings)
-    Axis, run_axes(axes)
-    render_axis(logger, label, findings, *, clean_msg, quiet)
+    Skip, Roster, AxisResult, record(roster, check_id, result)
+    Axis, run_axis(ax), run_axes(axes)
+    render_axis(logger, label, findings, *, clean_msg, quiet, grouped, roster)
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sysforge import log
 
@@ -109,6 +110,52 @@ class Finding:
 
 
 # ---------------------------------------------------------------------------
+# Roster — which checks ran and which could not (3.1.0-F1)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Skip:
+    """A check that could not run: its tool is missing, its input unreadable,
+    or it does not apply to this host (vendor-gated). Returned by a check in
+    place of ``None`` so "checked and healthy" and "never checked" stop
+    looking identical. ``reason`` is shown verbatim in the ``-vv`` roster."""
+    reason: str
+
+
+@dataclass
+class Roster:
+    """The checks an axis ran and the ones it skipped, with why."""
+    ran: list[str] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    def merge(self, other: "Roster") -> None:
+        self.ran.extend(other.ran)
+        self.skipped.extend(other.skipped)
+
+
+@dataclass
+class AxisResult:
+    """What an axis returns when it reports a roster. ``roster=None`` means the
+    axis has not been migrated to report one (``Axis.run`` returning a bare
+    list is normalised to this)."""
+    findings: list
+    roster: Roster | None = None
+
+
+def record(roster: Roster, check_id: str, result):
+    """File one check's result into ``roster`` and return its finding, if any.
+
+    ``Skip`` → skipped (returns ``None``); ``None`` → ran and passed; anything
+    else → ran and produced that finding (returned for the caller to collect).
+    """
+    if isinstance(result, Skip):
+        roster.skipped.append((check_id, result.reason))
+        return None
+    roster.ran.append(check_id)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Adapters — convert the existing probe dataclasses to Finding
 # ---------------------------------------------------------------------------
 
@@ -180,32 +227,40 @@ def error_count(findings: Iterable[Finding]) -> int:
 @dataclass(frozen=True)
 class Axis:
     """A named diagnostic axis: a label for the section header, a clean-state
-    message, and a zero-arg callable returning its findings."""
+    message, and a zero-arg callable returning its findings. ``run`` may return
+    a bare finding list or an :class:`AxisResult` carrying a roster."""
     name: str
     label: str
-    run: Callable[[], list[Finding]]
+    run: Callable[[], "list[Finding] | AxisResult"]
     clean_msg: str = "no issues detected"
 
 
-def run_axes(axes: Iterable[Axis]) -> dict[str, list[Finding]]:
-    """Run each axis, isolating failures so one broken probe can't abort the
-    sweep. A raising axis yields a single WARN finding rather than propagating.
-    Returns ``{axis_name: findings}`` preserving iteration order.
+def run_axis(ax: Axis) -> AxisResult:
+    """Run one axis, isolating failures so one broken probe can't abort the
+    sweep. A raising axis yields a single WARN finding (and no roster) rather
+    than propagating; a bare finding list becomes ``AxisResult(list, None)``.
     """
-    results: dict[str, list[Finding]] = {}
-    for ax in axes:
-        try:
-            results[ax.name] = list(ax.run())
-        except Exception as e:  # noqa: BLE001 — a probe must never abort the sweep
-            _log.debug(f"axis '{ax.name}' raised: {e}")
-            results[ax.name] = [Finding(
-                category=ax.name,
-                severity=SEV_WARN,
-                check_id=f"{ax.name}:probe_error",
-                message=f"could not run the {ax.name} probe: {e}",
-                remediation="re-run with -v for the traceback, or file a bug",
-            )]
-    return results
+    try:
+        out = ax.run()
+    except Exception as e:  # noqa: BLE001 — a probe must never abort the sweep
+        _log.debug(f"axis '{ax.name}' raised: {e}")
+        return AxisResult([Finding(
+            category=ax.name,
+            severity=SEV_WARN,
+            check_id=f"{ax.name}:probe_error",
+            message=f"could not run the {ax.name} probe: {e}",
+            remediation="re-run with -v for the traceback, or file a bug",
+        )])
+    if isinstance(out, AxisResult):
+        return AxisResult(list(out.findings), out.roster)
+    return AxisResult(list(out))
+
+
+def run_axes(axes: Iterable[Axis]) -> dict[str, list[Finding]]:
+    """Run each axis via :func:`run_axis`; return ``{axis_name: findings}``
+    preserving iteration order (the roster is dropped — callers that render
+    it use :func:`run_axis`)."""
+    return {ax.name: run_axis(ax).findings for ax in axes}
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +281,19 @@ def _color_severity(severity: str) -> str:
     return paint(token) if paint else token
 
 
+def _emit_roster(logger: log.Logger, roster: Roster | None) -> None:
+    """The roster block: ``info`` (``-vv``), or ``debug`` (``-vvv``) when the
+    axis reports none. Narration, never ``ui``."""
+    if roster is None:
+        logger.debug("  roster: not reported by this axis")
+        return
+    if roster.ran:
+        logger.info(f"  ran:     {', '.join(roster.ran)}")
+    if roster.skipped:
+        logger.info("  skipped: " + ", ".join(
+            f"{cid} ({why})" for cid, why in roster.skipped))
+
+
 def render_axis(
     logger: log.Logger,
     label: str,
@@ -234,6 +302,7 @@ def render_axis(
     clean_msg: str = "no issues detected",
     quiet: bool = False,
     grouped: bool = False,
+    roster: Roster | None = None,
 ) -> int:
     """Render one axis section through ``logger`` and return its error count.
 
@@ -245,13 +314,17 @@ def render_axis(
     A clean axis prints ``clean_msg`` (suppressed under ``quiet``). Returns the
     number of error-severity / brick findings for the exit-code reducer.
     When ``grouped=True``, findings are grouped by their ``subject`` field,
-    ordered by worst severity, then alphabetically.
+    ordered by worst severity, then alphabetically. ``roster`` (3.1.0-F1) is
+    printed at ``-vv`` after the findings (or the clean message); ``None``
+    prints a not-reported line at ``-vvv``. It is narration about how the
+    answer was produced, so ``info``/``debug`` per the logging rubric.
     """
     logger.newline()
     logger.ui(f"== {label} ==")
     if not findings:
         if not quiet:
             logger.ui(f"  {clean_msg}")
+        _emit_roster(logger, roster)
         return 0
 
     errors = sum(1 for f in findings if f.is_error)
@@ -286,5 +359,6 @@ def render_axis(
                         reverse=True):
             _emit(f, "  ")
 
+    _emit_roster(logger, roster)
     logger.ui(f"{label}: {len(findings)} finding(s), {errors} error(s).")
     return errors

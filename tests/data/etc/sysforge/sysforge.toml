@@ -96,6 +96,9 @@ llvm_preflight        = true
 # warning). mesa is always allowed, so the default list is empty. See
 # etc/sysforge/sysforge.toml for full docs.
 # allow = ["mesa"]
+# skew_warn_ratio — share of a reused profile's functions that may stop
+# matching before the staleness line calls it stale. See etc/sysforge/sysforge.toml.
+skew_warn_ratio = 0.5
 
 [update]
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching

@@ -198,6 +198,13 @@ llvm_preflight        = true
 # not it appears below, so the default list is empty.
 #allow = ["mesa"]
 
+# skew_warn_ratio — after a rebuild that reuses a profile, sysforge prints
+# "PGO profile <pkg>: N of M profiled functions no longer match the source (x%)". At or
+# above this share the line calls the profile stale and points at
+# `sysforge build <pkg> --pgo=record`, and the update summary repeats it.
+# 0.5 means "most of the profile no longer applies". Range (0, 1].
+skew_warn_ratio = 0.5
+
 [update]
 # Standing defaults for `sysforge update` drift auto-rebuild. The matching
 # CLI flags (--rebuild-on-drift / --rebuild-on-toolchain-drift /

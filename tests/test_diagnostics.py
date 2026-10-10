@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 
 from sysforge import log
 from sysforge.primitives import diagnostics as diag
@@ -228,3 +230,100 @@ def test_render_axis_ungrouped_is_unchanged(capsys):
     # Default mode ignores subject entirely — flat, severity-sorted.
     assert "mesa 25.1" not in out
     assert out.index("err b") < out.index("info a")
+
+
+# ---------------------------------------------------------------------------
+# Roster (3.1.0-F1)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def at_verbosity():
+    saved = log.get_verbosity()
+    yield log.set_verbosity
+    log.set_verbosity(saved)
+
+
+def test_record_files_skip_ran_and_finding():
+    roster = diag.Roster()
+    finding = diag.Finding("g", diag.SEV_WARN, "b", "bad")
+    assert diag.record(roster, "a", None) is None
+    assert diag.record(roster, "b", finding) is finding
+    assert diag.record(roster, "c", diag.Skip("tool missing")) is None
+    assert roster.ran == ["a", "b"]
+    assert roster.skipped == [("c", "tool missing")]
+
+
+def test_roster_merge_appends_both_lists():
+    a = diag.Roster(ran=["x"], skipped=[("y", "why")])
+    a.merge(diag.Roster(ran=["z"], skipped=[("w", "because")]))
+    assert a.ran == ["x", "z"]
+    assert a.skipped == [("y", "why"), ("w", "because")]
+
+
+def test_run_axis_normalises_list_and_axisresult():
+    roster = diag.Roster(ran=["k"])
+    f = diag.Finding("ok", diag.SEV_INFO, "x", "fine")
+    bare = diag.run_axis(diag.Axis("bare", "bare", lambda: [f]))
+    full = diag.run_axis(diag.Axis("full", "full", lambda: diag.AxisResult([f], roster)))
+    assert bare.findings == [f] and bare.roster is None
+    assert full.findings == [f] and full.roster is roster
+
+
+def test_run_axis_raising_axis_has_no_roster():
+    def boom():
+        raise RuntimeError("x")
+    res = diag.run_axis(diag.Axis("bad", "bad", boom))
+    assert [x.check_id for x in res.findings] == ["bad:probe_error"]
+    assert res.roster is None
+
+
+def test_run_axes_still_returns_finding_lists():
+    f = diag.Finding("ok", diag.SEV_INFO, "x", "fine")
+    out = diag.run_axes([diag.Axis("a", "a", lambda: diag.AxisResult([f], diag.Roster()))])
+    assert out == {"a": [f]}
+
+
+def test_render_axis_roster_hidden_below_vv(capsys, at_verbosity):
+    at_verbosity(1)
+    roster = diag.Roster(ran=["a"], skipped=[("b", "no gpu")])
+    diag.render_axis(log.get_logger("TEST"), "g", [], clean_msg="ok", roster=roster)
+    out = capsys.readouterr().err
+    assert "ok" in out
+    assert "ran:" not in out and "skipped:" not in out
+
+
+def test_render_axis_roster_shown_at_vv_on_clean_axis(capsys, at_verbosity):
+    at_verbosity(2)
+    roster = diag.Roster(ran=["a", "c"], skipped=[("b", "no gpu")])
+    diag.render_axis(log.get_logger("TEST"), "g", [], clean_msg="ok", roster=roster)
+    out = capsys.readouterr().err
+    assert "ran:     a, c" in out
+    assert "skipped: b (no gpu)" in out
+
+
+def test_render_axis_roster_shown_at_vv_with_findings(capsys, at_verbosity):
+    at_verbosity(2)
+    f = diag.Finding("g", diag.SEV_WARN, "a", "bad")
+    diag.render_axis(log.get_logger("TEST"), "g", [f],
+                     roster=diag.Roster(ran=["a"]))
+    out = capsys.readouterr().err
+    assert "[WARN] a: bad" in out or "a: bad" in out
+    assert "ran:     a" in out
+    assert "skipped:" not in out  # empty list omitted
+
+
+def test_render_axis_unreported_roster_only_at_vvv(capsys, at_verbosity):
+    at_verbosity(2)
+    diag.render_axis(log.get_logger("TEST"), "g", [], clean_msg="ok", roster=None)
+    assert "not reported" not in capsys.readouterr().err
+    at_verbosity(3)
+    diag.render_axis(log.get_logger("TEST"), "g", [], clean_msg="ok", roster=None)
+    assert "roster: not reported by this axis" in capsys.readouterr().err
+
+
+def test_render_axis_roster_is_quiet_at_default(quiet_at_default):
+    roster = diag.Roster(ran=["a"], skipped=[("b", "no gpu")])
+    err_v0, err_v2 = quiet_at_default(
+        lambda: diag.render_axis(log.get_logger("TEST"), "g", [], clean_msg="ok",
+                                 roster=roster))
+    assert "ran:" in err_v2

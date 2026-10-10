@@ -16,7 +16,7 @@ not the compositor/session env, so an unset value is never asserted as broken.
 All checks are read-only and safe when the target is absent.
 
 Public API:
-    check_gfxperf(config, *, gpu_vendors=None) -> list[GraphicsFinding]
+    check_gfxperf(config, *, gpu_vendors=None) -> diag.AxisResult
 """
 from __future__ import annotations
 
@@ -25,9 +25,10 @@ import re
 import subprocess
 from pathlib import Path
 
+from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import pacman
 from sysforge.primitives.graphics_probe import (
-    SEV_ERROR, SEV_INFO, SEV_WARN, GraphicsFinding,
+    NO_NVIDIA, SEV_ERROR, SEV_INFO, SEV_WARN, GraphicsFinding,
 )
 from sysforge.primitives import run
 
@@ -54,10 +55,10 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
 _GOVERNOR_PATH = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
 
 
-def _check_cpu_governor() -> GraphicsFinding | None:
+def _check_cpu_governor() -> GraphicsFinding | diag.Skip | None:
     gov = _read_text(_GOVERNOR_PATH)
     if gov is None:
-        return None  # no cpufreq exposed (VM / unusual kernel) — does not apply
+        return diag.Skip("no cpufreq governor exposed")  # VM / unusual kernel
     gov = gov.strip()
     if gov == "powersave":
         return GraphicsFinding(
@@ -113,13 +114,13 @@ def _check_libva_env() -> GraphicsFinding | None:
 # Cluster 2 — GPU power / clock state (NVIDIA-gated)
 # ---------------------------------------------------------------------------
 
-def _check_nvidia_persistence() -> GraphicsFinding | None:
+def _check_nvidia_persistence() -> GraphicsFinding | diag.Skip | None:
     r = _run(["nvidia-smi", "-q"])
     if r is None or r.returncode != 0:
-        return None
+        return diag.Skip("nvidia-smi unavailable")
     m = re.search(r"Persistence Mode\s*:\s*(\w+)", r.stdout)
     if m is None:
-        return None
+        return diag.Skip("persistence mode not reported")
     if m.group(1).lower() == "enabled":
         return GraphicsFinding(SEV_INFO, "nvidia_persistence",
                                "NVIDIA persistence mode enabled.")
@@ -132,10 +133,10 @@ def _check_nvidia_persistence() -> GraphicsFinding | None:
     )
 
 
-def _check_nvidia_powerd() -> GraphicsFinding | None:
+def _check_nvidia_powerd() -> GraphicsFinding | diag.Skip | None:
     r = _run(["systemctl", "is-active", "nvidia-powerd.service"])
     if r is None:
-        return None
+        return diag.Skip("systemctl unavailable")
     state = r.stdout.strip()
     if state == "active":
         return GraphicsFinding(SEV_INFO, "nvidia_powerd",
@@ -148,7 +149,7 @@ def _check_nvidia_powerd() -> GraphicsFinding | None:
             "If your GPU supports Dynamic Boost, enable it: `sudo systemctl "
             "enable --now nvidia-powerd.service`.",
         )
-    return None  # unknown / not-installed unit — does not apply
+    return diag.Skip("nvidia-powerd.service not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +171,13 @@ def _check_gl_frame_pacing() -> GraphicsFinding | None:
 # Cluster 5 (NVIDIA) — thermal snapshot
 # ---------------------------------------------------------------------------
 
-def _check_gpu_thermal() -> GraphicsFinding | None:
+def _check_gpu_thermal() -> GraphicsFinding | diag.Skip | None:
     r = _run(["nvidia-smi", "-q"])
     if r is None or r.returncode != 0:
-        return None
+        return diag.Skip("nvidia-smi unavailable")
     cur = re.search(r"GPU Current Temp\s*:\s*(\d+)", r.stdout)
     if cur is None:
-        return None
+        return diag.Skip("GPU temperature not reported")
     cur_t = int(cur.group(1))
     slow = re.search(r"GPU Slowdown Temp\s*:\s*(\d+)", r.stdout)
     slow_t = int(slow.group(1)) if slow else None
@@ -198,10 +199,10 @@ def _check_gpu_thermal() -> GraphicsFinding | None:
 # Cluster 6 — Transient pressure (snapshot)
 # ---------------------------------------------------------------------------
 
-def _check_memory_pressure() -> GraphicsFinding | None:
+def _check_memory_pressure() -> GraphicsFinding | diag.Skip | None:
     text = _read_text(Path("/proc/meminfo"))
     if text is None:
-        return None
+        return diag.Skip("/proc/meminfo unreadable")
     vals: dict[str, int] = {}
     for line in text.splitlines():
         m = re.match(r"(\w+):\s+(\d+)\s*kB", line)
@@ -209,7 +210,7 @@ def _check_memory_pressure() -> GraphicsFinding | None:
             vals[m.group(1)] = int(m.group(2))
     total = vals.get("MemTotal", 0)
     if total == 0:
-        return None
+        return diag.Skip("MemTotal not reported")
     avail = vals.get("MemAvailable", 0)
     swap_used = vals.get("SwapTotal", 0) - vals.get("SwapFree", 0)
     avail_pct = 100 * avail // total
@@ -234,29 +235,35 @@ def check_gfxperf(
     config,
     *,
     gpu_vendors: list[str] | None = None,
-) -> list[GraphicsFinding]:
+) -> diag.AxisResult:
     """Run the advisory graphics-performance sweep. Vendor-agnostic checks run
-    always; NVIDIA-gated clusters run when 'nvidia' in gpu_vendors. Findings are
-    returned in a stable order; callers render them verbatim."""
+    always; NVIDIA-gated clusters run when 'nvidia' in gpu_vendors and are
+    recorded as skipped otherwise (3.1.0-F1). Findings are returned in a stable
+    order; callers render them verbatim."""
     del config  # reserved for future user-configured skips
     gvendors = gpu_vendors or []
     installed = pacman.get_all_installed_packages()
 
+    roster = diag.Roster()
     findings: list[GraphicsFinding] = []
 
-    def _add(f: GraphicsFinding | None) -> None:
+    def _add(check_id: str, result) -> None:
+        f = diag.record(roster, check_id, result)
         if f is not None:
             findings.append(f)
 
-    _add(_check_cpu_governor())
-    _add(_check_memory_pressure())
+    _add("cpu_governor", _check_cpu_governor())
+    _add("memory_pressure", _check_memory_pressure())
 
-    if "nvidia" in gvendors:
-        _add(_check_vaapi_driver(installed))
-        _add(_check_libva_env())
-        _add(_check_nvidia_persistence())
-        _add(_check_nvidia_powerd())
-        _add(_check_gl_frame_pacing())
-        _add(_check_gpu_thermal())
+    nvidia = "nvidia" in gvendors
+    for check_id, fn in (
+        ("vaapi_driver", lambda: _check_vaapi_driver(installed)),
+        ("libva_env", _check_libva_env),
+        ("nvidia_persistence", _check_nvidia_persistence),
+        ("nvidia_powerd", _check_nvidia_powerd),
+        ("gl_frame_pacing", _check_gl_frame_pacing),
+        ("gpu_thermal", _check_gpu_thermal),
+    ):
+        _add(check_id, fn() if nvidia else diag.Skip(NO_NVIDIA))
 
-    return findings
+    return diag.AxisResult(findings, roster)

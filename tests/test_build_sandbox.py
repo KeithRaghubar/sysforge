@@ -1741,3 +1741,21 @@ def test_seam_sync_refusal_stops_before_the_swap(tmp_path):
         with pytest.raises(bs.SandboxUnavailable, match="repo"):
             _invoke(pb, conf, {})
     assert pb.read_text() == "# fake\n"
+
+
+def test_on_line_feeds_pgo_counter(tmp_path):
+    from sysforge.primitives import mesa_pgo
+    pb, conf = _pkg_and_conf(tmp_path)
+    line = ("warning: a.c: function control flow change detected (hash mismatch) "
+            "f Hash = 1 up to 0 count discarded [-Wbackend-plugin]")
+
+    def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes, preexec_fn=None, **_kw):
+        line_callback(line)
+        return 0
+
+    mesa_pgo.reset_skew_session()
+    mesa_pgo.arm_skew_count()
+    with patch.dict(os.environ, {"PATH": "/usr/bin", "HOME": "/root"}, clear=True), \
+            patch("sysforge.primitives.makepkg_invoke.run_with_pty", side_effect=fake_pty):
+        invoke_makepkg(pb, conf, {})
+    assert mesa_pgo.take_skew_count() == {("a.c", "f")}

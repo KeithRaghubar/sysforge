@@ -517,6 +517,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     already_built = False
     captured_lines: list[str] = []
 
+    from sysforge.primitives import mesa_pgo as _mesa_pgo
+
     def _on_line(stripped: str) -> None:
         nonlocal failed_stage, toolchain_mismatch, already_built
         # The pty makes the child think it has a terminal, so compilers embed
@@ -526,6 +528,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # forward_bytes.
         stripped = strip_ansi(stripped)
         captured_lines.append(stripped)
+        # 3.2.0-F9: count IR-PGO hash mismatches (a no-op unless the wrapper armed it).
+        _mesa_pgo.observe_line(stripped)
         if "A failure occurred in prepare()." in stripped:
             failed_stage = "prepare"
         elif "A failure occurred in build()." in stripped:

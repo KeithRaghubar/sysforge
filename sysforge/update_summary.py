@@ -217,6 +217,8 @@ class ResultSummary:
     labels: dict[str, str] = field(default_factory=dict)
     # 3.2.0-F15: "<pkgfile>: <member> is nested…" lines from payload_layout.
     layout_findings: list[str] = field(default_factory=list)
+    # 3.2.0-F9: staleness lines for PGO-reusing rebuilds whose profile is stale.
+    pgo_staleness_lines: list[str] = field(default_factory=list)
     # (pkgbase, installed_ver, upstream_ver, owner_stage)
     stage_owned_updates: list[tuple[str, str | None, str | None, str]] = field(
         default_factory=list
@@ -346,6 +348,9 @@ def _print_result_summary(
     if summary.layout_findings:
         _section("Payload layout (installed, but never read by its consumer):",
                  list(summary.layout_findings))
+
+    if summary.pgo_staleness_lines:
+        _section("PGO profile staleness:", list(summary.pgo_staleness_lines))
 
     if summary.cleansrc_failures:
         emit(

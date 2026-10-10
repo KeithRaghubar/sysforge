@@ -177,6 +177,22 @@ def is_mesa_pkgbase(pkgbase: str | None) -> bool:
     return bool(pkgbase) and pkgbase in _MESA_PKGBASES
 
 
+def is_mesa_family(name: str | None) -> bool:
+    """:func:`is_mesa_pkgbase`, but also true for a ``-sysforge``-renamed build.
+
+    ``--pgo=use`` earns the rename, so an installed PGO mesa is ``mesa-sysforge``
+    (pkgbase and pkgname alike) and an exact match misses it. For callers that
+    look at what is *installed* — the mesa smoke check, the graphics axis —
+    rather than at the pkgbase about to be built.
+    """
+    # Lazy: pkgbuild_patcher imports this module.
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+    suffix = f"-{RENAME_SUFFIX}"
+    if name and name.endswith(suffix):
+        name = name[: -len(suffix)]
+    return is_mesa_pkgbase(name)
+
+
 def variant_env_overlay(pkgbase: str, variant: str | None) -> dict[str, str]:
     """Return per-package env vars driven by the active toolchain variant.
 

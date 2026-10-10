@@ -153,7 +153,19 @@ build — check with `pacman -Q mesa-sysforge`.
   Refreshing is just Step 1 → 3 again; the new data is **merged** with the old.
 - **Start over** (e.g. after changing GPU or driver): `sysforge state profiles --purge
   pgo-mesa`, then record again.
-- **Stop using PGO**: purge the store, then `sysforge revert mesa` (or rebuild normally).
+- **Stop using PGO**: purge the store, then `sysforge revert-to-stock mesa` (or rebuild normally).
+
+**Is the profile stale?** Every rebuild that reuses a profile prints a line like
+
+    PGO profile mesa: 412 of 18,210 profiled functions no longer match the source (2.3%)
+
+A function "no longer matches" when its code changed since you recorded the profile; the compiler
+ignores the profile for that function and optimizes it as if unprofiled. A few percent after an
+upstream release is normal. Once the share reaches `[pgo] skew_warn_ratio` in `sysforge.toml`
+(default `0.5`, i.e. most of the profile no longer applies), the line says the profile is stale,
+the `update` summary repeats it, and it is time to re-record:
+`sysforge build mesa --pgo=record`, exercise it, then `--pgo=use`. Builds run with
+`--interactive` can't measure staleness and say so at `-vv`.
 
 ### Other packages
 

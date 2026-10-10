@@ -1,4 +1,8 @@
 
+from pathlib import Path
+
+from sysforge.primitives import diagnostics as diag
+from sysforge.primitives import graphics_probe
 from sysforge.primitives import gfxperf_probe as gp
 
 
@@ -24,9 +28,10 @@ def test_cpu_governor_performance_is_info(monkeypatch, tmp_path):
     assert "schedutil" in f.message
 
 
-def test_cpu_governor_absent_returns_none(monkeypatch, tmp_path):
+def test_cpu_governor_absent_skips(monkeypatch, tmp_path):
     monkeypatch.setattr(gp, "_GOVERNOR_PATH", tmp_path / "missing")
-    assert gp._check_cpu_governor() is None
+    r = gp._check_cpu_governor()
+    assert isinstance(r, diag.Skip) and r.reason == "no cpufreq governor exposed"
 
 
 def test_memory_pressure_low_available_info(monkeypatch):
@@ -39,13 +44,13 @@ def test_memory_pressure_low_available_info(monkeypatch):
 
 def test_check_gfxperf_no_gpu_runs_only_agnostic(monkeypatch):
     monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
-    ids = _ids(gp.check_gfxperf({}, gpu_vendors=[]))
+    ids = _ids(gp.check_gfxperf({}, gpu_vendors=[]).findings)
     assert ids == {"cpu_governor", "memory_pressure"}
 
 
 def test_check_gfxperf_never_errors(monkeypatch):
     monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
-    for f in gp.check_gfxperf({}, gpu_vendors=["nvidia"]):
+    for f in gp.check_gfxperf({}, gpu_vendors=["nvidia"]).findings:
         assert f.severity in (gp.SEV_WARN, gp.SEV_INFO)
 
 
@@ -82,7 +87,7 @@ def test_libva_env_always_info(monkeypatch):
 
 def test_nvidia_gated_checks_present(monkeypatch):
     monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
-    ids = _ids(gp.check_gfxperf({}, gpu_vendors=["nvidia"]))
+    ids = _ids(gp.check_gfxperf({}, gpu_vendors=["nvidia"]).findings)
     assert {"vaapi_driver", "libva_env"} <= ids
 
 
@@ -105,9 +110,9 @@ def test_persistence_enabled_info(monkeypatch):
     assert f.severity == gp.SEV_INFO and f.remediation == ""
 
 
-def test_persistence_no_smi_returns_none(monkeypatch):
+def test_persistence_no_smi_skips(monkeypatch):
     monkeypatch.setattr(gp, "_run", lambda cmd: None)
-    assert gp._check_nvidia_persistence() is None
+    assert isinstance(gp._check_nvidia_persistence(), diag.Skip)
 
 
 def test_powerd_inactive_info(monkeypatch):
@@ -122,9 +127,10 @@ def test_powerd_active_info(monkeypatch):
     assert f.severity == gp.SEV_INFO and f.remediation == ""
 
 
-def test_powerd_unknown_unit_none(monkeypatch):
+def test_powerd_unknown_unit_skips(monkeypatch):
     monkeypatch.setattr(gp, "_run", lambda cmd: _cp("unknown\n", rc=4))
-    assert gp._check_nvidia_powerd() is None
+    r = gp._check_nvidia_powerd()
+    assert isinstance(r, diag.Skip) and r.reason == "nvidia-powerd.service not installed"
 
 
 def test_gl_frame_pacing_always_info(monkeypatch):
@@ -148,13 +154,45 @@ def test_gpu_thermal_cool_info(monkeypatch):
     assert f.severity == gp.SEV_INFO
 
 
-def test_gpu_thermal_no_smi_none(monkeypatch):
+def test_gpu_thermal_no_smi_skips(monkeypatch):
     monkeypatch.setattr(gp, "_run", lambda cmd: None)
-    assert gp._check_gpu_thermal() is None
+    r = gp._check_gpu_thermal()
+    assert isinstance(r, diag.Skip) and r.reason == "nvidia-smi unavailable"
 
 
 def test_full_nvidia_id_set(monkeypatch):
     monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
     monkeypatch.setattr(gp, "_run", lambda cmd: None)  # skip smi/systemctl checks
-    ids = _ids(gp.check_gfxperf({}, gpu_vendors=["nvidia"]))
+    ids = _ids(gp.check_gfxperf({}, gpu_vendors=["nvidia"]).findings)
     assert {"vaapi_driver", "libva_env", "gl_frame_pacing"} <= ids
+
+
+def test_cpu_governor_skips_without_cpufreq(monkeypatch):
+    monkeypatch.setattr(gp, "_read_text", lambda p: None)
+    r = gp._check_cpu_governor()
+    assert isinstance(r, diag.Skip) and r.reason == "no cpufreq governor exposed"
+
+
+def test_persistence_skips_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(gp, "_run", lambda cmd: None)
+    r = gp._check_nvidia_persistence()
+    assert isinstance(r, diag.Skip) and r.reason == "nvidia-smi unavailable"
+
+
+def test_memory_pressure_skips_when_meminfo_unreadable(monkeypatch):
+    monkeypatch.setattr(gp, "_read_text", lambda p: None)
+    r = gp._check_memory_pressure()
+    assert isinstance(r, diag.Skip) and r.reason == "/proc/meminfo unreadable"
+
+
+def test_gfxperf_roster_without_nvidia(monkeypatch):
+    monkeypatch.setattr(gp.pacman, "get_all_installed_packages", lambda: {})
+    monkeypatch.setattr(gp, "_read_text", lambda p: (
+        "schedutil\n" if Path(p) == gp._GOVERNOR_PATH
+        else "MemTotal: 1000 kB\nMemAvailable: 900 kB\n"))
+    res = gp.check_gfxperf({}, gpu_vendors=[])
+    skipped = dict(res.roster.skipped)
+    for cid in ("vaapi_driver", "libva_env", "nvidia_persistence",
+                "nvidia_powerd", "gl_frame_pacing", "gpu_thermal"):
+        assert skipped[cid] == graphics_probe.NO_NVIDIA
+    assert res.roster.ran == ["cpu_governor", "memory_pressure"]

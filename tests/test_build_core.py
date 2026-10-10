@@ -2103,3 +2103,22 @@ def test_build_and_install_as_root_never_touches_sudo(tmp_path, monkeypatch):
             stack.enter_context(p)
         build_core.build_and_install([target], config={}, sync_source=False,
                                      review="off", state_dir=tmp_path / "state")
+
+
+def test_post_install_mesa_smoke_passes_installed_names(monkeypatch, tmp_path):
+    from sysforge import build_core
+    from sysforge.primitives import mesa_smoke
+    seen = {}
+    monkeypatch.setattr(build_core, "read_pkgname_from_file",
+                        lambda f: {"a.pkg": "mesa", "b.pkg": "vulkan-swrast"}.get(f))
+    monkeypatch.setattr(mesa_smoke, "post_install",
+                        lambda changed, state_dir: seen.update(changed=changed, sd=state_dir))
+    build_core._post_install_mesa_smoke(["a.pkg", "b.pkg"], tmp_path)
+    assert seen == {"changed": {"mesa", "vulkan-swrast"}, "sd": tmp_path}
+
+
+def test_post_install_mesa_smoke_noop_without_files(monkeypatch):
+    from sysforge import build_core
+    from sysforge.primitives import mesa_smoke
+    monkeypatch.setattr(mesa_smoke, "post_install", lambda *a: pytest.fail("must not run"))
+    build_core._post_install_mesa_smoke([], None)

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
 
+from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import graphics_probe as gp
 from sysforge.primitives import pacman as pacman_mod
 
@@ -27,6 +28,11 @@ def _quiet_mesa_llvm_symbols(monkeypatch):
     monkeypatch.setattr(
         "sysforge.primitives.toolchain_safety.check_installed_consumer_symbols",
         lambda: [], raising=True,
+    )
+    from sysforge.primitives import diagnostics as _diag
+    monkeypatch.setattr(
+        "sysforge.primitives.mesa_smoke.run_smoke",
+        lambda: _diag.AxisResult([], _diag.Roster()), raising=True,
     )
 
 
@@ -101,7 +107,7 @@ def test_modeset_cmdline_fallback_missing_flag_warns(monkeypatch):
 
 def test_fbdev_skipped_on_old_kernel(monkeypatch):
     _patch_run(monkeypatch, {"uname": _completed("6.10.5-arch1-1\n")})
-    assert gp._check_nvidia_fbdev() is None
+    _skip(gp._check_nvidia_fbdev(), "kernel older than 6.11")
 
 
 def test_fbdev_skipped_when_param_absent(monkeypatch, tmp_path):
@@ -115,7 +121,7 @@ def test_fbdev_skipped_when_param_absent(monkeypatch, tmp_path):
             return False
         return orig_exists(self)
     monkeypatch.setattr(Path, "exists", fake_exists, raising=True)
-    assert gp._check_nvidia_fbdev() is None
+    _skip(gp._check_nvidia_fbdev(), "driver has no fbdev parameter")
 
 
 def test_fbdev_warn_when_disabled(monkeypatch):
@@ -166,7 +172,7 @@ def test_driver_skew_detected(monkeypatch):
 
 def test_driver_skew_no_nvidia_installed(monkeypatch):
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
-    assert gp._check_nvidia_driver_skew() is None
+    _skip(gp._check_nvidia_driver_skew(), "no NVIDIA driver packages installed")
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +199,7 @@ def test_module_loaded_missing_when_nvidia_vendor_present(monkeypatch):
 
 
 def test_module_loaded_skipped_when_no_nvidia_vendor(monkeypatch):
-    assert gp._check_nvidia_module_loaded(["amd"]) is None
+    _skip(gp._check_nvidia_module_loaded(["amd"]), gp.NO_NVIDIA)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +222,7 @@ def test_multilib_disabled_detected(monkeypatch):
 
 def test_multilib_skipped_without_gpu(monkeypatch):
     # headless — no 32-bit libs needed
-    assert gp._check_multilib_enabled([]) is None
+    _skip(gp._check_multilib_enabled([]), "no NVIDIA/AMD/Intel GPU detected")
 
 
 # ---------------------------------------------------------------------------
@@ -232,10 +238,10 @@ def test_session_type_info(monkeypatch):
     assert "wayland" in f.message and "COSMIC" in f.message
 
 
-def test_session_type_absent_returns_none(monkeypatch):
+def test_session_type_absent_skips(monkeypatch):
     monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
     monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
-    assert gp._check_session_type() is None
+    _skip(gp._check_session_type(), "no XDG session variables set")
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +250,7 @@ def test_session_type_absent_returns_none(monkeypatch):
 
 def test_xwayland_skipped_on_x11(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
-    assert gp._check_xwayland_present({}) is None
+    _skip(gp._check_xwayland_present({}), "not a Wayland session")
 
 
 def test_xwayland_missing_on_wayland(monkeypatch):
@@ -266,12 +272,12 @@ def test_xwayland_present_via_git_variant(monkeypatch):
 
 def test_explicit_sync_skipped_without_nvidia(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-    assert gp._check_explicit_sync_protocol(["amd"]) is None
+    _skip(gp._check_explicit_sync_protocol(["amd"]), gp.NO_NVIDIA)
 
 
 def test_explicit_sync_skipped_on_x11(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
-    assert gp._check_explicit_sync_protocol(["nvidia"]) is None
+    _skip(gp._check_explicit_sync_protocol(["nvidia"]), "not a Wayland session")
 
 
 def test_explicit_sync_present_clean(monkeypatch):
@@ -325,7 +331,7 @@ def test_explicit_sync_tool_missing_skipped(monkeypatch):
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     _patch_run(monkeypatch, {})  # wayland-info not installed
     # No false-positive when we can't probe
-    assert gp._check_explicit_sync_protocol(["nvidia"]) is None
+    _skip(gp._check_explicit_sync_protocol(["nvidia"]), "wayland-info unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +361,7 @@ def test_steam_gpu_accel_disabled_clean(monkeypatch, tmp_path):
 
 def test_steam_gpu_accel_no_config_skipped(monkeypatch, tmp_path):
     monkeypatch.setattr(gp, "_STEAM_CONFIG_PATHS", (tmp_path / "missing.vdf",))
-    assert gp._check_steam_gpu_accel() is None
+    _skip(gp._check_steam_gpu_accel(), "Steam config not found")
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +384,7 @@ def test_orchestrator_aggregates_findings(monkeypatch):
         "wayland-info": _completed("interface: 'wp_viewporter'\n"),  # no explicit-sync
     })
 
-    findings = gp.check_system_graphics({}, gpu_vendors=["nvidia"])
+    findings = gp.check_system_graphics({}, gpu_vendors=["nvidia"]).findings
     ids = [f.check_id for f in findings]
     # session_type always present with env set; explicit_sync_protocol should fire.
     assert "session_type" in ids
@@ -394,7 +400,7 @@ def test_orchestrator_nvidia_checks_skipped_without_nvidia(monkeypatch):
     _patch_read(monkeypatch, {"/etc/pacman.conf": "[multilib]\n"})
     _patch_run(monkeypatch, {})
 
-    findings = gp.check_system_graphics({}, gpu_vendors=["amd"])
+    findings = gp.check_system_graphics({}, gpu_vendors=["amd"]).findings
     ids = {f.check_id for f in findings}
     # None of the NVIDIA-gated checks should fire
     assert "nvidia_modeset" not in ids
@@ -448,5 +454,71 @@ def test_check_system_graphics_includes_mesa_llvm(monkeypatch):
         _CHECK,
         lambda: [SimpleNamespace(message="broken AMDGPU link", remediation="fix")],
     )
-    findings = gp.check_system_graphics(None, gpu_vendors=[])
+    findings = gp.check_system_graphics(None, gpu_vendors=[]).findings
     assert "mesa_llvm_symbols" in {f.check_id for f in findings}
+
+
+def _skip(result, fragment):
+    assert isinstance(result, diag.Skip), result
+    assert fragment in result.reason
+
+
+def test_module_loaded_skip_when_lsmod_missing(monkeypatch):
+    _patch_run(monkeypatch, {})
+    _skip(gp._check_nvidia_module_loaded(["nvidia"]), "lsmod unavailable")
+
+
+def test_multilib_skip_when_conf_unreadable(monkeypatch):
+    _patch_read(monkeypatch, {})
+    _skip(gp._check_multilib_enabled(["amd"]), "/etc/pacman.conf unreadable")
+
+
+def test_fbdev_skip_when_kernel_version_unreadable(monkeypatch):
+    _patch_run(monkeypatch, {})
+    _skip(gp._check_nvidia_fbdev(), "kernel version unreadable")
+
+
+def test_orchestrator_roster_without_nvidia(monkeypatch):
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.delenv("XDG_CURRENT_DESKTOP", raising=False)
+    _patch_read(monkeypatch, {"/etc/pacman.conf": "[multilib]\n"})
+    res = gp.check_system_graphics({}, gpu_vendors=["amd"])
+    skipped = dict(res.roster.skipped)
+    for cid in ("nvidia_module_loaded", "nvidia_modeset", "nvidia_fbdev",
+                "nvidia_driver_skew", "explicit_sync_protocol"):
+        assert skipped[cid] == gp.NO_NVIDIA
+    assert "multilib_enabled" in res.roster.ran
+    assert "mesa_llvm_symbols" in res.roster.ran
+    assert skipped["session_type"] == "no XDG session variables set"
+    assert skipped["xwayland_present"] == "not a Wayland session"
+
+
+def test_graphics_merges_smoke_when_mesa_installed(monkeypatch):
+    from sysforge.primitives import mesa_smoke
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {"mesa": "1:26.2.4-1"})
+    monkeypatch.setattr(mesa_smoke, "run_smoke", lambda: diag.AxisResult(
+        [gp.GraphicsFinding("error", "mesa_egl", "boom")],
+        diag.Roster(ran=["mesa_egl"], skipped=[("mesa_vulkan", "no mesa Vulkan ICDs installed")])))
+    res = gp.check_system_graphics({}, gpu_vendors=[])
+    assert "mesa_egl" in [f.check_id for f in res.findings]
+    assert "mesa_egl" in res.roster.ran
+    assert ("mesa_vulkan", "no mesa Vulkan ICDs installed") in res.roster.skipped
+
+
+def test_graphics_omits_smoke_without_mesa(monkeypatch):
+    from sysforge.primitives import mesa_smoke
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {"lib32-mesa": "1"})
+    monkeypatch.setattr(mesa_smoke, "run_smoke", lambda: pytest.fail("must not probe"))
+    res = gp.check_system_graphics({}, gpu_vendors=[])
+    assert "mesa_egl" not in res.roster.ran
+
+
+def test_graphics_runs_smoke_for_renamed_pgo_mesa(monkeypatch):
+    from sysforge.primitives import mesa_smoke
+    called = []
+    monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {"mesa-sysforge": "1"})
+    monkeypatch.setattr(mesa_smoke, "run_smoke",
+                        lambda: called.append(1) or diag.AxisResult([], diag.Roster()))
+    gp.check_system_graphics({}, gpu_vendors=[])
+    assert called == [1]

@@ -2152,3 +2152,31 @@ def test_collect_boot_findings_includes_audit(monkeypatch):
     marker = diag.Finding("boot", diag.SEV_WARN, "boot_entry_dangling", "m", remediation="r")
     monkeypatch.setattr(doctor, "_boot_entry_audit_findings", lambda: [marker])
     assert any(f.check_id == "boot_entry_dangling" for f in doctor._collect_boot_findings())
+
+
+# ---------------------------------------------------------------------------
+# 3.1.0-F1: the graphics axis prints its ran/skipped roster at -vv
+# ---------------------------------------------------------------------------
+
+def test_graphics_axis_prints_roster_at_vv(monkeypatch, capsys):
+    from sysforge import log
+    from sysforge.primitives import diagnostics as diag
+    from sysforge.primitives.graphics_probe import GraphicsFinding
+    monkeypatch.setattr(doctor, "_read_gpu_vendors", lambda config: [])
+    monkeypatch.setattr(
+        doctor, "check_system_graphics",
+        lambda config, gpu_vendors: diag.AxisResult(
+            [GraphicsFinding("info", "session_type", "session: wayland")],
+            diag.Roster(ran=["session_type"],
+                        skipped=[("nvidia_modeset", "no NVIDIA GPU detected")]),
+        ))
+    saved = log.get_verbosity()
+    try:
+        log.set_verbosity(2)
+        doctor._run_system_axes(SimpleNamespace(quiet=False), {}, ["graphics"])
+    finally:
+        log.set_verbosity(saved)
+    err = capsys.readouterr().err
+    assert "session_type: session: wayland" in err
+    assert "ran:     session_type" in err
+    assert "skipped: nvidia_modeset (no NVIDIA GPU detected)" in err

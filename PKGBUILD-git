@@ -30,6 +30,8 @@ optdepends=(
     'lld: required for the optimized build profile (-fuse-ld=lld)'
     'llvm: required for sysforge run toolchain --compiler=llvm (PGO bootstrap)'
     'compiler-rt: required for sysforge run toolchain --compiler=llvm'
+    'mesa-utils: post-install mesa smoke check (eglinfo)'
+    'vulkan-tools: post-install mesa smoke check (vulkaninfo)'
 )
 conflicts=('sysforge')
 provides=('sysforge')

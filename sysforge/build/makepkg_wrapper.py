@@ -1144,6 +1144,45 @@ class BuildOptions:
     rename_pkgbase_to: str | None = None
 
 
+def _arm_pgo_staleness(pkgbase: str, interactive: bool) -> bool:
+    """Arm the profile-staleness counter for a PGO-consuming build (3.2.0-F9).
+
+    Interactive builds inherit the TTY, so no output line reaches
+    ``makepkg_invoke``'s classifier; say so instead of reporting a zero.
+    """
+    from sysforge.primitives import mesa_pgo
+    if interactive:
+        _build_log.info(f"PGO profile {pkgbase}: staleness not measured (interactive build)")
+        return False
+    mesa_pgo.arm_skew_count()
+    return True
+
+
+def _disarm_pgo_staleness() -> None:
+    """Drop any armed count (a failed build's count is meaningless)."""
+    from sysforge.primitives import mesa_pgo
+    mesa_pgo.take_skew_count()
+
+
+def _report_pgo_staleness(pkgbase: str, profdata: Path) -> None:
+    """After a successful PGO-consuming build: grade how much of the profile
+    still matched, print the ``ui()`` staleness line and keep the report for the
+    update summary. Observability only — never fails the build."""
+    from sysforge.primitives import mesa_pgo
+    from sysforge.primitives.config import load_sysforge_toml, resolve_pgo_skew_warn_ratio
+    try:
+        seen = mesa_pgo.take_skew_count()
+        if seen is None:
+            return
+        report = mesa_pgo.SkewReport(pkgbase, len(seen),
+                                     mesa_pgo.profile_function_total(profdata))
+        mesa_pgo.record_skew_report(report)
+        _build_log.ui(mesa_pgo.staleness_line(
+            report, resolve_pgo_skew_warn_ratio(load_sysforge_toml())))
+    except Exception as exc:  # noqa: BLE001 — observability must not fail a build
+        _build_log.warn(f"PGO profile {pkgbase}: could not grade the profile: {exc}")
+
+
 def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                         rename, record_build_mode, build_elapsed,
                         kernel_build=False):
@@ -1360,6 +1399,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         )
 
     build_success = False
+    # 3.2.0-F9: the profile a PGO-consuming build reads, graded after success.
+    _staleness_profdata: Path | None = None
     try:
         matched_rules = match_rules(pkgmeta, config.get("rules", []))
 
@@ -1485,6 +1526,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                     ),
                 )
                 _pgo_flag = mesa_pgo.use_flags(_profdata)
+                _staleness_profdata = _profdata
                 record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
             else:
                 raise RuntimeError(f"unknown --pgo mode {options.pgo_mode!r}")
@@ -1503,8 +1545,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
             # (same compiler_flags_extra seam as --pgo=use) rather than silently
             # regressing to a stock build. No re-merge — the optimized build isn't
             # instrumented, so no new .profraw accrues. None ⇒ never PGO-built
-            # here ⇒ a normal build. use_flags already demotes the skew warnings
-            # so a slightly-stale profile never -Werror-fails the rebuild.
+            # here ⇒ a normal build. Its staleness is graded after the build (3.2.0-F9).
             from sysforge.primitives import mesa_pgo
             from sysforge.primitives.profile import is_llvm_toolchain
             # A clang .profdata only feeds a clang build (the BuildVerb.pre_check
@@ -1523,6 +1564,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
             )
             if _reuse is not None:
                 _pgo_flag = mesa_pgo.use_flags(_reuse)
+                _staleness_profdata = _reuse
                 record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
                 effective_flags_extra = (
                     f"{effective_flags_extra} {_pgo_flag}".strip()
@@ -1591,6 +1633,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # DKMS modules or run its boot audit. One seam for both, keyed on the
         # same owner_stage the rest of the stage-ownership policy reads.
         _stage_owned = kernel_build or options.owner_stage in ("kernel", "toolchain")
+        _staleness_armed = (
+            _staleness_profdata is not None
+            and _arm_pgo_staleness(_pgo_pkgbase, options.interactive)
+        )
         with build_sandbox.suppressed(_stage_owned):
             rename = _run_build(
                 pkgbuild_path, resolved_profile, config, groups,
@@ -1623,6 +1669,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 rename_pkgbase_to=options.rename_pkgbase_to,
             )
         build_success = True
+        if _staleness_armed:
+            _report_pgo_staleness(_pgo_pkgbase, _staleness_profdata)
         _paused = progress_hooks.hooks().paused_seconds() - _paused_start
         build_elapsed = max(0, int(_time.time() - _build_start - _paused))
 
@@ -1694,6 +1742,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         )
 
     finally:
+        _disarm_pgo_staleness()
         if options.pkg_log:
             log.close_pkg_log(success=build_success, persist=options.persist_log)
 

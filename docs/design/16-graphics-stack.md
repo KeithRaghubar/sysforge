@@ -27,3 +27,24 @@ For the healable class Gate 2 does **not** abort. It captures the installed libL
 
 ---
 
+### Post-install mesa smoke check (3.2.0-F10)
+
+After an install, `mesa_smoke.post_install` creates a surfaceless EGL context through mesa (default
+driver, then forced llvmpipe) and enumerates Vulkan devices through mesa-owned ICDs only. glvnd is
+pinned to mesa's vendor file (`__EGL_VENDOR_LIBRARY_FILENAMES`) and Vulkan to mesa ICDs
+(`VK_DRIVER_FILES`), otherwise an Nvidia host would test the proprietary driver. Surfaceless needs
+no display, so headless hosts are checked; skips are a missing `eglinfo`/`vulkaninfo`, vendor
+file or ICD set. It runs only when the mesa stack (installed mesa-family packages plus their
+runtime-depends closure, `lib32-*` excluded) holds a source-built package and the run changed a
+stack member — a stock mesa on a custom LLVM qualifies; an all-stock stack never does. Pacman's
+`depends` is a superset of what mesa links (`opencl-mesa` alone pulls in `clang`/`gcc`), so the
+stack is wide and the probe (about a second) runs after most upgrades on a host with a custom
+toolchain; that cost is accepted over missing a linked dependency. `build` runs it after its
+install, `update` once after its trailing `pacman -Syu` (a before/after local-DB snapshot is
+taken whenever pacman runs, independent of the summary's change report). Advisory: failures are
+`error()` lines naming `sysforge revert-to-stock` with the stack's source-built members (or, when none is source-built, a repo reinstall); the exit code and install are unchanged. A `-sysforge`-renamed (`--pgo=use`) mesa counts as mesa-family (`profile.is_mesa_family`). A hardware ICD (RADV, ANV) that enumerates no device is a failure when `lspci` shows its GPU, and a skip only when no installed mesa ICD matches a GPU present.
+`doctor --graphics` runs the same probes whenever a mesa-family package is installed.
+
+**Tested-hardware scope:** exercised on Nvidia/x86_64 only, where mesa binds no hardware driver —
+only llvmpipe and lavapipe are validated. radeonsi, iris, RADV and ANV paths are
+implemented-but-unvalidated.
