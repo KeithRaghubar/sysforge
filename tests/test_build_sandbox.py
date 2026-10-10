@@ -55,6 +55,18 @@ def _clean_policy():
     bs.reset_session()
 
 
+@pytest.fixture(autouse=True)
+def _no_host_foreign_or_provides():
+    """Keep the resolver off this machine's real ``pacman -Qm``, local-DB
+    provides and artifact .PKGINFO reads; tests that need any of them patch
+    them explicitly."""
+    with patch("sysforge.primitives.pacman.get_foreign_packages", return_value={}), \
+            patch("sysforge.primitives.pacman.get_provider_map", return_value={}), \
+            patch("sysforge.primitives.pacman.read_pkginfo_relations",
+                  return_value={"depend": set(), "provides": set()}):
+        yield
+
+
 def _chroot(tmp_path: Path) -> Path:
     """A chroot dir that passes preflight (only <dir>/root must exist)."""
     root = tmp_path / "chroot" / "root"
@@ -506,7 +518,9 @@ def test_seam_seeds_artifacts_built_this_run(tmp_path):
     dep = _artifact(tmp_path, "dep-1-1-x86_64.pkg.tar.zst")
     bs.register_artifacts([dep])
     bs.set_policy(_policy(tmp_path))
-    cap = _invoke(pb, conf, {})
+    with patch("sysforge.primitives.pacman.collect_builddeps", return_value=["dep"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}):
+        cap = _invoke(pb, conf, {})
     assert "-I" in cap["cmd"]
     assert str(dep) in cap["cmd"]
 
@@ -1161,10 +1175,15 @@ def test_install_args_unions_the_session_registry_over_the_resolver(tmp_path):
     bs.register_artifacts([fresh])
     stale = tmp_path / "libbar-1.0.0-1-x86_64.pkg.tar.zst"
     stale.write_text("")
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
 
     with patch("sysforge.primitives.build_sandbox.resolve_dep_artifacts",
-               return_value=[stale, fresh]):
-        got = bs.install_args(tmp_path / "PKGBUILD", search_dir=tmp_path)
+               return_value=[stale, fresh]), \
+            patch("sysforge.primitives.pacman.collect_builddeps",
+                  return_value=["libfoo", "libbar"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}):
+        got = bs.install_args(pb, search_dir=tmp_path)
 
     assert got == [stale, fresh]
     assert got.count(fresh) == 1
@@ -1177,6 +1196,71 @@ def test_install_args_without_a_pkgbuild_is_the_session_registry_only(tmp_path):
     fresh.write_text("")
     bs.register_artifacts([fresh])
     assert bs.install_args() == [fresh]
+
+
+def _session_world(tmp_path, relations):
+    """Register one artifact per *relations* key; return {pkgname: path}."""
+    bs.reset_session()
+    arts = {}
+    for name in relations:
+        arts[name] = _artifact(tmp_path, f"{name}-1.0-1-x86_64.pkg.tar")
+    bs.register_artifacts(arts.values())
+    return arts
+
+
+def _relations_of(relations, arts):
+    by_path = {arts[n]: rel for n, rel in relations.items()}
+    return lambda path: {"depend": set(by_path[path].get("depend", ())),
+                         "provides": set(by_path[path].get("provides", ()))}
+
+
+def test_install_args_seeds_only_session_artifacts_in_the_target_closure(tmp_path):
+    """2026-10-10: every artifact built this run went into every later
+    container's ``pacman -U``. One the container could not install
+    (pop-shell-plugin-system76-power-git, whose system76-power is nowhere)
+    failed that whole transaction — makechrootpkg carries on regardless — so
+    the repo LLVM rust needs never landed and cosmic-app-library-git's rustc
+    died on the host libLLVM."""
+    relations = {"libfoo": {}, "plugin-git": {"depend": ["system76-power"]}}
+    arts = _session_world(tmp_path, relations)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.pacman.collect_builddeps", return_value=["libfoo"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}), \
+            patch("sysforge.primitives.pacman.read_pkginfo_relations",
+                  side_effect=_relations_of(relations, arts)):
+        out = bs.install_args(pb, search_dir=tmp_path)
+    assert out == [arts["libfoo"]]
+
+
+def test_install_args_walks_a_session_artifact_s_own_depends(tmp_path):
+    """Batch mode installs on the host only after the batch, so a dep that is
+    new this run has no edges in the host's local DB — its .PKGINFO does."""
+    relations = {"app-lib": {"depend": ["new-dep"]}, "new-dep": {}, "other": {}}
+    arts = _session_world(tmp_path, relations)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.pacman.collect_builddeps", return_value=["app-lib"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value={"app-lib": []}), \
+            patch("sysforge.primitives.pacman.read_pkginfo_relations",
+                  side_effect=_relations_of(relations, arts)):
+        out = bs.install_args(pb, search_dir=tmp_path)
+    assert out == [arts["app-lib"], arts["new-dep"]]
+
+
+def test_install_args_resolves_session_artifacts_through_provides(tmp_path):
+    relations = {"vulkan-headers-git": {"provides": ["vulkan-headers"]}, "other": {}}
+    arts = _session_world(tmp_path, relations)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.pacman.collect_builddeps",
+               return_value=["vulkan-headers"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}), \
+            patch("sysforge.primitives.pacman.read_pkginfo_relations",
+                  side_effect=_relations_of(relations, arts)):
+        out = bs.install_args(pb, search_dir=tmp_path)
+    assert out == [arts["vulkan-headers-git"]]
 
 
 def _pol(chroot: Path) -> "bs.SandboxPolicy":
@@ -1718,6 +1802,17 @@ def test_seam_syncs_when_local_repo_on(tmp_path):
     assert "-D" not in cap["cmd"] and "-d" not in cap["cmd"]
 
 
+def test_seam_mirrors_multilib_with_the_local_repo_off(tmp_path):
+    """[multilib] is container fidelity, not part of the local repo, so it is
+    mirrored whether or not ``sandbox_local_repo`` is on."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))  # local_repo False
+    with patch("sysforge.primitives.local_repo.ensure_chroot_multilib") as ml, \
+            patch("sysforge.primitives.local_repo.remove_chroot_section"):
+        _invoke(pb, conf, {})
+    assert ml.called
+
+
 def test_seam_off_switch_neither_syncs_nor_mounts(tmp_path):
     """Review Focus 5."""
     pb, conf = _pkg_and_conf(tmp_path)
@@ -1743,6 +1838,120 @@ def test_seam_sync_refusal_stops_before_the_swap(tmp_path):
     assert pb.read_text() == "# fake\n"
 
 
+def _root_with_db(tmp_path):
+    """A chroot root holding a pacman.conf, a local DB and one stale sync DB."""
+    pol = _policy(tmp_path)
+    root = pol.chroot_dir / "root"
+    (root / "etc").mkdir(parents=True)
+    (root / "etc" / "pacman.conf").write_text("[options]\n[core]\n")
+    (root / "var/lib/pacman/local").mkdir(parents=True)
+    (root / "var/lib/pacman/sync").mkdir(parents=True)
+    (root / "var/lib/pacman/sync/core.db").write_text("stale")
+    (root / "var/lib/pacman/sync/extra.db").write_text("stale-extra")
+    return pol, root
+
+
+def _done(rc, stderr="", stdout=""):
+    return subprocess.CompletedProcess([], rc, stdout, stderr)
+
+
+def test_check_install_set_refuses_with_pacman_s_reason(tmp_path):
+    """makechrootpkg runs the -I set as one ``pacman -U``, records its failure
+    and builds on without any of it. Four 2026-10-10 bugs (3.4.0-B4/B6/B8/B9)
+    surfaced only as unrelated-looking build errors that way; a dry run over
+    the same set names the real cause before anything is built."""
+    pol, _root = _root_with_db(tmp_path)
+    art = _artifact(tmp_path, "plugin-git-1-1-x86_64.pkg.tar")
+    # pacman's own split, observed: the verdict on stderr, the reason on stdout.
+    err = "error: failed to prepare transaction (could not satisfy dependencies)\n"
+    out = ":: unable to satisfy dependency 'system76-power' required by plugin-git\n"
+    with patch("sysforge.primitives.run.probe",
+               return_value=_done(1, err, out)) as probe:
+        with pytest.raises(bs.SandboxUnavailable, match="system76-power"):
+            bs.check_install_set(pol, [art], host_sync_dir=tmp_path / "nohost")
+    argv = probe.call_args.args[0]
+    assert argv[:1] == ["pacman"] and "-U" in argv and "--print" in argv
+    assert argv[-1] == str(art)
+
+
+def test_check_install_set_passes_an_installable_set(tmp_path):
+    pol, _root = _root_with_db(tmp_path)
+    art = _artifact(tmp_path, "libfoo-1-1-x86_64.pkg.tar")
+    with patch("sysforge.primitives.run.probe", return_value=_done(0)):
+        bs.check_install_set(pol, [art], host_sync_dir=tmp_path / "nohost")
+
+
+def test_check_install_set_resolves_against_fresh_sync_dbs(tmp_path):
+    """The root's own sync DBs are as old as its last ``-u``, and it has none
+    for a repo first synced inside a working copy; the build resolves after
+    ``-u``. So: the root's local DB, the host's fresh sync DBs over the root's,
+    plus any repo DB the caller names."""
+    pol, root = _root_with_db(tmp_path)
+    host = tmp_path / "hostsync"
+    host.mkdir()
+    (host / "core.db").write_text("fresh")
+    extra_repo = tmp_path / "repo" / "mine.db.tar.gz"
+    extra_repo.parent.mkdir()
+    extra_repo.write_text("mine")
+    seen = {}
+
+    def fake(argv, **_kw):
+        db = Path(argv[argv.index("--dbpath") + 1])
+        seen["local"] = (db / "local").resolve()
+        seen["sync"] = {f.name: f.read_text() for f in (db / "sync").iterdir()}
+        seen["root"] = argv[argv.index("--root") + 1]
+        seen["config"] = argv[argv.index("--config") + 1]
+        return _done(0)
+
+    art = _artifact(tmp_path, "libfoo-1-1-x86_64.pkg.tar")
+    with patch("sysforge.primitives.run.probe", side_effect=fake):
+        bs.check_install_set(pol, [art], sync_dbs={"mine": extra_repo},
+                             host_sync_dir=host)
+    assert seen["local"] == (root / "var/lib/pacman/local").resolve()
+    assert seen["sync"] == {"core.db": "fresh", "extra.db": "stale-extra",
+                            "mine.db": "mine"}
+    assert seen["root"] == str(root)
+    assert seen["config"] == str(root / "etc" / "pacman.conf")
+
+
+def test_check_install_set_that_cannot_run_warns_and_continues(tmp_path):
+    """No verdict is not a refusal: the check guards a makechrootpkg quirk, it
+    is not part of the isolation boundary."""
+    pol, _root = _root_with_db(tmp_path)
+    art = _artifact(tmp_path, "libfoo-1-1-x86_64.pkg.tar")
+    with patch("sysforge.primitives.run.probe",
+               return_value=_done(127, "pacman: command not found")):
+        bs.check_install_set(pol, [art], host_sync_dir=tmp_path / "nohost")
+    with patch("sysforge.primitives.run.probe",
+               side_effect=subprocess.TimeoutExpired(["pacman"], 60)):
+        bs.check_install_set(pol, [art], host_sync_dir=tmp_path / "nohost")
+
+
+def test_check_install_set_without_a_set_or_a_root_db_checks_nothing(tmp_path):
+    art = _artifact(tmp_path, "libfoo-1-1-x86_64.pkg.tar")
+    with patch("sysforge.primitives.run.probe") as probe:
+        pol, _root = _root_with_db(tmp_path)
+        bs.check_install_set(pol, [])
+        bare = _policy(tmp_path / "other")  # root without conf or local DB
+        bs.check_install_set(bare, [art])
+    assert not probe.called
+
+
+def test_seam_refuses_an_uninstallable_seed_set_before_the_build(tmp_path):
+    pb, conf = _pkg_and_conf(tmp_path)
+    dep = _artifact(tmp_path, "dep-1-1-x86_64.pkg.tar.zst")
+    bs.register_artifacts([dep])
+    bs.set_policy(_policy(tmp_path))
+    with patch("sysforge.primitives.pacman.collect_builddeps", return_value=["dep"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}), \
+            patch.object(bs, "check_install_set",
+                         side_effect=bs.SandboxUnavailable("seed")) as chk:
+        with pytest.raises(bs.SandboxUnavailable, match="seed"):
+            _invoke(pb, conf, {})
+    assert chk.call_args.args[1] == [dep]
+    assert pb.read_text() == "# fake\n"
+
+
 def test_on_line_feeds_pgo_counter(tmp_path):
     from sysforge.primitives import mesa_pgo
     pb, conf = _pkg_and_conf(tmp_path)
@@ -1759,3 +1968,212 @@ def test_on_line_feeds_pgo_counter(tmp_path):
             patch("sysforge.primitives.makepkg_invoke.run_with_pty", side_effect=fake_pty):
         invoke_makepkg(pb, conf, {})
     assert mesa_pgo.take_skew_count() == {("a.c", "f")}
+
+
+# ---------------------------------------------------------------------------
+# Container dependency fidelity (2026-10-10 update run)
+# ---------------------------------------------------------------------------
+#
+# A clean chroot exposes everything the host provides silently. That run lost
+# 32 builds to three gaps in what reaches the container: AUR packages sysforge
+# never built, dependencies satisfied through ``provides``, and the host's
+# target-reduced libLLVM replacing the one Arch's rust is linked against.
+
+
+def test_resolver_injects_a_foreign_dep_sysforge_did_not_build(tmp_path):
+    """``build_mode = "pacman"`` means "not built by sysforge", not "in a repo":
+    an AUR package installed some other way is ``target not found`` in the
+    container (pop-icon-theme-git → cosmic-icons-git and 14 dependents)."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["pop-icon-theme-git"], installed={},
+        source_built=set(),
+        artifacts=["pop-icon-theme-git-1:3.5.1-2-any.pkg.tar.zst"],
+    )
+    with patch("sysforge.primitives.pacman.get_foreign_packages",
+               return_value={"pop-icon-theme-git": "1:3.5.1-2"}):
+        got = _resolve(pb, dest, {"pop-icon-theme-git": []},
+                       {"pop-icon-theme-git": "1:3.5.1-2"}, set(),
+                       ["pop-icon-theme-git"])
+    assert [p.name for p in got] == ["pop-icon-theme-git-1:3.5.1-2-any.pkg.tar.zst"]
+
+
+def test_resolver_follows_provides_to_the_installed_provider(tmp_path):
+    """``vulkan-headers`` is satisfied on the host by ``vulkan-headers-git``;
+    a name-only walk finds no package called ``vulkan-headers`` and injects
+    nothing, so the container installs the older repo headers."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["vulkan-headers"], installed={},
+        source_built=set(),
+        artifacts=["vulkan-headers-git-1.4.365-1-any.pkg.tar.zst"],
+    )
+    with patch("sysforge.primitives.pacman.get_provider_map",
+               return_value={"vulkan-headers": "vulkan-headers-git"}):
+        got = _resolve(pb, dest, {"vulkan-headers-git": []},
+                       {"vulkan-headers-git": "1.4.365-1"},
+                       {"vulkan-headers-git"}, ["vulkan-headers>=1.4"])
+    assert [p.name for p in got] == ["vulkan-headers-git-1.4.365-1-any.pkg.tar.zst"]
+
+
+def test_resolver_matches_a_versioned_soname_dep_to_its_exact_provider(tmp_path):
+    """2026-10-10: ``libvulkan.so=1-64`` stripped to ``libvulkan.so`` matched
+    the lexically first provider, lib32-vulkan-icd-loader-git (``=1-32``), so
+    the 32-bit loader was injected for a 64-bit consumer and the 64-bit one
+    was not."""
+    pb, dest, *_ = _dep_fixture(
+        tmp_path, pkgbuild_deps=["vulkan-utility-libraries"], installed={},
+        source_built=set(),
+        artifacts=["vulkan-icd-loader-git-1.4.365-1-x86_64.pkg.tar.zst",
+                   "lib32-vulkan-icd-loader-git-1.4.365-1-x86_64.pkg.tar.zst"],
+    )
+    providers = {"libvulkan.so": "lib32-vulkan-icd-loader-git",
+                 "libvulkan.so=1-32": "lib32-vulkan-icd-loader-git",
+                 "libvulkan.so=1-64": "vulkan-icd-loader-git"}
+    with patch("sysforge.primitives.pacman.get_provider_map", return_value=providers):
+        got = _resolve(pb, dest,
+                       {"vulkan-utility-libraries": ["libvulkan.so=1-64"],
+                        "vulkan-icd-loader-git": [], "lib32-vulkan-icd-loader-git": []},
+                       {"vulkan-icd-loader-git": "1.4.365-1",
+                        "lib32-vulkan-icd-loader-git": "1.4.365-1"},
+                       {"vulkan-icd-loader-git", "lib32-vulkan-icd-loader-git"},
+                       ["vulkan-utility-libraries"])
+    assert [p.name for p in got] == ["vulkan-icd-loader-git-1.4.365-1-x86_64.pkg.tar.zst"]
+
+
+def test_install_args_passes_one_artifact_per_pkgname_newest_wins(tmp_path):
+    """2026-10-10: the resolver's artifact of the version the host runs and the
+    session's newer build of the same package both went in; pacman refuses the
+    whole ``-U`` as ``duplicate target`` and makechrootpkg builds on without it."""
+    bs.reset_session()
+    host = _artifact(tmp_path, "cosmic-applets-git-1.9.0-1-x86_64.pkg.tar")
+    other = _artifact(tmp_path, "libbar-1.0-1-x86_64.pkg.tar")
+    fresh = _artifact(tmp_path, "cosmic-applets-git-1.10.0-1-x86_64.pkg.tar")
+    bs.register_artifacts([fresh])
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch.object(bs, "resolve_dep_artifacts", return_value=[host, other]), \
+            patch("sysforge.primitives.pacman.collect_builddeps",
+                  return_value=["cosmic-applets-git", "libbar"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends", return_value={}):
+        out = bs.install_args(pb, search_dir=tmp_path)
+    assert out == [other, fresh]
+
+
+def test_llvm_linked_is_libllvm_and_everything_reaching_it():
+    graph = {"clang": ["llvm-libs", "compiler-rt"], "mesa": ["libdrm", "llvm-libs"],
+             "llvm-libs": [], "compiler-rt": [], "libdrm": [], "app": ["mesa"]}
+    names = {"clang", "mesa", "llvm-libs", "compiler-rt", "libdrm", "app"}
+    assert bs.llvm_linked(names, graph) == {"clang", "mesa", "llvm-libs", "app"}
+
+
+def test_llvm_linked_is_empty_when_libllvm_is_not_host_built():
+    assert bs.llvm_linked({"clang"}, {"clang": ["llvm-libs"]}) == set()
+
+
+@pytest.mark.parametrize("deps,expected", [
+    (["cargo", "git"], True),
+    (["rust>=1.80"], True),
+    (["rustup"], False),  # self-contained toolchain, no system libLLVM
+    (["meson", "clang"], False),
+])
+def test_needs_repo_rust(tmp_path, deps, expected):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch("sysforge.primitives.pacman.collect_builddeps", return_value=deps):
+        assert bs.needs_repo_rust(pb) is expected
+
+
+def _llvm_world(tmp_path):
+    arts = {}
+    for name in ("clang", "llvm-libs", "lld", "libfoo"):
+        p = tmp_path / f"{name}-23.1.1-1-x86_64.pkg.tar.zst"
+        p.write_bytes(b"host")
+        arts[name] = p
+    graph = {"clang": ["llvm-libs"], "lld": ["llvm-libs"], "llvm-libs": [],
+             "libfoo": []}
+    return arts, graph
+
+
+def test_install_args_swaps_host_llvm_for_repo_llvm_on_rust_targets(tmp_path):
+    """The 2026-10-10 rustc crash: ``undefined symbol LLVMInitializeARMTargetInfo``.
+    Arch's rust pins ``llvm-libs=<ver>`` exactly, so the host's same-version,
+    target-reduced build satisfies it and rustc dies at load. The host LLVM set
+    leaves the -I list and the repo builds of the same names take its place —
+    after ``-u``, so they also override whatever [sysforge-local] supplied."""
+    arts, graph = _llvm_world(tmp_path)
+    repo = {n: tmp_path / "cache" / f"{n}-23.1.1-1-x86_64.pkg.tar.zst"
+            for n in ("clang", "llvm-libs")}
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch.object(bs, "_source_built_packages",
+                      return_value={"clang", "llvm-libs", "lld", "libfoo"}), \
+            patch("sysforge.primitives.pacman.collect_builddeps",
+                  return_value=["cargo", "libfoo", "llvm-libs"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value=graph), \
+            patch("sysforge.primitives.pacman.get_installed_version",
+                  return_value="23.1.1-1"), \
+            patch.object(bs, "installed_artifact", side_effect=lambda n, d: arts.get(n)), \
+            patch.object(bs, "fetch_repo_packages",
+                         side_effect=lambda names: [repo[n] for n in sorted(names)]) as fetch:
+        out = bs.install_args(pb, search_dir=tmp_path, exports={"CC": "clang"})
+    fetch.assert_called_once_with({"clang", "llvm-libs"})
+    assert out == [arts["libfoo"], repo["clang"], repo["llvm-libs"]]
+
+
+def test_install_args_drops_session_built_llvm_on_rust_targets(tmp_path):
+    arts, graph = _llvm_world(tmp_path)
+    bs.register_artifacts([arts["llvm-libs"]])
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch.object(bs, "_source_built_packages", return_value={"llvm-libs"}), \
+            patch("sysforge.primitives.pacman.collect_builddeps", return_value=["cargo"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value=graph), \
+            patch.object(bs, "fetch_repo_packages", return_value=[]):
+        out = bs.install_args(pb, search_dir=tmp_path, exports={"CC": "gcc"})
+    assert arts["llvm-libs"] not in out
+
+
+def test_install_args_keeps_host_llvm_for_c_targets(tmp_path):
+    """Only the rust case changes: everything else must keep linking the host's
+    libLLVM (the 2026-09-11 mesa black-screen)."""
+    arts, graph = _llvm_world(tmp_path)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("# fake\n")
+    with patch.object(bs, "_source_built_packages",
+                      return_value={"clang", "llvm-libs", "lld"}), \
+            patch("sysforge.primitives.pacman.collect_builddeps",
+                  return_value=["meson", "llvm-libs"]), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value=graph), \
+            patch("sysforge.primitives.pacman.get_installed_version",
+                  return_value="23.1.1-1"), \
+            patch.object(bs, "installed_artifact", side_effect=lambda n, d: arts.get(n)), \
+            patch.object(bs, "fetch_repo_packages") as fetch:
+        out = bs.install_args(pb, search_dir=tmp_path, exports={"CC": "clang"})
+    assert not fetch.called
+    assert set(out) == {arts["llvm-libs"], arts["clang"]}
+
+
+def test_fetch_repo_packages_downloads_repo_qualified(tmp_path):
+    """Repo-qualified, because a bare name would be just as happy with a
+    same-named host build; download-only, so the host installs nothing."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "llvm-libs-23.1.1-1-x86_64.pkg.tar.zst").write_bytes(b"repo")
+    printed = MagicMock(returncode=0,
+                        stdout="llvm-libs|extra|llvm-libs-23.1.1-1-x86_64.pkg.tar.zst\n")
+    with patch("sysforge.primitives.build_sandbox.run.probe", return_value=printed), \
+            patch("sysforge.primitives.build_sandbox.run_privileged") as priv, \
+            patch.object(bs, "_pacman_cache_dirs", return_value=[cache]):
+        got = bs.fetch_repo_packages({"llvm-libs"})
+    argv = priv.call_args[0][0]
+    assert argv[:3] == ["pacman", "-Sw", "--noconfirm"] and "extra/llvm-libs" in argv
+    assert got == [cache / "llvm-libs-23.1.1-1-x86_64.pkg.tar.zst"]
+
+
+def test_fetch_repo_packages_refuses_a_name_no_repo_carries(tmp_path):
+    with patch("sysforge.primitives.build_sandbox.run.probe",
+               return_value=MagicMock(returncode=1, stdout="", stderr="target not found")):
+        with pytest.raises(bs.SandboxUnavailable, match="llvm-libs"):
+            bs.fetch_repo_packages({"llvm-libs"})

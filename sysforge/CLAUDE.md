@@ -123,6 +123,10 @@ Mechanism lives in the cited §DESIGN section.
   - §CLI Verb / §Flag-Profile / §`pkgbuild_patcher.py`.
 - **Build-failure recovery**: `makepkg_invoke._run_recovery_menu`; persists a cc/ld swap via
   `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer). §makepkg-wrapper.
+- **Sandbox host-only set**: `build_sandbox.host_only_packages` (source-built ∪ `pacman -Qm`) feeds
+  both container channels — the `-I` closure and `local_repo.sync`; the ABI gate keeps the narrower
+  `source_built_packages`. A `rust`/`cargo` target swaps `llvm_linked` for the repo LLVM via `-I` only
+  (`fetch_repo_packages`), never by dropping LLVM from the local repo (2026-09-11 mesa). §makepkg-wrapper.
 - **Build failures**: reserved `[failures]` namespace in `build_state.toml`; diagnostics in
   `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §`build_diag`.
 - **Refused-install revert/restore**: `build_core._revert_uninstalled_state` stashes the undone entry

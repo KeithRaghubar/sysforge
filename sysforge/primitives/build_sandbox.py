@@ -43,10 +43,11 @@ Why this is not just another ``build_throttle.wrapper_argv`` prefix entry
 * The throttle wrapper applies *outside* the container (nice/ionice propagate
   to children; a ``RLIMIT_AS`` cap would only bind ``makechrootpkg`` itself,
   not the build — :func:`mem_cap_applies` says so, and the caller warns).
-* Dependencies built earlier in the same run are installed on the *host*, so
-  the container cannot see them.  The session registry
-  (:func:`register_artifacts` / :func:`install_args`) feeds them back in as
-  ``-I`` so an AUR dep chain still resolves.
+* Dependencies built earlier in the same run exist only as artifacts (batch
+  mode installs on the host after the whole batch), so the container cannot
+  see them.  The session registry (:func:`register_artifacts` /
+  :func:`install_args`) feeds back the ones in the target's dependency closure
+  as ``-I`` so an AUR dep chain still resolves.
 
 Public API:
     SandboxUnavailable
@@ -65,8 +66,13 @@ Public API:
     missing_toolchain(policy, exports) -> dict
     provision_toolchain(policy, exports) -> None
     register_artifacts(paths) / install_args(pkgbuild, ..., exports, conf_path) / reset_session()
+    check_install_set(policy, install_pkgs, sync_dbs) -> None  (raises SandboxUnavailable)
     toolchain_packages(exports, conf_path) -> set
     installed_artifact(name, search_dir) -> Path | None
+    host_only_packages(state_dir) -> set
+    llvm_linked(names, graph) -> set
+    needs_repo_rust(pkgbuild_path) -> bool
+    fetch_repo_packages(names) -> list[Path]          (raises SandboxUnavailable)
     COPY_NAME; SandboxProvenance(cc_name, copy_identity)
     set_provenance(p) / take_provenance() / clear_provenance()
     copy_compiler(policy, cc_name) -> Path
@@ -79,10 +85,13 @@ import contextlib
 import re
 import shlex
 import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import run
 from sysforge.primitives.privilege import run_privileged
 
 _log = log.get_logger("SANDBOX")
@@ -1043,6 +1052,148 @@ def source_built_packages(state_dir=None) -> set:
     return _source_built_packages(state_dir)
 
 
+def _host_only_packages(state_dir) -> set:
+    """Pkgnames the container can only get from the host: source-built ∪ foreign.
+
+    ``build_state`` records every installed package, and ``build_mode =
+    "pacman"`` means "sysforge did not build it", not "a repo carries it". An
+    AUR package installed some other way is in no stock repo either, so it is
+    ``target not found`` in the container exactly like a source-built one
+    (``pop-icon-theme-git``, 2026-10-10). ``pacman -Qm`` is the authority on
+    "in no sync repo"; unreadable, it degrades to the source-built set alone.
+    """
+    from sysforge.primitives import pacman
+
+    try:
+        foreign = set(pacman.get_foreign_packages())
+    except Exception:
+        foreign = set()
+    return _source_built_packages(state_dir) | foreign
+
+
+def host_only_packages(state_dir=None) -> set:
+    """Public view of :func:`_host_only_packages`, for the local repo — the
+    other channel that must carry exactly this set into the container."""
+    return _host_only_packages(state_dir)
+
+
+# A host-built libLLVM carries the profile's reduced target set; Arch's rust is
+# linked against the repo's full one and pins ``llvm-libs=<pkgver>`` exactly,
+# so the same-version host build satisfies the pin and rustc dies at load on a
+# missing ``LLVMInitialize<Target>TargetInfo``.
+_LIBLLVM_PKG = "llvm-libs"
+_REPO_RUST_DEPS = frozenset({"rust", "cargo"})
+
+
+def llvm_linked(names, graph: dict, providers: dict | None = None) -> set:
+    """The members of *names* that are host-built libLLVM or depend on it.
+
+    Walked over the host's local DB (*graph*), through *providers* for
+    ``provides``/soname edges. Empty when ``llvm-libs`` itself is not in
+    *names*: a repo libLLVM needs no swapping.
+    """
+    from sysforge.primitives.aur_resolve import _strip_version
+
+    names = set(names)
+    if _LIBLLVM_PKG not in names:
+        return set()
+    providers = providers or {}
+
+    def _reaches(start: str) -> bool:
+        seen: set = set()
+        queue = [start]
+        while queue:
+            name = _strip_version(queue.pop())
+            if name not in graph:
+                name = providers.get(name, name)
+            if name == _LIBLLVM_PKG:
+                return True
+            if name in seen:
+                continue
+            seen.add(name)
+            queue.extend(graph.get(name, []))
+        return False
+
+    return {n for n in names if _reaches(n)}
+
+
+def needs_repo_rust(pkgbuild_path) -> bool:
+    """True when *pkgbuild_path* will pull Arch's ``rust`` into the container.
+
+    ``rust``/``cargo`` resolve to the repo package, which is linked against the
+    system libLLVM. ``rustup`` ships its own LLVM and is not affected. An
+    unreadable PKGBUILD answers False; the dep resolver refuses on it first.
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.aur_resolve import _strip_version
+
+    try:
+        deps = pacman.collect_builddeps([pkgbuild_path])
+    except Exception:
+        return False
+    return bool({_strip_version(d) for d in deps} & _REPO_RUST_DEPS)
+
+
+def _pacman_cache_dirs() -> list[Path]:
+    res = run.probe(["pacman-conf", "CacheDir"])
+    dirs = [Path(line.strip()) for line in res.stdout.splitlines() if line.strip()] \
+        if res.returncode == 0 else []
+    return dirs or [Path("/var/cache/pacman/pkg")]
+
+
+def fetch_repo_packages(names) -> list[Path]:
+    """Download the stock-repo builds of *names* into the pacman cache; return them.
+
+    Repo-qualified (``extra/llvm-libs``), so the answer is the repo build even
+    when the host runs a same-named one of its own; ``-Sw`` downloads only, so
+    the host installs nothing. Sorted by name. Refuses rather than returning a
+    partial set: a container holding half the repo LLVM and half the host's is
+    the mismatch this exists to avoid.
+    """
+    names = sorted(set(names))
+    if not names:
+        return []
+    res = run.probe(["pacman", "-Sp", "--print-format", "%n|%r|%f", *names])
+    rows = {}
+    for line in res.stdout.splitlines() if res.returncode == 0 else []:
+        parts = line.strip().split("|")
+        if len(parts) == 3:
+            rows[parts[0]] = (parts[1], parts[2])
+    missing = [n for n in names if n not in rows]
+    if missing:
+        raise SandboxUnavailable(
+            f"refusing to sandbox: no stock repo carries {', '.join(missing)} "
+            f"({(res.stderr or '').strip() or 'not found'}), and a rust build "
+            f"needs the repo LLVM that Arch's rust is linked against"
+        )
+    try:
+        run_privileged(["pacman", "-Sw", "--noconfirm",
+                        *[f"{rows[n][0]}/{n}" for n in names]], tag="SANDBOX")
+    except Exception as exc:
+        raise SandboxUnavailable(
+            f"refusing to sandbox: could not download the repo build of "
+            f"{', '.join(names)} ({exc}), which a rust build needs in place "
+            f"of the host's LLVM"
+        ) from exc
+    out: list[Path] = []
+    cache_dirs = _pacman_cache_dirs()
+    for n in names:
+        fname = rows[n][1]
+        path = next((d / fname for d in cache_dirs if (d / fname).is_file()), None)
+        if path is None:
+            raise SandboxUnavailable(
+                f"refusing to sandbox: downloaded {fname} but found it in none "
+                f"of {', '.join(map(str, cache_dirs))}"
+            )
+        out.append(path)
+    return out
+
+
+def _artifact_pkgname(path: Path) -> str:
+    """``<pkgname>-<pkgver>-<pkgrel>-<arch>.pkg.tar*`` → ``<pkgname>``."""
+    return path.name.rsplit("-", 3)[0]
+
+
 def installed_artifact(name: str, search_dir):
     """The artifact in *search_dir* at the version the host runs, or None.
 
@@ -1061,6 +1212,84 @@ def installed_artifact(name: str, search_dir):
     return Path(match[0]) if match else None
 
 
+def _session_relations() -> tuple[dict, dict]:
+    """``(graph, providers)`` edges carried by this run's own artifacts.
+
+    Batch mode installs on the host only after the whole batch, so a package
+    built earlier in the run is either absent from the local DB or there at its
+    *previous* version. Its ``.PKGINFO`` is what the container will install, so
+    those edges override the host's.
+    """
+    from sysforge.primitives import pacman
+
+    graph: dict = {}
+    providers: dict = {}
+    for path in _session.artifacts:
+        if not path.exists():
+            continue
+        name = _artifact_pkgname(path)
+        rel = pacman.read_pkginfo_relations(path)
+        graph[name] = sorted(rel["depend"])
+        for prov in sorted(rel["provides"]):
+            providers.setdefault(prov, name)
+    return graph, providers
+
+
+def _dep_closure(pkgbuild_path) -> list:
+    """Every package *pkgbuild_path* needs installed, in walk order.
+
+    Build deps, then runtime deps transitively, over the host's local DB with
+    this run's artifacts layered on top (:func:`_session_relations`). Raises
+    ``SandboxUnavailable`` when the closure cannot be read (3.2.0-B19).
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.aur_resolve import _strip_version
+
+    if not Path(pkgbuild_path).is_file():
+        raise SandboxUnavailable(
+            f"refusing to sandbox: cannot resolve source-built deps — "
+            f"{pkgbuild_path} does not exist, so the container would link "
+            f"against repo versions instead of the ones this host runs"
+        )
+    try:
+        roots = pacman.collect_builddeps([pkgbuild_path], strict=True)
+        if not roots:
+            return []
+        # One pass over the local DB rather than a `pacman -Qi` per package: a
+        # whole-system walk the other way is O(N^2) directory reads (2.6.1-B22).
+        graph = pacman.get_all_package_depends()
+        # A dep satisfied through ``provides`` names no installed package, so
+        # without this the walk stops at it and the container installs the
+        # repo package of that name instead (vulkan-headers, 2026-10-10).
+        providers = pacman.get_provider_map()
+    except Exception as exc:
+        raise SandboxUnavailable(
+            f"refusing to sandbox: cannot resolve source-built deps of "
+            f"{pkgbuild_path} ({exc}), so the container would link against "
+            f"repo versions instead of the ones this host runs"
+        ) from exc
+    session_graph, session_providers = _session_relations()
+    graph = {**graph, **session_graph}
+    providers = {**providers, **session_providers}
+
+    seen: set = set()
+    queue = list(roots)
+    closure: list = []
+    while queue:
+        raw = queue.pop()
+        name = _strip_version(raw)
+        if name and name not in graph:
+            # Exact first: ``libvulkan.so=1-64`` must not land on the lib32
+            # provider of the bare soname.
+            name = providers.get(raw) or providers.get(name, name)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        closure.append(name)
+        queue.extend(graph.get(name, []))
+    return closure
+
+
 def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[Path]:
     """Return locally-built artifacts for *pkgbuild_path*'s source-built deps.
 
@@ -1073,9 +1302,10 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
 
     Three rules, each chosen against a failure mode:
 
-    * **Scope** is the target's dependency closure ∩ source-built, not every
-      source-built package: on a stack machine the latter is ~150 files copied
-      into the working copy and installed in one ``pacman -U`` per build. The
+    * **Scope** is the target's dependency closure ∩ host-only (source-built
+      ∪ foreign, :func:`_host_only_packages`), not every host-only package:
+      on a stack machine the latter is ~150 files copied into the working
+      copy and installed in one ``pacman -U`` per build. The
       closure is walked over the host's local DB, because ``build_state``
       records versions but no dependency edges.
     * **Version** is the one the host actually runs, never the newest artifact
@@ -1095,13 +1325,12 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     (``primitives/local_repo.py``, 3.1.0-F10).
     """
     from sysforge.primitives import pacman
-    from sysforge.primitives.aur_resolve import _strip_version
 
     if not pkgbuild_path or not search_dir:
         return []
 
-    source_built = _source_built_packages(state_dir)
-    if not source_built:
+    host_only = _host_only_packages(state_dir)
+    if not host_only:
         return []
 
     # Fail closed from here on (3.2.0-B19). Every failure below used to return
@@ -1111,40 +1340,10 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     # and the resulting mesa black-screened the desktop on reboot. A pruned
     # *artifact* still warns and continues (one dep, named); losing the whole
     # closure is not that case.
-    if not Path(pkgbuild_path).is_file():
-        raise SandboxUnavailable(
-            f"refusing to sandbox: cannot resolve source-built deps — "
-            f"{pkgbuild_path} does not exist, so the container would link "
-            f"against repo versions instead of the ones this host runs"
-        )
-    try:
-        roots = pacman.collect_builddeps([pkgbuild_path], strict=True)
-        if not roots:
-            return []
-        # One pass over the local DB rather than a `pacman -Qi` per package: a
-        # whole-system walk the other way is O(N^2) directory reads (2.6.1-B22).
-        graph = pacman.get_all_package_depends()
-    except Exception as exc:
-        raise SandboxUnavailable(
-            f"refusing to sandbox: cannot resolve source-built deps of "
-            f"{pkgbuild_path} ({exc}), so the container would link against "
-            f"repo versions instead of the ones this host runs"
-        ) from exc
-
-    seen: set = set()
-    queue = list(roots)
-    closure: list = []
-    while queue:
-        name = _strip_version(queue.pop())
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        closure.append(name)
-        queue.extend(graph.get(name, []))
-
+    closure = _dep_closure(pkgbuild_path)
     found: list[Path] = []
     for name in closure:
-        if name not in source_built:
+        if name not in host_only:
             continue
         version = pacman.get_installed_version(name)
         if not version:
@@ -1193,43 +1392,163 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
 
     The union of two sources, the session registry winning: packages built
     earlier in *this run* are newer than anything the persistent store points
-    at. With no *pkgbuild_path* it is the registry alone, which is what call
-    sites that have no target in hand get.
+    at. Registry entries are scoped to the target's dependency closure like
+    the resolver's; with no *pkgbuild_path* it is the whole registry, which is
+    what call sites that have no target in hand get.
 
     Only files that still exist: an artifact cleaned out between builds is a
     stale registry entry, not a reason to fail the build.
+
+    A target that pulls Arch's ``rust`` gets the *repo* LLVM instead of the
+    host's (:func:`needs_repo_rust`): every host-built libLLVM-linked artifact
+    leaves the list and the repo builds of the toolchain's LLVM packages are
+    appended. Appended, because ``-I`` installs after makechrootpkg's ``-u``,
+    so they also replace what the local repo served during it. The local repo
+    keeps publishing the host LLVM for every other build.
     """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.aur_resolve import _strip_version
+
     resolved: list[Path] = []
     if pkgbuild_path is not None:
         resolved = resolve_dep_artifacts(
             pkgbuild_path, search_dir=search_dir, state_dir=state_dir)
+    repo_rust = pkgbuild_path is not None and needs_repo_rust(pkgbuild_path)
 
     # 3.1.0-F10: the host's own toolchain build, closure included, so the
     # working copy compiles with it even when the root holds the same version
     # from the repos. Gated on *exports* (the caller passes it only with the
-    # local repo on), and on there being anything source-built at all.
+    # local repo on), and on there being anything host-only at all.
     pkgs = toolchain_packages(exports, conf_path=conf_path) if exports is not None else set()
-    source_built = _source_built_packages(state_dir) if pkgs else set()
-    if source_built:
-        from sysforge.primitives import pacman
-        graph = pacman.get_all_package_depends()
-        seen: set = set()
+    host_only = _host_only_packages(state_dir) if (pkgs or repo_rust) else set()
+    graph = pacman.get_all_package_depends() if host_only else {}
+    toolchain_closure: set = set()
+    if host_only and pkgs:
         queue = sorted(pkgs)
         while queue:
-            name = queue.pop()
-            if name in seen:
+            name = _strip_version(queue.pop())
+            if name in toolchain_closure:
                 continue
-            seen.add(name)
+            toolchain_closure.add(name)
             queue.extend(graph.get(name, []))
-            if name in source_built and search_dir:
+            if name in host_only and search_dir:
                 art = installed_artifact(name, search_dir)
                 if art is not None and art not in resolved:
                     resolved.append(art)
 
     session = [p for p in _session.artifacts if p.exists()]
+    if pkgbuild_path is not None and session:
+        # Only what this target needs: every artifact of the run used to go
+        # into one ``pacman -U``, and a single one the container cannot
+        # install fails that whole transaction — which makechrootpkg ignores
+        # and builds on, without anything else on the list (2026-10-10).
+        needed = set(_dep_closure(pkgbuild_path))
+        session = [p for p in session if _artifact_pkgname(p) in needed]
     out = [p for p in resolved if p.exists() and p not in session]
     out.extend(session)
-    return out
+
+    linked = llvm_linked(host_only, graph) if repo_rust else set()
+    if linked:
+        dropped = sorted({_artifact_pkgname(p) for p in out} & linked)
+        out = [p for p in out if _artifact_pkgname(p) not in linked]
+        swap = ({_LIBLLVM_PKG} | toolchain_closure) & linked
+        _log.info(
+            f"sandbox: {Path(pkgbuild_path).parent.name} builds with Arch's rust, "
+            f"which is linked against the repo LLVM — using the repo "
+            f"{', '.join(sorted(swap))} in the container"
+            + (f" instead of this host's {', '.join(dropped)}" if dropped else "")
+        )
+        out.extend(fetch_repo_packages(swap))
+    return _last_per_pkgname(out)
+
+
+def _last_per_pkgname(paths: list) -> list:
+    """Keep one artifact per pkgname, the last one, in list order.
+
+    The resolver hands back the version the host runs and the registry this
+    run's newer build of the same package; given both, pacman rejects the whole
+    ``-U`` as ``duplicate target`` (2026-10-10). Last wins because
+    :func:`install_args` orders newest last.
+    """
+    seen: set = set()
+    keep: list = []
+    for path in reversed(paths):
+        name = _artifact_pkgname(path)
+        if name in seen:
+            continue
+        seen.add(name)
+        keep.append(path)
+    return keep[::-1]
+
+
+_HOST_SYNC_DIR = Path("/var/lib/pacman/sync")
+
+
+def check_install_set(policy: SandboxPolicy, install_pkgs, *, sync_dbs=None,
+                      host_sync_dir: Path = _HOST_SYNC_DIR) -> None:
+    """Refuse a ``-I`` set the container could not install, with pacman's reason.
+
+    makechrootpkg installs the whole set in one ``pacman -U``, records that
+    transaction's failure and builds on anyway — without anything on the list.
+    The build then fails on something unrelated-looking (``rustc`` on the host
+    libLLVM, a C++ build on old headers), or worse, succeeds against the wrong
+    dependency. This is the same transaction as a ``--print`` dry run, against
+    the chroot root's local DB and *fresh* sync DBs: the host's (its ``-Syu``
+    is what the working copy's ``-u`` will match) over the root's own, plus
+    *sync_dbs* (``{repo: db file}``) for a repo the root has never synced.
+
+    Only a pacman verdict refuses. A check that cannot run warns and the build
+    goes ahead, as it did before the check existed.
+    """
+    pkgs = [str(p) for p in install_pkgs or []]
+    root = Path(policy.chroot_dir) / "root"
+    conf = root / "etc" / "pacman.conf"
+    local_db = root / "var" / "lib" / "pacman" / "local"
+    if not pkgs or not conf.is_file() or not local_db.is_dir():
+        return
+    with tempfile.TemporaryDirectory(prefix="sysforge-seedcheck-") as tmp:
+        dbpath = Path(tmp)
+        (dbpath / "local").symlink_to(local_db)
+        sync = dbpath / "sync"
+        sync.mkdir()
+        sources: dict = {}
+        for src_dir in (root / "var" / "lib" / "pacman" / "sync", Path(host_sync_dir)):
+            if src_dir.is_dir():
+                sources.update({f.name: f for f in src_dir.glob("*.db")})
+        for repo, db in (sync_dbs or {}).items():
+            if Path(db).is_file():
+                sources[f"{repo}.db"] = Path(db)
+        for name, src in sources.items():
+            (sync / name).symlink_to(src.resolve())
+        try:
+            res = run.probe(
+                ["pacman", "--config", str(conf), "--root", str(root),
+                 "--dbpath", str(dbpath), "--noconfirm",
+                 "-U", "--print", "--print-format", "%n", *pkgs],
+                timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            _log.warn(f"sandbox: could not dry-run the packages seeded into the "
+                      f"container ({exc}); building without the check")
+            return
+    if res.returncode == 0:
+        return
+    # pacman splits it: the verdict on stderr, the ``:: unable to satisfy
+    # dependency …`` detail on stdout.
+    reason = "\n".join(
+        [ln.strip() for ln in (res.stderr or "").splitlines()
+         if ln.strip() and not ln.lstrip().startswith("warning:")]
+        + [ln.strip() for ln in (res.stdout or "").splitlines()
+           if ln.lstrip().startswith("::")])
+    if res.returncode == run.MISSING_BINARY_RC or not reason:
+        _log.warn(f"sandbox: could not dry-run the packages seeded into the "
+                  f"container (exit {res.returncode}); building without the check")
+        return
+    raise SandboxUnavailable(
+        "refusing to sandbox: the container cannot install the packages it is "
+        "seeded with, and makechrootpkg would build on without any of them — "
+        f"pacman says:\n{reason}\nseeded: "
+        + ", ".join(Path(p).name for p in pkgs)
+    )
 
 
 def reset_session() -> None:

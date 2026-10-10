@@ -336,6 +336,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # would keep mounting a repo nothing syncs any more. All of these raise
         # SandboxUnavailable before anything needs undoing.
         from sysforge.primitives import local_repo
+        # Mirrored whatever the local repo setting: a lib32-* build's lib32
+        # deps resolve from [multilib], which the stock chroot ships commented.
+        local_repo.ensure_chroot_multilib(sandbox)
         if sandbox.local_repo:
             _state = _sandbox_state_dir()
             local_repo.ensure_chroot_section(sandbox, _state)
@@ -347,6 +350,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             # The toolchain -I is part of F10 and gated with it.
             exports=(extra_env or {}) if sandbox.local_repo else None,
             conf_path=conf_path)
+        # makechrootpkg ignores a failed -I transaction and builds without it,
+        # so the set is dry-run first and an uninstallable one refuses here,
+        # with pacman's reason, instead of as an unrelated build error later.
+        build_sandbox.check_install_set(
+            sandbox, install_pkgs,
+            sync_dbs=({local_repo.REPO_NAME: local_repo.db_path(_sandbox_state_dir())}
+                      if sandbox.local_repo else None))
         # The chroot is base-devel, which is gcc + binutils; a profile that
         # resolved to LLVM exports CC=clang into it and every C build dies in
         # configure (3.2.0-B4). Both channels the container is handed are
@@ -429,7 +439,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         if install_pkgs:
             _makepkg_log.info(
                 "Seeding the container with "
-                f"{len(install_pkgs)} artifact(s) built this run: "
+                f"{len(install_pkgs)} package(s): "
                 + ", ".join(p.name for p in install_pkgs)
             )
         if child_mem_cap is not None and not build_sandbox.mem_cap_applies(sandbox):

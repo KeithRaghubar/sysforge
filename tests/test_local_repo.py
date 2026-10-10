@@ -69,7 +69,7 @@ def _pkg(pkgdest: Path, name: str, ver: str) -> Path:
 
 def _sync(tmp_path, installed: dict, tools=None):
     tools = tools or FakeRepoTools()
-    with patch.object(bs, "source_built_packages", return_value=set(installed)), \
+    with patch.object(bs, "host_only_packages", return_value=set(installed)), \
             patch("sysforge.primitives.local_repo.pacman.get_installed_version",
                   side_effect=lambda n: installed.get(n)), \
             patch("sysforge.primitives.local_repo.run.run_or_raise", side_effect=tools):
@@ -329,3 +329,71 @@ def test_remove_section_failure_refuses(tmp_path):
                side_effect=PermissionError("ro")):
         with pytest.raises(bs.SandboxUnavailable, match="pacman.conf"):
             lr.remove_chroot_section(pol)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-10: foreign packages and [multilib]
+# ---------------------------------------------------------------------------
+
+def test_publishes_foreign_packages_sysforge_did_not_build(tmp_path):
+    """The repo carries the host-only set, not just what sysforge built: an AUR
+    package from another tool is just as absent from the stock repos."""
+    _pkg(tmp_path / "pkgdest", "pop-icon-theme-git", "1:3.5.1-2")
+    with patch.object(bs, "_source_built_packages", return_value=set()), \
+            patch("sysforge.primitives.pacman.get_foreign_packages",
+                  return_value={"pop-icon-theme-git": "1:3.5.1-2"}), \
+            patch("sysforge.primitives.local_repo.pacman.get_installed_version",
+                  return_value="1:3.5.1-2"), \
+            patch("sysforge.primitives.local_repo.run.run_or_raise",
+                  side_effect=FakeRepoTools()):
+        res = lr.sync(tmp_path / "state", tmp_path / "pkgdest")
+    assert res.added == ["pop-icon-theme-git"]
+
+
+_MULTILIB_ON = _STOCK_CONF + "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n"
+_MULTILIB_COMMENTED = _STOCK_CONF + "\n#[multilib]\n#Include = /etc/pacman.d/mirrorlist\n"
+
+
+def _host_conf(tmp_path, text):
+    host = tmp_path / "host-pacman.conf"
+    host.write_text(text)
+    return host
+
+
+def test_multilib_is_enabled_when_the_host_has_it(tmp_path):
+    """lib32-* builds resolve lib32 deps from [multilib]; the stock chroot
+    ships it commented out (lib32-vulkan-icd-loader-git, 2026-10-10)."""
+    pol = _root_conf(tmp_path, _MULTILIB_COMMENTED)
+    lr.ensure_chroot_multilib(pol, host_conf=_host_conf(tmp_path, _MULTILIB_ON))
+    conf = (tmp_path / "chroot" / "root" / "etc" / "pacman.conf").read_text()
+    assert "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n" in conf
+    assert "#[multilib]" not in conf
+
+
+def test_multilib_is_appended_when_the_root_has_no_stanza(tmp_path):
+    pol = _root_conf(tmp_path)
+    lr.ensure_chroot_multilib(pol, host_conf=_host_conf(tmp_path, _MULTILIB_ON))
+    conf = (tmp_path / "chroot" / "root" / "etc" / "pacman.conf").read_text()
+    assert conf.rstrip().endswith("[multilib]\nInclude = /etc/pacman.d/mirrorlist")
+
+
+def test_multilib_left_alone_when_the_host_lacks_it(tmp_path):
+    pol = _root_conf(tmp_path, _MULTILIB_COMMENTED)
+    with patch("sysforge.primitives.local_repo.replace_file") as rf:
+        lr.ensure_chroot_multilib(pol, host_conf=_host_conf(tmp_path, _MULTILIB_COMMENTED))
+    assert not rf.called
+
+
+def test_multilib_already_on_writes_nothing(tmp_path):
+    pol = _root_conf(tmp_path, _MULTILIB_ON)
+    with patch("sysforge.primitives.local_repo.replace_file") as rf:
+        lr.ensure_chroot_multilib(pol, host_conf=_host_conf(tmp_path, _MULTILIB_ON))
+    assert not rf.called
+
+
+def test_multilib_conf_failure_refuses(tmp_path):
+    pol = _root_conf(tmp_path, _MULTILIB_COMMENTED)
+    with patch("sysforge.primitives.local_repo.replace_file",
+               side_effect=OSError("ro")):
+        with pytest.raises(bs.SandboxUnavailable, match="multilib"):
+            lr.ensure_chroot_multilib(pol, host_conf=_host_conf(tmp_path, _MULTILIB_ON))

@@ -49,6 +49,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_build_linker,
     validate_patched_pkgbuild,
     PkgbuildPatchError,
+    SIDECAR_HEADER,
 )
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -522,7 +523,7 @@ def test_patch_groups_inline_pkgname():
         pb = Path(d) / "PKGBUILD"
         pb.write_text("pkgname=htop\npkgver=1.0\n")
         result = patch_pkgbuild_groups(pb, ["sf-build"])
-        lines = result.read_text().splitlines()
+        lines = result.read_text().removeprefix(SIDECAR_HEADER).splitlines()
     assert lines[0] == "pkgname=htop"
     assert lines[1] == 'groups=("sf-build")'
     assert lines[2] == "pkgver=1.0"
@@ -552,6 +553,40 @@ def test_patch_groups_replaces_existing():
     assert text.count("groups=") == 1
     assert 'groups=("sf-build")' in text
     assert "old-group" not in text
+
+
+def test_sidecar_opens_with_a_do_not_edit_header():
+    """2026-10-10: a missing depends was added to PKGBUILD.sysforge — the file
+    the build-failure message names — and the next build regenerated it from
+    PKGBUILD, silently dropping the fix."""
+    with tempfile.TemporaryDirectory() as d:
+        pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
+        patched = apply_patch_pkgbuild(pb, {"globals": {"pkgname": "mypkg"}, "functions": {}})
+        text = patched.read_text()
+    assert text.startswith(SIDECAR_HEADER)
+    assert "edit PKGBUILD" in SIDECAR_HEADER
+    assert all(ln.startswith("#") for ln in SIDECAR_HEADER.splitlines())
+
+
+def test_sidecar_header_appears_once_across_both_writers():
+    """apply_patch_pkgbuild writes the sidecar, then patch_pkgbuild_groups
+    rewrites it from itself: the header must not stack."""
+    with tempfile.TemporaryDirectory() as d:
+        pb = _make_pkgbuild(d, SIMPLE_PKGBUILD)
+        patched = apply_patch_pkgbuild(pb, {"globals": {"pkgname": "mypkg"}, "functions": {}})
+        patched = patch_pkgbuild_groups(patched, ["sf-build"])
+        text = patched.read_text()
+    assert text.startswith(SIDECAR_HEADER)
+    assert text.count(SIDECAR_HEADER) == 1
+
+
+def test_sidecar_header_from_groups_alone():
+    with tempfile.TemporaryDirectory() as d:
+        pb = Path(d) / "PKGBUILD"
+        pb.write_text("pkgname=htop\npkgver=1.0\n")
+        text = patch_pkgbuild_groups(pb, ["sf-build"]).read_text()
+        assert pb.read_text() == "pkgname=htop\npkgver=1.0\n"
+    assert text.startswith(SIDECAR_HEADER)
 
 
 # ---------------------------------------------------------------------------

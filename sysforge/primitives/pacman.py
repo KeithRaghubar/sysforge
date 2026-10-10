@@ -382,14 +382,15 @@ def read_pkgname_from_file(path) -> str | None:
     return None
 
 
-def _read_pkginfo_names(path, keys: tuple) -> dict:
+def _read_pkginfo_names(path, keys: tuple, exact: tuple = ()) -> dict:
     """Return {key: set of bare names} for the given .PKGINFO keys.
 
     One bsdtar per package, not one per field. Beware the key spellings:
     makepkg's ``write_kv_pair`` emits ``replaces`` and ``provides`` plural but
     ``conflict`` and ``depend`` **singular** — the .PKGINFO names are not the
     PKGBUILD array names. Version constraints (``foo<1.0``, ``wayland=1.26``)
-    are stripped to the bare name. Empty sets on any read failure.
+    are stripped to the bare name; keys in *exact* also keep the unstripped
+    value. Empty sets on any read failure.
     """
     out: dict = {k: set() for k in keys}
     try:
@@ -406,6 +407,8 @@ def _read_pkginfo_names(path, keys: tuple) -> dict:
                 name = re.split(r"[<>=]", val, maxsplit=1)[0].strip()
                 if name:
                     out[key].add(name)
+                    if key in exact:
+                        out[key].add(val)
                 break
     return out
 
@@ -419,6 +422,18 @@ def read_pkg_replaces_from_file(path) -> set:
     package that is. Empty set on any read failure.
     """
     return _read_pkginfo_names(path, ("replaces",))["replaces"]
+
+
+def read_pkginfo_relations(path) -> dict:
+    """Return ``{"depend": …, "provides": …}`` bare names from a built package.
+
+    The edges a not-yet-installed artifact brings with it, for walking a
+    dependency closure the host's local DB cannot see yet (the build sandbox's
+    session seeding). Runtime ``depend`` only; ``provides`` keeps each
+    versioned entry's exact form too (see :func:`get_provider_map`). Empty sets
+    on any read failure.
+    """
+    return _read_pkginfo_names(path, ("depend", "provides"), exact=("provides",))
 
 
 def _bare_name(dep: str) -> str:
@@ -1562,3 +1577,24 @@ def get_all_package_depends(root: Path | None = None) -> dict[str, list[str]]:
     """
     return {name: f["%DEPENDS%"]
             for name, f in get_all_package_fields("%DEPENDS%", root=root).items()}
+
+
+def get_provider_map(root: Path | None = None) -> dict[str, str]:
+    """Return ``{provided name: installed pkgname}`` from every ``%PROVIDES%``.
+
+    Dependency walks over :func:`get_all_package_depends` key on pkgname, so a
+    dep satisfied through ``provides`` (``vulkan-headers`` by
+    ``vulkan-headers-git``) otherwise looks uninstalled. Keyed on the bare name
+    and, for a versioned provide, on its exact form too: a soname dep names its
+    ABI in the version (``libvulkan.so=1-64`` vs the lib32 ``=1-32``), so a
+    walk tries the exact dep first. On two providers of one key the lexically
+    first pkgname wins, so the answer does not depend on directory order.
+    """
+    out: dict[str, str] = {}
+    fields = get_all_package_fields("%PROVIDES%", root=root)
+    for name in sorted(fields):
+        for prov in fields[name]["%PROVIDES%"]:
+            if "=" in prov:
+                out.setdefault(prov, name)
+            out.setdefault(prov.split("=", 1)[0], name)
+    return out

@@ -1249,9 +1249,10 @@ def build_and_install(
                     outcome.built_pkg_files.extend(new_pkgs)
                     built_files_by_pkgbase[target.pkgbase] = new_pkgs
                     outcome.built_pkgs.append(target.pkgbase)
-                    # Under the build sandbox the host install of an
-                    # intra-batch dep is invisible to the next container, so
-                    # its artifacts have to be handed back in as ``-I``.
+                    # Under the build sandbox an intra-batch dep (installed on
+                    # the host only after the batch) is invisible to the next
+                    # container, so its artifacts are handed back in as ``-I``
+                    # to the targets whose closure needs them.
                     # Registered unconditionally: the registry is inert while
                     # the sandbox is off, and a conditional here would be a
                     # second place the policy has to be read correctly.

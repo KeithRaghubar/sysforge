@@ -24,6 +24,7 @@ from sysforge.primitives.pacman import (
     get_pkgbase,
     pkg_supersedes_installed,
     read_pkg_replaces_from_file,
+    read_pkginfo_relations,
     read_pkgname_from_file,
     snapshot_pkg_dir,
 )
@@ -341,6 +342,33 @@ class TestReadPkgnameFromFile:
     @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
     def test_bsdtar_not_installed(self, _mock_run):
         assert read_pkgname_from_file("/tmp/x.pkg.tar.zst") is None
+
+
+# ---------------------------------------------------------------------------
+# read_pkginfo_relations
+# ---------------------------------------------------------------------------
+
+class TestReadPkginfoRelations:
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_reads_runtime_depends_and_provides(self, mock_run):
+        """``depend`` is singular in .PKGINFO; makedepends are not runtime edges.
+        A versioned provide keeps its exact form too, for soname deps."""
+        mock_run.return_value = MagicMock(
+            stdout=("pkgname = vulkan-headers-git\ndepend = glibc>=2.40\n"
+                    "makedepend = cmake\nprovides = vulkan-headers=1:1.4.330\n"),
+            returncode=0,
+        )
+        assert read_pkginfo_relations("/tmp/x.pkg.tar") == {
+            "depend": {"glibc"},
+            "provides": {"vulkan-headers", "vulkan-headers=1:1.4.330"},
+        }
+
+    @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
+    def test_unreadable_is_empty(self, _mock_run):
+        assert read_pkginfo_relations("/tmp/x.pkg.tar") == {
+            "depend": set(), "provides": set(),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1397,6 +1425,35 @@ def test_logged_transaction_nonzero_returns_tail(tmp_path, monkeypatch, pacman_t
     assert rc == 1
     assert tail[-1].endswith("exited 10")
     assert any("answered=y" in line for line in tail)
+
+
+def test_get_provider_map_keys_bare_names_and_is_order_stable(tmp_path):
+    """``vulkan-headers`` → the installed ``vulkan-headers-git``; on two
+    providers of one name the lexically first pkgname wins."""
+    from sysforge.primitives import pacman
+    for name, provides in (("vulkan-headers-git", "vulkan-headers=1.4.365"),
+                           ("zz-headers", "vulkan-headers"),
+                           ("aa-icons", "icon-theme")):
+        d = tmp_path / f"{name}-1-1"
+        d.mkdir()
+        (d / "desc").write_text(f"%NAME%\n{name}\n\n%PROVIDES%\n{provides}\n\n")
+    assert pacman.get_provider_map(root=tmp_path) == {
+        "vulkan-headers": "vulkan-headers-git", "icon-theme": "aa-icons",
+        "vulkan-headers=1.4.365": "vulkan-headers-git"}
+
+
+def test_get_provider_map_keys_versioned_provides_exactly(tmp_path):
+    """A soname dep (``libvulkan.so=1-64``) names its ABI in the version, so
+    the bare-name key alone hands a 64-bit consumer the 32-bit provider."""
+    from sysforge.primitives import pacman
+    for name, provides in (("lib32-vulkan-icd-loader-git", "libvulkan.so=1-32"),
+                           ("vulkan-icd-loader-git", "libvulkan.so=1-64")):
+        d = tmp_path / f"{name}-1-1"
+        d.mkdir()
+        (d / "desc").write_text(f"%NAME%\n{name}\n\n%PROVIDES%\n{provides}\n\n")
+    out = pacman.get_provider_map(root=tmp_path)
+    assert out["libvulkan.so=1-64"] == "vulkan-icd-loader-git"
+    assert out["libvulkan.so=1-32"] == "lib32-vulkan-icd-loader-git"
 
 
 def test_get_all_package_fields_one_pass(tmp_path):

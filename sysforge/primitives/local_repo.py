@@ -31,6 +31,7 @@ Public API:
     sync(state_dir, pkgdest) -> SyncResult      (raises SandboxUnavailable)
     ensure_chroot_section(policy, state_dir)    (raises SandboxUnavailable)
     remove_chroot_section(policy)               (raises SandboxUnavailable)
+    ensure_chroot_multilib(policy, host_conf)   (raises SandboxUnavailable)
     section_text(state_dir) -> str
     reset_session()
 """
@@ -132,7 +133,10 @@ def _link_in(src: Path, dest_dir: Path) -> Path:
 
 
 def sync(state_dir, pkgdest) -> SyncResult:
-    """Make ``[sysforge-local]`` hold exactly the installed source-built set.
+    """Make ``[sysforge-local]`` hold exactly the installed host-only set.
+
+    Host-only is source-built ∪ foreign (``build_sandbox.host_only_packages``):
+    an AUR package sysforge never built is in no stock repo either.
 
     Once per run. A pruned installed artifact warns and continues (the 3.1.0-F9
     rule: one dep, named); a tooling or filesystem failure refuses, because the
@@ -154,7 +158,7 @@ def sync(state_dir, pkgdest) -> SyncResult:
 
     desired: dict[str, Path] = {}
     kept: set[str] = set()
-    for name in sorted(_sandbox.source_built_packages(state_dir)):
+    for name in sorted(_sandbox.host_only_packages(state_dir)):
         art = _sandbox.installed_artifact(name, pkgdest) if pkgdest else None
         if art is None:
             version = pacman.get_installed_version(name)
@@ -306,4 +310,48 @@ def remove_chroot_section(policy) -> None:
         raise SandboxUnavailable(
             f"refusing to sandbox: could not remove [{REPO_NAME}] from {conf_path} "
             f"({exc}), so containers would keep mounting a stale local repo"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# [multilib]
+# ---------------------------------------------------------------------------
+#
+# The devtools chroot ships [multilib] commented out, so a lib32-* build's
+# lib32 deps are `target not found` even on a host that enables it. Mirrored
+# from the host rather than always on: a host without multilib has no lib32
+# packages to build. Lives here as the one writer of the root's pacman.conf.
+
+_MULTILIB_ON_RE = re.compile(r"^\[multilib\][ \t]*$", re.MULTILINE)
+_MULTILIB_COMMENTED_RE = re.compile(
+    r"^#[ \t]*\[multilib\][ \t]*\n#[ \t]*(Include[ \t]*=.*)$", re.MULTILINE)
+
+
+def ensure_chroot_multilib(policy, host_conf=Path("/etc/pacman.conf")) -> None:
+    """Enable ``[multilib]`` in the chroot root when the host enables it.
+
+    Uncomments the stock stanza when present, else appends one. The root's
+    sync dbs are refreshed by makechrootpkg ``-u`` on the next build.
+    """
+    conf_path = policy.chroot_dir / "root" / "etc" / "pacman.conf"
+    try:
+        host = Path(host_conf).read_text()
+    except OSError:
+        return
+    if not _MULTILIB_ON_RE.search(host) or not conf_path.exists():
+        return
+    try:
+        conf = conf_path.read_text()
+        if _MULTILIB_ON_RE.search(conf):
+            return
+        if _MULTILIB_COMMENTED_RE.search(conf):
+            wanted = _MULTILIB_COMMENTED_RE.sub(r"[multilib]\n\1", conf, count=1)
+        else:
+            wanted = conf.rstrip("\n") + "\n\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n"
+        replace_file(conf_path, wanted, tag="REPO")
+        _log.info(f"sandbox: enabled [multilib] in {conf_path} to match the host")
+    except Exception as exc:
+        raise SandboxUnavailable(
+            f"refusing to sandbox: could not enable [multilib] in {conf_path} "
+            f"({exc}), so lib32 dependencies would not resolve in the container"
         ) from exc
