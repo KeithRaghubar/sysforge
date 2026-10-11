@@ -253,6 +253,19 @@ include paths or defines. Point the corpus at sources that build that way, such 
 single-file programs or preprocessed sources (`clang -E` output saved as `.c`/`.cpp`),
 rather than at a project's `src/` directory, whose files usually need its headers.
 
+After `sysforge run toolchain` builds and installs a new clang, it prints a reminder to run
+the bench. To have it run the bench by itself at that point instead, opt in:
+
+```toml
+[bench]
+after_build = true
+```
+
+It is off by default because right after a long build the machine is at its busiest, which
+makes for a noisier measurement, and the bench may need to download the stock packages. If
+the bench can't run then, the toolchain install is not affected: you get a line saying why,
+and you can run `sysforge bench toolchain` later.
+
 The result is recorded, and `sysforge state profiles` shows it in the GAIN column next to
 the toolchain profile. It is marked `(stale)` once clang is upgraded or the workload
 changes; run the bench again to refresh it.

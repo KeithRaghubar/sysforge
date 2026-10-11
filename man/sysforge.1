@@ -1709,7 +1709,10 @@ Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,
 toolchain.\&toml [bench] \fBcorpus\fR (default: unset) names the source
 files or directories \fBbench toolchain\fR compiles; unset uses its
 built\-in workload.\& Each file is compiled on its own with only \-O2 \-c
-(\-std=c++17 for C++), so it must not need include paths or defines.\& Also read by \fBbench toolchain\fR and \fBstate profiles\fR.\&
+(\-std=c++17 for C++), so it must not need include paths or defines.\&
+The [bench] \fBafter_build\fR key (default: false) runs \fBbench toolchain\fR
+at the end of a \fBrun toolchain\fR that built and installed clang from
+source; off, that stage prints a one\-line hint instead.\& Also read by \fBbench toolchain\fR and \fBstate profiles\fR.\&
 .PP
 .RE
 build_state.\&toml (under the state directory)

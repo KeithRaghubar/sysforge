@@ -237,6 +237,9 @@ from sysforge.pipeline.stages.toolchain.identity import (  # noqa: F401
     propagate_default_toolchain,
     toolchain_identity_lines,
 )
+from sysforge.pipeline.stages.toolchain.measure import (  # noqa: F401
+    after_install,
+)
 from sysforge.pipeline.stages.toolchain.bolt import (  # noqa: F401
     build_bolt_tools,
     run_bolt,
@@ -301,6 +304,7 @@ __all__ = [
     "profile_runtime_ldflag",
     "profraw_merge_daemon",
     "propagate_default_toolchain",
+    "after_install",
     "query_pacman_versions",
     "rebuild_soname_consumers",
     "remove_staging",

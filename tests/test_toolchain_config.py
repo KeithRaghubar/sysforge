@@ -318,3 +318,12 @@ def test_reuse_digest_ignores_the_bench_table():
     assert ToolchainConfig.from_toml(dict(base)).reuse_digest_raw == base
     with_bench = dict(base, bench={"corpus": ["~/src/x"]})
     assert ToolchainConfig.from_toml(with_bench).reuse_digest_raw == base
+
+
+def test_bench_after_build_parsed_and_defaulted_off():
+    """`[bench] after_build` (3.4.0-F11): opt-in, off unless set."""
+    assert ToolchainConfig.from_toml({}).bench_after_build is False
+    on = ToolchainConfig.from_toml({"bench": {"after_build": True}})
+    assert on.bench_after_build is True
+    # build-inert like the rest of [bench]: never part of the reuse digest
+    assert "bench" not in on.reuse_digest_raw

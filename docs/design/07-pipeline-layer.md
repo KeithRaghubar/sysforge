@@ -497,6 +497,7 @@ The AUR-dep build and per-package install loop are wrapped in `sentinel_scope(st
 | `gates.py` | Gate 1 / Gate 2, soname consumers, snapshot + rollback |
 | `identity.py` | which toolchain is active; the register-only GCC path |
 | `bolt.py` | Pass 5, optional post-link optimization |
+| `measure.py` | after a verified from-source install: hint at, or run (`[bench] after_build`), `sysforge bench toolchain` |
 | `stage.py` | `ToolchainStage` — sequencing only, delegating every step |
 
 Dependencies run one way (`constants` ← `config` ← … ← `stage`), and `stage.py` is the only module importing most of the others. Two conventions make the split hold: **modules call each other module-qualified** (`profdata.pgo_install(...)`, never a bare imported name) so a patch on the owning module is seen by every caller; and **a name that crosses a module boundary is public**, since an underscore is a promise about one module's internals that stopped being true the moment another module needed the name. The package `__init__` re-exports every public name, so `sysforge.pipeline.stages.toolchain` remains a valid import path and `stages/__init__.py`'s eager instantiation is untouched. Read `stage.py` to learn what the stage does; read the siblings to learn how each step works.

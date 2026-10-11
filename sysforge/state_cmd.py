@@ -613,15 +613,15 @@ def _toolchain_gain() -> str:
     the measurement, or ``-`` with no result (or none with a ratio, as across a
     major-version gap).
     """
-    from sysforge import bench_cmd
+    from sysforge import bench_core
     from sysforge.primitives import bench_state
 
-    result = bench_state.load(_bench_state_dir(), bench_cmd.TARGET)
+    result = bench_state.load(_bench_state_dir(), bench_core.TARGET)
     if result is None or result.ratio is None:
         return "-"
-    fp = bench_cmd.current_fingerprint(bench_cmd._load_tcfg())
+    fp = bench_core.current_fingerprint(bench_core.load_tcfg())
     stale = fp is None or bench_state.is_stale(
-        result, bench_cmd.installed_version("clang"), fp)
+        result, bench_core.installed_version("clang"), fp)
     return f"{result.ratio:.2f}x" + (" (stale)" if stale else "")
 
 

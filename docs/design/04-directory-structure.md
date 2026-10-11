@@ -24,7 +24,8 @@ sysforge/
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
 │   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
-│   ├── bench_cmd.py                   # sysforge bench namespace (toolchain): stock vs installed clang, report only
+│   ├── bench_cmd.py                   # sysforge bench namespace (toolchain): argparse surface over bench_core
+│   ├── bench_core.py                  # shared bench engine behind bench toolchain, state profiles GAIN and [bench] after_build
 │   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
 │   ├── verbs/
 │   │   ├── base.py                    # Verb ABC (incl. add_parser) + VerbGroup + PreCheckResult/ExecResult

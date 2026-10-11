@@ -77,6 +77,8 @@ enabled = false
 # [bench]
 # corpus — standalone .c/.cc/.cpp/.cxx files or dirs; empty = built-in TUs
 # corpus = ["~/bench-sources"]
+# after_build — run the bench after a verified from-source build (default off)
+# after_build = false
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed

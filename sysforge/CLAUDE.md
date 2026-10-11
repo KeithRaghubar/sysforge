@@ -125,6 +125,10 @@ Mechanism lives in the cited §DESIGN section.
     link standalone BOLT tools; `standalone_build_viable()` guards) — **keep `[bolt] enabled =
     false`**. Toolchain Pass 5, in-place stock name.
   - §CLI Verb / §Flag-Profile / §`pkgbuild_patcher.py`.
+- **Bench engine**: `bench_core.run_toolchain_bench` is the one home, called by `bench_cmd` (the
+  verb), `state_cmd` (GAIN, via `bench_core.current_fingerprint`) and the toolchain stage
+  (`toolchain/measure.py::after_install`, `[bench] after_build`). Never import `bench_cmd` from
+  another verb or the pipeline. `bench.toml` only via `primitives/bench_state.py`. §CLI Verb.
 - **Build-failure recovery**: `makepkg_invoke._run_recovery_menu`; persists a cc/ld swap via
   `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer). §makepkg-wrapper.
 - **Sandbox host-only set**: `build_sandbox.host_only_packages` (source-built ∪ `pacman -Qm`) feeds

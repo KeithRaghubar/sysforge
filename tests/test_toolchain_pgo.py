@@ -710,3 +710,15 @@ def test_full_pgo_run_one_tracker_per_logical_pass(tmp_path, monkeypatch):
     assert [p for p, *_ in train] == ["PGO 3/4 · train"]
     for prefix, total, labels in opened:
         assert len(labels) == total, (prefix, total, labels)
+
+
+def test_verified_llvm_build_hands_off_to_the_bench_step(tmp_path, monkeypatch):
+    """3.4.0-F11, llvm path: a from-source build that passes Gate 3 calls
+    measure.after_install once, with the stage's own config."""
+    from sysforge.pipeline.stages.toolchain import measure
+
+    calls = []
+    monkeypatch.setattr(measure, "after_install",
+                        lambda tcfg, options: calls.append(tcfg))
+    _run_pgo(tmp_path, pgo_pkgs=["llvm"])
+    assert len(calls) == 1 and calls[0].compiler == "llvm"

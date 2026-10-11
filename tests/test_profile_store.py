@@ -212,7 +212,7 @@ def test_orphaned_profile_notice_names_the_path(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _bench(tmp_path, monkeypatch, *, installed="23.1.1-1", fp=None, ratio=1.2):
-    from sysforge import bench_cmd, state_cmd
+    from sysforge import bench_core, state_cmd
     from sysforge.primitives import bench_state, bench_workload
 
     tc = _tcfg(tmp_path)
@@ -220,8 +220,8 @@ def _bench(tmp_path, monkeypatch, *, installed="23.1.1-1", fp=None, ratio=1.2):
     _file(tmp_path / "root" / "pgo" / "htop" / "htop.profdata", 2048)
     monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
     monkeypatch.setattr(state_cmd, "_bench_state_dir", lambda: tmp_path)
-    monkeypatch.setattr(bench_cmd, "installed_version", lambda name: installed)
-    monkeypatch.setattr(bench_cmd, "_load_tcfg", lambda: None)
+    monkeypatch.setattr(bench_core, "installed_version", lambda name: installed)
+    monkeypatch.setattr(bench_core, "load_tcfg", lambda: None)
     bench_state.save(tmp_path, "toolchain", bench_state.BenchResult(
         installed_version="23.1.1-1", stock_version="23.1.1-1", corpus="c",
         fingerprint=fp or bench_workload.default_fingerprint(), runs=5,

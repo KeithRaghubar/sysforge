@@ -183,7 +183,10 @@ recovery command.
 	toolchain.toml [bench] *corpus* (default: unset) names the source
 	files or directories *bench toolchain* compiles; unset uses its
 	built-in workload. Each file is compiled on its own with only -O2 -c
-	(-std=c++17 for C++), so it must not need include paths or defines. Also read by *bench toolchain* and *state profiles*.
+	(-std=c++17 for C++), so it must not need include paths or defines.
+	The [bench] *after_build* key (default: false) runs *bench toolchain*
+	at the end of a *run toolchain* that built and installed clang from
+	source; off, that stage prints a one-line hint instead. Also read by *bench toolchain* and *state profiles*.
 
 build_state.toml (under the state directory)
 	Per-package build records (a superset of pacman -Q) plus the table

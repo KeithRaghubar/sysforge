@@ -187,6 +187,14 @@ enabled = false
 #   its own with only -O2 -c (-std=c++17 for C++), no include paths or
 #   defines, so use standalone or preprocessed (clang -E) sources.
 #corpus = ["~/bench-sources"]
+
+# after_build — run `sysforge bench toolchain` automatically once `run
+#   toolchain` has installed and verified a toolchain it built from source.
+#   Off (default): the stage only prints a one-line hint to run it yourself.
+#   Opt-in because right after a long build the machine is at its noisiest,
+#   and the bench may download the stock packages. A bench that cannot run
+#   is reported and never fails the toolchain stage.
+#after_build = false
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ from sysforge.pipeline.stages.toolchain import (
     config,
     gates,
     identity,
+    measure,
     pgo,
     pkgbuilds,
     profdata,
@@ -504,3 +505,9 @@ class ToolchainStage(Stage):
             f"Toolchain stage complete. cc={cc}  cxx={cxx}"
             + (f"  ld={ld}" if ld else ""),
         )
+
+        # A from-source toolchain is installed and Gate-3-verified: point at
+        # the bench, or run it under [bench] after_build (3.4.0-F11). Outside
+        # the sentinel and never raising, so a bench that cannot run leaves the
+        # install untouched.
+        measure.after_install(tcfg, options)

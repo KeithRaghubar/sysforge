@@ -170,6 +170,14 @@ def test_verb_modules_do_not_import_siblings():
                 violations.append(
                     f"{path.name}:{node.lineno} imports {names} from {node.module}"
                 )
+            # `from sysforge import bench_cmd` names the sibling as the
+            # imported name, not the module, and slipped past the check above.
+            if node.module == "sysforge":
+                for alias in node.names:
+                    if alias.name.endswith("_cmd") and alias.name != path.stem:
+                        violations.append(
+                            f"{path.name}:{node.lineno} imports {alias.name} from sysforge"
+                        )
     assert not violations, (
         "verb modules must not import from a sibling *_cmd.py — move the "
         "shared operation into sysforge/verbs/shared.py:\n  "

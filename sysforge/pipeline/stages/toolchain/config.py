@@ -247,6 +247,9 @@ class ToolchainConfig:
     # [bench] (3.4.0-F6): held-out workload for `sysforge bench toolchain`;
     # empty → the bench's built-in TUs (primitives/bench_workload.py).
     bench_corpus: tuple[str, ...] = ()
+    # [bench] after_build (3.4.0-F11): run the bench once a from-source build is
+    # installed and Gate-3-verified; off → the stage only prints a hint.
+    bench_after_build: bool = False
 
     @property
     def reuse_digest_raw(self) -> dict:
@@ -275,7 +278,8 @@ class ToolchainConfig:
             return None
         pkgs = data.get("packages", {}) or {}
         bcfg = bolt_config(data)
-        corpus = (data.get("bench", {}) or {}).get("corpus", [])
+        bench = data.get("bench", {}) or {}
+        corpus = bench.get("corpus", [])
         if isinstance(corpus, str):
             corpus = [corpus]
         return cls(
@@ -298,6 +302,7 @@ class ToolchainConfig:
             training_corpus=tuple(resolve_training_corpus(data)),
             bolt=BoltConfig(**bcfg),
             bench_corpus=tuple(str(c) for c in corpus),
+            bench_after_build=bool(bench.get("after_build", False)),
         )
 
 

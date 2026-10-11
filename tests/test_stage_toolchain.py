@@ -1132,3 +1132,18 @@ def test_change_extras_labels_the_block(tmp_path):
     assert len(blocks) == 1
     assert blocks[0].label == "Toolchain:"
     assert "variant: system → gcc" in blocks[0].lines
+
+
+def test_gcc_register_only_path_never_hands_off_to_the_bench(tmp_path, monkeypatch):
+    """3.4.0-F11, gcc path: nothing was built, so there is nothing to measure."""
+    from sysforge.pipeline.stages.toolchain import measure
+
+    calls = []
+    monkeypatch.setattr(measure, "after_install", lambda *a: calls.append(a))
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "gcc"\n[bench]\nafter_build = true\n')
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")}}
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run(config, state, make_options(dry_run=False))
+    assert calls == []

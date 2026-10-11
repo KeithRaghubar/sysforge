@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sysforge import bench_cmd
+from sysforge import bench_cmd, bench_core
 from sysforge.primitives import bench_harness as bh
 from sysforge.primitives import bench_state as bs
 from sysforge.primitives import stock_pkg as sp
@@ -25,28 +25,28 @@ def happy(tmp_path, monkeypatch):
     env = {"installed": "23.1.1-1", "stock": "23.1.1-1", "build_mode": "pgo",
            "recorded": ("23.1.1", "1", "0"),
            "jobs": None, "samples": {"stock": [4.0, 4.2, 4.4], "sysforge": [3.4, 3.5, 3.6]}}
-    monkeypatch.setattr(bench_cmd, "_clang_present", lambda: True)
-    monkeypatch.setattr(bench_cmd, "installed_version", lambda name: env["installed"])
+    monkeypatch.setattr(bench_core, "_clang_present", lambda: True)
+    monkeypatch.setattr(bench_core, "installed_version", lambda name: env["installed"])
     monkeypatch.setattr(
-        bench_cmd, "_build_entry",
+        bench_core, "_build_entry",
         lambda state_dir: (
             {"build_mode": env["build_mode"], "pkgver": env["recorded"][0],
              "pkgrel": env["recorded"][1], "epoch": env["recorded"][2]}
             if env["build_mode"] else None))
-    monkeypatch.setattr(bench_cmd, "_load_tcfg", lambda: None)
+    monkeypatch.setattr(bench_core, "load_tcfg", lambda: None)
     monkeypatch.setattr(sp, "resolve", lambda names: [
         sp.StockPkg(n, env["stock"], "extra", f"{n}.pkg.tar.zst", "https://m", "x")
         for n in names])
     monkeypatch.setattr(sp, "obtain",
                         lambda pkg, workdir, offline: Path(workdir) / pkg.filename)
     monkeypatch.setattr(sp, "extract", lambda archives, prefix: None)
-    monkeypatch.setattr(bench_cmd, "_probe_stock", lambda prefix: None)
+    monkeypatch.setattr(bench_core, "_probe_stock", lambda prefix: None)
 
     def fake_run(jobs, runs):
         env["jobs"] = jobs
         return env["samples"]
 
-    monkeypatch.setattr(bench_cmd, "_run_jobs", fake_run)
+    monkeypatch.setattr(bench_core, "_run_jobs", fake_run)
     return env
 
 
@@ -97,7 +97,7 @@ def test_compile_failure_exits_1_and_persists_nothing(tmp_path, happy, monkeypat
     def fail(jobs, runs):
         raise bh.BenchFailed("stock", ["clang", "x.c"], "error: boom")
 
-    monkeypatch.setattr(bench_cmd, "_run_jobs", fail)
+    monkeypatch.setattr(bench_core, "_run_jobs", fail)
     assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 1
     assert not (tmp_path / bs.FILENAME).exists()
 
@@ -110,7 +110,7 @@ def test_stock_built_clang_exits_2(tmp_path, happy):
 
 
 def test_bad_configured_corpus_exits_1(tmp_path, happy, monkeypatch):
-    monkeypatch.setattr(bench_cmd, "_load_tcfg",
+    monkeypatch.setattr(bench_core, "load_tcfg",
                         lambda: SimpleNamespace(bench_corpus=(str(tmp_path / "nope"),)))
     assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 1
     assert not (tmp_path / bs.FILENAME).exists()
