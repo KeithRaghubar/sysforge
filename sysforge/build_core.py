@@ -819,7 +819,7 @@ def _post_install_libllvm_check(installed_files: list) -> list:
             "the desktop may fail to start on next login. Restore the prior "
             "version from the pre-build snapshot or with "
             "`sudo pacman -U /var/cache/pacman/pkg/<previous package>`, then "
-            "run `sysforge doctor --graphics`."
+            "run `sysforge doctor system --graphics`."
         )
     return findings
 

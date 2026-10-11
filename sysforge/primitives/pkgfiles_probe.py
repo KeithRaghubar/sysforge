@@ -144,6 +144,6 @@ def collect_integrity_findings(
             "integrity", diag.SEV_INFO, "integrity_partial_coverage",
             f"{unreadable} package-owned file(s) were unreadable without root; "
             f"coverage is partial",
-            remediation="re-run `sudo sysforge doctor --integrity` for full coverage",
+            remediation="re-run `sudo sysforge doctor system --integrity` for full coverage",
         ))
     return findings

@@ -1079,7 +1079,7 @@ def _collect_restart_findings() -> list[diag.Finding]:
         out.append(diag.Finding(
             "restart", diag.SEV_INFO, "restart:partial_coverage",
             "some processes could not be inspected, so this list may be incomplete",
-            remediation="re-run as `sudo sysforge doctor --restart` for full coverage"))
+            remediation="re-run as `sudo sysforge doctor system --restart` for full coverage"))
     return out
 
 
@@ -1474,7 +1474,7 @@ def _apply_rebuilds(
             _log.ui(f"  → run: sudo pacman -S {name}")
     if install_candidates:
         _log.ui(
-            "Install candidates skipped; `sysforge doctor --apply` only "
+            "Install candidates skipped; `sysforge doctor pkg --apply` only "
             "rebuilds (not installs) in v1.x:"
         )
         for cand in install_candidates:

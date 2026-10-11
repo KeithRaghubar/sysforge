@@ -515,7 +515,7 @@ class HardwareStage(Stage):
         if unsupported:
             _log.warn(
                 f"{len(unsupported)} device(s) present with no driver bound: "
-                "see `sysforge doctor --hardware`",
+                "see `sysforge doctor system --hardware`",
             )
 
         # --- Device-driven kconfig: modular drivers for present devices ---

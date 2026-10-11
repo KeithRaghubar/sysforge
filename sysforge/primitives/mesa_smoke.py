@@ -129,16 +129,16 @@ def _failure(check_id: str, message: str) -> GraphicsFinding:
     """A probe failure. :func:`run_smoke` replaces the remediation with one
     naming the source-built packages to roll back."""
     return GraphicsFinding(SEV_ERROR, check_id, message,
-                           "run `sysforge doctor --graphics` for the full picture")
+                           "run `sysforge doctor system --graphics` for the full picture")
 
 
 def _remediation(culprits: list[str]) -> str:
     if culprits:
         return (f"`sysforge revert-to-stock {' '.join(sorted(culprits))}` while this "
-                "session still works, then `sysforge doctor --graphics`")
+                "session still works, then `sysforge doctor system --graphics`")
     return ("no package in the mesa stack is source-built; reinstall the mesa "
             "packages from the repos (`sudo pacman -S <pkg>`), then "
-            "`sysforge doctor --graphics`")
+            "`sysforge doctor system --graphics`")
 
 
 def _source_built_stack() -> list[str]:

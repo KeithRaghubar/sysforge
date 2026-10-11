@@ -9,6 +9,7 @@ that exists but is missing from ``COMMANDS`` (directly or through a
 ``VerbGroup``) has no command line at all, and nothing else would notice."""
 import argparse
 import ast
+import re
 import inspect
 from pathlib import Path
 
@@ -97,3 +98,49 @@ def test_no_user_facing_text_names_git_pull():
             assert "git pull" not in (action.help or ""), (sp.prog, action.dest)
     src = (REPO_ROOT / "sysforge/primitives/makepkg_invoke.py").read_text(encoding="utf-8")
     assert "git pull" not in src
+
+
+_DOCTOR_CMD = re.compile(r"sysforge doctor((?: (?:system|pkg|-[-\w]+))*)")
+
+
+def _docstrings(tree):
+    return {n.body[0].value for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and n.body and isinstance(n.body[0], ast.Expr)}
+
+
+def _printed_doctor_commands():
+    """Every `sysforge doctor ...` a user can be told to run: non-docstring
+    string literals under sysforge/, plus the README, guides and man source."""
+    found = []
+    for py in sorted((REPO_ROOT / "sysforge").rglob("*.py")):
+        tree = ast.parse(py.read_text(encoding="utf-8"))
+        skip = _docstrings(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and node not in skip:
+                for m in _DOCTOR_CMD.finditer(node.value):
+                    found.append((f"{py.relative_to(REPO_ROOT)}:{node.lineno}", m.group(1)))
+    docs = [REPO_ROOT / "README.md", REPO_ROOT / "man/sysforge.1.scd.in",
+            *sorted((REPO_ROOT / "docs/guides").glob("*.md"))]
+    for doc in docs:
+        for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            for m in _DOCTOR_CMD.finditer(line):
+                found.append((f"{doc.relative_to(REPO_ROOT)}:{n}", m.group(1)))
+    return found
+
+
+def test_every_printed_doctor_command_parses():
+    """3.5.0-B3: `doctor` became a `system`/`pkg` namespace and the flat
+    `doctor --<axis>` form was removed, but advisories kept printing it, so
+    `sysforge doctor --restart` failed with "unrecognized arguments"."""
+    cmds = _printed_doctor_commands()
+    assert cmds, "the scan found no doctor commands at all"
+    parser = build_parser()
+    bad = []
+    for where, rest in cmds:
+        try:
+            parser.parse_args(["doctor", *rest.split()])
+        except SystemExit:
+            bad.append(f"{where}: sysforge doctor{rest}")
+    assert not bad, "printed doctor commands that do not parse:\n  " + "\n  ".join(bad)

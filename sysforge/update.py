@@ -711,7 +711,7 @@ def _emit_restart_notice(*, emit) -> None:
         restart_probe.TIER_RESTART_UNIT: "restart the affected service(s) to apply",
     }[report.highest_tier]
     emit(f"still running superseded code: {subject}; {action} "
-         f"(details: sysforge doctor --restart)")
+         f"(details: sysforge doctor system --restart)")
 
 
 def _emit_timings(timer: PhaseTimer, args) -> None:

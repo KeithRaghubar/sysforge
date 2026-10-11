@@ -62,7 +62,7 @@ def test_egl_software_wrong_renderer_fails(probe, vendor):
     f = ms.check_egl(software=True)
     assert f.check_id == "mesa_egl_software" and f.severity == "error"
     assert "radeonsi" in f.message
-    assert "doctor --graphics" in f.remediation
+    assert "doctor system --graphics" in f.remediation
 
 
 def test_egl_nonzero_exit_fails_with_stderr_tail(probe, vendor):

@@ -660,7 +660,7 @@ def adopt(registry, src, cls: str | None = None):
     if cls == CLASS_HOOK and src.name in _sysforge_owned_names():
         raise ArtifactError(
             f"{src.name} is a sysforge-owned artifact: manage it with "
-            "`sysforge setup` / `sysforge doctor --pacman`, not `artifact`"
+            "`sysforge setup` / `sysforge doctor system --pacman`, not `artifact`"
         )
     try:
         data = src.read_bytes()
