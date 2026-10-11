@@ -1,26 +1,8 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. An entry leads with its
-roadmap ID, in the same shape ROADMAP.md entries use:
+Sandboxed builds now see the system you actually run: sysforge publishes your own builds and foreign packages into a read-only local repo for the build container, audits the container's `makepkg.conf` for settings that still point at the host, records the compiler that really built each package, and fixes a run of dependency bugs that broke Rust, `lib32-*` and `-git` builds in the sandbox. Also: `sysforge bench toolchain` to measure your optimized clang against stock, one sudo prompt per `build`/`update` with makepkg no longer escalating on its own, a `doctor` roster of ran and skipped checks, a post-install mesa smoke check, PGO profile staleness reporting, a `CONFIG_RUST` host preflight for `run kernel`, per-package build ETAs, pacman hook output kept in the run log, DKMS rebuilds that no longer hit sysforge's memory cap, new drift, freeze and kernel guides, and a CI job that runs every pre-release gate in a clean container.
 
-    - **`1.2.0-F35` — <title sentence>.** <body>
-
-    ---
-
-    - **`1.2.0-F36` — …
-
-Entries are separated by a `---` rule and kept in ascending ID order within each
-section. Flag breaking changes with a **Breaking:** prefix opening the body, plus
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+---
 
 ## Added
 
@@ -144,7 +126,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.3.0-B18` — a failed kernel FDO sidecar write reports its own error, not the cleanup's.** When writing `round.toml` or `applied.toml` failed, the temporary file was unlinked before re-raising. The unlink is in the same directory, so it tends to fail the same way, and when it did, its error replaced the original and the warning named the cleanup rather than the write. The cleanup's errors are now suppressed so the original always propagates. Also: `fdo.building_pkgver`'s docstring now says it reads the static PKGBUILD, and the three remaining `"PKGBUILD.sysforge"` literals use `pkgbuild_patcher.PATCHED_PKGBUILD_NAME`.
+- **`3.3.0-B18` — a failed kernel FDO sidecar write reports its own error, not the cleanup's.** When writing `round.toml` or `applied.toml` failed, the temporary file was unlinked before re-raising. The unlink is in the same directory, so it tends to fail the same way, and when it did, its error replaced the original and the warning named the cleanup rather than the write. The cleanup's errors are now suppressed so the original always propagates.
 
 ---
 
