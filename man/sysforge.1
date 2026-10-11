@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-10"
+.TH "sysforge" "1" "2026\-10\-11"
 .PP
 .PP
 .SH NAME
@@ -920,6 +920,33 @@ Package name(s) or pkgbase(s) to stop tracking.\& A pkgbase forgets every split\
 Override state directory.\&
 .PP
 .RE
+.SS bench
+.PP
+\fBsysforge bench\fR \fISUBCOMMAND\fR
+.PP
+Measure whether an optimized build is faster than stock (report only).\&
+.PP
+.SS bench toolchain
+.PP
+\fBsysforge bench toolchain\fR [\fIOPTIONS\fR]
+.PP
+Compile a fixed workload with the stock repo clang and the installed sysforge clang, interleaved; report the median, spread and ratio.\& Read\-only: the stock build is unpacked to a temp dir.\&
+.PP
+\fB\-\-runs\fR \fIN\fR
+.RS 4
+Timed rounds per compiler (default 5).\&
+.PP
+.RE
+\fB\-\-offline\fR
+.RS 4
+Use the stock package only from the pacman cache; never download.\&
+.PP
+.RE
+\fB\-\-state\-dir\fR \fIDIR\fR
+.RS 4
+Override state directory (where bench.\&toml is recorded).\&
+.PP
+.RE
 .SS artifact
 .PP
 \fBsysforge artifact\fR \fISUBCOMMAND\fR
@@ -1679,6 +1706,10 @@ over\-minimize to modules currently loaded and accumulate the lsmod
 snapshot at <state_dir>/lsmod.\&snapshot (delete it to reset).\&
 Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,
 \fBrun reconfigure\fR, \fBstate boot\-entries\fR, and \fBdoctor\fR on the matching axes.\&
+toolchain.\&toml [bench] \fBcorpus\fR (default: unset) names the source
+files or directories \fBbench toolchain\fR compiles; unset uses its
+built\-in workload.\& Each file is compiled on its own with only \-O2 \-c
+(\-std=c++17 for C++), so it must not need include paths or defines.\& Also read by \fBbench toolchain\fR and \fBstate profiles\fR.\&
 .PP
 .RE
 build_state.\&toml (under the state directory)
@@ -1689,6 +1720,14 @@ directory resolves from \fB\-\-state\-dir\fR, $SYSFORGE_STATE_DIR, or the
 default /var/lib/sysforge.\&
 Read by: \fBstate\fR (read/write), \fBbuild\fR, \fBupdate\fR, \fBdoctor\fR, and the
 install\-bearing \fBrun\fR stages.\&
+.PP
+.RE
+bench.\&toml (under the state directory)
+.RS 4
+The last \fBsysforge bench\fR result per target: the stock and installed
+versions, the workload and its fingerprint, both medians and the
+stock/sysforge ratio.\& Safe to delete.\&
+Written by: \fBbench toolchain\fR.\& Read by: \fBstate profiles\fR (GAIN column).\&
 .PP
 .RE
 .SH ENVIRONMENT

@@ -202,7 +202,8 @@ Mechanism lives in the cited §DESIGN section.
   (`<stage>/config.py::from_toml`) — **never re-read a TOML key at a use site**, and never default
   one there. `raw` is kept only for the store resolvers (`resolve_pgo_store`,
   `bolt.resolve_store`), `resolve_pkgbuild_src_dir` and the Pass-4 `config_digest` (which must
-  keep hashing the raw table or every reuse cache key changes).
+  keep hashing the raw table, via `reuse_digest_raw` minus the build-inert `[bench]`, or every reuse
+  cache key changes).
   `KernelConfig.compiler` is `str | None`: unset means "inherit from pipeline state". §Config Layer.
 
 - **Health = exactly two checkers**: `toolchain/verify.py::verify_llvm_install` (`run toolchain`) +

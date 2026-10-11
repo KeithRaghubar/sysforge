@@ -601,6 +601,30 @@ def _load_toolchain_cfg() -> dict | None:
     return _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
 
 
+def _bench_state_dir():
+    from sysforge.primitives.paths import resolve_state_dir
+    return resolve_state_dir(None)[0]
+
+
+def _toolchain_gain() -> str:
+    """The ``instr-pgo`` row's GAIN cell, from ``bench.toml`` (3.4.0-F6).
+
+    ``1.20x``, ``1.20x (stale)`` once clang or the bench workload has moved since
+    the measurement, or ``-`` with no result (or none with a ratio, as across a
+    major-version gap).
+    """
+    from sysforge import bench_cmd
+    from sysforge.primitives import bench_state
+
+    result = bench_state.load(_bench_state_dir(), bench_cmd.TARGET)
+    if result is None or result.ratio is None:
+        return "-"
+    fp = bench_cmd.current_fingerprint(bench_cmd._load_tcfg())
+    stale = fp is None or bench_state.is_stale(
+        result, bench_cmd.installed_version("clang"), fp)
+    return f"{result.ratio:.2f}x" + (" (stale)" if stale else "")
+
+
 def cmd_state_profiles(args) -> int:
     """List the shared profile store, or reclaim one store (3.2.0-F11).
 
@@ -652,22 +676,31 @@ def cmd_state_profiles(args) -> int:
             print("No collected profiles in the profile store.")
             return 0
         now = time.time()
+
+        def _is_toolchain(r) -> bool:
+            return r.method == "instr-pgo" and not r.target
+
+        gain = _toolchain_gain() if any(_is_toolchain(r) for r in rows) else "-"
         table = [
             (
                 r.method + (f"/{r.target}" if r.target else ""),
                 fmt_bytes(r.size_bytes),
                 f"{int((now - r.mtime) // 86400)}d",
                 r.collected_version or "-",
+                gain if _is_toolchain(r) else "-",
                 str(r.path),
             )
             for r in rows
         ]
-        header = ("STORE", "SIZE", "AGE", "COLLECTED", "PATH")
-        widths = [max(len(header[i]), *(len(t[i]) for t in table)) for i in range(4)]
+        header = ("STORE", "SIZE", "AGE", "COLLECTED", "GAIN", "PATH")
+        widths = [max(len(header[i]), *(len(t[i]) for t in table)) for i in range(5)]
         fmt = "  ".join(f"{{:<{w}}}" for w in widths) + "  {}"
         print(fmt.format(*header))
         for t in table:
             print(fmt.format(*t))
+        if gain != "-":
+            print("\nGAIN: stock/sysforge compile-time ratio from "
+                  "`sysforge bench toolchain`.")
         print("\nReclaim one with: sysforge state profiles --purge <STORE>")
     return 0
 

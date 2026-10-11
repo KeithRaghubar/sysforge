@@ -338,7 +338,7 @@ class ToolchainStage(Stage):
                 config_digest = build_fingerprint.hash_obj({
                     "profiles": sysforge_config.get("profiles"),
                     "rules": sysforge_config.get("rules"),
-                    "toolchain": tcfg.raw,
+                    "toolchain": tcfg.reuse_digest_raw,
                 })
                 built_map, cc, cxx, ld, variant = pgo.build_llvm_pgo_inner(
                     pgo_map, non_pgo_map, lib32_map,

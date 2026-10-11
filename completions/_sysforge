@@ -34,6 +34,7 @@ _sysforge() {
         doctor)   _sysforge_doctor   ;;
         packages) _sysforge_packages ;;
         state)    _sysforge_state    ;;
+        bench)    _sysforge_bench    ;;
         revert-to-stock) _sysforge_revert ;;
         run)      _sysforge_run      ;;
         search)   _sysforge_search   ;;
@@ -86,6 +87,7 @@ _sysforge_commands() {
     'env:print the inherited env chain'
     'log:page the unified or per-package sysforge log through $PAGER'
     'state:inspect build_state.toml, failures and profile stores'
+    'bench:measure an optimized build against stock (report only)'
     'artifact:inventory user-authored scripts, units, and pacman hooks'
     'setup:configure system integration (IgnoreGroup, pacman hooks)'
     'config:adopt .sfnew/.pacnew config companions (merge)'
@@ -477,6 +479,37 @@ _sysforge_state_subcommands() {
     'forget:stop maintaining package(s) (delete their build_state record)'
   )
   _describe 'subcommand' subcommands
+}
+
+_sysforge_bench() {
+  local context state state_descr line
+  typeset -A opt_args
+
+  _arguments -C \
+    '1: :_sysforge_bench_targets' \
+    '*:: :->args'
+
+  case $state in
+    args)
+      case $words[1] in
+        toolchain) _sysforge_bench_toolchain ;;
+      esac
+      ;;
+  esac
+}
+
+_sysforge_bench_targets() {
+  local targets=(
+    'toolchain:time the installed clang against the stock repo clang'
+  )
+  _describe 'target' targets
+}
+
+_sysforge_bench_toolchain() {
+  _arguments \
+    '--runs[timed rounds per compiler (default 5)]:runs:' \
+    '--offline[use the stock package only from the pacman cache]' \
+    '--state-dir[override state directory]:dir:_directories'
 }
 
 _sysforge_state_list() {

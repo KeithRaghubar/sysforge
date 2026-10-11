@@ -26,7 +26,7 @@ _sysforge() {
 
     # Ordered by usage tier to mirror `sysforge --help` (2.5.0-F1):
     # Everyday, then Inspect, then Maintain.
-    local commands="build update fetch search help doctor resolve env log state artifact setup config packages run revert-to-stock uninstall"
+    local commands="build update fetch search help doctor resolve env log state bench artifact setup config packages run revert-to-stock uninstall"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -74,6 +74,7 @@ _sysforge() {
         doctor)      _sysforge_doctor      ;;
         packages)    _sysforge_packages    ;;
         state)       _sysforge_state       ;;
+        bench)       _sysforge_bench       ;;
         revert-to-stock) _sysforge_revert  ;;
         run)         _sysforge_run         ;;
         search)      _sysforge_search      ;;
@@ -334,6 +335,21 @@ _sysforge_packages() {
     esac
 }
 
+_sysforge_bench() {
+    _sysforge_flag_arg && return
+    if [[ -z $subverb ]]; then
+        COMPREPLY=( $(compgen -W "toolchain" -- "$cur") )
+        return
+    fi
+    case "$subverb" in
+        toolchain)
+            [[ $prev == "--runs" ]] && { COMPREPLY=(); return; }
+            [[ $prev == "--state-dir" ]] && { COMPREPLY=( $(compgen -d -- "$cur") ); return; }
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--runs --offline --state-dir" -- "$cur") )
+            ;;
+    esac
+}
+
 _sysforge_state() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
@@ -461,6 +477,7 @@ _sysforge_help() {
         packages) subs="list add add-group remove" ;;
         run)      subs="pipeline hardware reconfigure toolchain packages kernel" ;;
         state)    subs="list repair orphans profiles boot-entries failed forget" ;;
+        bench)    subs="toolchain" ;;
     esac
     COMPREPLY=( $(compgen -W "$subs" -- "$cur") )
 }

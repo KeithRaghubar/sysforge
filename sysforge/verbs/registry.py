@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 
+from sysforge.bench_cmd import BENCH_GROUP
 from sysforge.build_cmd import BuildVerb
 from sysforge.completions_cmd import CompletionsVerb
 from sysforge.config_cmd import CONFIG_GROUP
@@ -51,6 +52,7 @@ COMMANDS: tuple[type[Verb] | VerbGroup, ...] = (
     DOCTOR_GROUP,
     PACKAGES_GROUP,
     STATE_GROUP,
+    BENCH_GROUP,
     RevertToStockVerb,
     RUN_GROUP,
     SearchVerb,
@@ -75,7 +77,7 @@ COMMANDS: tuple[type[Verb] | VerbGroup, ...] = (
 # appears in the listing).
 _COMMAND_TIERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Everyday", ("build", "update", "fetch", "search", "help")),
-    ("Inspect", ("doctor", "resolve", "env", "log", "state", "artifact")),
+    ("Inspect", ("doctor", "resolve", "env", "log", "state", "bench", "artifact")),
     ("Maintain",
      ("setup", "config", "packages", "run", "revert-to-stock", "uninstall")),
 )

@@ -301,3 +301,20 @@ def test_training_corpus_is_resolved_at_parse_time():
     cfg = ToolchainConfig.from_toml(
         {"packages": {"training_corpus": ["llvm", "mesa"]}})
     assert cfg.training_corpus == ("mesa",)
+
+
+def test_bench_corpus_parsed_and_defaulted():
+    """`[bench] corpus` (3.4.0-F6): parsed once at entry, list or bare string."""
+    assert ToolchainConfig.from_toml({}).bench_corpus == ()
+    tc = ToolchainConfig.from_toml({"bench": {"corpus": ["~/c", "/x.cpp"]}})
+    assert tc.bench_corpus == ("~/c", "/x.cpp")
+    assert ToolchainConfig.from_toml({"bench": {"corpus": "/one"}}).bench_corpus == ("/one",)
+
+
+def test_reuse_digest_ignores_the_bench_table():
+    """[bench] tunes a read-only verb; editing it must not invalidate the Pass-4
+    reuse cache, and a config without it hashes exactly as before."""
+    base = {"enabled": True, "llvm": {"targets": ["X86"]}}
+    assert ToolchainConfig.from_toml(dict(base)).reuse_digest_raw == base
+    with_bench = dict(base, bench={"corpus": ["~/src/x"]})
+    assert ToolchainConfig.from_toml(with_bench).reuse_digest_raw == base

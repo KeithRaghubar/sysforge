@@ -100,7 +100,7 @@ _KNOWN_SECTIONS: dict[str, set[str]] = {
                        "package_compiler_overrides"},
     "packages.toml":  {"build", "package", "group"},
     "kernel.toml":    {"kconfig", "fdo"},
-    "toolchain.toml": {"packages", "llvm", "bolt"},
+    "toolchain.toml": {"packages", "llvm", "bolt", "bench"},
     "bootstrap.toml": {"partition", "system", "mirror", "desktop", "makepkg"},
 }
 

@@ -1026,5 +1026,13 @@ is best-effort — a full disk, an unwritable state dir, or a corrupt archive yi
 stepped over, never raised. `previous` returning `None` on a first build is a real answer, not an
 error: there is nothing to compare against, and the summary says so.
 
----
+### Bench primitives (`3.4.0-F6`)
 
+The four leaf modules behind `sysforge bench toolchain` (§CLI Verb Framework). Each owns one concern; `bench_cmd.py` orchestrates them.
+
+- **`bench_workload.py`** — what is compiled. `default_workload(dest_dir)` writes the bench's own header-heavy C++17 TU and plain C TU; `configured_workload(entries)` resolves `[bench] corpus` (files or directories, filtered to `.c .cc .cpp .cxx`, raising `ValueError` for a missing entry or a corpus with no sources); `fingerprint(files)` / `default_fingerprint()` hash names and bytes, order-independently; `compile_argv` builds the `-O2 -c` command. The TUs are deliberately **not** BOLT's training TU (`bolt._DEFAULT_WORKLOAD_TU`): the day BOLT works, Pass 5 profiles clang on that file, and measuring on a training input flatters the result; a BOLT-tuning edit must also never change what the bench measures.
+- **`bench_harness.py`** — how it is timed. `run_interleaved(jobs, runs)` runs one untimed warm-up round per `Job` then `runs` alternating rounds through the `run` seam, timing each with `perf_counter`; a non-zero compile raises `BenchFailed` naming the compiler and command. `summarize` gives median/low/high; `version_relation` classifies `[epoch:]pkgver-pkgrel` pairs as `same`/`differs`/`major-gap`; `ratio` is stock median over installed median and `None` across a major gap. No thresholds live here.
+- **`bench_state.py`** — the sole reader/writer of `<state_dir>/bench.toml` (one table per target, other targets' tables preserved). It writes with its own temp-file-plus-`os.replace` and deliberately **not** `atomic_write.replace_file`, which escalates through the privilege seam on a refused write: `bench` is read-only and must never prompt for sudo, so an unwritable state dir raises `OSError` and the verb warns. `load` returns `None` for a missing, malformed, incomplete or wrongly typed table; `is_stale(result, installed_version, fingerprint)` is the one staleness rule `state profiles` uses.
+- **`stock_pkg.py`** — the unprivileged sibling of `build_sandbox.fetch_repo_packages`. `resolve(names)` asks `pacman -Sp --print-format '%n|%v|%r|%f|%l|%h'` (keeping only the requested names, refusing one that resolves to the sandbox's local repo); `obtain` uses a cached archive (a `file://` location or a `CacheDir` hit) or downloads into a temp dir as the user, and checks every archive against the sync database's `%h` checksum before use; `extract` unpacks `usr/` with `bsdtar` (Python 3.12's `tarfile` cannot read zstd). Every failure is a `StockUnavailable` carrying the reason. It never escalates and never writes the system cache.
+
+---

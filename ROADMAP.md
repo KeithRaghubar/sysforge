@@ -114,16 +114,22 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.4.0-B14` | update --help says --explain-drift does no source sync, but it does | med | small | patch |
+| `3.4.0-B17` | a mistyped [bench] table breaks toolchain.toml parsing for every verb | med | small | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
-| `3.4.0-F6` | nothing measures whether an optimized build is actually faster than stock | med | large | minor |
 | `3.4.0-B15` | run kernel --help says --no-update skips git pull --rebase | low | small | patch |
 | `3.4.0-B16` | the shipped kernel.toml and the README number the stages wrong | low | small | patch |
+| `3.4.0-B18` | rebuilding the toolchain at the same version leaves an old GAIN looking current | low | small | patch |
+| `3.4.0-B20` | state profiles looks up the bench result the wrong way | low | small | patch |
+| `3.4.0-B21` | bench toolchain unpacks about 440 MB into $TMPDIR | low | small | patch |
 | `3.4.0-F8` | a version change doesn't show how big the jump is | low | small | minor |
+| `3.4.0-F9` | bench toolchain prints nothing while it downloads, unpacks and times | low | small | minor |
+| `3.4.0-F10` | bench toolchain always times stock first in every round | low | small | patch |
 | `3.4.0-STD2` | two standards rows share the number 28 | low | small | patch |
+| `3.4.0-B19` | bench toolchain's stock fetch fails in cases pacman itself would get through | low | medium | patch |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
@@ -361,37 +367,6 @@ canonical ordering.
 
 ---
 
-- **`3.4.0-F6` — nothing measures whether an optimized build is actually faster than stock.**
-  The project's premise is that profiled, PGO-built packages run faster than the stock Arch build.
-  The toolchain stage spends hours on a PGO pipeline, but nothing compares the result against the
-  stock package, so neither the user nor the project can tell whether a rebuild paid off. Start
-  with the LLVM toolchain, because it already has a workload: `resolve_training_corpus`
-  (`pipeline/stages/toolchain/config.py`). Add a read-only `bench` verb (Inspect tier,
-  `requires_sentinel=False`, since it installs nothing) with a `toolchain` target. It extracts the
-  stock `clang`/`llvm-libs` from the pacman cache (or `pacman -Sw`) into a temporary prefix,
-  compiles the corpus with the stock clang and then with the installed sysforge clang, interleaves
-  the runs (`--runs N`, default small), and reports the median wall time, the spread and the
-  stock/sysforge ratio. Profiling the same corpus the profile was trained on flatters the result,
-  so the report says which corpus it ran, and a `toolchain.toml [bench] corpus` key accepts a
-  held-out one. When the stock and installed versions differ the report says so, and it shows no
-  ratio across a major-version gap. **Report only, never a verdict:** no pass/fail threshold,
-  following the no-machine-calibrated-numbers rule, because a cutoff tuned on one host means
-  nothing on another. Persist the last result per target in the state dir (its own file, keyed by
-  the target and the installed version) so `state profiles` can show the measured gain next to the
-  profile it came from, and a later version bump marks the result stale. Other targets (mesa via a
-  shader-compile replay, the kernel) are follow-ups, not part of this item. Completions and the man
-  page gain the verb in the same change. Tests: the ratio and median computation; the
-  version-mismatch and major-gap paths; the stale-result marking; and the stock-extraction failure
-  path (no cached package and `--offline`), which must report and exit cleanly rather than compare
-  against nothing.
-  *Priority: med · Effort: large · Bump: minor* — med because it is observability on the project's
-  central claim; large for stock-package extraction, an isolated run harness, a new verb and the
-  persisted result.
-  **Standards home on adoption:** none; `docs/design/` gains the verb, and the PGO guide gains a
-  "did it help?" section.
-
----
-
 - **`3.4.0-F7` — no verb has machine-readable output, so scripts must parse prose meant for
   people.** `state list`, `doctor` and `update --dry-run` each answer a question a status bar, a
   notification hook or a timer wrapper would want to ask ("what is drifted?", "what failed?",
@@ -436,6 +411,33 @@ canonical ordering.
   *Priority: low · Effort: small · Bump: minor* — low because nothing is wrong today, it only makes
   a long summary faster to read. Small because there is one function to change and the colour
   gate already exists.
+
+---
+
+- **`3.4.0-F9` — `bench toolchain` prints nothing while it downloads, unpacks and times.** At
+  default verbosity the verb is silent from launch until the report: the stock `clang` and
+  `llvm-libs` download (about 105 MB when not cached), the extraction, and `2 x (runs + 1)` timed
+  compile rounds (about 40 s on the dev host before any download) show no sign of life, which reads
+  as a hang. `doctor` and `fetch` already drive `ui/progress`; reuse it through
+  `progress_hooks.hooks()` so the primitives stay free of `ui/` imports, with a phase line
+  ("fetching stock clang", "unpacking", "round 3/5") that the report then replaces. The narration
+  that exists today stays at `info()`. Tests: the progress hook is called once per phase and once
+  per round; `quiet_at_default` still passes; nothing changes with `--quiet`.
+  *Priority: low · Effort: small · Bump: minor* — low because the bench completes correctly;
+  small because the progress surface and its protocol already exist.
+
+---
+
+- **`3.4.0-F10` — `bench toolchain` always times stock first in every round.** Each round runs
+  stock then sysforge (`bench_harness.run_interleaved`), so any systematic within-round order
+  effect (a compiler warming caches the other reuses, a turbo budget spent by the first job) lands
+  on the same side every time. Alternating the order per round (ABBA) cancels it at no cost in
+  runs. Keep one untimed warm-up per compiler. Tests: the call order over four rounds is
+  stock, sysforge, sysforge, stock, stock, sysforge, sysforge, stock; per-label sample counts
+  unchanged. Files under `## Changed`: it changes how the number is measured, not the interface.
+  *Priority: low · Effort: small · Bump: patch* — low because interleaving already spreads drift
+  and no order effect has been observed; small because it is the loop in one function.
+
 
 ### Bugs
 
@@ -482,6 +484,76 @@ canonical ordering.
   `tests/data/etc/sysforge/` update too (`make check-shipped`).
   *Priority: low · Effort: small · Bump: patch* — low because it is a comment; small because it
   is one number per file.
+
+---
+
+- **`3.4.0-B17` — a mistyped `[bench]` table breaks `toolchain.toml` parsing for every verb.**
+  `ToolchainConfig.from_toml` reads `[bench] corpus` without checking types, so `corpus = 5`
+  raises `TypeError` and `bench = "x"` raises `AttributeError` while the config loads. That is
+  not limited to `bench toolchain`: `run toolchain` and `state profiles` load the same config and
+  fail with a traceback over a key that configures no build. Validate in `from_toml` the way
+  `_soname_mode` does: warn and fall back to the default (built-in workload) rather than abort,
+  accepting a string or a list of strings. Tests: `corpus = 5`, `corpus = [1]` and `bench = "x"`
+  each warn and parse to `bench_corpus == ()`; a valid list is unchanged.
+  *Priority: med · Effort: small · Bump: patch* — med because a one-character typo in an advisory
+  table takes down the toolchain stage; small because it is one parse site.
+
+---
+
+- **`3.4.0-B18` — rebuilding the toolchain at the same version leaves an old GAIN looking
+  current.** `bench_state.is_stale` compares only the installed `pacman -Q` version and the
+  workload fingerprint. A toolchain rebuild with a fresh profile (`--rebuild-profdata`, a broader
+  `training_corpus`, new flags) keeps the same `pkgver-pkgrel`, so `state profiles` keeps showing
+  the previous build's ratio without `(stale)`. Record `build_state`'s `built_at` for `clang` in
+  `bench.toml` and treat a different value as stale. An older `bench.toml` without the field
+  then loads as stale rather than failing. Tests: same version with a newer `built_at` is stale;
+  equal values are not; a result missing the field is stale.
+  *Priority: low · Effort: small · Bump: patch* — low because the number was right when measured
+  and a re-run fixes it; small because the field already exists in `build_state.toml`.
+
+---
+
+- **`3.4.0-B19` — `bench toolchain`'s stock fetch fails in cases pacman itself would get
+  through.** Three gaps in `primitives/stock_pkg.py`. `%l` names only the first `Server`, so a
+  lagging mirror, or a sync DB newer than that mirror, gives a 404 where pacman would try the next
+  mirror; the error should try the remaining servers (`pacman-conf --repo <repo> Server`) before
+  giving up. A cached archive that fails the checksum is a hard error rather than a fallback to
+  downloading a fresh copy into the temp dir (the cache file itself is never touched). And `pacman
+  -Sp` resolves dependencies against the installed system, so an unrelated transaction-prepare
+  failure (a conflict, a versioned dependency) blocks a bench that only needs two archives;
+  `-Sp -dd` decouples that. Tests: first server 404 then second succeeds; corrupt cache plus
+  `--offline` still errors, without `--offline` downloads; the argv carries `-dd`.
+  *Priority: low · Effort: medium · Bump: patch* — low because the common case (cache hit, healthy
+  mirror) works; medium for the mirror fallback and its tests.
+
+---
+
+- **`3.4.0-B20` — `state profiles` looks up the bench result the wrong way.** `_toolchain_gain`
+  calls `resolve_state_dir(None)`, which on an unprovisioned `/var/lib/sysforge` enters the
+  `fs_provision` path that can ask for sudo, from a read-only listing; it also ignores
+  `--state-dir`, so a result saved with `bench toolchain --state-dir X` never shows in GAIN (give
+  `state profiles` the same `--state-dir` flag). It re-hashes the whole configured `[bench]
+  corpus` on every listing, a hidden cost for a large corpus; compare a cheaper key (paths, sizes,
+  mtimes) first and hash only when that changed. And it reaches into the private
+  `bench_cmd._load_tcfg`; make the loader public or share the toolchain loader `state_cmd` already
+  has. Completions and the man page gain the flag. Tests: `--state-dir` is honoured; no
+  provisioning call happens when the default dir is unwritable; an unchanged corpus is not re-hashed.
+  *Priority: low · Effort: small · Bump: patch* — low because it only matters with a non-default
+  state dir or a large corpus; small because each part is a few lines.
+
+---
+
+- **`3.4.0-B21` — `bench toolchain` unpacks about 440 MB into `$TMPDIR`.** The whole `usr/` tree
+  of `clang` and `llvm-libs` is extracted into a `TemporaryDirectory`, and a downloaded archive
+  stays beside it until the run ends. On Arch `$TMPDIR` is usually `/tmp`, a tmpfs, so that is RAM
+  for the length of the run, and a small tmpfs fails the extraction outright. Extract only what
+  the compiler needs (`usr/bin/clang*`, `usr/lib/libclang-cpp.so*`, `usr/lib/libLLVM*.so*`,
+  `usr/lib/clang/`), delete a downloaded archive once it is unpacked, and say in the PGO guide how
+  much space the run uses. Tests: `extract` passes the member list to `bsdtar`; a downloaded
+  archive is gone after extraction; a cached one is left alone.
+  *Priority: low · Effort: small · Bump: patch* — low because it works on a typical desktop;
+  small because it is one argv and one unlink.
+
 
 ### Standards
 

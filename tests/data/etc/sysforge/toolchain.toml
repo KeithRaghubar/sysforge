@@ -73,6 +73,11 @@ enabled = false
 # training_workload — .cpp to profile; empty = generated header-heavy TU
 # training_workload = ""
 
+# `sysforge bench toolchain` workload — see etc/sysforge/toolchain.toml.
+# [bench]
+# corpus — standalone .c/.cc/.cpp/.cxx files or dirs; empty = built-in TUs
+# corpus = ["~/bench-sources"]
+
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #

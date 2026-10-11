@@ -205,3 +205,60 @@ def test_orphaned_profile_notice_names_the_path(tmp_path, monkeypatch):
     assert len(lines) == 1
     assert str(store) in lines[0] and "state profiles --purge pgo/htop" in lines[0]
     assert state_cmd.orphaned_profile_lines(["ripgrep"]) == []
+
+
+# ---------------------------------------------------------------------------
+# GAIN column: the measured `bench toolchain` ratio (3.4.0-F6)
+# ---------------------------------------------------------------------------
+
+def _bench(tmp_path, monkeypatch, *, installed="23.1.1-1", fp=None, ratio=1.2):
+    from sysforge import bench_cmd, state_cmd
+    from sysforge.primitives import bench_state, bench_workload
+
+    tc = _tcfg(tmp_path)
+    _file(tmp_path / "root" / "llvm-pgo" / "clang.profdata", 2048)
+    _file(tmp_path / "root" / "pgo" / "htop" / "htop.profdata", 2048)
+    monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
+    monkeypatch.setattr(state_cmd, "_bench_state_dir", lambda: tmp_path)
+    monkeypatch.setattr(bench_cmd, "installed_version", lambda name: installed)
+    monkeypatch.setattr(bench_cmd, "_load_tcfg", lambda: None)
+    bench_state.save(tmp_path, "toolchain", bench_state.BenchResult(
+        installed_version="23.1.1-1", stock_version="23.1.1-1", corpus="c",
+        fingerprint=fp or bench_workload.default_fingerprint(), runs=5,
+        stock_median_s=4.2, installed_median_s=3.5, ratio=ratio,
+        measured_at="2026-10-11T00:00:00Z"))
+    return state_cmd
+
+
+def _gain(out, store):
+    lines = out.splitlines()
+    col = lines[0].index("GAIN")
+    row = next(line for line in lines if line.startswith(store + " "))
+    cell = row[col:].split()[0]
+    return cell + (" (stale)" if "(stale)" in row else "")
+
+
+def test_state_profiles_shows_gain_on_the_toolchain_row_only(tmp_path, monkeypatch, capsys):
+    state_cmd = _bench(tmp_path, monkeypatch)
+    assert state_cmd.cmd_state_profiles(_args()) == 0
+    out = capsys.readouterr().out
+    assert _gain(out, "instr-pgo") == "1.20x"
+    assert _gain(out, "pgo/htop") == "-"
+
+
+def test_state_profiles_gain_stale_on_version_bump(tmp_path, monkeypatch, capsys):
+    state_cmd = _bench(tmp_path, monkeypatch, installed="23.1.2-1")
+    state_cmd.cmd_state_profiles(_args())
+    assert _gain(capsys.readouterr().out, "instr-pgo") == "1.20x (stale)"
+
+
+def test_state_profiles_gain_stale_on_workload_change(tmp_path, monkeypatch, capsys):
+    state_cmd = _bench(tmp_path, monkeypatch, fp="0" * 64)
+    state_cmd.cmd_state_profiles(_args())
+    assert _gain(capsys.readouterr().out, "instr-pgo") == "1.20x (stale)"
+
+
+def test_state_profiles_gain_dash_without_ratio(tmp_path, monkeypatch, capsys):
+    state_cmd = _bench(tmp_path, monkeypatch, ratio=None)
+    state_cmd.cmd_state_profiles(_args())
+    assert _gain(capsys.readouterr().out, "instr-pgo") == "-"

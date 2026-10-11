@@ -24,6 +24,7 @@ sysforge/
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
 │   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
+│   ├── bench_cmd.py                   # sysforge bench namespace (toolchain): stock vs installed clang, report only
 │   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
 │   ├── verbs/
 │   │   ├── base.py                    # Verb ABC (incl. add_parser) + VerbGroup + PreCheckResult/ExecResult
@@ -49,6 +50,10 @@ sysforge/
 │       ├── makepkg_flags.py           # makepkg flag-string transforms (owns [FLAG] tag)
 │       ├── makepkg_artifacts.py       # built .pkg.tar* discovery + filename→version parse (pure, no tag)
 │       ├── makepkg_pgo.py             # PGO profdata state resolution (pure, no logger)
+│       ├── bench_workload.py          # bench-owned compile TUs + [bench] corpus resolution + fingerprint
+│       ├── bench_harness.py           # interleaved compile timing, median/spread, version relation, ratio
+│       ├── bench_state.py             # <state_dir>/bench.toml: last bench result per target (sole reader/writer)
+│       ├── stock_pkg.py               # unprivileged stock repo build: pacman -Sp, cache/download, sync-DB checksum, bsdtar
 │       ├── makepkg_env.py             # subprocess env resolution + effective build dir (owns [ENV] tag)
 │       ├── makepkg_conf.py            # temp makepkg.conf emission ctx-mgr (owns [CONF])
 │       ├── makepkg_invoke.py          # makepkg subprocess invocation + sudo-timeout retry (owns [MAKEPKG])

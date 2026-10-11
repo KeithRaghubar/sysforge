@@ -177,6 +177,19 @@ enabled = false
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# `sysforge bench toolchain`: stock repo clang vs the installed build
+#
+[bench]
+# corpus — files or directories of .c/.cc/.cpp/.cxx sources compiled as the
+#   timed workload. Empty (default) uses the bench's built-in synthetic TUs,
+#   which are not a PGO or BOLT training input. Point this at code the profile
+#   was not trained on for a held-out measurement. Each file is compiled on
+#   its own with only -O2 -c (-std=c++17 for C++), no include paths or
+#   defines, so use standalone or preprocessed (clang -E) sources.
+#corpus = ["~/bench-sources"]
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
 #
 [packages]

@@ -180,6 +180,10 @@ recovery command.
 	snapshot at <state_dir>/lsmod.snapshot (delete it to reset).
 	Read by: *run toolchain* / *run kernel*, *run pipeline*,
 	*run reconfigure*, *state boot-entries*, and *doctor* on the matching axes.
+	toolchain.toml [bench] *corpus* (default: unset) names the source
+	files or directories *bench toolchain* compiles; unset uses its
+	built-in workload. Each file is compiled on its own with only -O2 -c
+	(-std=c++17 for C++), so it must not need include paths or defines. Also read by *bench toolchain* and *state profiles*.
 
 build_state.toml (under the state directory)
 	Per-package build records (a superset of pacman -Q) plus the table
@@ -188,6 +192,12 @@ build_state.toml (under the state directory)
 	default /var/lib/sysforge.
 	Read by: *state* (read/write), *build*, *update*, *doctor*, and the
 	install-bearing *run* stages.
+
+bench.toml (under the state directory)
+	The last *sysforge bench* result per target: the stock and installed
+	versions, the workload and its fingerprint, both medians and the
+	stock/sysforge ratio. Safe to delete.
+	Written by: *bench toolchain*. Read by: *state profiles* (GAIN column).
 
 # ENVIRONMENT
 

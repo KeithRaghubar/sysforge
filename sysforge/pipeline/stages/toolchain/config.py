@@ -115,6 +115,10 @@ def _soname_mode(raw) -> str:
 # are never installed and never become -fprofile-use targets (the profile stays
 # clang-keyed). See DESIGN.md §Flag/Profile System (training corpus).
 _KNOWN_CORPUS = frozenset({"llvm", "mesa"})
+
+# toolchain.toml tables that configure no build, so the Pass-4 reuse digest
+# skips them (``ToolchainConfig.reuse_digest_raw``).
+_NON_BUILD_TABLES = frozenset({"bench"})
 _DEFAULT_TRAINING_CORPUS = ["llvm"]
 
 
@@ -202,9 +206,12 @@ class ToolchainConfig:
       with the wrapper's orphan-profraw guard and owns its own precedence
       (config > ``SYSFORGE_PGO_STORE`` > ``/var/cache``);
     * the Pass-4 reuse ``config_digest``, which hashes the toolchain settings
-      wholesale. It must keep hashing the raw table — hashing a field list
-      instead would change every existing cache key and silently invalidate
-      every user's reuse cache.
+      wholesale through :attr:`reuse_digest_raw`. It must keep hashing the raw
+      table — hashing a field list instead would change every existing cache
+      key and silently invalidate every user's reuse cache. The one exclusion
+      is ``[bench]`` (3.4.0-F6), which tunes a read-only verb and never reaches
+      a build: editing it must not cost an LLVM rebuild, and a config without
+      it hashes byte-identically to before.
     """
 
     raw: dict = field(default_factory=dict, repr=False)
@@ -237,6 +244,15 @@ class ToolchainConfig:
 
     bolt: BoltConfig = field(default_factory=BoltConfig)
 
+    # [bench] (3.4.0-F6): held-out workload for `sysforge bench toolchain`;
+    # empty → the bench's built-in TUs (primitives/bench_workload.py).
+    bench_corpus: tuple[str, ...] = ()
+
+    @property
+    def reuse_digest_raw(self) -> dict:
+        """``raw`` minus the tables that never reach a build (``[bench]``)."""
+        return {k: v for k, v in self.raw.items() if k not in _NON_BUILD_TABLES}
+
     @property
     def pgo_enabled(self) -> bool:
         """``pgo`` is only meaningful on the LLVM path.
@@ -259,6 +275,9 @@ class ToolchainConfig:
             return None
         pkgs = data.get("packages", {}) or {}
         bcfg = bolt_config(data)
+        corpus = (data.get("bench", {}) or {}).get("corpus", [])
+        if isinstance(corpus, str):
+            corpus = [corpus]
         return cls(
             raw=data,
             enabled=bool(data.get("enabled", False)),
@@ -278,6 +297,7 @@ class ToolchainConfig:
             lib32_pkgs=tuple(pkgs.get("lib32", constants.DEFAULT_LLVM_LIB32)),
             training_corpus=tuple(resolve_training_corpus(data)),
             bolt=BoltConfig(**bcfg),
+            bench_corpus=tuple(str(c) for c in corpus),
         )
 
 

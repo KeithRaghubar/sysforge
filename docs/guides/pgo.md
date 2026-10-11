@@ -221,6 +221,46 @@ Best practices:
 - **If a late package fails**, rerun with `--reuse-built` to skip re-optimizing the packages
   that already succeeded.
 
+### Did it help?
+
+`sysforge bench toolchain` compiles the same fixed workload with the stock repo clang and
+with your installed clang, alternating between them, and reports each one's median time,
+its spread and the stock/sysforge ratio. A ratio above 1.00x means your build compiled
+the workload faster.
+
+```sh
+sysforge bench toolchain            # 5 interleaved runs per compiler
+sysforge bench toolchain --runs 10  # tighter median, longer run
+sysforge bench toolchain --offline  # use the stock package only from the pacman cache
+```
+
+The bench gives no pass or fail verdict, because what counts as a worthwhile gain depends
+on your machine and on what you compile. It installs nothing and needs no sudo: the stock
+clang is unpacked into a temporary directory. If the stock package isn't in the pacman
+cache it is downloaded as your user and checked against the sync database's checksum
+before it is used.
+
+By default the workload is a pair of built-in source files that no profile is trained on.
+To measure on your own code, list files or directories in `toolchain.toml`:
+
+```toml
+[bench]
+corpus = ["~/bench-sources"]
+```
+
+Each file is compiled on its own with only `-O2 -c` (and `-std=c++17` for C++), with no
+include paths or defines. Point the corpus at sources that build that way, such as
+single-file programs or preprocessed sources (`clang -E` output saved as `.c`/`.cpp`),
+rather than at a project's `src/` directory, whose files usually need its headers.
+
+The result is recorded, and `sysforge state profiles` shows it in the GAIN column next to
+the toolchain profile. It is marked `(stale)` once clang is upgraded or the workload
+changes; run the bench again to refresh it.
+
+If the stock and installed clang versions differ, the report says so, because the ratio
+then includes upstream changes as well as the optimization. Across a major-version gap it
+shows no ratio at all.
+
 ---
 
 ## Kernel AutoFDO / Propeller
@@ -456,7 +496,7 @@ a warning if enabled.
 ## Inspecting and cleaning up profiles
 
 ```sh
-sysforge state profiles                    # every store: method, size, age, collected version
+sysforge state profiles                    # every store: method, size, age, collected version, measured gain
 sysforge state profiles --purge pgo-mesa   # delete one store (asks first)
 sysforge state profiles --purge pgo/htop   # per-package stores are METHOD/TARGET
 ```
