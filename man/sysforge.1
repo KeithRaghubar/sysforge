@@ -268,7 +268,7 @@ Run a post\-build ABI compatibility check on built shared libraries.\& Also sett
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase before building.\&
+Skip the source sync (fetch and fast\-forward) and build the PKGBUILD as checked out.\& \-\-cleansrc still syncs.\&
 .PP
 .RE
 \fB\-\-cleansrc\fR
@@ -338,7 +338,7 @@ Resolve and rebuild VCS packages (\-git, \-svn, \-hg, \-bzr) whose upstream HEAD
 .RE
 \fB\-\-offline\fR
 .RS 4
-No network: skip git pulls, clones, and AUR RPC.\& Pure local version check.\&
+No network: skip the source sync, clones, and AUR RPC.\& Pure local version check.\&
 .PP
 .RE
 \fB\-\-install\-only\fR
@@ -488,7 +488,7 @@ One or more package names to download.\&
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase for packages that are already cloned.\&
+Skip the source sync (fetch and fast\-forward) for packages that are already cloned.\& \-\-cleansrc still syncs.\&
 .PP
 .RE
 \fB\-\-cleansrc\fR
@@ -1211,7 +1211,7 @@ Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, 
 .PP
 \fBsysforge run pipeline\fR [\fIOPTIONS\fR]
 .PP
-Run the full install pipeline (stages 1–8).\&
+Run the full install pipeline (stages 1–7).\&
 .PP
 \fB\-\-resume\fR
 .RS 4
@@ -1285,7 +1285,7 @@ Run a post\-build ABI compatibility check on built shared libraries.\&
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase before each build.\&
+Skip the source sync (fetch and fast\-forward) in every stage that builds, and build each tree as checked out.\&
 .PP
 .RE
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (per stage reached)
@@ -1350,7 +1350,7 @@ Show what would run without executing anything.\&
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase before each build.\&
+Skip the source sync (fetch and fast\-forward) of the toolchain PKGBUILDs and build them as checked out.\&
 .PP
 .RE
 \fB\-\-makepkg\fR, \fB\-m\fR \fIFLAGS\fR
@@ -1450,7 +1450,7 @@ Retry all failed packages without prompting.\&
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase before each build.\&
+Skip the source sync (fetch and fast\-forward) of each package and build it as checked out.\&
 .PP
 .RE
 \fB\-\-no\-pkg\-logs\fR
@@ -1505,7 +1505,7 @@ Show what would run without executing anything.\&
 .RE
 \fB\-\-no\-update\fR
 .RS 4
-Skip git pull \-\-rebase before each build.\&
+Skip the source sync (fetch and fast\-forward) of the kernel tree and build it as checked out.\&
 .PP
 .RE
 \fB\-\-cleansrc\fR

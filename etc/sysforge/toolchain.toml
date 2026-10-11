@@ -1,5 +1,5 @@
 # =============================================================================
-# toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
+# toolchain.toml — custom LLVM or GCC toolchain build (stage 5 / sysforge run toolchain)
 #
 # Everything down to line 30 ("END OF HEADER") is documentation;
 # the settings themselves start below it.

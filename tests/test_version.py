@@ -154,3 +154,42 @@ def test_vercmp_does_not_log_when_the_binary_is_missing():
         vercmp("1.0-1", "2.0-1")
 
     assert lines == []
+
+
+# ---------------------------------------------------------------------------
+# vercmp_local: pure port of libalpm's alpm_pkg_vercmp (3.4.0-F8)
+# ---------------------------------------------------------------------------
+
+_VERCMP_PAIRS = [
+    ("1.0-1", "1.0-1"), ("1.0-1", "1.0-2"), ("1.0-2", "1.0-1"),
+    ("1.0", "1.0.0"), ("1.0.0", "1.0"), ("1.0a", "1.0"), ("1.0", "1.0a"),
+    ("1.0rc1", "1.0"), ("1.0alpha", "1.0beta"), ("1.0.a", "1.0.1"),
+    ("1:1.0-1", "2.0-1"), ("2.0-1", "1:1.0-1"), ("0:1.0-1", "1.0-1"),
+    ("1.0_1", "1.0.1"), ("1.0+1", "1.0.1"), ("1..0", "1.0"), ("001", "1"),
+    ("1.2.3.r45.gabcdef0", "1.2.3.r50.g1234567"), ("r1234.abc", "r1240.def"),
+    ("20240101", "20240215"), ("1.0-1.1", "1.0-1"), ("1.0", "1.0-1"),
+    ("1.0-1", "1.0"), ("a", "1"), ("1", "a"), ("", "1"), ("1.0~rc1", "1.0"),
+    ("2.10", "2.9"), ("1.0.0", "1.0.0.0"), ("1.a.1", "1.b.0"),
+]
+
+
+@pytest.mark.parametrize("a,b,want", [
+    ("1.0-1", "1.0-1", 0), ("1.0-1", "1.0-2", -1), ("2.10", "2.9", 1),
+    ("1:1.0-1", "2.0-1", 1), ("1.0rc1", "1.0", -1), ("001", "1", 0),
+    ("1.0", "1.0.0", -1), ("1.0a", "1.0", -1),
+])
+def test_vercmp_local_known_answers(a, b, want):
+    from sysforge.primitives.version import vercmp_local
+    assert vercmp_local(a, b) == want
+
+
+@pytest.mark.skipif(not __import__("shutil").which("vercmp"),
+                    reason="vercmp(8) not installed")
+@pytest.mark.parametrize("a,b", _VERCMP_PAIRS)
+def test_vercmp_local_agrees_with_vercmp_binary(a, b):
+    import subprocess
+    from sysforge.primitives.version import vercmp_local
+    out = subprocess.run(["vercmp", a, b], capture_output=True, text=True,  # noqa: S603, S607
+                         check=True).stdout.strip()
+    want = (int(out) > 0) - (int(out) < 0)
+    assert vercmp_local(a, b) == want, (a, b)

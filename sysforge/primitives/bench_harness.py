@@ -68,15 +68,24 @@ def run_interleaved(
     *,
     runner: Callable | None = None,
     clock: Callable[[], float] = time.perf_counter,
+    on_round: Callable[[str], None] | None = None,
 ) -> dict[str, list[float]]:
-    """Wall time per round, per label: one warm-up, then *runs* alternating rounds."""
+    """Wall time per round, per label: one warm-up, then *runs* alternating rounds.
+
+    *on_round* receives ``"warm-up"`` and then ``"round i/N"`` before each
+    round starts (3.4.0-F9), so a caller can show progress without this
+    primitive knowing about the display.
+    """
     if runs < 1:
         raise ValueError("runs must be >= 1")
     runner = runner or _default_runner
+    report = on_round or (lambda _label: None)
+    report("warm-up")
     for label, job in jobs.items():
         _round(label, job, runner)  # warm-up, untimed
     samples: dict[str, list[float]] = {label: [] for label in jobs}
-    for _ in range(runs):
+    for i in range(1, runs + 1):
+        report(f"round {i}/{runs}")
         for label, job in jobs.items():
             start = clock()
             _round(label, job, runner)

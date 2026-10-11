@@ -1,5 +1,5 @@
 # =============================================================================
-# kernel.toml — custom kernel build (stage 8 / sysforge run kernel)
+# kernel.toml — custom kernel build (stage 7 / sysforge run kernel)
 #
 # Everything down to line 22 ("END OF HEADER") is documentation;
 # the settings themselves start below it.

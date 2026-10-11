@@ -149,6 +149,8 @@ Mechanism lives in the cited §DESIGN section.
   literal**; glyphs resolve at format time (idempotent with `log.ui`'s `downgrade_glyphs`).
   **Every pre-flight block emits via `log.ui`, never bare `print()`** — that is what mirrors it
   into the unified run-log; enforced by `tests/test_preflight_logging.py`.
+  A pair's jump-size tint is `version_pair(..., classify=True)` (`3.4.0-F8`, order via the pure
+  `version.vercmp_local`); only on a `ui()`/`print()` line, never in text that can reach `error()`.
 - **LLVM source-state**: `llvm_state.collect_llvm_state` — don't call `git_is_dirty`+URL-parse.
 - **Editor/merge-tool launch**: `primitives/editor.py` (`resolve_editor`, `resolve_merge_tool`,
   `run_tty_argv`); `.sfnew` adoption in `config_cmd.ConfigMergeVerb`. §Config Layer.

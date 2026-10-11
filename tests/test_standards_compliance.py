@@ -901,7 +901,7 @@ def test_release_gates_accepts_a_pinned_type_checker(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Row 28 — subprocess goes through primitives/run (3.2.0-F13)
+# Row 31 — subprocess goes through primitives/run (3.2.0-F13)
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1034,3 +1034,44 @@ def test_em_dash_ignores_release_notes_and_roadmap(tmp_path):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("- **`1.0.0-F1` — title.**\n", encoding="utf-8")
     assert _load_check_standards().check_em_dash(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# standards_rows group (3.4.0-STD2): row numbers are unique across both tables
+# ---------------------------------------------------------------------------
+
+_ROW = "| {n} | Std | Scope | enforced | how |\n"
+
+
+def _standards_tree(tmp_path, rows, next_row):
+    p = tmp_path / "docs/design/21-standards.md"
+    p.parent.mkdir(parents=True)
+    p.write_text(
+        "#### Externally-sourced\n\n| # | Standard |\n|---|---|\n"
+        + "".join(_ROW.format(n=n) for n in rows[0])
+        + f"\n#### SysForge-exclusive\n\nthe next row is {next_row}\n"
+        "regardless of which subsection it joins\n\n| # | Standard |\n|---|---|\n"
+        + "".join(_ROW.format(n=n) for n in rows[1]),
+        encoding="utf-8")
+    return tmp_path
+
+
+def test_standards_rows_group_is_clean_on_the_real_repo():
+    assert _load_check_standards().check_standards_rows(_REPO) == []
+
+
+def test_standards_rows_flags_a_number_shared_across_tables(tmp_path):
+    repo = _standards_tree(tmp_path, ([1, 2, 3], [3, 4]), next_row=5)
+    found = _load_check_standards().check_standards_rows(repo)
+    assert [f.message for f in found] == ["row 3 is used 2 times"], found
+
+
+def test_standards_rows_flags_a_stale_next_row_counter(tmp_path):
+    repo = _standards_tree(tmp_path, ([1, 2], [3]), next_row=3)
+    found = _load_check_standards().check_standards_rows(repo)
+    assert any("next row" in f.message for f in found), found
+
+
+def test_standards_rows_accepts_unique_rows_and_correct_counter(tmp_path):
+    repo = _standards_tree(tmp_path, ([1, 3], [2, 4]), next_row=5)
+    assert _load_check_standards().check_standards_rows(repo) == []

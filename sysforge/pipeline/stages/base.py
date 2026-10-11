@@ -38,7 +38,7 @@ class RunOptions:
     # ABI checking
     abi_check: bool = False          # run post-build ABI compatibility check on .so files
     # Source updates
-    no_update: bool = False          # skip git pull --rebase before each build
+    no_update: bool = False          # skip the scheduler source sync
     cleansrc: bool = False           # purge each src dir and re-clone (refuses on dirty trees)
     cleansrc_force: bool = False     # like cleansrc but bypasses the dirty/diverged guard
     # Profile / build configuration

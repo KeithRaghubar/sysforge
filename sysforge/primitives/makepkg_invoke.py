@@ -638,8 +638,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 _makepkg_log.error(f"  {dep}")
             _makepkg_log.warn(
                 "This usually means related PKGBUILDs are at different versions. "
-                "Run 'git pull --rebase' in each package directory to sync them, "
-                "then retry with -m '-f' to force a rebuild.")
+                "Sync them with `sysforge fetch <pkg>...`, then retry with "
+                "-m '-f' to force a rebuild.")
         elif failed_stage == "prepare":
             _makepkg_log.info("prepare() failed: likely an upstream issue "
                       "(patch conflict, changed upstream state, or fetch error); "

@@ -299,14 +299,14 @@ cd sysforge && makepkg -si && cd ~
 sysforge run pipeline --resume
 ```
 
-This runs stages 5–8:
+This runs stages 4–7:
 
 - **reconfigure:** pre-build checks (disk space, network, config review).
 - **toolchain:** *(opt-in)* builds the LLVM toolchain via the PGO bootstrap, behind three safety gates that keep the live `/usr` toolchain from ever being left broken (pre-build preflight, pre-install ABI audit, post-install verify with auto-restore). Register-only on the default gcc path. See [DESIGN.md](DESIGN.md) §Toolchain stage.
 - **packages:** builds and installs everything in `packages.toml` with profiled flags. Optionally trims mesa's GPU drivers to your hardware (`[mesa] filter_drivers`).
 - **kernel:** *(opt-in)* builds a custom kernel with boot-safety gates (won't leave the system unbootable). Interactive by default; compiler independent of the toolchain stage. On systemd-boot it also writes and maintains the kernel's loader entry (your own entries are never modified; `sysforge state boot-entries` lists them). See [DESIGN.md](DESIGN.md) §Kernel stage and [docs/guides/boot-entries.md](docs/guides/boot-entries.md).
 
-If a stage 5–8 run is interrupted, resume it with `sysforge run pipeline --resume`.
+If a stage 4–7 run is interrupted, resume it with `sysforge run pipeline --resume`.
 
 ---
 

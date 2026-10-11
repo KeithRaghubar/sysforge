@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/hardware.py — stage 3: hardware detection
+stages/hardware.py — stage 2: hardware detection
 
 Probes the running system and emits hardware_profile.toml to the state dir.
 No config file required — everything is auto-detected.

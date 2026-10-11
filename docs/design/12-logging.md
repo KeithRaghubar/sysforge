@@ -41,7 +41,7 @@ Resolution precedence in `use_color()`:
 
 The mode is resolved at startup as **`--color=auto|always|never` flag > `[ui] color` config (`sysforge.toml`) > `"auto"`** (`cli._resolve_color_mode`); a junk value degrades to `"auto"`. File logs are always written plain regardless of the gate. Because the decision is per-call, output piped through the pager is coloured up front (the review diff passes `git diff --color=always` when the gate is on, then `less -R` carries the ANSI through).
 
-**Message bodies passed to `error()` / `warn()` / `info()` / `debug()` must stay uncoloured.** Those levels build their file-log text as `f"[SYSFORGE][LEVEL]{tag} {message}"` straight from the caller's own string, and only `_format_line` — which decorates the *level* and *tag* tokens, never the body — consults `use_color()`. An escape sequence embedded in a message body is therefore ungated and is written verbatim into `sysforge.log` / `sysforge-update.log`. Colour belongs on the `ui()` / `print()` surfaces, which never reach a file; every existing `log.green()` / `red()` / `dim()` call site sits on one of those, and none on `info()` / `warn()`. When a report block wants a coloured verdict, it goes through the `[TAG]` gutter (`render.tag_header(color=…)`), not into the message.
+**Message bodies passed to `error()` / `warn()` / `info()` / `debug()` must stay uncoloured.** Those levels build their file-log text as `f"[SYSFORGE][LEVEL]{tag} {message}"` straight from the caller's own string, and only `_format_line` — which decorates the *level* and *tag* tokens, never the body — consults `use_color()`. An escape sequence embedded in a message body is therefore ungated and is written verbatim into `sysforge.log` / `sysforge-update.log`. Colour belongs on the `ui()` / `print()` surfaces: `print()` never reaches a file, and `ui()`, which mirrors every message into the unified and per-package logs, strips SGR sequences from that copy (`3.5.0-B1`; before it, `build`'s coloured summary landed in the run log as raw escapes). Every existing `log.green()` / `red()` / `dim()` call site sits on one of those, and none on `info()` / `warn()`. When a report block wants a coloured verdict, it goes through the `[TAG]` gutter (`render.tag_header(color=…)`), not into the message.
 
 `use_color()` takes an optional *stream* argument for the one caller that does not write to the log's active stream: `ui/progress.py` renders to stderr unconditionally, while `log._out()` swings to stdout under `--dry-run`. Progress passes `sys.stderr` explicitly so a redirected stdout cannot drag it into plain mode, and the mode/env precedence above stays in its single home.
 
@@ -178,14 +178,14 @@ emitted the bare names.
 
 | Tag | Covers |
 |---|---|
-| `[BASE_INSTALL]` | Stage 2: pacstrap, genfstab |
-| `[CONFIGURE]` | Stage 4: hostname, locale, bootloader, user, services |
-| `[HARDWARE]` | Stage 3: CPU/GPU/NVMe detection |
-| `[PACKAGES]` | Stage 7: package build progress |
-| `[PARTITION]` | Stage 1: GPT partitioning, mkfs, mount |
+| `[BASE_INSTALL]` | Stage 1 (install): pacstrap, genfstab |
+| `[CONFIGURE]` | Stage 3: hostname, locale, bootloader, user, services |
+| `[HARDWARE]` | Stage 2: CPU/GPU/NVMe detection |
+| `[PACKAGES]` | Stage 6: package build progress |
+| `[PARTITION]` | Stage 1 (install): GPT partitioning, mkfs, mount |
 | `[PIPELINE]` | Stage sequencing, checkpoint events |
-| `[RECONFIGURE]` | Stage 5: pre-build checkpoint and config review |
-| `[TOOLCHAIN]` | Stage 6: LLVM/GCC build, PGO pass orchestration |
+| `[RECONFIGURE]` | Stage 4: pre-build checkpoint and config review |
+| `[TOOLCHAIN]` | Stage 5: LLVM/GCC build, PGO pass orchestration |
 
 **Commands:**
 

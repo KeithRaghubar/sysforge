@@ -46,7 +46,7 @@ root_fs = "ext4"
 
 
 # =============================================================================
-# System identity (stage 4)
+# System identity (stage 1, applied by archinstall)
 # =============================================================================
 
 [system]
@@ -72,7 +72,7 @@ root_fs = "ext4"
 
 
 # =============================================================================
-# Mirrorlist (stage 4 — requires reflector in the chroot)
+# Mirrorlist (stage 3 — requires reflector in the chroot)
 # =============================================================================
 
 [mirror]
@@ -89,7 +89,7 @@ age      = 12
 
 
 # =============================================================================
-# Desktop environment (stage 4 — optional)
+# Desktop environment (stage 3 — optional)
 # =============================================================================
 #
 # Pick a curated desktop environment to install as a packages.toml [group.*]
@@ -110,7 +110,7 @@ age      = 12
 
 
 # =============================================================================
-# makepkg defaults (stage 4 — optional)
+# makepkg defaults (stage 3 — optional)
 # =============================================================================
 #
 # Stamp common makepkg.conf settings into the target /etc/makepkg.conf during

@@ -266,7 +266,8 @@ class BuildVerb(Verb):
             help="Run a post-build ABI compatibility check on built shared libraries. "
                  "Also settable via [build] abi_check = true in packages.toml.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase before building.")
+            help="Skip the source sync (fetch and fast-forward) and build the "
+                 "PKGBUILD as checked out. --cleansrc still syncs.")
         p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
             help="Purge the package src dir and re-clone before building. "
                  "Refuses (per package) if the existing clone has uncommitted changes, "

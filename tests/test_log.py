@@ -852,3 +852,20 @@ def test_set_dry_run_mode_honours_quiet(capsys):
     log.warn("[TEST]", "narration")
     cap = capsys.readouterr()
     assert "[WARN]" not in cap.out + cap.err
+
+
+def test_ui_colour_reaches_the_terminal_but_not_the_file_log(tmp_path, monkeypatch, capsys):
+    """3.5.0-B1: ui() mirrors its message into the run log, so colour applied
+    with log.green()/red()/... must be stripped there, or the log carries raw
+    escape sequences."""
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    path = tmp_path / "run.log"
+    log.open_unified_log(path)
+    try:
+        log.ui("[T]", f"{log.green('Built:')} foo")
+    finally:
+        log.close_unified_log(success=False, persist=True)
+    assert "\x1b[" in capsys.readouterr().err
+    text = path.read_text()
+    assert "Built: foo" in text and "\x1b" not in text

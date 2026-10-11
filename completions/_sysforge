@@ -166,7 +166,7 @@ _sysforge_build() {
     '--persist-log[keep log after a successful build]' \
     '--cache-report[print ccache/sccache summary after build]' \
     '--abi-check[post-build ABI check on built shared libraries]' \
-    '--no-update[skip git pull --rebase before building]' \
+    '--no-update[skip the source sync, build as checked out]' \
     '--cleansrc[purge src dir and re-clone (refuses if dirty)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
@@ -182,7 +182,7 @@ _sysforge_build() {
 
 _sysforge_fetch() {
   _arguments \
-    '--no-update[skip git pull --rebase for already-cloned packages]' \
+    '--no-update[skip the source sync for already-cloned packages]' \
     '--cleansrc[purge src dirs and re-clone (refuses if dirty)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty/diverged guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
@@ -197,7 +197,7 @@ _sysforge_update() {
     '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
     '--devel[rebuild VCS packages newer than installed]' \
-    '--offline[no network: skip pulls, clones, and AUR RPC]' \
+    '--offline[no network: no source sync, clone or AUR RPC]' \
     '--install-only[install pre-built PKGDEST artifacts only]' \
     '--interactive[pause on build failures; let pacman -Syu prompt]' \
     '--no-cleanbuild[skip automatic --cleanbuild]' \
@@ -600,7 +600,7 @@ _sysforge_run() {
 
 _sysforge_run_stages() {
   local stages=(
-    'pipeline:run the full install pipeline (stages 1-8)'
+    'pipeline:run the full install pipeline (stages 1-7)'
     'hardware:re-run hardware detection and refresh hardware_profile.toml'
     'reconfigure:pre-build checkpoint'
     'toolchain:build and install the LLVM/GCC toolchain'
@@ -632,7 +632,7 @@ _sysforge_run_pipeline() {
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after pipeline]' \
     '--abi-check[post-build ABI check on built shared libraries]' \
-    '--no-update[skip git pull --rebase before each build]'
+    '--no-update[skip the source sync, build as checked out]'
 }
 
 _sysforge_run_reconfigure() {
@@ -647,7 +647,7 @@ _sysforge_run_toolchain() {
   _arguments \
     $_sysforge_help_spec \
     '--dry-run[show what would run without executing]' \
-    '--no-update[skip git pull --rebase before each build]' \
+    '--no-update[skip the source sync, build as checked out]' \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags]:flags' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after run]' \
@@ -671,7 +671,7 @@ _sysforge_run_packages() {
     '--packages[path to packages.toml]:file:_files' \
     '--dry-run[show what would run without executing]' \
     '--force-retry[retry failed packages without prompting]' \
-    '--no-update[skip git pull --rebase before each build]' \
+    '--no-update[skip the source sync, build as checked out]' \
     '--no-pkg-logs[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
@@ -684,7 +684,7 @@ _sysforge_run_packages() {
 _sysforge_run_kernel() {
   _arguments \
     '--dry-run[show what would run without executing]' \
-    '--no-update[skip git pull --rebase before each build]' \
+    '--no-update[skip the source sync, build as checked out]' \
     '--cleansrc[purge the kernel src dir and re-clone]' \
     '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
     '--non-interactive[use olddefconfig, no interactive kconfig]' \

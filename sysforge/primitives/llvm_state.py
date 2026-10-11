@@ -679,7 +679,7 @@ def _format_version_pair(installed: str | None, pkgbuild: str | None) -> str:
     never reached ``downgrade_glyphs`` and survived intact on ``TERM=linux``.
     :func:`render.version_pair` resolves the glyph at format time instead.
     """
-    return version_pair(installed, pkgbuild)
+    return version_pair(installed, pkgbuild, classify=True)
 
 
 def is_actionable_state(s: LlvmPackageState) -> bool:

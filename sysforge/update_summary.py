@@ -37,8 +37,8 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
     "DOWNGRADE":         ("DOWNGRADE",         "downgrade",
                           "{pkgbase}: installed {installed_ver} > pkgbuild "
                           "{pkgbuild_ver} (skipped){star}"),
-    "PULL_FAILED":       ("PULL_FAILED",       "pull failed",
-                          "{pkgbase}: git pull failed (skipped){star}"),
+    "PULL_FAILED":       ("SYNC_FAILED",       "sync failed",
+                          "{pkgbase}: source sync failed (skipped){star}"),
     "RATE_LIMITED":      ("RATE_LIMITED",      "rate-limited",
                           "{pkgbase}: AUR rate-limited (skipped, retry later){star}"),
     "PURGE_REFUSED":     ("PURGE_REFUSED",     "purge refused",
@@ -236,7 +236,9 @@ def _fmt_pkg(summary: ResultSummary, pkgbase: str) -> str:
         return name
     # equal_marker=False: a built package reports what it was rebuilt to, so an
     # unchanged version still reads as a transition rather than "(=)".
-    return f"{name}: {render.version_pair(installed_ver, pkgbuild_ver, equal_marker=False)}"
+    pair_text = render.version_pair(
+        installed_ver, pkgbuild_ver, equal_marker=False, classify=True)
+    return f"{name}: {pair_text}"
 
 
 # 3.0.0-F5: a stock `-Syu` can be hundreds of packages, unlike the bounded
@@ -262,7 +264,7 @@ def _sysupgrade_lines(
             lines.append(f"{name}: {old} (removed)")
         else:
             lines.append(
-                f"{name}: {render.version_pair(old, new, equal_marker=False)}"
+                f"{name}: {render.version_pair(old, new, equal_marker=False, classify=True)}"
             )
     if log.get_verbosity() >= 1 or len(lines) <= _SYSUPGRADE_DEFAULT_CAP:
         return lines
@@ -370,7 +372,7 @@ def _print_result_summary(
         for pkgbase, installed_ver, upstream_ver, owner_stage in summary.stage_owned_updates:
             if installed_ver and upstream_ver:
                 ver = render.version_pair(
-                    installed_ver, upstream_ver, equal_marker=False,
+                    installed_ver, upstream_ver, equal_marker=False, classify=True,
                 )
             else:
                 ver = upstream_ver or ""

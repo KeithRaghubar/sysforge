@@ -1,5 +1,5 @@
 # =============================================================================
-# kernel.toml — custom kernel build (stage 8 / sysforge run kernel)
+# kernel.toml — custom kernel build (stage 7 / sysforge run kernel)
 #
 # This stage is opt-in. Building a custom kernel is a deliberate choice;
 # most users should leave this disabled and rely on a stock pacman kernel.

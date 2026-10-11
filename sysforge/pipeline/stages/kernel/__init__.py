@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/kernel/ — stage 8: kernel build
+stages/kernel/ — stage 7: kernel build
 
 Builds a custom kernel from a PKGBUILD and runs post-install steps.
 

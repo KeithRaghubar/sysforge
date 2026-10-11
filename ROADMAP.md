@@ -120,15 +120,10 @@ canonical ordering.
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
-| `3.4.0-B15` | run kernel --help says --no-update skips git pull --rebase | low | small | patch |
-| `3.4.0-B16` | the shipped kernel.toml and the README number the stages wrong | low | small | patch |
 | `3.4.0-B18` | rebuilding the toolchain at the same version leaves an old GAIN looking current | low | small | patch |
 | `3.4.0-B20` | state profiles looks up the bench result the wrong way | low | small | patch |
 | `3.4.0-B21` | bench toolchain unpacks about 440 MB into $TMPDIR | low | small | patch |
-| `3.4.0-F8` | a version change doesn't show how big the jump is | low | small | minor |
-| `3.4.0-F9` | bench toolchain prints nothing while it downloads, unpacks and times | low | small | minor |
 | `3.4.0-F10` | bench toolchain always times stock first in every round | low | small | patch |
-| `3.4.0-STD2` | two standards rows share the number 28 | low | small | patch |
 | `3.4.0-B19` | bench toolchain's stock fetch fails in cases pacman itself would get through | low | medium | patch |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
@@ -390,44 +385,6 @@ canonical ordering.
 
 ---
 
-- **`3.4.0-F8` — a version change doesn't show how big the jump is.** Every `old → new` row
-  (the `update` summary, the post-build change report, the toolchain pre-build list from
-  `3.2.0-B23`, and the LLVM and toolchain pre-flights) looks the same whether it is an epoch
-  change, a major bump, or a pkgrel-only rebuild. In a long `update --devel` summary, the few rows
-  that need a second look are hidden among dozens of `r1234 → r1240` VCS ticks. All six sites
-  already go through `render.version_pair()` (`primitives/render.py`), so the change lives in one
-  place. Classify the pair by the first component that differs on the `[epoch:]pkgver-pkgrel`
-  shape: **epoch**, **major**, **minor**, **patch** (any deeper pkgver component), **pkgrel**
-  (pkgver equal), **vcs** (only a trailing `rN`/`.gHASH` segment moved), **downgrade** (`vercmp`
-  says new < old), and **unknown**, which stays plain. pkgver is not SemVer: dates, `_`/`+`
-  separators and mixed alpha segments must classify, or fall back to unknown, without raising.
-  Make colour opt-in per call (e.g. `version_pair(..., classify=True)`) and map each level to a
-  tint through the same named-colour table `tag_header` uses, gated on `log.use_color()`. That
-  table's rule applies here too: colour in a message body is only safe on `ui()`/`print()`
-  surfaces, and every current caller emits that way. Output with colour off is byte-identical to
-  today. Tests: a classifier table covering each level, including epoch, date pkgvers, a `-git`
-  `r`-count tick and a downgrade; colour-off output unchanged; one call-site test showing a tint
-  under `use_color()`.
-  *Priority: low · Effort: small · Bump: minor* — low because nothing is wrong today, it only makes
-  a long summary faster to read. Small because there is one function to change and the colour
-  gate already exists.
-
----
-
-- **`3.4.0-F9` — `bench toolchain` prints nothing while it downloads, unpacks and times.** At
-  default verbosity the verb is silent from launch until the report: the stock `clang` and
-  `llvm-libs` download (about 105 MB when not cached), the extraction, and `2 x (runs + 1)` timed
-  compile rounds (about 40 s on the dev host before any download) show no sign of life, which reads
-  as a hang. `doctor` and `fetch` already drive `ui/progress`; reuse it through
-  `progress_hooks.hooks()` so the primitives stay free of `ui/` imports, with a phase line
-  ("fetching stock clang", "unpacking", "round 3/5") that the report then replaces. The narration
-  that exists today stays at `info()`. Tests: the progress hook is called once per phase and once
-  per round; `quiet_at_default` still passes; nothing changes with `--quiet`.
-  *Priority: low · Effort: small · Bump: minor* — low because the bench completes correctly;
-  small because the progress surface and its protocol already exist.
-
----
-
 - **`3.4.0-F10` — `bench toolchain` always times stock first in every round.** Each round runs
   stock then sysforge (`bench_harness.run_interleaved`), so any systematic within-round order
   effect (a compiler warming caches the other reuses, a turbo budget spent by the first job) lands
@@ -456,34 +413,6 @@ canonical ordering.
   `--explain-drift` run makes no scheduler request (or the help text names `--offline`).
   *Priority: med · Effort: small · Bump: patch* — med because the help promises a read-only,
   no-network report and the run does network I/O; small because it is one gate or one string.
-
----
-
-- **`3.4.0-B15` — `run kernel --help` says `--no-update` skips `git pull --rebase`.** The kernel
-  stage has not pulled with `git pull --rebase` since source sync moved to the scheduler, which
-  does a full-history fetch and fast-forward (`source_sync.get_scheduler().request(...)`). The
-  help text (`run_cmd.py`, "Skip git pull --rebase before each build.") and its man page entry
-  describe a mechanism that no longer exists, and "before each build" is wrong for a stage that
-  builds one kernel. Reword it to what the flag does now (skip the source sync for the kernel
-  tree, building whatever is checked out), check whether `run toolchain --no-update` carries the
-  same stale text, and regenerate the man page. Test: the help string no longer names `git pull`.
-  *Priority: low · Effort: small · Bump: patch* — low because the flag itself works; small
-  because it is help text plus `make man`.
-
----
-
-- **`3.4.0-B16` — the shipped `kernel.toml` and the README number the stages wrong.** The
-  stage registry (`pipeline/stages/__init__.py` `STAGES`) and DESIGN (§Pipeline Layer, "Kernel
-  stage (stage 7)") order the seven stages install, hardware, configure, reconfigure, toolchain,
-  packages, kernel, so the kernel is stage 7. `kernel.toml`'s header says "stage 8 / sysforge
-  run kernel", and the README's post-install section says "This runs stages 5–8" for
-  reconfigure through kernel (4–7), right after "stages 1–3" for the first three. A user
-  matching `--start-from` or a pipeline report against either gets numbers that match nothing.
-  Correct both, and check the other shipped configs' headers (`toolchain.toml`,
-  `packages.toml`) for the same drift. Shipped-file change, so fixtures in
-  `tests/data/etc/sysforge/` update too (`make check-shipped`).
-  *Priority: low · Effort: small · Bump: patch* — low because it is a comment; small because it
-  is one number per file.
 
 ---
 
@@ -554,20 +483,5 @@ canonical ordering.
   *Priority: low · Effort: small · Bump: patch* — low because it works on a typical desktop;
   small because it is one argv and one unlink.
 
-
-### Standards
-
-- **`3.4.0-STD2` — two standards rows share the number 28.** `docs/design/21-standards.md`
-  lists `pam.d(5)` / `sudoers(5)` / `sysusers.d(5)` as row 28 in the external-spec table and
-  "Subprocess goes through `primitives/run`" as row 28 in the SysForge-exclusive table. The
-  subsection text says the number is the row's identity, cited from code, tests and published
-  release notes, so a citation of "row 28" is ambiguous. Find which row took 28 second (git
-  log on the file), give it the next free number, and re-point every citation of it (grep
-  `row 28` across `sysforge/`, `tests/`, `tools/`, `docs/design/`; released `v*.md` notes are
-  immutable and keep the old number, so the renumbering row should note its former number).
-  Add a `check_standards` assertion that row numbers are unique across both tables, so this
-  cannot recur.
-  *Priority: low · Effort: small · Bump: patch* — low because nothing breaks; small because it is
-  one renumber, a citation sweep and a uniqueness check.
 
 ### Open questions

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/reconfigure.py — stage 5: pre-build checkpoint
+stages/reconfigure.py — stage 4: pre-build checkpoint
 
 Runs after bootstrap configuration and before the build stages
 (toolchain → packages → kernel). Safe to re-run on a live system at any time.
@@ -1697,7 +1697,7 @@ class ReconfigureStage(Stage):
                         f"State file already up-to-date at {chroot_state_dir / state.path.name}"
                     )
             raise BootstrapRebootRequired(
-                "Bootstrap complete (stages 1–4 done). "
+                "Bootstrap complete (stages 1–3 done). "
                 "Reboot into the installed system before continuing."
             )
 

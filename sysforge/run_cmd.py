@@ -64,7 +64,7 @@ class RunPipelineVerb(_RunVerbBase):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("pipeline",
-            help="Run the full install pipeline (stages 1–8).")
+            help="Run the full install pipeline (stages 1–7).")
         p.add_argument("--resume", action="store_true",
             help="Resume from the last checkpoint.")
         p.add_argument("--start-from", metavar="STAGE", dest="start_from",
@@ -95,7 +95,8 @@ class RunPipelineVerb(_RunVerbBase):
         p.add_argument("--abi-check", action="store_true", dest="abi_check",
             help="Run a post-build ABI compatibility check on built shared libraries.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase before each build.")
+            help="Skip the source sync (fetch and fast-forward) in every stage "
+                 "that builds, and build each tree as checked out.")
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -193,7 +194,8 @@ class RunToolchainVerb(_RunVerbBase):
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show what would run without executing anything.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase before each build.")
+            help="Skip the source sync (fetch and fast-forward) of the toolchain "
+                 "PKGBUILDs and build them as checked out.")
         p.add_argument("--makepkg", "-m", metavar="FLAGS",
             help="Additional makepkg flags appended to each build. "
                  "Example: -m '-f' to force rebuild of already-built packages. "
@@ -305,7 +307,8 @@ class RunPackagesVerb(_RunVerbBase):
         p.add_argument("--force-retry", action="store_true", dest="force_retry",
             help="Retry all failed packages without prompting.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase before each build.")
+            help="Skip the source sync (fetch and fast-forward) of each package "
+                 "and build it as checked out.")
         p.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
             help="Disable per-package log files.")
         p.add_argument("--persist-log", action="store_true", dest="persist_log",
@@ -354,7 +357,8 @@ class RunKernelVerb(_RunVerbBase):
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show what would run without executing anything.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase before each build.")
+            help="Skip the source sync (fetch and fast-forward) of the kernel "
+                 "tree and build it as checked out.")
         p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
             help="Purge the kernel src dir and re-clone before building. "
                  "Refuses if the existing clone has uncommitted changes, "

@@ -1,5 +1,5 @@
 # =============================================================================
-# toolchain.toml — custom LLVM or GCC toolchain build (stage 6 / sysforge run toolchain)
+# toolchain.toml — custom LLVM or GCC toolchain build (stage 5 / sysforge run toolchain)
 #
 # Opt-in stage. See DESIGN.md §Toolchain stage for details.
 # The built compiler is automatically propagated to subsequent stages via

@@ -47,6 +47,7 @@ Usage:
 """
 import contextlib
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -441,11 +442,19 @@ def newline() -> None:
     print("", file=_out())
 
 
+# SGR sequences, the only escapes the colour helpers above emit.
+_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def ui(tag: str, message: str) -> None:
     """Always printed regardless of verbosity. Always written to log files.
-    For interactive output."""
+    For interactive output.
+
+    The file copy is stripped of colour (3.5.0-B1): ``ui()`` is the surface
+    colour is allowed on, and its mirror into the run log must stay plain.
+    """
     print(downgrade_glyphs(message), file=_out())
-    _write_to_files(f"[SYSFORGE][UI]{tag} {message}\n")
+    _write_to_files(f"[SYSFORGE][UI]{tag} {_SGR_RE.sub('', message)}\n")
 
 
 def transcript(tag: str, line: str) -> None:

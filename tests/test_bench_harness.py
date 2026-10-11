@@ -73,3 +73,17 @@ def test_run_interleaved_raises_on_failure():
 def test_run_interleaved_rejects_zero_runs():
     with pytest.raises(ValueError):
         bh.run_interleaved({"a": bh.Job((("x",),))}, 0)
+
+
+def test_run_interleaved_reports_each_round_before_running_it():
+    """3.4.0-F9: one call for the warm-up and one per timed round, each made
+    before that round's first compile, so the label names the work under way."""
+    events = []
+
+    def runner(argv, env):
+        events.append(argv[0])
+        return SimpleNamespace(returncode=0, stderr="")
+
+    jobs = {"stock": bh.Job((("s",),)), "sysforge": bh.Job((("i",),))}
+    bh.run_interleaved(jobs, 2, runner=runner, on_round=events.append)
+    assert events == ["warm-up", "s", "i", "round 1/2", "s", "i", "round 2/2", "s", "i"]

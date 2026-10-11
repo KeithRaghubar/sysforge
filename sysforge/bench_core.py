@@ -128,8 +128,20 @@ def _jobs(workload: bench_workload.Workload, prefix: Path, objdir: Path) -> dict
     }
 
 
-def _run_jobs(jobs: dict[str, bh.Job], runs: int) -> dict[str, list[float]]:
-    return bh.run_interleaved(jobs, runs)
+def _run_jobs(jobs: dict[str, bh.Job], runs: int,
+              on_round: Callable[[str], None] | None = None) -> dict[str, list[float]]:
+    return bh.run_interleaved(jobs, runs, on_round=on_round)
+
+
+def _phase(label: str | None) -> None:
+    """Show *label* on the progress line (3.4.0-F9); ``None`` clears it.
+
+    Without it the verb is silent from launch to report: a ~105 MB download,
+    the extraction and every timed round read as a hang. The narration at
+    ``info()`` stays as it was; this is the display, not the log.
+    """
+    from sysforge.ui import progress
+    progress.phase(None if label is None else f"bench toolchain: {label}")
 
 
 def _fmt(stat: bh.Stat) -> str:
@@ -153,6 +165,46 @@ def _report(workload, runs, stock_ver, inst_ver, s_stat, i_stat, relation, ratio
                 "major versions, so the comparison would not isolate the optimization")
     else:
         _log.ui(f"stock/sysforge: {ratio:.2f}x")
+
+
+def _measure(tcfg, runs: int, offline: bool, fail: Callable[[str], None]):
+    """Fetch and unpack stock clang, then time both compilers.
+
+    Returns ``(workload, stock_version, samples)``, or the exit code when a
+    step fails (the failure already reported through *fail*).
+    """
+    with tempfile.TemporaryDirectory(prefix="sysforge-bench-") as td:
+        tmp = Path(td)
+        try:
+            workload = _workload(tcfg, tmp)
+        except ValueError as exc:
+            fail(f"bench toolchain: {exc}")
+            return 1
+        try:
+            pkgs = stock_pkg.resolve(list(_STOCK_PKGS))
+            archives = []
+            for p in pkgs:
+                _phase(f"fetching stock {p.name} {p.version}")
+                archives.append(stock_pkg.obtain(p, tmp, offline=offline))
+            prefix = tmp / "stock"
+            _phase("unpacking stock clang")
+            stock_pkg.extract(archives, prefix)
+            _probe_stock(prefix)
+        except stock_pkg.StockUnavailable as exc:
+            fail(f"bench toolchain: no stock clang to compare against: {exc}")
+            return 1
+        stock_ver = next(p.version for p in pkgs if p.name == "clang")
+
+        objdir = tmp / "obj"
+        objdir.mkdir()
+        _log.info(f"timing {_plural(len(workload.files), 'file')} x "
+                  f"{_plural(runs, 'run')} per compiler")
+        try:
+            samples = _run_jobs(_jobs(workload, prefix, objdir), runs, on_round=_phase)
+        except bh.BenchFailed as exc:
+            fail(f"bench toolchain: {exc}")
+            return 1
+    return workload, stock_ver, samples
 
 
 def run_toolchain_bench(state_dir: Path, *, runs: int = DEFAULT_RUNS,
@@ -190,33 +242,13 @@ def run_toolchain_bench(state_dir: Path, *, runs: int = DEFAULT_RUNS,
                    "Rebuild it with `sysforge run toolchain` before benchmarking")
         return 2
 
-    with tempfile.TemporaryDirectory(prefix="sysforge-bench-") as td:
-        tmp = Path(td)
-        try:
-            workload = _workload(tcfg, tmp)
-        except ValueError as exc:
-            fail(f"bench toolchain: {exc}")
-            return 1
-        try:
-            pkgs = stock_pkg.resolve(list(_STOCK_PKGS))
-            archives = [stock_pkg.obtain(p, tmp, offline=offline) for p in pkgs]
-            prefix = tmp / "stock"
-            stock_pkg.extract(archives, prefix)
-            _probe_stock(prefix)
-        except stock_pkg.StockUnavailable as exc:
-            fail(f"bench toolchain: no stock clang to compare against: {exc}")
-            return 1
-        stock_ver = next(p.version for p in pkgs if p.name == "clang")
-
-        objdir = tmp / "obj"
-        objdir.mkdir()
-        _log.info(f"timing {_plural(len(workload.files), 'file')} x "
-                  f"{_plural(runs, 'run')} per compiler")
-        try:
-            samples = _run_jobs(_jobs(workload, prefix, objdir), runs)
-        except bh.BenchFailed as exc:
-            fail(f"bench toolchain: {exc}")
-            return 1
+    try:
+        measured = _measure(tcfg, runs, offline, fail)
+    finally:
+        _phase(None)  # the report replaces the phase line, on every exit path
+    if isinstance(measured, int):
+        return measured
+    workload, stock_ver, samples = measured
 
     s_stat = bh.summarize(samples["stock"])
     i_stat = bh.summarize(samples["sysforge"])

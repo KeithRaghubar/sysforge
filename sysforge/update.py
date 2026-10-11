@@ -263,10 +263,10 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
             getattr(args, "noconfirm", False)
         report = auto_remediate_toolchain(report, non_interactive=non_interactive)
     if report.failed:
-        _log.ui(render_toolchain_preflight(report))
+        _log.ui(render_toolchain_preflight(report, classify=True))
         return False
 
-    rendered = render_toolchain_preflight(report)
+    rendered = render_toolchain_preflight(report, classify=True)
     if rendered:
         _log.ui(rendered)
     return True
@@ -1796,7 +1796,8 @@ class UpdateVerb(Verb):
                  "recorded in build_state are reused on subsequent runs to "
                  "short-circuit the resolve via git ls-remote.")
         p.add_argument("--offline", action="store_true", dest="offline",
-            help="No network: skip git pulls, clones, and AUR RPC. Pure local version check.")
+            help="No network: skip the source sync, clones, and AUR RPC. Pure local "
+                 "version check.")
         p.add_argument("--install-only", action="store_true", dest="install_only",
             help="Skip rebuild; install only those locally-built artifacts in PKGDEST that are "
                  "newer than the installed version. Implies --offline. Mutually exclusive with "

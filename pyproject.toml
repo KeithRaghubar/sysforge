@@ -89,7 +89,7 @@ ignore = [
 # (inherits the TTY, streams, needs its own preexec_fn, or is a privileged
 # command whose status/exception the caller inspects) carries a
 # `# noqa: TID251 — <why>` naming its reason. Enforced together with
-# tests/test_standards_compliance.py (standards row 28).
+# tests/test_standards_compliance.py (standards row 31).
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "subprocess.run".msg = "use primitives/run (capture/probe/run_or_raise) or privilege.run_privileged"
 "subprocess.Popen".msg = "use primitives/run or pty_runner; a raw Popen needs a `# noqa: TID251 — <why>`"

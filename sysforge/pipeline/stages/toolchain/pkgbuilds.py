@@ -367,7 +367,7 @@ def show_version_changes(pkgbuild_map: dict[str, Path]) -> None:
         target = _pkgbuild_version(path)
         if installed != target:
             changing += 1
-        rows.append(f"  {name:<36}  {render.version_pair(installed, target)}")
+        rows.append(f"  {name:<36}  {render.version_pair(installed, target, classify=True)}")
     _log.ui(
         f"─── Version changes ({changing} of {len(rows)} changing) "
         "─────────────────────"

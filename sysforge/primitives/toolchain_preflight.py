@@ -577,7 +577,7 @@ def run_preflight(required: frozenset[str]) -> ToolchainPreflightReport:
 # Rendering
 # ---------------------------------------------------------------------------
 
-def render_preflight(report: ToolchainPreflightReport) -> str:
+def render_preflight(report: ToolchainPreflightReport, *, classify: bool = False) -> str:
     """Render a human-readable pre-flight table.
 
     Shares its gutter and version-pair vocabulary with
@@ -588,6 +588,10 @@ def render_preflight(report: ToolchainPreflightReport) -> str:
     A check carrying ``versions`` rows gets an indented ``label: old → new``
     table under its detail line — the same shape the update summary uses for
     rebuilt packages — instead of the version facts being buried in prose.
+
+    *classify* tints those pairs by jump size (3.4.0-F8). It is opt-in rather
+    than always on because the kernel stage raises this block as an error
+    message, and colour must never reach ``error()`` (§Logging, Colour).
     """
     if not report.checks:
         return ""
@@ -605,7 +609,7 @@ def render_preflight(report: ToolchainPreflightReport) -> str:
         for label, old, new in c.versions:
             # Indented past the status/name columns so the version table reads
             # as detail belonging to the row above it.
-            lines.append(f"{' ' * 12}{label}: {version_pair(old, new)}")
+            lines.append(f"{' ' * 12}{label}: {version_pair(old, new, classify=classify)}")
 
     failed = report.failed
     if failed:

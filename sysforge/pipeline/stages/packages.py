@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/packages.py — stage 7: package builds (bootstrap context)
+stages/packages.py — stage 6: package builds (bootstrap context)
 
 This is the bootstrap leg of the packages.toml dual role (see
 DESIGN.md §Package Manifest): on a fresh system with only the pacstrap base

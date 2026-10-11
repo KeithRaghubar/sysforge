@@ -1701,6 +1701,30 @@ def check_em_dash(repo: Path) -> list[Finding]:
     return findings
 
 
+_STANDARDS_DOC = "docs/design/21-standards.md"
+
+
+def check_standards_rows(repo: Path) -> list[Finding]:
+    """Row numbers are one global sequence across both standards tables
+    (3.4.0-STD2): a number is the row's identity, so a repeat makes every
+    citation of it ambiguous. The "next row is N" counter must also be
+    max + 1, since a stale counter is how a number gets reused."""
+    path = repo / _STANDARDS_DOC
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    nums = [int(m) for m in re.findall(r"^\| (\d+) \|", text, flags=re.MULTILINE)]
+    findings = [Finding("standards_rows", "error", _STANDARDS_DOC,
+                        f"row {n} is used {nums.count(n)} times")
+                for n in sorted(set(nums)) if nums.count(n) > 1]
+    m = re.search(r"the next row is\s+(\d+)", text)
+    if nums and m and int(m.group(1)) != max(nums) + 1:
+        findings.append(Finding("standards_rows", "error", _STANDARDS_DOC,
+                                f"next row counter says {m.group(1)}, "
+                                f"expected {max(nums) + 1}"))
+    return findings
+
+
 def _make_recipes(text: str) -> dict[str, str]:
     """``{target: recipe text}`` for simple ``target:`` rules (tab-led lines)."""
     recipes: dict[str, str] = {}
@@ -1731,6 +1755,7 @@ GROUPS = {
     "semver_bump":    check_semver_bump,
     "release_gates":  check_release_gates,
     "em_dash":        check_em_dash,
+    "standards_rows": check_standards_rows,
 }
 
 

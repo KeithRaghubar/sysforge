@@ -1415,7 +1415,7 @@ def test_pull_failure_continues_to_next_package(update_scenario, capsys):
     combined = "".join(capsys.readouterr())
     # htop's sync failure surfaces (PULL_FAILED) ...
     assert "git fetch failed" in combined
-    assert "1 pull failed" in combined
+    assert "1 sync failed" in combined  # 3.5.0-B2: sysforge never runs git pull
     # ... and the run is NOT aborted by it: neovim is still version-checked
     # (counted up to date) and the run reaches a clean finish. Both packages
     # are at the installed version, so there is nothing to rebuild.

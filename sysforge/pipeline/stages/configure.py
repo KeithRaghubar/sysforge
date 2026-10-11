@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/configure.py — stage 4: sysforge-specific tuning
+stages/configure.py — stage 3: sysforge-specific tuning
 
 System identity (hostname, locale, timezone, keymap, bootloader, services,
 sshd, user creation) is largely archinstall's job, applied by the earlier
@@ -43,7 +43,7 @@ bootstrap.toml optional fields:
   [makepkg] packager           string  PACKAGER written to target /etc/makepkg.conf
   [makepkg] makeflags          string  MAKEFLAGS written to target /etc/makepkg.conf
 
-These steps are intentionally separated from reconfigure (stage 5) because
+These steps are intentionally separated from reconfigure (stage 4) because
 they are destructive on a live running system if re-applied carelessly.
 Use --start-from reconfigure to skip bootstrap stages on an already-configured
 system.

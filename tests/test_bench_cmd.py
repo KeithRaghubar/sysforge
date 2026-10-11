@@ -42,8 +42,12 @@ def happy(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "extract", lambda archives, prefix: None)
     monkeypatch.setattr(bench_core, "_probe_stock", lambda prefix: None)
 
-    def fake_run(jobs, runs):
+    def fake_run(jobs, runs, on_round=None):
         env["jobs"] = jobs
+        if on_round:
+            on_round("warm-up")
+            for i in range(1, runs + 1):
+                on_round(f"round {i}/{runs}")
         return env["samples"]
 
     monkeypatch.setattr(bench_core, "_run_jobs", fake_run)
@@ -94,7 +98,7 @@ def test_stock_extraction_failure_exits_1_and_persists_nothing(tmp_path, happy, 
 
 
 def test_compile_failure_exits_1_and_persists_nothing(tmp_path, happy, monkeypatch):
-    def fail(jobs, runs):
+    def fail(jobs, runs, on_round=None):
         raise bh.BenchFailed("stock", ["clang", "x.c"], "error: boom")
 
     monkeypatch.setattr(bench_core, "_run_jobs", fail)
@@ -159,3 +163,37 @@ def test_recorded_epoch_is_matched(tmp_path, happy):
     happy["stock"] = "1:23.1.1-1"
     happy["recorded"] = ("23.1.1", "1", "1")
     assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
+
+
+def test_phase_line_names_each_step_then_clears_for_the_report(tmp_path, happy, monkeypatch):
+    """3.4.0-F9: fetching, unpacking and every round each set the progress phase,
+    and the phase is cleared before the report so the report replaces it."""
+    from sysforge.ui import progress
+    seen = []
+    monkeypatch.setattr(progress, "phase", seen.append)
+    monkeypatch.setattr(bench_core, "_report", lambda *a: seen.append("REPORT"))
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path, runs=2)) == 0
+    assert seen == [
+        "bench toolchain: fetching stock clang 23.1.1-1",
+        "bench toolchain: fetching stock llvm-libs 23.1.1-1",
+        "bench toolchain: unpacking stock clang",
+        "bench toolchain: warm-up",
+        "bench toolchain: round 1/2",
+        "bench toolchain: round 2/2",
+        None,
+        "REPORT",
+    ]
+
+
+def test_phase_line_is_cleared_when_the_bench_fails(tmp_path, happy, monkeypatch):
+    from sysforge.ui import progress
+    seen = []
+    monkeypatch.setattr(progress, "phase", seen.append)
+
+    def offline_miss(pkg, workdir, offline):
+        raise sp.StockUnavailable("not cached")
+
+    monkeypatch.setattr(sp, "obtain", offline_miss)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 1
+    assert seen[-1] is None
+

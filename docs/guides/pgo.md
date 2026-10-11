@@ -238,7 +238,8 @@ The bench gives no pass or fail verdict, because what counts as a worthwhile gai
 on your machine and on what you compile. It installs nothing and needs no sudo: the stock
 clang is unpacked into a temporary directory. If the stock package isn't in the pacman
 cache it is downloaded as your user and checked against the sync database's checksum
-before it is used.
+before it is used. While it runs, the progress line names the step: fetching each stock
+package, unpacking it, the warm-up, then each timed round (`round 3/5`).
 
 By default the workload is a pair of built-in source files that no profile is trained on.
 To measure on your own code, list files or directories in `toolchain.toml`:

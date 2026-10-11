@@ -6,7 +6,8 @@
 fetch.py — sysforge fetch subcommand
 
 Download one or more PKGBUILDs into pkgbuild_dir without building them.
-For packages already cloned, runs git pull --rebase (skipped with --no-update).
+For packages already cloned, runs the scheduler source sync (fetch and
+fast-forward; skipped with --no-update).
 Prints the resulting PKGBUILD directory for each package.
 
 Public API:
@@ -102,7 +103,8 @@ class FetchVerb(Verb):
             help="One or more package names to download.",
         )
         p.add_argument("--no-update", action="store_true", dest="no_update",
-            help="Skip git pull --rebase for packages that are already cloned.")
+            help="Skip the source sync (fetch and fast-forward) for packages that "
+                 "are already cloned. --cleansrc still syncs.")
         p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
             help="Purge each package's src dir and re-clone. Refuses (per package) "
                  "if the existing clone has uncommitted changes, ahead-of-upstream "

@@ -790,7 +790,7 @@ def tracker(total: int, prefix: str,
                 do_work(item)
 
     Paints a 0/total placeholder on entry so users see immediate feedback
-    even when the first tick is far away (e.g. a batch of slow git pulls).
+    even when the first tick is far away (e.g. a batch of slow source syncs).
 
     One tracker at a time. For a sub-step inside an item use the yielded
     ``tick.note(text)`` / ``tick.resume()`` — e.g. a just-in-time dep install

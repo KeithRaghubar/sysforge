@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 
 """
-stages/toolchain/ — stage 6: LLVM toolchain build (GCC is register-only)
+stages/toolchain/ — stage 5: LLVM toolchain build (GCC is register-only)
 
 Opt-in: stage is a clean no-op if /etc/sysforge/toolchain.toml is absent or
 has enabled = false.  Systems that skip this stage use whatever compiler is

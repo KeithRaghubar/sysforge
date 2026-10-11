@@ -139,7 +139,8 @@ def _fmt_row(row: ChangeRow, *, name_width: int, show_size: bool) -> str:
     new_ver = row.new.version if row.new else None
     # equal_marker=False: a stage reports what it applied, so an unchanged
     # version still reads as a transition (matching update_summary._fmt_pkg).
-    line = f"{row.name:<{name_width}}  {version_pair(old_ver, new_ver, equal_marker=False)}"
+    pair_text = version_pair(old_ver, new_ver, equal_marker=False, classify=True)
+    line = f"{row.name:<{name_width}}  {pair_text}"
 
     if not show_size:
         return line
