@@ -107,7 +107,7 @@ def resolve_enum(raw, known, default, *, key: str):
     if raw in known:
         return raw
     _log.warn(
-        f"{key} = {raw!r} is not one of {sorted(known)} — using {default!r}"
+        f"{key} = {raw!r} is not one of {sorted(known)}: using {default!r}"
     )
     return default
 
@@ -271,7 +271,7 @@ def resolve_pkgbuild_src_dir(config: dict | None, build_cfg: dict | None = None)
         _src_dir_mismatch_warned = True
         _log.warn(
             "pkgbuild_src_dir mismatch: packages.toml [build] sets "
-            f"{build_val!r} but profiles.toml [paths] sets {paths_val!r} — "
+            f"{build_val!r} but profiles.toml [paths] sets {paths_val!r}; "
             f"using {build_val!r} ([build] takes precedence)"
         )
     return build_val or paths_val
@@ -746,7 +746,7 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8")
     except PermissionError:
-        _log.warn(f"Cannot read {path} — skipping")
+        _log.warn(f"Cannot read {path}: skipping")
         return {}
 
     result = parse_makepkg_conf_text(text)
@@ -948,7 +948,7 @@ def parse_system_makepkg_conf(path=None):
         result = _parse_one_makepkg_conf(Path(path))
         if not result:
             _log.warn(
-                f"makepkg.conf not found or unreadable at {path} — will use profile values only"
+                f"makepkg.conf not found or unreadable at {path}: will use profile values only"
             )
         return result
 
@@ -956,7 +956,7 @@ def parse_system_makepkg_conf(path=None):
     result = _parse_one_makepkg_conf(SYSTEM_MAKEPKG_CONF)
     if not result:
         _log.warn(
-            f"System makepkg.conf not found at {SYSTEM_MAKEPKG_CONF} — "
+            f"System makepkg.conf not found at {SYSTEM_MAKEPKG_CONF}: "
             "will use profile values only"
         )
 

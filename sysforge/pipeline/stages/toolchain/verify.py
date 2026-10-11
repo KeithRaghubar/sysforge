@@ -97,13 +97,13 @@ def check_llvm_link_resolution() -> list[str]:
         for p in libllvm_paths:
             if "/var/tmp/sysforge-llvm-stage" in p:  # noqa: S108 — reference literal for a diagnostic substring check, not a temp file created here
                 issues.append(
-                    f"{label} resolves libLLVM from a staging prefix: {p} "
-                    "— Pass 4 packaged a bad RPATH or the install is incomplete"
+                    f"{label} resolves libLLVM from a staging prefix: {p}; "
+                    "Pass 4 packaged a bad RPATH or the install is incomplete"
                 )
             elif not p.startswith("/usr/lib"):
                 issues.append(
-                    f"{label} resolves libLLVM outside /usr/lib: {p} "
-                    "— a sibling libLLVM is shadowing the package-managed one"
+                    f"{label} resolves libLLVM outside /usr/lib: {p}; "
+                    "a sibling libLLVM is shadowing the package-managed one"
                 )
     return issues
 
@@ -226,7 +226,7 @@ def dump_stage_dynsym_evidence(
     )
 
     lines: list[str] = [
-        "# Gate-3 ABI brick evidence — C++ stdlib symbols bound to LLVM_<ver>",
+        "# Gate-3 ABI brick evidence: C++ stdlib symbols bound to LLVM_<ver>",
         f"# installed libLLVM: {installed_libllvm}  "
         f"({len(provided)} _ZNSt*@LLVM_* exports)",
         f"# staged   libLLVM: {staged_libllvm or '(absent)'}  "
@@ -249,7 +249,7 @@ def dump_stage_dynsym_evidence(
             if in_staged:
                 lines.append(
                     f"# note: {len(in_staged)}/{len(missing)} of these ARE exported by "
-                    "the staged (staging3) libLLVM — the shipped libLLVM differs "
+                    "the staged (staging3) libLLVM; the shipped libLLVM differs "
                     "from what Pass 4b linked against:"
                 )
                 lines.extend(in_staged)
@@ -315,7 +315,7 @@ def verify_llvm_install(
             continue
         if proc.returncode != 0:
             issues.append(
-                f"{label}: exit {proc.returncode} — {proc.stderr.strip()[:200]}"
+                f"{label}: exit {proc.returncode}; {proc.stderr.strip()[:200]}"
             )
 
     if expected_targets:

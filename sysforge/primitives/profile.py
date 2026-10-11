@@ -470,7 +470,7 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
     if parent_name is None:
         if append_overrides:
             _log.warn(
-                f"profile '{profile_name}' has [append] but no parent — append section ignored"
+                f"profile '{profile_name}' has [append] but no parent: append section ignored"
             )
         return profile
 
@@ -484,7 +484,7 @@ def merge_extends(profile_name, profiles, visited=None, conflict_groups=None):
         if key in profile:
             _log.warn(
                 f"key '{key}' set both directly and in [append] on profile "
-                f"'{profile_name}' — direct value wins, append ignored"
+                f"'{profile_name}': direct value wins, append ignored"
             )
             continue
         parent_val = parent.get(key, "")
@@ -547,7 +547,7 @@ def _expand_toolchain(profile: dict, default_toolchain: str | None) -> dict:
     if bundle is None:
         _log.warn(
             f"toolchain={tc!r} is not a known value "
-            f"({'/'.join(sorted(_TOOLCHAIN_BUNDLES))}) — ignoring"
+            f"({'/'.join(sorted(_TOOLCHAIN_BUNDLES))}): ignoring"
         )
         return profile
 

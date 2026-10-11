@@ -229,7 +229,7 @@ def reuse_notice(profdata: Path, pkgbase: str, target_version: str) -> str:
         "(source rebuild stays profiled)"
     )
     _status, detail = profile_version_verdict(profdata, target_version)
-    return f"{line} — {detail}" if detail else line
+    return f"{line}: {detail}" if detail else line
 
 
 def merge_profraw(
@@ -260,13 +260,13 @@ def merge_profraw(
             _log.info(f"Reusing existing merged {pkgbase} profile: {out}")
             return out
         raise MesaPgoError(
-            f"no .profraw files in {store} — build+install the instrumented "
+            f"no .profraw files in {store}: build+install the instrumented "
             f"{pkgbase} with `sysforge build {pkgbase} --pgo=record`, run a "
             "representative workload to exercise it, then re-run `--pgo=use`."
         )
     if shutil.which(profdata_tool) is None:
         raise MesaPgoError(
-            f"{profdata_tool!r} not found on PATH — PGO needs the LLVM "
+            f"{profdata_tool!r} not found on PATH: PGO needs the LLVM "
             "toolchain (llvm-profdata ships with llvm)."
         )
     # Fold any prior merged profile into the inputs so the accumulated signal
@@ -367,7 +367,7 @@ def staleness_line(report: SkewReport, threshold: float) -> str:
         body = f"{report.mismatched:,} profiled functions no longer match the source"
     line = f"PGO profile {report.pkgbase}: {body}"
     if is_stale(report, threshold):
-        line += (f" — profile is stale; refresh with "
+        line += (f": profile is stale; refresh with "
                  f"`sysforge build {report.pkgbase} --pgo=record`")
     return line
 

@@ -61,17 +61,17 @@ _STAGE_CONFIG_ADVICE: dict[str, tuple[str, tuple[str, ...]]] = {
     "toolchain": (
         "toolchain.toml",
         (
-            "compiler — gcc or llvm (default: gcc)",
-            "[pgo] enabled — a PGO build always builds LLVM from source",
-            "repo_mode — whether stock packages come from the repos or a "
+            "compiler: gcc or llvm (default gcc)",
+            "[pgo] enabled: a PGO build always builds LLVM from source",
+            "repo_mode: whether stock packages come from the repos or a "
             "source build",
         ),
     ),
     "kernel": (
         "kernel.toml",
         (
-            "[[kconfig]] — the fragments merged into the kernel config",
-            "subpackages — which of headers/docs/api-headers are built",
+            "[[kconfig]]: the fragments merged into the kernel config",
+            "subpackages: which of headers/docs/api-headers are built",
             "initramfs handling and the interactive kconfig step",
         ),
     ),

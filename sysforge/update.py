@@ -229,7 +229,7 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
             resolved = resolve_profile(pkgmeta, matched, config, conflict_groups)
             consumes = resolve_consumes(resolved, pkgmeta, inference_map)
         except Exception as e:
-            _log.warn(f"preflight: skipping {r.pkgbase} — {e}")
+            _log.warn(f"preflight: skipping {r.pkgbase}; {e}")
             continue
         per_pkg[r.pkgbase] = consumes
         # The resolved compiler(s) for this package — checked for executability
@@ -305,7 +305,7 @@ def _load_overrides(path: Path) -> tuple[dict, dict[str, dict]]:
             # hand-written [[package]] entries get the cleanup nudge.
             if entry_is_inert(entry) and "group" not in entry:
                 _log.warn(
-                    f"{name}: inert override (no behavior-changing field) — "
+                    f"{name}: inert override (no behavior-changing field); "
                     "has no effect; remove or add enable_build_from_source/cache/reason"
                 )
         return build_cfg, overrides
@@ -333,13 +333,13 @@ _SENTINEL_DIR = Path("/var/lib/sysforge/sentinels")
 
 _SENTINEL_REMINDERS = {
     "kernel": (
-        "Kernel package(s) changed since last sysforge run — review whether "
+        "Kernel package(s) changed since last sysforge run: review whether "
         "kernel-dependent AUR packages (nvidia-dkms, *-headers, vbox modules) "
         "need a `sysforge update`."
     ),
     "toolchain": (
         "Toolchain package(s) (llvm/clang/gcc) changed since last sysforge "
-        "run — packages built against the prior toolchain may want a rebuild; "
+        "run: packages built against the prior toolchain may want a rebuild; "
         "PGO profdata cached under toolchain.toml `pgo_store` may be stale."
     ),
 }
@@ -438,7 +438,7 @@ def _consume_artifact_sentinel(silent: bool = False) -> None:
                 )
             if new_cands:
                 parts.append(f"{len(new_cands)} new adoptable candidate(s)")
-            _log.warn("; ".join(parts) + " — run `sysforge artifact review`.")
+            _log.warn("; ".join(parts) + ": run `sysforge artifact review`.")
     with contextlib.suppress(OSError):
         path.unlink()
 
@@ -710,7 +710,7 @@ def _emit_restart_notice(*, emit) -> None:
         restart_probe.TIER_RELOGIN: "log out and back in to apply",
         restart_probe.TIER_RESTART_UNIT: "restart the affected service(s) to apply",
     }[report.highest_tier]
-    emit(f"still running superseded code: {subject} — {action} "
+    emit(f"still running superseded code: {subject}; {action} "
          f"(details: sysforge doctor --restart)")
 
 
@@ -894,7 +894,7 @@ def _phase_init(run: UpdateRun) -> int | None:
         except OSError as e:
             run.unified_log_active = False
             _log.warn(
-                f"Cannot write unified log to {run.unified_log_path}: {e} — "
+                f"Cannot write unified log to {run.unified_log_path}: {e}; "
                 f"logging to terminal only"
             )
 
@@ -989,7 +989,7 @@ def _phase_source_sync(run: UpdateRun) -> int | None:
         run.pacman_updates_map = checkupdates_map()
         if run.pacman_updates_map is None:
             _log.warn(
-                "checkupdates unavailable — pacman-class repo packages will "
+                "checkupdates unavailable: pacman-class repo packages will "
                 "be reported as SKIPPED_NO_CHECKUPDATES; install pacman-contrib"
             )
     else:
@@ -1170,7 +1170,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
-                f"flag drift: {r.pkgbase} — failed to parse PKGBUILD: {fd.error}"
+                f"flag drift: {r.pkgbase}; failed to parse PKGBUILD: {fd.error}"
             )
             continue
         if fd.drifted:
@@ -1209,7 +1209,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
-                f"flag drift: {pkgbase} — failed to parse PKGBUILD: {fd.error}"
+                f"flag drift: {pkgbase}; failed to parse PKGBUILD: {fd.error}"
             )
             continue
         if fd.drifted:
@@ -1325,8 +1325,8 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         if unbuildable:
             _log.warn(
                 f"--rebuild-on-toolchain-drift: {unbuildable} drifted "
-                "package(s) have no resolvable PKGBUILD (likely pacman-class) "
-                "— skipped"
+                "package(s) have no resolvable PKGBUILD (likely pacman-class); "
+                "skipped"
             )
 
     if run._rebuild_fl_drift and flag_drifted:
@@ -1350,7 +1350,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         if unbuildable:
             _log.warn(
                 f"--rebuild-on-flag-drift: {unbuildable} drifted "
-                "package(s) have no resolvable PKGBUILD — skipped"
+                "package(s) have no resolvable PKGBUILD; skipped"
             )
 
     run.timer.stop()
@@ -1449,7 +1449,7 @@ def _phase_build(run: UpdateRun) -> int | None:
         run.install_failed = bool(refused)
         run.not_installed = build_core.not_installed_by_pkgbase(refused, pkgbase_of)
         if not built_pkg_files and run.built_pkgs and not run.install_failed:
-            _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
+            _log.warn("No .pkg.tar.* files eligible to install: nothing to do")
     else:
         # ── Phase 4.5: Toolchain pre-flight ───────────────────────────────
         # Probes rust/cmake/meson availability (incl. rustup cross targets
@@ -1458,7 +1458,7 @@ def _phase_build(run: UpdateRun) -> int | None:
         # prints a fix block and aborts the batch.
         _ui_progress.phase("toolchain preflight")
         if not _toolchain_preflight_for_batch(run.to_build, run.config, run.args):
-            print("[SYSFORGE] Toolchain pre-flight failed — aborting batch.",
+            print("[SYSFORGE] Toolchain pre-flight failed: aborting batch.",
                   file=sys.stderr)
             sys.exit(1)
 
@@ -1535,7 +1535,7 @@ def _phase_build(run: UpdateRun) -> int | None:
         run.install_failed = run.outcome.install_failed
         run.not_installed = run.outcome.not_installed
         if not built_pkg_files and run.built_pkgs and not run.install_failed:
-            _log.warn("No .pkg.tar.* files eligible to install — nothing to do")
+            _log.warn("No .pkg.tar.* files eligible to install: nothing to do")
 
 
 def _phase_install_and_report(run: UpdateRun) -> int:
@@ -1836,7 +1836,7 @@ class UpdateVerb(Verb):
         p.add_argument("--cleansrc", action="store_true", dest="cleansrc",
             help="Purge each package's src dir and re-clone before building. "
                  "Per-package fatal if the clone has uncommitted changes, "
-                 "ahead-of-upstream commits, or no upstream — that package is "
+                 "ahead-of-upstream commits, or no upstream. That package is "
                  "reported failed and the run continues.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
             help="Like --cleansrc but bypasses the dirty/diverged guard and "
@@ -1859,7 +1859,7 @@ class UpdateVerb(Verb):
             help="Finish the run with a single `pacman -Syu` system upgrade, after "
                  "source-built artifacts are installed (they stay protected by the "
                  "`IgnoreGroup = sf-build` line `sysforge setup` adds). Independent "
-                 "of repo_mode — no extra packages enter the version-check walk. "
+                 "of repo_mode: no extra packages enter the version-check walk. "
                  "Also settable via [build] system_upgrade = true in packages.toml.")
         sysupgrade_group.add_argument("--no-sysupgrade", action="store_true", dest="no_sysupgrade",
             help="Skip the trailing system upgrade even when "
@@ -1890,7 +1890,7 @@ class UpdateVerb(Verb):
                  "no source sync beyond the version check, no rebuild, no stage. "
                  "Unlike a normal run this always includes stage-owned "
                  "(toolchain/kernel) packages, annotated with the stage that owns "
-                 "them — it is the quick answer to 'is there a new toolchain or "
+                 "them. It is the quick answer to 'is there a new toolchain or "
                  "kernel?' without entering `run toolchain` / `run kernel`. "
                  "Up-to-date packages collapse into a count. VCS packages report "
                  "no available version unless --devel is also passed.")
@@ -1904,7 +1904,7 @@ class UpdateVerb(Verb):
             dest="rebuild_on_toolchain_drift",
             help="Treat toolchain-variant drift as an upgrade trigger: packages "
                  "built under a different toolchain than is active now are added "
-                 "to the rebuild queue. Off by default — drift is reported but "
+                 "to the rebuild queue. Off by default: drift is reported but "
                  "not acted on, since most C/C++ packages don't measurably "
                  "benefit from a re-stamp. Also settable via "
                  "[update] rebuild_on_toolchain_drift = true in sysforge.toml.")
@@ -1912,7 +1912,7 @@ class UpdateVerb(Verb):
             dest="rebuild_on_flag_drift",
             help="Treat flag drift as an upgrade trigger: profiled packages whose "
                  "flags now resolve differently than when built are added to the "
-                 "rebuild queue. Off by default — flag drift is reported but not "
+                 "rebuild queue. Off by default: flag drift is reported but not "
                  "acted on, since one profile edit can drift every profiled "
                  "package. Also settable via [update] rebuild_on_flag_drift = true "
                  "in sysforge.toml.")

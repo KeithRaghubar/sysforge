@@ -585,7 +585,7 @@ class AbiWalk:
         roots = self._roots(installed, foreign)
         for r in roots:
             if r not in installed:
-                _log.warn(f"{r}: not installed — will report as missing")
+                _log.warn(f"{r}: not installed; will report as missing")
 
         targets = _walk_closure(roots, shallow=getattr(self.args, "shallow", False))
         ldconfig_set = _parse_ldconfig(_default_ldconfig_fn())
@@ -603,7 +603,7 @@ class AbiWalk:
         suggest = bool(getattr(self.args, "suggest", False))
         if suggest and not files_db_present():
             _log.warn("--suggest: pacman files db not synced; "
-                      "run `sudo pacman -Fy` (or `-Fyy`) first — "
+                      "run `sudo pacman -Fy` (or `-Fyy`) first: "
                       "no candidate lookups will be performed")
             suggest = False
         installed_name_set = set(installed.keys())
@@ -710,7 +710,7 @@ def _require_completed_walk(walk: "AbiWalk") -> None:
     """
     if walk.results is None:
         raise RuntimeError(
-            "--apply: the ABI walk did not run — its structured results are "
+            "--apply: the ABI walk did not run; its structured results are "
             "unavailable. This is a wiring bug: the abi axis must execute "
             "before the apply bridge (2.6.1-F1)."
         )
@@ -771,7 +771,7 @@ def _derive_pkg_targets(args, config) -> list[str]:
 # persists. Annotated at the doctor boundary only: the underlying probes are
 # reused by the kernel/toolchain stages, where the audited config is the
 # just-built one and this caveat would be wrong.
-_REBOOT_HINT = ("reflects the *running* kernel / current boot — "
+_REBOOT_HINT = ("reflects the *running* kernel / current boot: "
                 "reboot, then re-run doctor, to clear")
 
 
@@ -787,7 +787,7 @@ def _with_reboot_hint(
         if only is not None and not only(f):
             out.append(f)
             continue
-        tail = f"{f.remediation} — {_REBOOT_HINT}" if f.remediation else _REBOOT_HINT
+        tail = f"{f.remediation} ({_REBOOT_HINT})" if f.remediation else _REBOOT_HINT
         out.append(replace(f, remediation=tail))
     return out
 
@@ -1376,7 +1376,7 @@ def cmd_doctor_system(args):
     config = getattr(args, "config", None) or {}
     axis_names = _resolve_axis_names(args)
     if not axis_names:
-        _log.error("nothing to check — pass an axis flag, or run bare "
+        _log.error("nothing to check: pass an axis flag, or run bare "
                    "`sysforge doctor system` for the full sweep")
         return 2
     return 1 if _run_system_axes(args, config, axis_names) else 0
@@ -1411,7 +1411,7 @@ def cmd_doctor_pkg(args):
     derived = _derive_pkg_targets(args, config)
     if not (getattr(args, "packages", None) or []) and not derived:
         _log.error(
-            "nothing to check — pass PKG, --all, --repo, or --graphics "
+            "nothing to check: pass PKG, --all, --repo, or --graphics "
             "(e.g. `sysforge doctor pkg mesa`)"
         )
         return 2
@@ -1474,7 +1474,7 @@ def _apply_rebuilds(
             _log.ui(f"  → run: sudo pacman -S {name}")
     if install_candidates:
         _log.ui(
-            "Install candidates skipped — `sysforge doctor --apply` only "
+            "Install candidates skipped; `sysforge doctor --apply` only "
             "rebuilds (not installs) in v1.x:"
         )
         for cand in install_candidates:
@@ -1482,7 +1482,7 @@ def _apply_rebuilds(
             _log.ui(f"  → run: sysforge build {bare}")
 
     if not eligible:
-        _log.ui("No eligible rebuild candidates — nothing to apply.")
+        _log.ui("No eligible rebuild candidates: nothing to apply.")
         return 0
 
     dry_run = bool(getattr(args, "dry_run", False))
@@ -1557,7 +1557,7 @@ def _add_system_axis_flags(p):
     p.add_argument("--graphics", action="store_true",
         help="Run graphics system-state probes: nvidia-drm modeset, driver "
              "version skew, Wayland explicit-sync protocol, Steam GPU accel, "
-             "and session type. Does not select packages — for the graphics "
+             "and session type. Does not select packages: for the graphics "
              "package set use `doctor pkg --graphics`.")
     p.add_argument("--gfxperf", action="store_true",
         help="Advisory graphics-performance sweep (stutter/tearing/frame-drop "
@@ -1580,8 +1580,8 @@ def _add_system_axis_flags(p):
     p.add_argument("--toolchain", action="store_true",
         help="Check that the configured toolchain matches what's installed: when "
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
-             "optionally PGO) but stock repo LLVM is installed — or the PGO "
-             "profdata is version-skewed — report it.")
+             "optionally PGO) but stock repo LLVM is installed, or the PGO "
+             "profdata is version-skewed, report it.")
     p.add_argument("--rust", action="store_true",
         help="Report which Rust toolchain a build will actually use: the "
              "effective cargo/rustc owner (rustup channel or distro `rust` "
@@ -1716,7 +1716,7 @@ class DoctorPkgVerb(Verb):
                  "mtree via `pacman -Qkk`. Read-only; never restores.")
         p.add_argument("--all", action="store_true", dest="all",
             help="Target every installed package, foreign and non-foreign "
-                 "(pacman -Q). Suppresses the opt-in axes — runs --abi only unless "
+                 "(pacman -Q). Suppresses the opt-in axes: runs --abi only unless "
                  "you name another axis explicitly.")
         p.add_argument("--repo", action="store_true", dest="repo",
             help="Target every non-foreign (native repo) package. Narrower than "
@@ -1734,15 +1734,15 @@ class DoctorPkgVerb(Verb):
         p.add_argument("--suggest", "-s", action="store_true",
             help="For each unsatisfied soname, look up candidate packages "
                  "via `pacman -Fq`. Findings split into 'install candidates' "
-                 "(missing from disk — install the package), 'rebuild "
+                 "(missing from disk: install the package), 'rebuild "
                  "candidates' (installed; rebuild against the current system), "
                  "and 'ABI-drift candidates' (present but one of their "
-                 "versioned symbols no longer resolves — rebuild or upgrade, "
+                 "versioned symbols no longer resolves: rebuild or upgrade, "
                  "not reinstall). Requires a synced files db (`sudo pacman -Fy`).")
         p.add_argument("--apply", action="store_true",
             help="Hand the rebuild candidates from --suggest off to `sysforge "
                  "update` and rebuild them. Implies --suggest. Drift-rebuild only "
-                 "in v1.x — install candidates are printed but not invoked.")
+                 "in v1.x: install candidates are printed but not invoked.")
         p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
             help="Skip the y/N prompt before --apply rebuilds.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",

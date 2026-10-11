@@ -64,7 +64,7 @@ def _default_ldconfig_fn():
     """
     result = run.capture(["ldconfig", "-p"])
     if result is None:
-        _log.warn("ldconfig not found — skipping soname checks")
+        _log.warn("ldconfig not found: skipping soname checks")
         return ""
     return result.stdout
 
@@ -321,15 +321,15 @@ def _diagnose_guestfs(output, kernel_config):
             if val == "n":
                 missing.append(f"  {key}=m  ({desc})")
             elif val is None:
-                missing.append(f"  {key}=m  ({desc}) [cannot verify — /proc/config.gz unavailable]")
+                missing.append(f"  {key}=m  ({desc}) [cannot verify: /proc/config.gz unavailable]")
         if missing:
             issues.append(
-                "appliance cannot find root disk — missing kernel config options:\n"
+                "appliance cannot find root disk; missing kernel config options:\n"
                 + "\n".join(missing)
             )
         else:
             issues.append(
-                "appliance cannot find root disk — required modules appear enabled "
+                "appliance cannot find root disk: required modules appear enabled "
                 "but the appliance still failed to boot (stale appliance cache?)"
             )
     return issues
@@ -449,7 +449,7 @@ def run_dep_analysis(pkgmeta, config, ldconfig_fn=None, run_fn=None):
             check_soname_deps(depends, config, pkgname=pkgname, ldconfig_fn=ldconfig_fn)
         )
     else:
-        _log.info(f"[{pkgname}] no soname entries in depends — skipping")
+        _log.info(f"[{pkgname}] no soname entries in depends: skipping")
 
     # Makedep runtime probes
     makedepends = globals_.get("makedepends", [])

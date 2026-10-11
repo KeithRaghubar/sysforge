@@ -117,12 +117,12 @@ def _coerce_nice(raw) -> int | None:
     try:
         n = int(raw)
     except (TypeError, ValueError):
-        _throttle_log.warn(f"[build] nice = {raw!r} is not an integer — ignoring")
+        _throttle_log.warn(f"[build] nice = {raw!r} is not an integer: ignoring")
         return None
     if n < 0 or n > 19:
         clamped = max(0, min(19, n))
         _throttle_log.warn(
-            f"[build] nice = {n} out of range 0..19 — clamping to {clamped} "
+            f"[build] nice = {n} out of range 0..19: clamping to {clamped} "
             "(negative niceness needs privilege and is not the intent here)"
         )
         n = clamped
@@ -136,7 +136,7 @@ def _coerce_ionice(raw) -> str | None:
     if val in _IONICE_CLASSES:
         return val
     _throttle_log.warn(
-        f"[build] ionice = {raw!r} is not one of {sorted(_IONICE_CLASSES)} — ignoring"
+        f"[build] ionice = {raw!r} is not one of {sorted(_IONICE_CLASSES)}: ignoring"
     )
     return None
 
@@ -164,14 +164,14 @@ def _coerce_cpu_quota(raw) -> str | None:
         if frac is not None:
             if frac <= 0:
                 _throttle_log.warn(
-                    f"[build] cpu_quota = {raw!r} (fraction of cores) must be > 0 — ignoring"
+                    f"[build] cpu_quota = {raw!r} (fraction of cores) must be > 0: ignoring"
                 )
                 return None
             pct = max(1, round(frac * cores * 100))
     if pct is None:
         _throttle_log.warn(
             f"[build] cpu_quota = {raw!r} must look like \"600%\" (N%, 100%=one core) "
-            "or a fraction of total cores (e.g. 0.5) — ignoring"
+            "or a fraction of total cores (e.g. 0.5): ignoring"
         )
         return None
     # Warn-only (2.3.0-F7): a quota above cpu_count*100 asks for more cores than
@@ -180,7 +180,7 @@ def _coerce_cpu_quota(raw) -> str | None:
     if pct > cores * 100:
         _throttle_log.warn(
             f"[build] cpu_quota = {raw!r} resolves to {pct}% but this host has only "
-            f"{cores} core(s) ({cores * 100}%) — keeping it; systemd will clamp to "
+            f"{cores} core(s) ({cores * 100}%): keeping it; systemd will clamp to "
             "the available CPUs"
         )
     return f"{pct}%"
@@ -192,10 +192,10 @@ def _coerce_jobs(raw) -> int | None:
     try:
         j = int(raw)
     except (TypeError, ValueError):
-        _throttle_log.warn(f"[build] jobs = {raw!r} is not an integer — ignoring")
+        _throttle_log.warn(f"[build] jobs = {raw!r} is not an integer: ignoring")
         return None
     if j < 1:
-        _throttle_log.warn(f"[build] jobs = {j} must be >= 1 — ignoring")
+        _throttle_log.warn(f"[build] jobs = {j} must be >= 1: ignoring")
         return None
     return j
 
@@ -213,13 +213,13 @@ def _coerce_mem_limit(raw) -> int | None:
     if not m:
         _throttle_log.warn(
             f"[build] mem_limit = {raw!r} must look like \"24G\" (K/M/G/T binary "
-            "suffix) or a byte count — ignoring"
+            "suffix) or a byte count: ignoring"
         )
         return None
     value = float(m.group(1)) * (1024 ** _MEM_SUFFIX_POW[(m.group(2) or "")[:1].lower()])
     n = int(value)
     if n <= 0:
-        _throttle_log.warn(f"[build] mem_limit = {raw!r} must be > 0 — ignoring")
+        _throttle_log.warn(f"[build] mem_limit = {raw!r} must be > 0: ignoring")
         return None
     return n
 
@@ -301,12 +301,12 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
         if shutil.which("nice"):
             front += ["nice", "-n", str(throttle.nice)]
         else:
-            _throttle_log.warn("nice not found on PATH — skipping niceness throttle")
+            _throttle_log.warn("nice not found on PATH: skipping niceness throttle")
     if throttle.ionice is not None:
         if shutil.which("ionice"):
             front += ["ionice", "-c", _IONICE_CLASSES[throttle.ionice]]
         else:
-            _throttle_log.warn("ionice not found on PATH — skipping IO-priority throttle")
+            _throttle_log.warn("ionice not found on PATH: skipping IO-priority throttle")
 
     # A systemd scope is the primary tier for *both* resource ceilings (2.3.0-F9):
     # a cgroup CPUQuota and/or MemoryMax is kernel-enforced hierarchically over
@@ -330,7 +330,7 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
         # preexec (resolve_child_mem_cap owns that non-systemd fallback).
         if throttle.cpu_quota is not None:
             _throttle_log.warn(
-                "cpu_quota set but systemd-run not found — cannot enforce a hard CPU "
+                "cpu_quota set but systemd-run not found: cannot enforce a hard CPU "
                 "ceiling; falling back to nice/ionice only"
             )
 

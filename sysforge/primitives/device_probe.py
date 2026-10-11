@@ -440,7 +440,7 @@ def check_unsupported_devices(
             )
         else:
             remediation = (
-                f"Build/load module {mods} (no curated CONFIG_* mapping — "
+                f"Build/load module {mods} (no curated CONFIG_* mapping: "
                 "check the module's Kconfig symbol)."
             )
         findings.append(DeviceFinding(

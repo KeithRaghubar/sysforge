@@ -269,7 +269,7 @@ def _probe_rust_cross(target: str, pin: str | None = None) -> ToolchainCheck:
         detail = f"rustc cannot build for {target} (no rustup-managed toolchain)"
 
     if "E0463" in stderr or "can't find crate for `std`" in stderr:
-        detail += " — std crate missing"
+        detail += ": std crate missing"
 
     return ToolchainCheck(
         name=token_name, ok=False,
@@ -381,7 +381,7 @@ def _llvm_suite_skew() -> tuple[str, list[str], tuple] | None:
     groups = " vs ".join(
         f"{'/'.join(pkgs)} {ver}" for ver, pkgs in sorted(by_ver.items())
     )
-    detail = f"LLVM suite version skew ({groups}) — toolchain is half-installed"
+    detail = f"LLVM suite version skew ({groups}): toolchain is half-installed"
     target = _newest_pkgver(by_ver)
     rows = tuple(
         ("/".join(pkgs), ver, target) for ver, pkgs in sorted(by_ver.items())
@@ -534,7 +534,7 @@ def probe_rust_kernel(minimums: Mapping[str, str] | None = None,
         return ToolchainCheck(
             name="rust:kernel", ok=False,
             detail=(f"CONFIG_RUST=y requested but {'; '.join(problems)} "
-                    f"[rustc: {rust_probe.rustc_provenance()}; {window}] — "
+                    f"[rustc: {rust_probe.rustc_provenance()}; {window}]: "
                     "kconfig would silently drop CONFIG_RUST"),
             fix_cmd="; ".join(dict.fromkeys(fixes)), auto_remediable=False,
         )
@@ -562,7 +562,7 @@ def _probe_one(token: str) -> ToolchainCheck:
         return _probe_meson()
     return ToolchainCheck(
         name=token, ok=True,
-        detail=f"no probe registered for {token!r} — assuming OK",
+        detail=f"no probe registered for {token!r}: assuming OK",
         fix_cmd=None, auto_remediable=False,
     )
 
@@ -616,7 +616,7 @@ def render_preflight(report: ToolchainPreflightReport) -> str:
                 tag = " (auto)" if c.auto_remediable else ""
                 lines.append(f"    {c.name}: {c.fix_cmd}{tag}")
             else:
-                lines.append(f"    {c.name}: (no clean automatic fix — investigate manually)")
+                lines.append(f"    {c.name}: (no clean automatic fix; investigate manually)")
 
     return "\n".join(lines)
 

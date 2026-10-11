@@ -176,7 +176,7 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
     if not force and cache.exists():
         age = time.time() - cache.stat().st_mtime
         if age < AUR_CACHE_MAX_AGE:
-            _log.info(f"name cache is fresh ({int(age)}s old) — skipping refresh")
+            _log.info(f"name cache is fresh ({int(age)}s old): skipping refresh")
             return cache
 
     _log.info(f"refreshing AUR name cache → {cache}")
@@ -277,7 +277,7 @@ def aur_clone(
             if not (dest / "PKGBUILD").exists():
                 shutil.rmtree(dest, ignore_errors=True)
                 raise RuntimeError(
-                    f"AUR clone for {name!r} produced no PKGBUILD — AUR has no "
+                    f"AUR clone for {name!r} produced no PKGBUILD: AUR has no "
                     f"repository under that name (split packages live under "
                     f"their pkgbase)."
                 )

@@ -455,7 +455,7 @@ def audit_resolved_config(
         sev = SEV_ERROR if is_brick else SEV_WARN
         findings.append(KernelFinding(
             sev, f"boot_kconfig:{sym}",
-            f"{sym} is not enabled — needed for {reason}.",
+            f"{sym} is not enabled: needed for {reason}.",
             f"Set {sym}=y (or =m) before building this kernel.",
             is_brick=is_brick,
         ))
@@ -469,7 +469,7 @@ def audit_resolved_config(
             required_syms.add(sym)  # dedupe across devices
             findings.append(KernelFinding(
                 SEV_WARN, f"device_kconfig:{sym}",
-                f"{sym} is not enabled — {getattr(dev, 'description', '')} "
+                f"{sym} is not enabled: {getattr(dev, 'description', '')} "
                 f"({getattr(dev, 'address', '?')}) would have no driver.",
                 f"Enable {sym} to support this device.",
                 is_brick=False,
@@ -576,7 +576,7 @@ def verify_boot_artifacts(pkgname: str, bootloader: str = "systemd-boot") -> lis
     if not fallback.exists():
         findings.append(KernelFinding(
             SEV_WARN, "boot_fallback_initramfs_missing",
-            f"no fallback initramfs ({fallback}) — a broken main initramfs "
+            f"no fallback initramfs ({fallback}): a broken main initramfs "
             "would have no autodetect-free safety image.",
             "Add a `-fallback` preset to /etc/mkinitcpio.d/<preset>.preset.",
             is_brick=False,
@@ -585,7 +585,7 @@ def verify_boot_artifacts(pkgname: str, bootloader: str = "systemd-boot") -> lis
     if bootloader != "none" and not _boot_entry_references(pkgname):
         findings.append(KernelFinding(
             SEV_ERROR, "boot_entry_missing",
-            f"no boot entry references vmlinuz-{pkgname} — the kernel is "
+            f"no boot entry references vmlinuz-{pkgname}: the kernel is "
             "installed but cannot be selected at boot.",
             "For systemd-boot run `kernel-install add` or create a loader "
             "entry; for grub run `sudo grub-mkconfig -o /boot/grub/grub.cfg`.",
@@ -642,7 +642,7 @@ def check_mkinitcpio_hooks(topology: RootTopology) -> list[KernelFinding]:
         findings.append(KernelFinding(
             SEV_WARN, f"mkinitcpio_hook:{layer}",
             f"root uses {layer} but mkinitcpio HOOKS has none of "
-            f"{', '.join(names)} — the initramfs may not assemble root.",
+            f"{', '.join(names)}: the initramfs may not assemble root.",
             f"Add a {layer} hook (one of {', '.join(names)}) to "
             f"{_MKINITCPIO_CONF} and run `sudo mkinitcpio -P`.",
             is_brick=False,
@@ -771,7 +771,7 @@ def check_dkms_for_kernel(kver: str) -> list[KernelFinding]:
                 continue
             findings.append(KernelFinding(
                 SEV_WARN, f"dkms:{mod}",
-                f"DKMS module {mod!r} is not built for kernel {kver} — it "
+                f"DKMS module {mod!r} is not built for kernel {kver}: it "
                 "will not load on the new kernel.",
                 f"Install `{kver}` headers and run "
                 f"`{cmd}` (or reinstall the "
@@ -794,7 +794,7 @@ def check_boot_mount_space(min_mb: int = 200) -> KernelFinding | None:
     if not _BOOT_DIR.exists():
         return KernelFinding(
             SEV_ERROR, "boot_dir_missing",
-            f"{_BOOT_DIR} does not exist — kernel images have nowhere to land.",
+            f"{_BOOT_DIR} does not exist: kernel images have nowhere to land.",
             f"Mount the boot/ESP partition at {_BOOT_DIR} before building.",
             is_brick=True,
         )
@@ -806,7 +806,7 @@ def check_boot_mount_space(min_mb: int = 200) -> KernelFinding | None:
     if free_mb < min_mb:
         return KernelFinding(
             SEV_ERROR, "boot_low_space",
-            f"{_BOOT_DIR} has only {free_mb} MiB free (need ≥ {min_mb} MiB) — "
+            f"{_BOOT_DIR} has only {free_mb} MiB free (need ≥ {min_mb} MiB): "
             "a kernel + initramfs install may be truncated.",
             f"Free space on {_BOOT_DIR} (remove stale kernels) before building.",
             is_brick=True,

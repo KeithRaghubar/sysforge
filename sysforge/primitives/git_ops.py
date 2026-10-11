@@ -114,7 +114,7 @@ def git_fetch_and_compare(
          "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     )
     if r.returncode != 0:
-        _log.info(f"{pkgbuild_dir.name}: no tracking branch — skipping fetch")
+        _log.info(f"{pkgbuild_dir.name}: no tracking branch; skipping fetch")
         return GitFetchOutcome(status="no_tracking", head_before=None, head_after=None)
 
     tracking = r.stdout.strip()
@@ -187,7 +187,7 @@ def git_fetch_and_compare(
     if ancestor.returncode != 0 or git_is_dirty(pkgbuild_dir):
         if ancestor.returncode != 0:
             err = f"divergent: HEAD {head_before[:10]} vs FETCH_HEAD {fetch_head[:10]}"
-            _log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
+            _log.warn(f"{pkgbuild_dir.name}: {err}; keeping local PKGBUILD")
         elif is_vcs and not git_is_dirty(pkgbuild_dir, is_vcs=True):
             # 2.6.1-B1: the only working-tree change is makepkg's pkgver()
             # auto-bump (plus the regenerated .SRCINFO) — a build artifact, not
@@ -203,10 +203,10 @@ def git_fetch_and_compare(
             # `failed`, a scheduler blocker. `diverged` is the outcome the
             # caller's reset already heals correctly.
             err = "working tree carries only VCS pkgver churn"
-            _log.info(f"{pkgbuild_dir.name}: {err} — deferring to caller reset")
+            _log.info(f"{pkgbuild_dir.name}: {err}; deferring to caller reset")
         else:
             err = "working tree has local modifications"
-            _log.warn(f"{pkgbuild_dir.name}: {err} — keeping local PKGBUILD")
+            _log.warn(f"{pkgbuild_dir.name}: {err}; keeping local PKGBUILD")
         return GitFetchOutcome(
             status="diverged", head_before=head_before, head_after=fetch_head,
             error=err,
@@ -498,7 +498,7 @@ def _purge_refusal_message(pkgbuild_dir: Path, *, is_vcs: bool) -> str | None:
         return None
     return (
         f"refusing to purge {pkgbuild_dir}: " + "; ".join(causes)
-        + " — commit/discard the change or pass --cleansrc-force"
+        + ": commit/discard the change or pass --cleansrc-force"
     )
 
 

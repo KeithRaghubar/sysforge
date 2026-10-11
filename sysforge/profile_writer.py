@@ -21,7 +21,7 @@ _log = log.get_logger("PROFILE")
 
 _SECTION = "[package_compiler_overrides]"
 _HEADER = (
-    "# Auto-managed by sysforge — compiler/linker overrides recovered from "
+    "# Auto-managed by sysforge: compiler/linker overrides recovered from "
     "build failures.\n# Keyed by pkgbase; applied last in resolve_profile "
     "(wins over the matched profile).\n"
 )

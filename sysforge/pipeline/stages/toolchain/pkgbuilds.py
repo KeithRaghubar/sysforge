@@ -130,11 +130,11 @@ def sync_pkgbuild_dirs(
         result = scheduler.request(req)
         if result.status in SYNC_BLOCKING_STATUSES:
             failures.append(
-                f"{req.pkgbase}: {result.status} — {result.error or result.status}"
+                f"{req.pkgbase}: {result.status}; {result.error or result.status}"
             )
         elif result.status == STATUS_DIVERGED:
             _log.warn(
-                f"{req.pkgbase}: {result.error or 'divergent upstream'} — "
+                f"{req.pkgbase}: {result.error or 'divergent upstream'}; "
                 "build will use the local PKGBUILD; rerun with --cleansrc "
                 "to discard local edits and re-clone"
             )
@@ -310,7 +310,7 @@ def run_llvm_preflight(names: list[str], config: dict, options) -> None:
     blocker_lines = "\n".join(f"  - {b}" for b in blockers)
     if not prompt.is_interactive():
         raise RuntimeError(
-            "[TOOLCHAIN] LLVM safety pre-flight refused — strict mode "
+            "[TOOLCHAIN] LLVM safety pre-flight refused; strict mode "
             "blocked the run on the following:\n"
             f"{blocker_lines}\n"
             "Re-run with --allow-dirty-llvm to bypass dirty/diverged "

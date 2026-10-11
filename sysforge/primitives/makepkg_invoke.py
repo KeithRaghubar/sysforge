@@ -641,21 +641,21 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 "Run 'git pull --rebase' in each package directory to sync them, "
                 "then retry with -m '-f' to force a rebuild.")
         elif failed_stage == "prepare":
-            _makepkg_log.info("prepare() failed — likely an upstream issue "
+            _makepkg_log.info("prepare() failed: likely an upstream issue "
                       "(patch conflict, changed upstream state, or fetch error); "
                       "sysforge does not modify prepare()")
         elif failed_stage == "build":
-            _makepkg_log.info("build() failed — could be upstream or a flag/toolchain "
+            _makepkg_log.info("build() failed: could be upstream or a flag/toolchain "
                       "incompatibility from the active sysforge profile")
         elif failed_stage == "package":
-            _makepkg_log.info("package() failed — likely an upstream issue; "
+            _makepkg_log.info("package() failed: likely an upstream issue; "
                       "sysforge does not modify package()")
         else:
             _makepkg_log.info("see the captured output tail in the per-package log "
                       "for the failing block (or re-run with -vvv for full output)")
         if toolchain_mismatch:
             _makepkg_log.warn(
-                "Detected clang-only compiler flag rejected by GCC — "
+                "Detected clang-only compiler flag rejected by GCC: "
                 "the package's build system likely invokes a hardcoded gcc/g++"
             )
             err = ToolchainMismatchError(returncode, "makepkg")
@@ -752,7 +752,7 @@ def _recover_menu_choices(have_swap: bool,
     swap_line = "  [c] retry with a different compiler / linker\n" if have_swap else ""
     msg = (
         f"Recover {label}:\n"
-        "  [e] edit PKGBUILD in $EDITOR — retries automatically on exit\n"
+        "  [e] edit PKGBUILD in $EDITOR: retries automatically on exit\n"
         f"{swap_line}"
         "  [r] retry as-is            (Enter)\n"
         "  [a] abort\n"
@@ -984,7 +984,7 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 )
                 if built_pkgs:
                     _makepkg_log.ui(
-                            "Built packages found — build likely succeeded but "
+                            "Built packages found; build likely succeeded but "
                             "install failed (sudo timeout?):")
                     for p in built_pkgs:
                         _makepkg_log.ui(f"  {p.name}")

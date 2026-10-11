@@ -321,7 +321,7 @@ class KconfigPlan:
             if dropped_base or dropped_fragment:
                 _log.info(
                     "PKGBUILD already applies a kconfig fragment "
-                    "(merge_config.sh present) — skipping the seed/merge steps",
+                    "(merge_config.sh present): skipping the seed/merge steps",
                 )
         for slot, step in list(steps.items()):
             if step.skip_if_present and step.skip_if_present in text:
@@ -336,12 +336,12 @@ class KconfigPlan:
                     owns_generation=review.owns_generation,
                 )
                 _log.info(
-                    f"Non-interactive run — rewriting the configured kconfig "
+                    f"Non-interactive run: rewriting the configured kconfig "
                     f"review target to {OLDDEFCONFIG}",
                 )
             else:
                 del steps[REVIEW]
-                _log.info("Non-interactive run — dropping the kconfig review step")
+                _log.info("Non-interactive run: dropping the kconfig review step")
         # This drop rule exists to suppress a second *injected* nconfig when
         # the packager already opens a review menu of their own — it must not
         # delete a *configured* REVIEW (owns_generation): pass 2 below is
@@ -352,7 +352,7 @@ class KconfigPlan:
                 and _REVIEW_KCONFIG_RE.search(text)):
             del steps[REVIEW]
             _log.info(
-                "PKGBUILD already opens a kconfig review menu — "
+                "PKGBUILD already opens a kconfig review menu: "
                 "not injecting a second one",
             )
         if not steps:
@@ -375,8 +375,8 @@ class KconfigPlan:
             matches = list(_ANY_KCONFIG_RE.finditer(text))
             if not matches:
                 raise RuntimeError(
-                    f"kconfig plan: no kconfig make invocation found in {path} "
-                    f"— cannot anchor the configured target sequence"
+                    f"kconfig plan: no kconfig make invocation found in {path}; "
+                    f"cannot anchor the configured target sequence"
                 )
             first = matches[0]
             removal_anchor = (
@@ -408,7 +408,7 @@ class KconfigPlan:
 
             text = _INTERACTIVE_KCONFIG_RE.sub(_to_olddefconfig, text)
             if not rewrites:
-                _log.info("No interactive kconfig targets found — nothing replaced")
+                _log.info("No interactive kconfig targets found: nothing replaced")
 
         # --- 4. anchors
         if removal_anchor is not None:
@@ -422,7 +422,7 @@ class KconfigPlan:
             if anchor is None:
                 _log.warn(
                     "No kconfig anchor (make olddefconfig / .config seed) found in "
-                    "the kernel PKGBUILD prepare() — cannot inject the sysforge "
+                    "the kernel PKGBUILD prepare(): cannot inject the sysforge "
                     "kconfig steps, so the hardware/device fragment will be "
                     "ignored. Add a `make olddefconfig` step in prepare().",
                 )
@@ -706,7 +706,7 @@ def _pause_lines(target: str) -> tuple[str, ...]:
     """
     return (
         "{indent}if [ -t 0 ]; then",
-        "{indent}  read -rp 'sysforge: merged kernel .config assembled — press "
+        "{indent}  read -rp 'sysforge: merged kernel .config assembled. Press "
         f"Enter to review it in {target} (Ctrl-C aborts)… ' _sf_kconfig_ack || true",
         "{indent}fi",
     )

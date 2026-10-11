@@ -281,7 +281,7 @@ def test_format_conditions_multiple_keys():
 def test_format_conditions_empty_rule():
     rule = {"profile": "bare", "priority": 0}
     result = _format_conditions(rule)
-    assert result == "(no conditions — always matches)"
+    assert result == "(no conditions: always matches)"
 
 
 def test_format_conditions_only_known_keys_shown():

@@ -84,7 +84,7 @@ class UninstallVerb(Verb):
                 "" if it.installed_name == it.target else f" (installed as {it.installed_name})"
             )
             tag = "sysforge-tracked" if it.tracked else "repo/untracked"
-            _log.ui(f"[uninstall] {it.target}{renamed} — {tag}")
+            _log.ui(f"[uninstall] {it.target}{renamed}: {tag}")
 
         names = [it.installed_name for it in items]
         store_names = profile_store_names(pre.ctx["state_dir"], names)

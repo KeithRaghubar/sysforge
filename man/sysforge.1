@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-07"
+.TH "sysforge" "1" "2026\-10\-10"
 .PP
 .PP
 .SH NAME
@@ -21,9 +21,9 @@ sysforge \- build and maintenance suite and system bootstrapper for Arch Linux
 SysForge builds AUR and custom packages with rule\-matched compiler\-flag
 profiles: every package is built with the optimization flags its matching
 profile resolves (\-march=native, LTO, linker choice, caches), while pacman
-remains the owner of the package database.\& Build metadata — versions, the
+remains the owner of the package database.\& Build metadata (versions, the
 resolved flags, toolchain identity, source provenance, and the reviewed
-source commit — is recorded per package in build_state.\&toml and drives
+source commit) is recorded per package in build_state.\&toml and drives
 update, drift detection, and diagnostics.\&
 .PP
 \fBsysforge update\fR is the steady\-state entry point: it walks the live install
@@ -138,7 +138,7 @@ Print the sysforge version and exit.\&
 Run the verb under the Python profiler (cProfile) and print the top
 functions by cumulative time to stderr at exit.\& Position independent.\&
 Profiles sysforge'\&s own runtime only; subprocess work (makepkg, pacman,
-git) appears as wait time — use \fB\-\-timings\fR for wall\-clock phase costs.\&
+git) appears as wait time; use \fB\-\-timings\fR for wall\-clock phase costs.\&
 .PP
 .RE
 \fB\-\-py\-profile\-out\fR \fIFILE\fR
@@ -194,7 +194,7 @@ Lift the source freeze for this run, overriding
 \fB\-\-thaw\fR \fIPKG\fR[,\fIPKG\fR.\&.\&.\&]
 .RS 4
 Exempt the named pkgbases from the source freeze; everything else stays
-frozen.\& Repeatable, and accepts a comma\-separated list.\& Run\-scoped only —
+frozen.\& Repeatable, and accepts a comma\-separated list.\& Run\-scoped only:
 there is no persistent trust list.\&
 .PP
 .RE
@@ -398,7 +398,7 @@ Skip the automatic \-\-cleanbuild (\-C) added for update runs.\& Useful when pac
 .RE
 \fB\-\-cleansrc\fR
 .RS 4
-Purge each package'\&s src dir and re\-clone before building.\& Per\-package fatal if the clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream — that package is reported failed and the run continues.\&
+Purge each package'\&s src dir and re\-clone before building.\& Per\-package fatal if the clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.\& That package is reported failed and the run continues.\&
 .PP
 .RE
 \fB\-\-cleansrc\-force\fR
@@ -423,7 +423,7 @@ Skip the PKGBUILD review gate entirely (no auto\-accept notices).\& Also configu
 .RE
 \fB\-\-sysupgrade\fR
 .RS 4
-Finish the run with a single `pacman \-Syu` system upgrade, after source\-built artifacts are installed (they stay protected by the `IgnoreGroup = sf\-build` line `sysforge setup` adds).\& Independent of repo_mode — no extra packages enter the version\-check walk.\& Also settable via [build] system_upgrade = true in packages.\&toml.\&
+Finish the run with a single `pacman \-Syu` system upgrade, after source\-built artifacts are installed (they stay protected by the `IgnoreGroup = sf\-build` line `sysforge setup` adds).\& Independent of repo_mode: no extra packages enter the version\-check walk.\& Also settable via [build] system_upgrade = true in packages.\&toml.\&
 .PP
 .RE
 \fB\-\-no\-sysupgrade\fR
@@ -448,7 +448,7 @@ Include packages owned by a pipeline stage (e.\&g.\& the kernel stage'\&s `linux
 .RE
 \fB\-\-versions\fR
 .RS 4
-List packages with a newer version available and exit.\& Read\-only: no source sync beyond the version check, no rebuild, no stage.\& Unlike a normal run this always includes stage\-owned (toolchain/kernel) packages, annotated with the stage that owns them — it is the quick answer to '\&is there a new toolchain or kernel?\&'\& without entering `run toolchain` / `run kernel`.\& Up\-to\-date packages collapse into a count.\& VCS packages report no available version unless \-\-devel is also passed.\&
+List packages with a newer version available and exit.\& Read\-only: no source sync beyond the version check, no rebuild, no stage.\& Unlike a normal run this always includes stage\-owned (toolchain/kernel) packages, annotated with the stage that owns them.\& It is the quick answer to '\&is there a new toolchain or kernel?\&'\& without entering `run toolchain` / `run kernel`.\& Up\-to\-date packages collapse into a count.\& VCS packages report no available version unless \-\-devel is also passed.\&
 .PP
 .RE
 \fB\-\-explain\-drift\fR
@@ -458,12 +458,12 @@ List drifted packages and exit, across both axes: toolchain drift (recorded tool
 .RE
 \fB\-\-rebuild\-on\-toolchain\-drift\fR
 .RS 4
-Treat toolchain\-variant drift as an upgrade trigger: packages built under a different toolchain than is active now are added to the rebuild queue.\& Off by default — drift is reported but not acted on, since most C/C++ packages don'\&t measurably benefit from a re\-stamp.\& Also settable via [update] rebuild_on_toolchain_drift = true in sysforge.\&toml.\&
+Treat toolchain\-variant drift as an upgrade trigger: packages built under a different toolchain than is active now are added to the rebuild queue.\& Off by default: drift is reported but not acted on, since most C/C++ packages don'\&t measurably benefit from a re\-stamp.\& Also settable via [update] rebuild_on_toolchain_drift = true in sysforge.\&toml.\&
 .PP
 .RE
 \fB\-\-rebuild\-on\-flag\-drift\fR
 .RS 4
-Treat flag drift as an upgrade trigger: profiled packages whose flags now resolve differently than when built are added to the rebuild queue.\& Off by default — flag drift is reported but not acted on, since one profile edit can drift every profiled package.\& Also settable via [update] rebuild_on_flag_drift = true in sysforge.\&toml.\&
+Treat flag drift as an upgrade trigger: profiled packages whose flags now resolve differently than when built are added to the rebuild queue.\& Off by default: flag drift is reported but not acted on, since one profile edit can drift every profiled package.\& Also settable via [update] rebuild_on_flag_drift = true in sysforge.\&toml.\&
 .PP
 .RE
 \fB\-\-rebuild\-on\-drift\fR
@@ -560,7 +560,7 @@ System\-state axes: toolchain, cache, hardware, graphics, pacman, state, boot, r
 .PP
 \fB\-\-graphics\fR
 .RS 4
-Run graphics system\-state probes: nvidia\-drm modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel, and session type.\& Does not select packages — for the graphics package set use `doctor pkg \-\-graphics`.\&
+Run graphics system\-state probes: nvidia\-drm modeset, driver version skew, Wayland explicit\-sync protocol, Steam GPU accel, and session type.\& Does not select packages: for the graphics package set use `doctor pkg \-\-graphics`.\&
 .PP
 .RE
 \fB\-\-gfxperf\fR
@@ -580,7 +580,7 @@ Report the running distribution and its support tier, read from os\-release(5): 
 .RE
 \fB\-\-toolchain\fR
 .RS 4
-Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed — or the PGO profdata is version\-skewed — report it.\&
+Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed, or the PGO profdata is version\-skewed, report it.\&
 .PP
 .RE
 \fB\-\-rust\fR
@@ -671,7 +671,7 @@ Verify each target'\&s package\-owned files against alpm'\&s recorded mtree via 
 .RE
 \fB\-\-all\fR
 .RS 4
-Target every installed package, foreign and non\-foreign (pacman \-Q).\& Suppresses the opt\-in axes — runs \-\-abi only unless you name another axis explicitly.\&
+Target every installed package, foreign and non\-foreign (pacman \-Q).\& Suppresses the opt\-in axes: runs \-\-abi only unless you name another axis explicitly.\&
 .PP
 .RE
 \fB\-\-repo\fR
@@ -696,12 +696,12 @@ Suppress clean lines; print only packages with issues.\&
 .RE
 \fB\-\-suggest\fR, \fB\-s\fR
 .RS 4
-For each unsatisfied soname, look up candidate packages via `pacman \-Fq`.\& Findings split into '\&install candidates'\& (missing from disk — install the package), '\&rebuild candidates'\& (installed; rebuild against the current system), and '\&ABI\-drift candidates'\& (present but one of their versioned symbols no longer resolves — rebuild or upgrade, not reinstall).\& Requires a synced files db (`sudo pacman \-Fy`).\&
+For each unsatisfied soname, look up candidate packages via `pacman \-Fq`.\& Findings split into '\&install candidates'\& (missing from disk: install the package), '\&rebuild candidates'\& (installed; rebuild against the current system), and '\&ABI\-drift candidates'\& (present but one of their versioned symbols no longer resolves: rebuild or upgrade, not reinstall).\& Requires a synced files db (`sudo pacman \-Fy`).\&
 .PP
 .RE
 \fB\-\-apply\fR
 .RS 4
-Hand the rebuild candidates from \-\-suggest off to `sysforge update` and rebuild them.\& Implies \-\-suggest.\& Drift\-rebuild only in v1.\&x — install candidates are printed but not invoked.\&
+Hand the rebuild candidates from \-\-suggest off to `sysforge update` and rebuild them.\& Implies \-\-suggest.\& Drift\-rebuild only in v1.\&x: install candidates are printed but not invoked.\&
 .PP
 .RE
 \fB\-\-no\-confirm\fR
@@ -1328,7 +1328,7 @@ Skip git pull \-\-rebase before each build.\&
 .RE
 \fB\-\-makepkg\fR, \fB\-m\fR \fIFLAGS\fR
 .RS 4
-Additional makepkg flags appended to each build.\& Example: \-m '\&\-f'\& to force rebuild of already\-built packages.\& Unlike build/update, \-m is required here — bare makepkg flags are not forwarded implicitly on run subcommands.\& Install flags (\-i/\-\-install) are ignored; the toolchain controls which passes install to the system.\&
+Additional makepkg flags appended to each build.\& Example: \-m '\&\-f'\& to force rebuild of already\-built packages.\& Unlike build/update, \-m is required here: bare makepkg flags are not forwarded implicitly on run subcommands.\& Install flags (\-i/\-\-install) are ignored; the toolchain controls which passes install to the system.\&
 .PP
 .RE
 \fB\-\-persist\-log\fR
@@ -1368,7 +1368,7 @@ Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store purge, 4\
 .RE
 \fB\-\-allow\-dirty\-llvm\fR
 .RS 4
-Bypass the LLVM safety pre\-flight refusal on dirty or diverged trees.\& PGO profdata version mismatches cannot be bypassed.\& Note: this only suppresses the refusal — it does not modify the tree.\& Use \-\-cleansrc\-force to actually overwrite the local trees with upstream.\&
+Bypass the LLVM safety pre\-flight refusal on dirty or diverged trees.\& PGO profdata version mismatches cannot be bypassed.\& Note: this only suppresses the refusal and does not modify the tree.\& Use \-\-cleansrc\-force to actually overwrite the local trees with upstream.\&
 .PP
 .RE
 \fB\-\-allow\-version\-skew\fR
@@ -1378,7 +1378,7 @@ Override the pre\-build Gate\-1 abort when the in\-tree LLVM PKGBUILDs disagree 
 .RE
 \fB\-\-skip\-build\-space\-check\fR
 .RS 4
-Override the pre\-build Gate\-1 abort when a filesystem hosting the staging dirs / pgo_store / build output lacks min_build_free_gb free (default 40 GiB).\& Dangerous — the multi\-hour LLVM build may fail partway with no space left.\&
+Override the pre\-build Gate\-1 abort when a filesystem hosting the staging dirs / pgo_store / build output lacks min_build_free_gb free (default 40 GiB).\& Dangerous: the multi\-hour LLVM build may fail partway with no space left.\&
 .PP
 .RE
 \fB\-\-rebuild\-soname\-consumers\fR \fIREBUILD_SONAME_CONSUMERS\fR
@@ -1493,12 +1493,12 @@ Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
 .RE
 \fB\-\-non\-interactive\fR
 .RS 4
-Disable interactive kconfig (default is interactive — the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& runs as written).\& With this flag, interactive targets are patched to `make olddefconfig` for unattended runs.\&
+Disable interactive kconfig (default is interactive: the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& runs as written).\& With this flag, interactive targets are patched to `make olddefconfig` for unattended runs.\&
 .PP
 .RE
 \fB\-\-compiler\fR \fICOMPILER\fR
 .RS 4
-Kernel\-stage compiler override (gcc or llvm).\& Independent of the global toolchain stage — lets you keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > toolchain\-stage pipeline state.\&
+Kernel\-stage compiler override (gcc or llvm).\& Independent of the global toolchain stage, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > toolchain\-stage pipeline state.\&
 .PP
 .RE
 \fB\-\-bootloader\fR \fIBOOTLOADER\fR
@@ -1583,7 +1583,7 @@ Override the boot\-safety guarantee that a fallback kernel (stock linux/linux\-l
 .RE
 \fB\-\-skip\-boot\-audit\fR
 .RS 4
-Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous — can leave the system unbootable.\&
+Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous: it can leave the system unbootable.\&
 .PP
 .RE
 \fBConfiguration:\fR kernel.\&toml, profiles.\&toml
@@ -1674,7 +1674,7 @@ interactive stage run and are rejected otherwise (oldconfig names
 its silent equivalent olddefconfig); at most one UI target (config,
 nconfig, menuconfig, xconfig, gconfig) is allowed and it always
 runs last; randconfig is never allowed.\& localmodconfig/
-localyesconfig are warned against as high\-risk/low\-reward — they
+localyesconfig are warned against as high\-risk/low\-reward: they
 over\-minimize to modules currently loaded and accumulate the lsmod
 snapshot at <state_dir>/lsmod.\&snapshot (delete it to reset).\&
 Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,

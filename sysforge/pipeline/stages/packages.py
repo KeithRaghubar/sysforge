@@ -169,7 +169,7 @@ def _prompt_failed_packages(failed_names, errors, options):
     for name in failed_names:
         err = errors.get(name, "unknown error")
         ans = prompt_choice(
-            f"  {name} ({err}) — [r]etry / [s]kip / [a]bort: ",
+            f"  {name} ({err}); [r]etry / [s]kip / [a]bort: ",
             choices=("r", "s", "a"),
             eof_default="a",
             tag="PACKAGES",
@@ -309,7 +309,7 @@ def _build_aur(pkg, build_cfg, config, options, toolchain):
     try:
         makepkg_run(pkgbuild, options=build_opts)
     except AlreadyBuilt:
-        _log.info(f"{name}: already built — installing the existing package")
+        _log.info(f"{name}: already built; installing the existing package")
     install_built_packages(pkgbuild.parent, noconfirm=True)
 
 
@@ -475,7 +475,7 @@ class PackagesStage(Stage):
                     try:
                         if source == "repo" and effective_mode == REPO_MODE_SOURCE:
                             _log.info(
-                                f"{name}: repo source with build-from-source mode — "
+                                f"{name}: repo source with build-from-source mode; "
                                 "building from source"
                             )
                             _build_aur(pkg, build_cfg, config, options, toolchain)
@@ -497,7 +497,7 @@ class PackagesStage(Stage):
                     except RuntimeError as e:
                         state.mark_package_failed(name, str(e))
                         state.save()
-                        _log.error(f"{name}: FAILED — {e}")
+                        _log.error(f"{name}: FAILED; {e}")
                         # Non-fatal: continue with remaining packages
 
         # Enable the display-manager service for any desktop group that just

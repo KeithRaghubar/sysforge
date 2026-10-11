@@ -137,7 +137,7 @@ def resolve_state_dir(cli_override=None):
         except fs_provision.FsProvisionError:
             _log.info(
                 f"State dir {DEFAULT_STATE_DIR} is not writable and could not be "
-                f"provisioned — falling back to {FALLBACK_STATE_DIR} "
+                f"provisioned: falling back to {FALLBACK_STATE_DIR} "
                 "(set SYSFORGE_STATE_DIR or install sysforge via PKGBUILD to use "
                 "/var/lib/sysforge)",
             )

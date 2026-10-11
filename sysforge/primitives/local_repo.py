@@ -175,7 +175,7 @@ def sync(state_dir, pkgdest) -> SyncResult:
                 continue
             result.missing.append(name)
             _log.warn(f"local repo: no built artifact for installed {name} in "
-                      f"{pkgdest} — the container will use the repo version")
+                      f"{pkgdest}; the container will use the repo version")
             continue
         desired[name] = art
 

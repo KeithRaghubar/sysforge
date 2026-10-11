@@ -207,7 +207,7 @@ class ArtifactRegistry:
         """Write the registry atomically (temp file + replace)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = [
-            "# sysforge artifact registry — metadata only, never content.",
+            "# sysforge artifact registry: metadata only, never content.",
             "# Managed by `sysforge artifact`; hand-edits are overwritten.",
             "",
         ]
@@ -292,7 +292,7 @@ class IgnoreList:
         """Write the ignore-list atomically (temp file + replace)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = [
-            "# sysforge artifact ignore-list — declined discovery candidates.",
+            "# sysforge artifact ignore-list: declined discovery candidates.",
             "# Managed by `sysforge artifact review`; hand-edits are overwritten.",
             "",
         ]
@@ -655,11 +655,11 @@ def adopt(registry, src, cls: str | None = None):
         cls = class_for_path(src)
     if cls not in ARTIFACT_CLASSES:
         raise ArtifactError(
-            f"unknown class {cls!r} — expected one of {', '.join(ARTIFACT_CLASSES)}"
+            f"unknown class {cls!r}: expected one of {', '.join(ARTIFACT_CLASSES)}"
         )
     if cls == CLASS_HOOK and src.name in _sysforge_owned_names():
         raise ArtifactError(
-            f"{src.name} is a sysforge-owned artifact — manage it with "
+            f"{src.name} is a sysforge-owned artifact: manage it with "
             "`sysforge setup` / `sysforge doctor --pacman`, not `artifact`"
         )
     try:

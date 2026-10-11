@@ -280,14 +280,14 @@ def gate_soname_consumers(
 
     if mode == "off":
         _log.warn(
-            "rebuild_soname_consumers=off — building the new toolchain WITHOUT "
+            "rebuild_soname_consumers=off: building the new toolchain WITHOUT "
             f"rebuilding these consumers. Rebuild them yourself afterwards: {manual_cmd}"
         )
         return []
 
     if mode == "auto":
         _log.ui(
-            f"rebuild_soname_consumers=auto — will rebuild {len(impact.consumers)} "
+            f"rebuild_soname_consumers=auto: will rebuild {len(impact.consumers)} "
             "consumer(s) after the toolchain install"
         )
         return impact.consumers
@@ -311,7 +311,7 @@ def gate_soname_consumers(
     )
     if choice not in ("y", "yes"):
         raise RuntimeError(
-            "[TOOLCHAIN] Aborted — libLLVM soname change not approved. Nothing "
+            "[TOOLCHAIN] Aborted: libLLVM soname change not approved. Nothing "
             "was built or installed."
         )
     return impact.consumers
@@ -423,7 +423,7 @@ def gate2_audit(
         joined = "\n".join(f"  - {f.message}" for f in findings)
         raise RuntimeError(
             "[TOOLCHAIN] Gate 2: built packages contain C++ stdlib symbols "
-            "bound to the LLVM version namespace — refusing to install (the "
+            "bound to the LLVM version namespace; refusing to install (the "
             "live toolchain would be unable to resolve std::string methods at "
             f"runtime). Nothing was installed.\n{joined}\n"
             "Restart with: sysforge run toolchain --rebuild-profdata"
@@ -445,7 +445,7 @@ def gate2_audit(
         raise RuntimeError(
             "[TOOLCHAIN] Gate 2: the freshly-built libLLVM would strand an "
             "installed graphics consumer (mesa) by dropping LLVM target-init "
-            "symbols it imports — refusing to install (the desktop would "
+            "symbols it imports; refusing to install (the desktop would "
             f"black-screen on next session). Nothing was installed.\n{joined}\n"
             f"{unhealable[0].remediation}"
         )
@@ -477,7 +477,7 @@ def resolve_abi_consumers_to_rebuild(
     )
     if not consumers:
         _log.warn(
-            "Gate 2: no installed libLLVM consumer resolved for rebuild — "
+            "Gate 2: no installed libLLVM consumer resolved for rebuild; "
             "proceeding with the install; rebuild affected packages manually "
             "if the desktop misbehaves."
         )
@@ -496,14 +496,14 @@ def resolve_abi_consumers_to_rebuild(
 
     if mode == "off":
         _log.warn(
-            "rebuild_soname_consumers=off — installing the new libLLVM WITHOUT "
+            "rebuild_soname_consumers=off: installing the new libLLVM WITHOUT "
             f"rebuilding these consumers. Rebuild them yourself afterwards: {manual_cmd}"
         )
         return []
 
     if mode == "auto":
         _log.ui(
-            f"rebuild_soname_consumers=auto — will rebuild {len(consumers)} "
+            f"rebuild_soname_consumers=auto: will rebuild {len(consumers)} "
             "consumer(s) after the toolchain install"
         )
         return consumers
@@ -528,7 +528,7 @@ def resolve_abi_consumers_to_rebuild(
     )
     if choice not in ("y", "yes"):
         raise RuntimeError(
-            "[TOOLCHAIN] Gate 2: aborted — libLLVM consumer rebuild not "
+            "[TOOLCHAIN] Gate 2: aborted; libLLVM consumer rebuild not "
             "approved. Nothing was installed."
         )
     return consumers

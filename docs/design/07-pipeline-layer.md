@@ -276,7 +276,7 @@ The build user is resolved once, in `fs_provision.build_user()` (`SUDO_USER` > `
 
 The resolvers stay functions rather than becoming `KernelConfig` fields because their inputs are not all config: `resolve_compiler` weighs a CLI flag against `kernel.toml` against pipeline state, `resolve_source` probes the filesystem, and `resolve_names` derives a pair that must agree with the PKGBUILD.
 
-Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled. Also fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) before the build, sharing the same process-wide once-guard as the packages stage and `build_and_install`.
+Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysforge/kernel.toml` is absent or has `enabled = false`, so systems using a stock pacman kernel skip it without needing `--start-from`. Opt-in by design — users who want a stock kernel leave the stage disabled. Also fires the opt-in pre-build snapshot (see *Build-time estimate and pre-build snapshot* above) before the build, sharing the same process-wide once-guard as the packages stage and `build_and_install`. User guide: `docs/guides/kernel.md`.
 
 **`kernel.toml` structure:**
 

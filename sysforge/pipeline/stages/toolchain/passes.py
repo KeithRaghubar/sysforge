@@ -105,7 +105,7 @@ def build_pkg(
         # existing artifact is the product; route the decision and continue.
         resolve_already_built("reuse", interactive=False, tag="TOOLCHAIN")
         _log.info(
-            f"{name}: package already built — reusing existing artifact "
+            f"{name}: package already built; reusing existing artifact "
             "in PKGDEST"
         )
 
@@ -199,7 +199,7 @@ def build_pass(
         for name, pkgbuild_path in pkgbuild_map.items():
             pkg_dir = pkgbuild_path.parent
             if pkg_dir in seen_dirs:
-                _log.info(f"  {name} (split — built with {pkg_dir.name})")
+                _log.info(f"  {name} (split: built with {pkg_dir.name})")
                 continue
             seen_dirs.add(pkg_dir)
             tick(name)
@@ -222,7 +222,7 @@ def build_pass(
                     if hit:
                         _log.ui(
                             f"  [PGO] reusing cached build of {pkgbase} "
-                            f"({reuse_ctx.pass_id}) — fingerprint match, "
+                            f"({reuse_ctx.pass_id}): fingerprint match, "
                             f"{len(hit)} artifact(s) on disk; skipping rebuild",
                         )
                         continue  # build skipped; do not consume `first`

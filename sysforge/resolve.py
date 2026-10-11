@@ -74,7 +74,7 @@ def _format_conditions(rule: dict) -> str:
         "depends_any", "makedepends_any", "depends_all", "makedepends_all",
     )
     parts = [f"{k}={rule[k]!r}" for k in CONDITION_KEYS if k in rule]
-    return ", ".join(parts) if parts else "(no conditions — always matches)"
+    return ", ".join(parts) if parts else "(no conditions: always matches)"
 
 
 def _print_resolve(
@@ -119,7 +119,7 @@ def _print_resolve(
             print(f"  [priority {pri:>3}]  {conditions}  →  {profile}{marker}")
     else:
         default_profile = config.get("defaults", {}).get("profile", "bare")
-        print(f"Matched rules:   (none — using default profile: {default_profile!r})")
+        print(f"Matched rules:   (none; using default profile: {default_profile!r})")
 
     print()
     print(f"{'Profile chain:':<{W}} {' → '.join(chain)}")
@@ -145,7 +145,7 @@ def _print_resolve(
                 print(f"  {k:<26} = {v!r}")
     else:
         flag_count = len([k for k in resolved_profile if k not in SYSFORGE_KEYS])
-        print(f"\n  ({flag_count} flag key(s) — use --show-flags to expand)")
+        print(f"\n  ({flag_count} flag key(s): use --show-flags to expand)")
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +169,7 @@ def _print_deps(pkgbuild_path: Path, pkgmeta: dict, deps: list) -> None:
     unknown = [d for d in deps if d.source == "unknown"]
 
     if aur_deps:
-        print(f"AUR dependencies ({len(aur_deps)}) — build order:")
+        print(f"AUR dependencies ({len(aur_deps)}); build order:")
         for i, dep in enumerate(aur_deps, 1):
             req = ", ".join(dep.required_by)
             path_str = f"  {dep.pkgbuild_path}" if dep.pkgbuild_path else ""
@@ -178,19 +178,19 @@ def _print_deps(pkgbuild_path: Path, pkgmeta: dict, deps: list) -> None:
         print("AUR dependencies: (none)")
 
     if repo_deps:
-        print(f"\nRepo dependencies ({len(repo_deps)}) — installed via pacman:")
+        print(f"\nRepo dependencies ({len(repo_deps)}); installed via pacman:")
         for dep in sorted(repo_deps, key=lambda d: d.name):
             req = ", ".join(dep.required_by)
             print(f"       {dep.name}  (required by {req})")
 
     if unknown:
-        print(f"\nUnresolved ({len(unknown)}) — not found in repos or AUR:")
+        print(f"\nUnresolved ({len(unknown)}); not found in repos or AUR:")
         for dep in unknown:
             req = ", ".join(dep.required_by)
             print(f"    !  {dep.name}  (required by {req})")
 
     if installed:
-        print(f"\nInstalled ({len(installed)}) — already satisfied:")
+        print(f"\nInstalled ({len(installed)}); already satisfied:")
         for dep in sorted(installed, key=lambda d: d.name):
             req = ", ".join(dep.required_by)
             print(f"       {dep.name}  (required by {req})")

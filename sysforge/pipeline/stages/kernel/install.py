@@ -49,7 +49,7 @@ def update_bootloader(bootloader, dry_run):
         cmd = privileged_argv(["bootctl", "update"])
         label = "bootctl update"
     else:
-        _log.warn(f"Unknown bootloader {bootloader!r} — skipping update")
+        _log.warn(f"Unknown bootloader {bootloader!r}: skipping update")
         return
 
     if dry_run:
@@ -60,7 +60,7 @@ def update_bootloader(bootloader, dry_run):
     result = subprocess.run(cmd, preexec_fn=lift_for_child)  # noqa: TID251 — privileged bootloader update streams, status inspected
     if result.returncode != 0:
         _log.warn(
-            f"{label} exited {result.returncode} — bootloader may already be current; "
+            f"{label} exited {result.returncode}: bootloader may already be current; "
             "kernel is installed, continuing",
         )
 
@@ -86,7 +86,7 @@ def _load_or_raise():
         return boot_entries.load_entries(boot_entries.entries_dir())
     except OSError as e:
         raise RuntimeError(
-            f"[KERNEL] cannot read {boot_entries.entries_dir()}: {e} — is the boot "
+            f"[KERNEL] cannot read {boot_entries.entries_dir()}: {e}; is the boot "
             'partition mounted? (or set boot_entries = "off" in kernel.toml)'
         ) from e
 

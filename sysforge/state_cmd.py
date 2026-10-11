@@ -114,7 +114,7 @@ def _print_untracked_foreign(tracked: set[str]) -> None:
     for name in untracked:
         print(f"    {name} {foreign[name]}")
     print(
-        "    (installed via `pacman -Qm` but with no build_state.toml entry — "
+        "    (installed via `pacman -Qm` but with no build_state.toml entry: "
         "`sysforge update` will pick these up the next time their pkgbase "
         "PKGBUILD is fetched)"
     )
@@ -293,13 +293,13 @@ def cmd_state_repair(args):
         print()
 
     if skipped_missing:
-        print(f"Skipped {len(skipped_missing)} group(s) — PKGBUILD not found:")
+        print(f"Skipped {len(skipped_missing)} group(s); PKGBUILD not found:")
         for pdir, names in skipped_missing:
             print(f"  {pdir}  ({', '.join(repr(n) for n in names)})")
         print()
 
     if skipped_unresolvable:
-        print(f"Skipped {len(skipped_unresolvable)} group(s) — cannot resolve statically:")
+        print(f"Skipped {len(skipped_unresolvable)} group(s); cannot resolve statically:")
         for pdir, names, reason in skipped_unresolvable:
             print(f"  {pdir}  ({', '.join(repr(n) for n in names)})")
             print(f"    reason: {reason}")
@@ -308,7 +308,7 @@ def cmd_state_repair(args):
     if not plans and not stale_mode_fixes:
         return
     if dry_run:
-        print("Dry run — no changes written.  Re-run without --dry-run to apply.")
+        print("Dry run: no changes written.  Re-run without --dry-run to apply.")
         return
 
     total_created = 0
@@ -366,10 +366,10 @@ def cmd_state_orphans(args):
 
     pkgdest = get_pkgdest()
     if pkgdest is None:
-        print("PKGDEST not set in /etc/makepkg.conf — nothing to scan.")
+        print("PKGDEST not set in /etc/makepkg.conf: nothing to scan.")
         return
     if not pkgdest.is_dir():
-        print(f"PKGDEST {pkgdest} does not exist — nothing to scan.")
+        print(f"PKGDEST {pkgdest} does not exist: nothing to scan.")
         return
 
     installed = get_all_installed_packages()
@@ -385,7 +385,7 @@ def cmd_state_orphans(args):
     with _maybe_pager(use_pager and not getattr(args, "prune", False)):
         print(f"PKGDEST: {pkgdest}\n")
         print(
-            f"  Superseded — older than installed ({len(superseded)} file(s), "
+            f"  Superseded: older than installed ({len(superseded)} file(s), "
             f"{total / 1024 / 1024:.1f} MiB):"
         )
         for p in superseded:
@@ -520,7 +520,7 @@ def cmd_state_forget(args):
               "`pacman -Syu` won't touch it.")
         print("   Reinstall the repo binary with `pacman -S <pkg>` to fully revert.)")
     for name in missing:
-        print(f"No build_state record for {name!r} — nothing to forget.")
+        print(f"No build_state record for {name!r}: nothing to forget.")
 
 
 # ---------------------------------------------------------------------------
@@ -626,11 +626,11 @@ def cmd_state_profiles(args) -> int:
             _log.error(f"state profiles --purge: {exc}")
             return 2
         if not target.exists():
-            print(f"No profile store at {target} — nothing to purge.")
+            print(f"No profile store at {target}: nothing to purge.")
             return 0
         if not prompt.is_interactive():
             _log.error(
-                f"refusing to purge {target} without a TTY — a collected profile "
+                f"refusing to purge {target} without a TTY: a collected profile "
                 "needs a workload to regenerate; run it from a terminal"
             )
             return 2
@@ -640,7 +640,7 @@ def cmd_state_profiles(args) -> int:
             ["y", "n"], default="n", retry_on_invalid=False,
         )
         if answer != "y":
-            print("Aborted — nothing deleted.")
+            print("Aborted: nothing deleted.")
             return 2
         shutil.rmtree(target)
         print(f"Purged {target}.")

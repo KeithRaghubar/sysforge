@@ -637,7 +637,7 @@ def test_warn_artifacts_left_failure_wording(monkeypatch):
     monkeypatch.setattr(pp, "_log", rec)
     warn_artifacts_left(False)
     assert rec.calls == [
-        ("warn", "Build failed — leaving PKGBUILD.sysforge in place for diagnosis")
+        ("warn", "Build failed: leaving PKGBUILD.sysforge in place for diagnosis")
     ]
 
 

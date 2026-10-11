@@ -418,4 +418,4 @@ def test_summary_lists_not_installed_apart_from_built(capsys):
     _print_build_summary(outcome)
     out = capsys.readouterr().err
     assert "Built:       foo\n" in out
-    assert "Not installed: bar — /etc/bar exists in filesystem" in out
+    assert "Not installed: bar (/etc/bar exists in filesystem)" in out

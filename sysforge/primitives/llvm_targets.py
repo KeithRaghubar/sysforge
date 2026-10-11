@@ -73,7 +73,7 @@ def _read_toolchain_targets(path: Path):
         with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as e:
-        _log.warn(f"failed to read {path}: {e} — falling back to autodetect")
+        _log.warn(f"failed to read {path}: {e}; falling back to autodetect")
         return None
     section = data.get("llvm")
     if not isinstance(section, dict):
@@ -82,7 +82,7 @@ def _read_toolchain_targets(path: Path):
         return None
     targets = section["targets"]
     if not isinstance(targets, list):
-        _log.warn(f"{path}: [llvm] targets is not a list — ignoring")
+        _log.warn(f"{path}: [llvm] targets is not a list; ignoring")
         return None
     if not targets:
         return _DISABLE_FILTERING
@@ -129,7 +129,7 @@ def _ensure_system_consumer_targets(targets: list[str]) -> list[str]:
         result.extend(added)
         _log.info(
             f"added mandatory system-consumer LLVM target(s) {', '.join(added)} "
-            f"to resolved set {list(targets)} — mesa's libgallium links them "
+            f"to resolved set {list(targets)}: mesa's libgallium links them "
             "unconditionally; a reduced system libLLVM that drops them bricks "
             "the desktop"
         )

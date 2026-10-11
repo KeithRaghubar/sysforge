@@ -113,15 +113,17 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.4.0-DOC1` | the densest user surfaces have no guide | med | medium | patch |
+| `3.4.0-B14` | update --help says --explain-drift does no source sync, but it does | med | small | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
 | `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
 | `3.4.0-F6` | nothing measures whether an optimized build is actually faster than stock | med | large | minor |
-| `3.4.0-DOC2` | user-facing text is full of em-dashes | low | small | patch |
+| `3.4.0-B15` | run kernel --help says --no-update skips git pull --rebase | low | small | patch |
+| `3.4.0-B16` | the shipped kernel.toml and the README number the stages wrong | low | small | patch |
 | `3.4.0-F8` | a version change doesn't show how big the jump is | low | small | minor |
+| `3.4.0-STD2` | two standards rows share the number 28 | low | small | patch |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
@@ -435,36 +437,65 @@ canonical ordering.
   a long summary faster to read. Small because there is one function to change and the colour
   gate already exists.
 
-### Documentation
+### Bugs
 
-- **`3.4.0-DOC1` — the densest user surfaces have no guide.** `docs/guides/` holds only `pgo.md`
-  and `boot-entries.md`. Three surfaces are flag-heavy enough that `--help` and the man page do
-  not explain how their options fit together. (1) **Drift and rebuilds**: what `update` counts as
-  flag drift versus toolchain drift, `--explain-drift`, `--rebuild-on-flag-drift` and the
-  `--rebuild-on-drift` umbrella, why promotion is off by default, and how the build-state-wide fold
-  reports stage-owned packages. (2) **Source freeze and network policy**: `[security]
-  freeze_sources`, `--frozen`/`--no-frozen`/`--thaw`, what the freeze cannot cover (makepkg's own
-  `source=()` fetches), and `auto_fetch_pgp_keys`. (3) **The kernel stage**: interactive review
-  and the pre-`nconfig` pause, `kconfig_targets`, `--non-interactive`, the diverged-source gate and
-  the boot-safety settings. Write `docs/guides/drift.md`, `freeze.md` and `kernel.md`, each task-led
-  ("I changed a profile — what rebuilds?"), and link them from README. From then on the
-  guides-track-their-feature rule covers these surfaces as well.
-  *Priority: med · Effort: medium · Bump: patch* — med because these are the flags a user meets in
-  a routine `update` or kernel run; medium for three guides checked against the current behaviour.
+- **`3.4.0-B14` — `update --help` says `--explain-drift` does no source sync, but it does.** The
+  flag's help text ends "Informational; no source sync, no rebuild." The report itself exits
+  after the drift phases, but those run after `update`'s normal Phase 2 source sync, so a plain
+  `sysforge update --explain-drift` clones and fetches every in-scope package first. Only
+  `--offline` skips it (`update_sync._sync_sources` returns early on `offline` alone). A user who
+  reads the help and runs the report to check drift without touching the network gets a full
+  sync. Fix one side: either skip the sync under `--explain-drift` (flag drift is network-free;
+  toolchain drift needs only the walk's `results`, which a version check can build from local
+  PKGBUILDs) or make the help say "add --offline to skip source sync". The first is better,
+  since the report never uses fetched sources, but check whether toolchain-drift detection of
+  a `NEEDS_REBUILD` package depends on the synced version. `docs/guides/drift.md` currently
+  recommends `--offline --explain-drift` because of this; update it in the same change. Test: an
+  `--explain-drift` run makes no scheduler request (or the help text names `--offline`).
+  *Priority: med · Effort: small · Bump: patch* — med because the help promises a read-only,
+  no-network report and the run does network I/O; small because it is one gate or one string.
 
 ---
 
-- **`3.4.0-DOC2` — user-facing text is full of em-dashes.** Roughly 37 sit in `README.md`, 15 in
-  `docs/guides/pgo.md`, 6 in the hand-written man prose (`man/sysforge.1.scd.in`), about 26 in
-  `--help`/`description` strings under `sysforge/` (which also generate most of the 23 in
-  `man/sysforge.1`), and 4 in completion descriptions. Rewrite each with a comma, colon, period or
-  parentheses as the sentence needs, rather than a blind substitution, then regenerate the man
-  page. Add a `check_standards` guard (with its standards row) that rejects U+2014 in README,
-  `docs/guides/`, the man source, CLI help text and completions, so the sweep holds. Out of scope:
-  the ``- **`<ID>` — <title>.**`` lead that ROADMAP and release notes require and lint enforces.
-  Changing that is a rule change, and would be filed as its own `STD`. Released `v*.md` notes are
-  immutable history.
-  *Priority: low · Effort: small · Bump: patch* — low because this is purely stylistic; small
-  because it is a mechanical sweep plus one lint group.
+- **`3.4.0-B15` — `run kernel --help` says `--no-update` skips `git pull --rebase`.** The kernel
+  stage has not pulled with `git pull --rebase` since source sync moved to the scheduler, which
+  does a full-history fetch and fast-forward (`source_sync.get_scheduler().request(...)`). The
+  help text (`run_cmd.py`, "Skip git pull --rebase before each build.") and its man page entry
+  describe a mechanism that no longer exists, and "before each build" is wrong for a stage that
+  builds one kernel. Reword it to what the flag does now (skip the source sync for the kernel
+  tree, building whatever is checked out), check whether `run toolchain --no-update` carries the
+  same stale text, and regenerate the man page. Test: the help string no longer names `git pull`.
+  *Priority: low · Effort: small · Bump: patch* — low because the flag itself works; small
+  because it is help text plus `make man`.
+
+---
+
+- **`3.4.0-B16` — the shipped `kernel.toml` and the README number the stages wrong.** The
+  stage registry (`pipeline/stages/__init__.py` `STAGES`) and DESIGN (§Pipeline Layer, "Kernel
+  stage (stage 7)") order the seven stages install, hardware, configure, reconfigure, toolchain,
+  packages, kernel, so the kernel is stage 7. `kernel.toml`'s header says "stage 8 / sysforge
+  run kernel", and the README's post-install section says "This runs stages 5–8" for
+  reconfigure through kernel (4–7), right after "stages 1–3" for the first three. A user
+  matching `--start-from` or a pipeline report against either gets numbers that match nothing.
+  Correct both, and check the other shipped configs' headers (`toolchain.toml`,
+  `packages.toml`) for the same drift. Shipped-file change, so fixtures in
+  `tests/data/etc/sysforge/` update too (`make check-shipped`).
+  *Priority: low · Effort: small · Bump: patch* — low because it is a comment; small because it
+  is one number per file.
+
+### Standards
+
+- **`3.4.0-STD2` — two standards rows share the number 28.** `docs/design/21-standards.md`
+  lists `pam.d(5)` / `sudoers(5)` / `sysusers.d(5)` as row 28 in the external-spec table and
+  "Subprocess goes through `primitives/run`" as row 28 in the SysForge-exclusive table. The
+  subsection text says the number is the row's identity, cited from code, tests and published
+  release notes, so a citation of "row 28" is ambiguous. Find which row took 28 second (git
+  log on the file), give it the next free number, and re-point every citation of it (grep
+  `row 28` across `sysforge/`, `tests/`, `tools/`, `docs/design/`; released `v*.md` notes are
+  immutable and keep the old number, so the renumbering row should note its former number).
+  Add a `check_standards` assertion that row numbers are unique across both tables, so this
+  cannot recur.
+  *Priority: low · Effort: small · Bump: patch* — low because nothing breaks; small because it is
+  one renumber, a citation sweep and a uniqueness check.
 
 ### Open questions

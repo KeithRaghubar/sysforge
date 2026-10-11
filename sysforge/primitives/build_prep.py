@@ -277,7 +277,7 @@ def fetch_pgp_keys(fingerprints: list[str], *, pkgbase: str | None) -> list[str]
         for fpr, uid in described:
             _log.ui(
                 f"[GPG] {pkgbase or '<unknown>'} names signer {fpr}"
-                f"{f' ({uid})' if uid else ''} — not in your keyring"
+                f"{f' ({uid})' if uid else ''}: not in your keyring"
             )
         fprs = [fpr for fpr, _ in described]
         if not _consent_to_import(pkgbase):

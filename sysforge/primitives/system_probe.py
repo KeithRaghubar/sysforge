@@ -66,7 +66,7 @@ def _check_db_consistency() -> list[diag.Finding]:
         body = line.split(":", 1)[1].strip() if line.startswith(("error:", "warning:")) else line
         findings.append(diag.Finding(
             "pacman", diag.SEV_ERROR, "pacman_db_inconsistent", body,
-            remediation="resolve the missing dependency (install it) — the local "
+            remediation="resolve the missing dependency (install it): the local "
                         "package database is inconsistent",
         ))
     if not findings:
@@ -85,7 +85,7 @@ def _check_stale_lock() -> list[diag.Finding]:
         return []
     return [diag.Finding(
         "pacman", diag.SEV_WARN, "pacman_db_locked",
-        f"pacman database lock present at {_PACMAN_DB_LOCK} — a previous "
+        f"pacman database lock present at {_PACMAN_DB_LOCK}: a previous "
         "transaction may have been interrupted (or pacman is running now)",
         remediation=f"if no pacman is running, remove it: sudo rm {_PACMAN_DB_LOCK}",
     )]
@@ -125,7 +125,7 @@ def _check_pacfiles() -> list[diag.Finding]:
             orphaned, "pacsave_orphaned",
             "orphaned pacman config backup(s) under /etc (base file gone; "
             "pacdiff cannot merge these)",
-            "these are leftovers from removed packages — review and delete "
+            "these are leftovers from removed packages: review and delete "
             "each once you've salvaged any settings you need"))
     return out
 
@@ -220,7 +220,7 @@ def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding]:
     return [diag.Finding(
         "pacman", diag.SEV_WARN, "mirrorlist_stale",
         f"/etc/pacman.d/mirrorlist is {age_days:.0f} days old "
-        f"(over the {stale_days:.0f}-day threshold) — mirrors may be slow or "
+        f"(over the {stale_days:.0f}-day threshold): mirrors may be slow or "
         f"lag the repos",
         remediation="refresh your mirrorlist (e.g. `reflector` or the "
                     "Arch mirror-status page), then `pacman -Syyu`",

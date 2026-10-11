@@ -1,20 +1,20 @@
 # SysForge
 
-SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles — every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
+SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles: every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
 **Relationship to `makepkg` and `pacman`:**
 
-- **`makepkg`** — `build` and `update` wrap it (with flag passthrough) to build the packages
+- **`makepkg`:** `build` and `update` wrap it (with flag passthrough) to build the packages
   SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`.
   A profiled front-end for those packages, not a general `makepkg` replacement.
-- **`pacman`** — SysForge wraps *part* of the surface: search/query, install (through
+- **`pacman`:** SysForge wraps *part* of the surface: search/query, install (through
   `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion).
-  It deliberately does not cover all of pacman — pacman remains the package-database authority.
+  It deliberately does not cover all of pacman; pacman remains the package-database authority.
 
 The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile, or use `sysforge run toolchain --compiler=llvm`.
 
 **Commands.** The everyday set is in [Quick start](#quick-start) below, grouped by what
-you're trying to do. For the complete reference — every verb, subcommand and flag — use
+you're trying to do. For the complete reference (every verb, subcommand and flag), use
 `sysforge --help` (or `sysforge help <command>`) and the [man page](man/sysforge.1);
 [DESIGN.md](DESIGN.md) documents the semantics behind them.
 
@@ -24,13 +24,13 @@ you're trying to do. For the complete reference — every verb, subcommand and f
 
 ## About
 
-SysForge started as a tool to streamline its author's own Arch Linux build and maintenance workflow on a daily-driver machine, and grew into a general-purpose suite. The codebase is developed essentially end-to-end with Claude Code, but it is deliberately structured to stay hand-editable: the modular design docs under `docs/design/` are the source of truth, every module has a documented owner and API, and the full test suite gates every change. Feedback and contributions are welcome — see [Contributing](#contributing).
+SysForge started as a tool to streamline its author's own Arch Linux build and maintenance workflow on a daily-driver machine, and grew into a general-purpose suite. The codebase is developed essentially end-to-end with Claude Code, but it is deliberately structured to stay hand-editable: the modular design docs under `docs/design/` are the source of truth, every module has a documented owner and API, and the full test suite gates every change. Feedback and contributions are welcome; see [Contributing](#contributing).
 
 ---
 
 ## Requirements
 
-- Arch Linux (or Arch ISO for fresh installs) — the primary supported base.
+- Arch Linux (or Arch ISO for fresh installs), the primary supported base.
   **Arch derivatives:** CachyOS is validated each minor release for packaging,
   dependency resolution, `makepkg.conf` handling and version comparison; other
   Arch derivatives are expected to work but are unvalidated. The bootstrap,
@@ -38,12 +38,12 @@ SysForge started as a tool to streamline its author's own Arch Linux build and m
   `sysforge doctor system --distro` reports which tier the machine you are on falls in.
 - Python 3.11+
 - `makepkg`, `pacman`, `sudo`
-- An AUR helper is **not** required — SysForge handles AUR builds directly
+- An AUR helper is **not** required: SysForge handles AUR builds directly
 
 > SysForge's writable runtime directories (`/var/lib/sysforge`, `/var/cache/sysforge`)
 > are owned by the `sysforge` group. The package install creates the group; the first
 > privileged run also adds your user to it. Group membership only takes effect after you
-> log out and back in — until then SysForge repairs the directory permissions per run, so
+> log out and back in. Until then SysForge repairs the directory permissions per run, so
 > nothing breaks, you may just be prompted for `sudo` once more than usual.
 
 ---
@@ -74,14 +74,14 @@ sysforge update --sysupgrade  # ...then one `pacman -Syu` for the repo packages
 ```
 
 Anything you `build` is then *maintained*: `sysforge update` rebuilds it from source as
-upstream advances. This works for repo packages too — `sysforge build mesa` keeps your
+upstream advances. This works for repo packages too: `sysforge build mesa` keeps your
 optimized mesa current.
 
 To stop maintaining one:
 
-- `sysforge state forget <pkg>` — drops it from build state, leaves the installed build alone.
-- `sysforge revert-to-stock <pkg>` — reinstalls the repo build over it and demotes it in one step.
-- `sudo pacman -S <pkg>` — works too; the next `update` reconciles it back to stock.
+- `sysforge state forget <pkg>` drops it from build state, leaves the installed build alone.
+- `sysforge revert-to-stock <pkg>` reinstalls the repo build over it and demotes it in one step.
+- `sudo pacman -S <pkg>` works too; the next `update` reconciles it back to stock.
 
 ### Common commands
 
@@ -148,12 +148,12 @@ sysforge update --no-frozen           # lift an [security] freeze_sources = true
 `--frozen` (or `[security] freeze_sources = true` in `sysforge.toml`) blocks new AUR clones,
 official-repo (`pkgctl`) checkouts, source-sync fetches, and VCS version probes; existing
 checkouts still build. `--thaw` and
-`--no-frozen` are both run-scoped lifts only — nothing persists.
+`--no-frozen` are both run-scoped lifts only; nothing persists.
 
 **Sandboxing builds**
 
 A PKGBUILD's `prepare()`/`build()`/`package()` are arbitrary code, and by default they run as
-you — with read access to `~/.ssh`, your GPG material and your browser profiles. Turn on the
+you, with read access to `~/.ssh`, your GPG material and your browser profiles. Turn on the
 build sandbox to run them inside a clean container instead:
 
 ```bash
@@ -169,11 +169,11 @@ sandbox_chroot_dir = "~/chroot"
 ```
 
 Builds then run through `makechrootpkg`; artifacts still land in your usual `PKGDEST`.
-Freezing gates what code comes *in*, sandboxing gates what a build can *reach* — they are
+Freezing gates what code comes *in*, sandboxing gates what a build can *reach*. They are
 independent and can be used together. A single profile can override the switch either way
 with `sandbox_builds` in `profiles.toml`. Builds that cannot be isolated stop with an error
 rather than quietly running unsandboxed, and `run toolchain` / `run kernel` are never
-sandboxed — both build against the host they are upgrading.
+sandboxed, since both build against the host they are upgrading.
 
 **How dependencies resolve.** The container has its own `pacman.conf`, so on its own it would
 resolve build dependencies from the stock repos rather than from what you have installed.
@@ -206,9 +206,16 @@ boot-entries` shows what boots what, and
 [docs/guides/boot-entries.md](docs/guides/boot-entries.md) covers menu ordering, the default
 entry and one-time boots.
 
-That is the everyday surface. For the rest — `--cleansrc`, `--install-only`,
+Three more guides cover the flag-heavy surfaces:
+[docs/guides/drift.md](docs/guides/drift.md) explains what `update` rebuilds on its own and what
+it only reports after a profile or compiler change;
+[docs/guides/freeze.md](docs/guides/freeze.md) covers `--frozen`, `--thaw` and PGP key fetches;
+and [docs/guides/kernel.md](docs/guides/kernel.md) walks through `sysforge run kernel`, from the
+config review to the boot-safety checks.
+
+That is the everyday surface. For the rest (`--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
-semantics — see `sysforge --help`, the [man page](man/sysforge.1), and
+semantics), see `sysforge --help`, the [man page](man/sysforge.1), and
 [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned features live in
 [ROADMAP.md](ROADMAP.md); ideas considered and rejected, with the reasoning, live in
 [docs/ROADMAP-ABANDONED.md](docs/ROADMAP-ABANDONED.md).
@@ -222,7 +229,7 @@ This covers the full path from booting the Arch install ISO to a working system 
 ### 1. Connect to the internet
 
 ```bash
-ip link                                   # wired — usually automatic
+ip link                                   # wired: usually automatic
 iwctl station wlan0 connect "SSID"        # wireless
 ```
 
@@ -261,13 +268,13 @@ name   = "neovim-git"
 source = "aur"
 ```
 
-For a graphical desktop you don't have to enumerate every package: `sysforge packages add-group gnome` (also `kde`, `xfce`, `mate`, `cinnamon`, `lxqt`, `budgie`, `cosmic`) writes a curated desktop group — its session, display manager, and portals. Installing the group also enables the display manager so you boot straight to a graphical login. A fresh install offers the same choice interactively, or reads it from `bootstrap.toml [desktop] environment`.
+For a graphical desktop you don't have to enumerate every package: `sysforge packages add-group gnome` (also `kde`, `xfce`, `mate`, `cinnamon`, `lxqt`, `budgie`, `cosmic`) writes a curated desktop group: its session, display manager, and portals. Installing the group also enables the display manager so you boot straight to a graphical login. A fresh install offers the same choice interactively, or reads it from `bootstrap.toml [desktop] environment`.
 
-A custom kernel goes in `kernel.toml` (not `packages.toml`) and a custom LLVM toolchain in `toolchain.toml` — the kernel and toolchain stages own those packages, and `sysforge update` skips stage-owned packages by default. Build/IO/memory throttling (including a per-build `mem_limit` ceiling), `PACKAGER`/`MAKEFLAGS` defaults, and per-profile knobs are documented inline in the shipped configs and in [DESIGN.md](DESIGN.md).
+A custom kernel goes in `kernel.toml` (not `packages.toml`) and a custom LLVM toolchain in `toolchain.toml`, because the kernel and toolchain stages own those packages, and `sysforge update` skips stage-owned packages by default. Build/IO/memory throttling (including a per-build `mem_limit` ceiling), `PACKAGER`/`MAKEFLAGS` defaults, and per-profile knobs are documented inline in the shipped configs and in [DESIGN.md](DESIGN.md).
 
-`packages.toml [build]` also carries per-flag defaults for `sysforge build` — `abi_check`, `cache_report`, `persist_log` — so you don't have to pass `--abi-check`/`--cache-report`/`--persist-log` every run; the CLI flag still wins if given. Similarly, `sysforge.toml [update]` carries `rebuild_on_drift` (+ the per-axis `rebuild_on_toolchain_drift`/`rebuild_on_flag_drift`) so `sysforge update` can default to rebuilding drifted packages without passing `--rebuild-on-drift` each time. `packages.toml [build] system_upgrade = true` does the same for `--sysupgrade`, the trailing `pacman -Syu` that refreshes your repo packages after the source builds are installed (`--no-sysupgrade` opts out for one run). It runs unattended with `--noconfirm` (a package conflict still cancels it rather than removing anything unasked); add `--interactive` to answer pacman's prompts yourself. That upgrade is summarized package-by-package at the end of the run — the version changes are read back off the local package DB, so the summary reports what pacman actually did; the list is capped by default and printed in full under `-v`, and `--no-sysupgrade-report` drops it.
+`packages.toml [build]` also carries per-flag defaults for `sysforge build` (`abi_check`, `cache_report`, `persist_log`), so you don't have to pass `--abi-check`/`--cache-report`/`--persist-log` every run; the CLI flag still wins if given. Similarly, `sysforge.toml [update]` carries `rebuild_on_drift` (+ the per-axis `rebuild_on_toolchain_drift`/`rebuild_on_flag_drift`) so `sysforge update` can default to rebuilding drifted packages without passing `--rebuild-on-drift` each time. `packages.toml [build] system_upgrade = true` does the same for `--sysupgrade`, the trailing `pacman -Syu` that refreshes your repo packages after the source builds are installed (`--no-sysupgrade` opts out for one run). It runs unattended with `--noconfirm` (a package conflict still cancels it rather than removing anything unasked); add `--interactive` to answer pacman's prompts yourself. That upgrade is summarized package-by-package at the end of the run. The version changes are read back off the local package DB, so the summary reports what pacman actually did; the list is capped by default and printed in full under `-v`, and `--no-sysupgrade-report` drops it.
 
-By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv` add warnings/info/debug. To raise that baseline permanently set `sysforge.toml [log] verbosity` (0–3) — for example `verbosity = 2` to always see progress narration. A CLI flag always wins, and `--quiet` forces silence (verbosity 0) for a single run.
+By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv` add warnings/info/debug. To raise that baseline permanently set `sysforge.toml [log] verbosity` (0–3), for example `verbosity = 2` to always see progress narration. A CLI flag always wins, and `--quiet` forces silence (verbosity 0) for a single run.
 
 ### 4. Run the bootstrap pipeline
 
@@ -276,7 +283,7 @@ By default sysforge prints errors plus the primary output only; `-v`/`-vv`/`-vvv
 sysforge run pipeline --state-dir /mnt/var/lib/sysforge
 ```
 
-This runs stages 1–3: **install** (disk partition/format/mount, base install, bootloader, users, services, and system identity — all via archinstall from a generated config), detect hardware, and **configure** the installed system with sysforge-specific tuning (mirrorlist, `makepkg.conf`, desktop group, and sysforge itself). The pipeline checkpoints after each stage; a failure resumes with `--resume`.
+This runs stages 1–3: **install** (disk partition/format/mount, base install, bootloader, users, services, and system identity, all via archinstall from a generated config), detect hardware, and **configure** the installed system with sysforge-specific tuning (mirrorlist, `makepkg.conf`, desktop group, and sysforge itself). The pipeline checkpoints after each stage; a failure resumes with `--resume`.
 
 ### 5. Reboot and continue
 
@@ -293,10 +300,10 @@ sysforge run pipeline --resume
 
 This runs stages 5–8:
 
-- **reconfigure** — pre-build checks: disk space, network, config review.
-- **toolchain** — *(opt-in)* builds the LLVM toolchain via the PGO bootstrap, behind three safety gates that keep the live `/usr` toolchain from ever being left broken (pre-build preflight, pre-install ABI audit, post-install verify with auto-restore). Register-only on the default gcc path. See [DESIGN.md](DESIGN.md) §Toolchain stage.
-- **packages** — builds and installs everything in `packages.toml` with profiled flags. Optionally trims mesa's GPU drivers to your hardware (`[mesa] filter_drivers`).
-- **kernel** — *(opt-in)* builds a custom kernel with boot-safety gates (won't leave the system unbootable). Interactive by default; compiler independent of the toolchain stage. On systemd-boot it also writes and maintains the kernel's loader entry (your own entries are never modified; `sysforge state boot-entries` lists them). See [DESIGN.md](DESIGN.md) §Kernel stage and [docs/guides/boot-entries.md](docs/guides/boot-entries.md).
+- **reconfigure:** pre-build checks (disk space, network, config review).
+- **toolchain:** *(opt-in)* builds the LLVM toolchain via the PGO bootstrap, behind three safety gates that keep the live `/usr` toolchain from ever being left broken (pre-build preflight, pre-install ABI audit, post-install verify with auto-restore). Register-only on the default gcc path. See [DESIGN.md](DESIGN.md) §Toolchain stage.
+- **packages:** builds and installs everything in `packages.toml` with profiled flags. Optionally trims mesa's GPU drivers to your hardware (`[mesa] filter_drivers`).
+- **kernel:** *(opt-in)* builds a custom kernel with boot-safety gates (won't leave the system unbootable). Interactive by default; compiler independent of the toolchain stage. On systemd-boot it also writes and maintains the kernel's loader entry (your own entries are never modified; `sysforge state boot-entries` lists them). See [DESIGN.md](DESIGN.md) §Kernel stage and [docs/guides/boot-entries.md](docs/guides/boot-entries.md).
 
 If a stage 5–8 run is interrupted, resume it with `sysforge run pipeline --resume`.
 
@@ -305,10 +312,10 @@ If a stage 5–8 run is interrupted, resume it with `sysforge run pipeline --res
 ## Tab completion
 
 ```bash
-# zsh — permanent
+# zsh, permanent
 sudo cp completions/_sysforge /usr/share/zsh/site-functions/
 
-# bash — permanent
+# bash, permanent
 sudo cp completions/sysforge.bash /usr/share/bash-completion/completions/sysforge
 ```
 
@@ -334,7 +341,7 @@ make dev-uninstall
 ```
 
 Because it links into the real system paths, remove any concurrently-installed
-`sysforge` package first — if a real (non-symlink) file already exists at a
+`sysforge` package first. If a real (non-symlink) file already exists at a
 target path, `dev-install` skips it rather than overwriting it.
 
 ---
@@ -365,7 +372,7 @@ Issues are the best channel for bug reports and feedback; pull requests are welc
 
 SysForge follows established Linux/Python ecosystem conventions: config/cache/state under the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/), system paths per the FHS, a POSIX/GNU CLI that honours `NO_COLOR`/`FORCE_COLOR` and splits stderr from stdout, [SemVer](https://semver.org/) releases with [Keep a Changelog](https://keepachangelog.com/) notes, and a [REUSE](https://reuse.software/)/SPDX-annotated tree (MIT).
 
-The full list — each standard with its scope, status, and enforcement — is in [DESIGN.md](DESIGN.md) (§Standards & Specifications). A release gate (`make check-standards` plus behavioural tests) verifies the checkable subset before every release.
+The full list, each standard with its scope, status, and enforcement, is in [DESIGN.md](DESIGN.md) (§Standards & Specifications). A release gate (`make check-standards` plus behavioural tests) verifies the checkable subset before every release.
 
 ---
 

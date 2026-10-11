@@ -255,7 +255,7 @@ class SourceSyncScheduler:
             self.limiter.wait_before_rpc()
             results = aur_info(pending)
         except Exception as e:  # noqa: BLE001 — urllib raises a sprawling tree
-            _log.warn(f"AUR RPC batch failed: {e} — falling back to fetch-all")
+            _log.warn(f"AUR RPC batch failed: {e}; falling back to fetch-all")
             return
 
         self._rpc_map.update(results)
@@ -268,7 +268,7 @@ class SourceSyncScheduler:
         """Set a flag so subsequent requests short-circuit to rate_limited."""
         if not self._aborted:
             _log.error(
-                f"AUR sync aborted: {reason} — remaining packages marked "
+                f"AUR sync aborted: {reason}; remaining packages marked "
                 "rate_limited; retry in a few minutes"
             )
         self._aborted = True
@@ -456,7 +456,7 @@ class SourceSyncScheduler:
         version = get_repo_candidate_version(db_name)
         if version is None:
             _log.warn(
-                f"{db_name}: no sync-DB candidate — leaving checkout on main "
+                f"{db_name}: no sync-DB candidate; leaving checkout on main "
                 f"(testing-track)"
             )
             return None
@@ -547,7 +547,7 @@ class SourceSyncScheduler:
                     pkgbase=pkgbase, status=STATUS_DIVERGED,
                     head_before=outcome.head_before,
                     head_after=outcome.head_after,
-                    error="local edits present — not re-pinning",
+                    error="local edits present: not re-pinning",
                 )
             pre = _head_commit(pkgbuild_dir)
             err = self._pin_repo_checkout(pkgbase, pkgbuild_dir, sync_db_name)

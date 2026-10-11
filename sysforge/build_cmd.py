@@ -108,7 +108,7 @@ def _print_build_summary(outcome) -> None:
     if landed:
         _log.ui(f"  {log.green('Built:')}       {' '.join(landed)}")
     for pb, reason in outcome.not_installed.items():
-        _log.ui(f"  {log.red('Not installed:')} {pb} — {reason}")
+        _log.ui(f"  {log.red('Not installed:')} {pb} ({reason})")
     if outcome.failed_pkgs:
         _log.ui(f"  {log.red('Failed:')}      {' '.join(outcome.failed_pkgs)}")
     if outcome.review_skipped:
@@ -206,7 +206,7 @@ def _write_repo_optin(name: str, config) -> bool:
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                "# packages.toml — managed by sysforge packages\n"
+                "# packages.toml: managed by sysforge packages\n"
                 "\n[build]\n"
                 'pkgbuild_src_dir = "~/src"\n'
             )
@@ -413,7 +413,7 @@ class BuildVerb(Verb):
                     and not _repo_pkg_opted_in(target.pkgbase, build_cfg, opted_in):
                 if is_interactive():
                     ans = prompt_choice(
-                        f"{target.pkgbase} is a repo package — build from source? "
+                        f"{target.pkgbase} is a repo package; build from source? "
                         "[y/N]: ",
                         choices=("y", "n"),
                         default="n",
@@ -427,7 +427,7 @@ class BuildVerb(Verb):
                 else:
                     _log.error(
                         f"{target.pkgbase} is a repo package not opted into source "
-                        "builds — set enable_build_from_source=true in packages.toml "
+                        "builds: set enable_build_from_source=true in packages.toml "
                         "(or run `sysforge packages add "
                         f"{target.pkgbase} --enable-build-from-source`), or pass "
                         "--force to build it this run only."
@@ -441,7 +441,7 @@ class BuildVerb(Verb):
             if any(t.pkgbase == target.pkgbase for t in targets):
                 _log.info(
                     f"{pkg}: already covered by the {target.pkgbase} build "
-                    "(same pkgbase) — skipping duplicate."
+                    "(same pkgbase); skipping duplicate."
                 )
                 continue
 

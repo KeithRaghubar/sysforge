@@ -75,7 +75,7 @@ class ToolchainStage(Stage):
         tcfg = config.load()
         if tcfg is None or not tcfg.enabled:
             _log.ui(
-                "toolchain.toml absent or disabled — stage is a no-op"
+                "toolchain.toml absent or disabled: stage is a no-op"
             )
             # Clear any prior cc/cxx/ld result so downstream stages
             # (packages, kernel) don't keep using stale toolchain
@@ -86,7 +86,7 @@ class ToolchainStage(Stage):
                     state.save()
                 except PermissionError:
                     _log.warn(
-                        "Cannot write state — stale toolchain result will persist",
+                        "Cannot write state: stale toolchain result will persist",
                     )
             return
 
@@ -105,7 +105,7 @@ class ToolchainStage(Stage):
         if compiler == "gcc":
             cc, cxx, ld = identity.compiler_paths("gcc")
             _log.ui(
-                f"Compiler: gcc — registering system paths (no build): cc={cc}  cxx={cxx}",
+                f"Compiler: gcc; registering system paths (no build): cc={cc}  cxx={cxx}",
             )
             state.set_stage_result(
                 "toolchain", {"cc": cc, "cxx": cxx, "variant": "gcc"}
@@ -114,7 +114,7 @@ class ToolchainStage(Stage):
                 state.save()
             except PermissionError:
                 _log.warn(
-                    "Cannot write state — toolchain results will not be checkpointed",
+                    "Cannot write state: toolchain results will not be checkpointed",
                 )
             identity.propagate_default_toolchain(compiler, options)
             return
@@ -128,7 +128,7 @@ class ToolchainStage(Stage):
             cc, cxx, ld = identity.compiler_paths(compiler)
             variant = profdata.resolve_skip_build_variant(pgo_store)
             _log.ui(
-                f"skip_build=true — skipping build, registering {compiler} "
+                f"skip_build=true; skipping build, registering {compiler} "
                 f"(variant={variant}): cc={cc}  cxx={cxx}",
             )
             result = {"cc": cc, "cxx": cxx, "variant": variant}
@@ -139,7 +139,7 @@ class ToolchainStage(Stage):
                 state.save()
             except PermissionError:
                 _log.warn(
-                    "Cannot write state — toolchain results will not be checkpointed",
+                    "Cannot write state: toolchain results will not be checkpointed",
                 )
             identity.propagate_default_toolchain(compiler, options)
             return
@@ -159,7 +159,7 @@ class ToolchainStage(Stage):
             suite = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
             cc, cxx, ld = identity.compiler_paths(compiler)
             _log.ui(
-                f"repo_mode=pacman, PGO off — installing {len(suite)} LLVM "
+                f"repo_mode=pacman, PGO off; installing {len(suite)} LLVM "
                 f"package(s) from repo (no build): {' '.join(suite)}",
             )
             if options.dry_run:
@@ -187,7 +187,7 @@ class ToolchainStage(Stage):
                 state.save()
             except PermissionError:
                 _log.warn(
-                    "Cannot write state — toolchain results will not be checkpointed",
+                    "Cannot write state: toolchain results will not be checkpointed",
                 )
             identity.propagate_default_toolchain(compiler, options)
             return
@@ -255,7 +255,7 @@ class ToolchainStage(Stage):
             except RuntimeError as e:
                 _log.warn(
                     f"[PGO] Could not resolve training-corpus extras "
-                    f"{corpus_extras}: {e} — proceeding with LLVM-only corpus",
+                    f"{corpus_extras}: {e}; proceeding with LLVM-only corpus",
                 )
 
         role_map = (
@@ -453,7 +453,7 @@ class ToolchainStage(Stage):
                         raise RuntimeError(
                             "[TOOLCHAIN] Built toolchain failed Gate-3 verification AND "
                             "automatic rollback could not complete. The live toolchain may "
-                            "be inconsistent. Stage sentinel left in place — restore with: "
+                            "be inconsistent. Stage sentinel left in place; restore with: "
                             f"{gates.snapshot_recovery_cmd(snapshot)}"
                         )
                     # Verify passed — safe to wipe the stage2/stage3 prefixes
@@ -491,7 +491,7 @@ class ToolchainStage(Stage):
             state.save()
         except PermissionError:
             _log.warn(
-                "Cannot write state — toolchain results will not be checkpointed",
+                "Cannot write state: toolchain results will not be checkpointed",
             )
 
         # Installed + Gate-3-verified: sync the profile default to the configured

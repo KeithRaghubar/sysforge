@@ -156,7 +156,7 @@ def _assemble_package_set(
             for stage, names in by_stage.items():
                 _log.info(
                     f"skipping {len(names)} {stage}-stage package(s): "
-                    f"{', '.join(sorted(names))} — run `sysforge run {stage}` "
+                    f"{', '.join(sorted(names))}; run `sysforge run {stage}` "
                     "to update (or pass --include-stage-owned)"
                 )
 
@@ -278,7 +278,7 @@ def _assemble_package_set(
             for name in unknown:
                 _log.warn(
                     f"{name}: not in update scope (not installed, or repo package "
-                    f"without an override) — skipping"
+                    f"without an override); skipping"
                 )
         filter_set = set(filter_names)
         packages = {k: v for k, v in packages.items() if k in filter_set}

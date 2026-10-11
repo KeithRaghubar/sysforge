@@ -155,7 +155,7 @@ class KernelStage(Stage):
         # Parsed once, here, into a frozen dataclass (3.2.0-F6).
         kernel_cfg = config.load()
         if kernel_cfg is None or not kernel_cfg.enabled:
-            _log.ui("kernel.toml absent or disabled — stage is a no-op")
+            _log.ui("kernel.toml absent or disabled: stage is a no-op")
             return
 
         from sysforge.primitives import snapshot
@@ -233,7 +233,7 @@ class KernelStage(Stage):
                 _log.warn(
                     f"kernel.toml bootloader = {bootloader!r} but installation "
                     f"not detected (found: {sorted(installed_bootloaders) or 'none'}). "
-                    "Post-install step will likely fail — pass "
+                    "Post-install step will likely fail: pass "
                     "--bootloader=<installed> or update kernel.toml."
                 )
 
@@ -262,7 +262,7 @@ class KernelStage(Stage):
         if cfg_interactive and not flag_non_interactive and not interactive:
             _log.warn(
                 "interactive kconfig review requested (kernel.toml "
-                "interactive = true) but no TTY is attached — running "
+                "interactive = true) but no TTY is attached: running "
                 "unattended; the config review will NOT run. Pass "
                 "--non-interactive to make this explicit."
             )
@@ -353,7 +353,7 @@ class KernelStage(Stage):
         elif cc:
             _log.info(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
         else:
-            _log.info("No kernel compiler override — profile defaults apply")
+            _log.info("No kernel compiler override: profile defaults apply")
 
         # 3.3: surface the inherited toolchain variant when the user hasn't
         # set `compiler` explicitly. The pipeline-state fallback already
@@ -362,14 +362,14 @@ class KernelStage(Stage):
         # a future toolchain-stage disable that clears [stages.toolchain.result]).
         if compiler is None and variant == "pgo_llvm":
             _log.warn(
-                "Active toolchain variant: pgo_llvm — kernel will inherit PGO "
+                "Active toolchain variant: pgo_llvm; kernel will inherit PGO "
                 "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
                 "in kernel.toml (or pass --compiler=llvm) to make this explicit "
                 "and survive future toolchain-stage disable."
             )
         elif compiler is None and variant == "stock_llvm":
             _log.info(
-                "Active toolchain variant: stock_llvm — kernel will inherit "
+                "Active toolchain variant: stock_llvm; kernel will inherit "
                 "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
                 "in kernel.toml to make this explicit."
             )
@@ -384,7 +384,7 @@ class KernelStage(Stage):
         # `sysforge doctor --toolchain`.
         from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
         for finding in detect_toolchain_config_mismatch(sysforge_config):
-            _log.warn(f"{finding.message} — {finding.remediation}")
+            _log.warn(f"{finding.message}: {finding.remediation}")
 
         # Base .config seeding — written before the fragment so the build order
         # is base → fragment overlay. "pkgbuild" (default) is a no-op; "running"
@@ -501,7 +501,7 @@ class KernelStage(Stage):
             else:
                 _log.warn(
                     "AutoFDO profiling kernel requested, but branch sampling is "
-                    f"unsupported on this CPU — {_sampling.note} The collected "
+                    f"unsupported on this CPU: {_sampling.note} The collected "
                     "profile may be unusable."
                 )
 
@@ -692,7 +692,7 @@ class KernelStage(Stage):
             if not options.dry_run and not sudo_session.authenticate():
                 raise RuntimeError(
                     "[KERNEL] sudo authentication failed or timed out before "
-                    "the install step — nothing was installed and the system is "
+                    "the install step: nothing was installed and the system is "
                     "unchanged. Re-run when you can answer the prompt: "
                     "sysforge run kernel"
                 )
@@ -724,7 +724,7 @@ class KernelStage(Stage):
                             # every re-run (the stale package keeps
                             # short-circuiting the build). Point at the exit.
                             raise RuntimeError(
-                                f"[KERNEL] {e} — installing a previously built "
+                                f"[KERNEL] {e}: installing a previously built "
                                 "(stale) package failed; break the loop with a "
                                 "fresh build: bump pkgver/pkgrel, or remove the "
                                 "stale package(s) from PKGDEST and re-run."
@@ -745,7 +745,7 @@ class KernelStage(Stage):
                     raise RuntimeError(
                         f"[KERNEL] {fdo_eff_pkgname} is installed (initramfs and "
                         f"bootloader updated) but its boot entry could not be "
-                        f"written: {e} — fix that and re-run `sysforge run kernel`, "
+                        f"written: {e}; fix that and re-run `sysforge run kernel`, "
                         'or set boot_entries = "off" in kernel.toml and add an '
                         "entry by hand"
                     ) from e

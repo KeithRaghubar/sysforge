@@ -79,7 +79,7 @@ def _produced_pkgnames(pkgbuild_path: Path, pkgnames: list[str]) -> list[str]:
     try:
         patched_meta = parse_pkgbuild(patched)
     except Exception as e:  # noqa: BLE001 — advisory filter; never fail the check
-        _log.debug(f"failed to parse {patched}: {e} — counting all members")
+        _log.debug(f"failed to parse {patched}: {e}; counting all members")
         return pkgnames
     declared = patched_meta.get("globals", {}).get("pkgname")
     if isinstance(declared, str):
@@ -171,12 +171,12 @@ def _check_one_pkgbase(
     pkgbuild_dir = Path(entry["pkgbuild_dir"])
 
     if not pkgbuild_dir.is_dir():
-        _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found — skipping")
+        _log.warn(f"{pkgbase}: pkgbuild_dir {pkgbuild_dir} not found; skipping")
         return None
 
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
-        _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path} — skipping")
+        _log.warn(f"{pkgbase}: PKGBUILD not found at {pkgbuild_path}; skipping")
         return None
 
     if not skip_sync_check and pkgbase in sync_failures:
@@ -192,7 +192,7 @@ def _check_one_pkgbase(
     try:
         pkgmeta = parse_pkgbuild(pkgbuild_path)
     except Exception as e:
-        _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e} — skipping")
+        _log.warn(f"{pkgbase}: failed to parse PKGBUILD: {e}; skipping")
         return None
 
     globals_ = pkgmeta.get("globals", {})
@@ -219,7 +219,7 @@ def _check_one_pkgbase(
         else:
             _log.warn(
                 f"{pkgbase}: pkgver '{pkgbuild_ver}' has unresolved shell "
-                "expansion and no cached RPC version — skipping"
+                "expansion and no cached RPC version; skipping"
             )
             return None
 
@@ -264,7 +264,7 @@ def _check_one_pkgbase(
         resolved = evaluate_vcs_pkgver(pkgbuild_dir, pkgbase=pkgbase)
         if resolved is None:
             _log.warn(
-                f"{pkgbase}: pkgver() evaluation failed — skipping rebuild "
+                f"{pkgbase}: pkgver() evaluation failed; skipping rebuild "
                 "(re-run --devel after the upstream/network issue clears)"
             )
             return _UpdateResult(
@@ -277,7 +277,7 @@ def _check_one_pkgbase(
         try:
             cmp = vercmp(resolved, installed_ver)
         except RuntimeError as e:
-            _log.warn(f"{pkgbase}: vercmp failed on resolved {resolved!r}: {e} — skipping")
+            _log.warn(f"{pkgbase}: vercmp failed on resolved {resolved!r}: {e}; skipping")
             return _UpdateResult(
                 pkgbase=pkgbase, pkgnames=pkgnames, action="DEVEL_EVAL_FAILED",
                 installed_ver=installed_ver, pkgbuild_ver=resolved,
@@ -302,7 +302,7 @@ def _check_one_pkgbase(
     try:
         cmp = vercmp(pkgbuild_ver, installed_ver)
     except RuntimeError as e:
-        _log.warn(f"{pkgbase}: version comparison failed: {e} — skipping")
+        _log.warn(f"{pkgbase}: version comparison failed: {e}; skipping")
         return None
 
     # Drift observability: when the installed version matches what sysforge
@@ -318,7 +318,7 @@ def _check_one_pkgbase(
         if installed_ver == bs_ver and pkgbuild_ver != bs_ver:
             _log.info(
                 f"{pkgbase}: PKGBUILD on disk ({pkgbuild_ver}) differs from "
-                f"last built ({bs_ver}) — upstream PKGBUILD has moved"
+                f"last built ({bs_ver}); upstream PKGBUILD has moved"
             )
 
     if cmp > 0:

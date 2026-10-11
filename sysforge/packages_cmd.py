@@ -74,7 +74,7 @@ def cmd_packages_list(args):
         installed = set(get_all_installed_packages().keys())
         entries = [e for e in entries if e.get("name") not in installed]
         if not entries:
-            print(f"No orphan entries in {path} — all override targets are installed.")
+            print(f"No orphan entries in {path}: all override targets are installed.")
             return
 
     if entries:
@@ -170,7 +170,7 @@ def cmd_packages_add(args):
         # Fresh file: write the standard header so the file is self-documenting.
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            "# packages.toml — managed by sysforge packages\n"
+            "# packages.toml: managed by sysforge packages\n"
             "\n[build]\n"
             'pkgbuild_src_dir = "~/src"\n'
         )

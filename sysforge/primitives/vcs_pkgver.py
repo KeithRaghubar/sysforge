@@ -84,12 +84,12 @@ def evaluate_vcs_pkgver(
     try:
         get_policy().check(KIND_VCS_RESOLVE, pkgbase or pkgbuild_dir.name)
     except NetworkFrozen as e:
-        _log.warn(f"{e} — pkgver() not evaluated")
+        _log.warn(f"{e}: pkgver() not evaluated")
         return None
 
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
     if not pkgbuild_path.exists():
-        _log.warn(f"{pkgbuild_dir}: PKGBUILD missing — cannot evaluate pkgver()")
+        _log.warn(f"{pkgbuild_dir}: PKGBUILD missing; cannot evaluate pkgver()")
         return None
 
     try:

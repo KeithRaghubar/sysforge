@@ -88,7 +88,7 @@ _SEP = "# " + "─" * 60 + "\n"
 
 def _session_header(label: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"{_SEP}# {label} — {ts}\n{_SEP}"
+    return f"{_SEP}# {label}: {ts}\n{_SEP}"
 
 
 def set_verbosity(level: int) -> None:

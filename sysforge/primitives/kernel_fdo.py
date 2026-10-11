@@ -488,7 +488,7 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
                     f"AMD {mech} branch sampling (family "
                     f"0x{family:x}). EXPERIMENTAL for AutoFDO and less "
                     "battle-tested than Intel LBR; the event uses libpfm "
-                    "(`--pfm-events`) — verify your perf build supports it "
+                    "(`--pfm-events`): verify your perf build supports it "
                     "(`perf record --pfm-events ... ` / `perf list`) and "
                     "cross-check the kernel's Documentation/dev-tools/autofdo.rst."
                 ),
@@ -508,7 +508,7 @@ def detect_branch_sampling(cpuinfo_text: str | None = None) -> BranchSampling:
         supported=False,
         perf_event_args="-e branches:k",
         note=(
-            "Could not identify the CPU vendor from /proc/cpuinfo — pick a "
+            "Could not identify the CPU vendor from /proc/cpuinfo: pick a "
             "taken-branch event that supports `-b` (branch stack) on your "
             "hardware and verify with `perf list`."
         ),

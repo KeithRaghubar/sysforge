@@ -656,7 +656,7 @@ def detect_toolchain_config_mismatch(
             check_id="toolchain_pgo_profdata_skew",
             severity="error",
             message=(
-                "PGO profdata version does not match the target LLVM — a rebuild "
+                "PGO profdata version does not match the target LLVM: a rebuild "
                 "would not reuse the stored profile."
             ),
             remediation="run `sysforge run toolchain --rebuild-profdata`",

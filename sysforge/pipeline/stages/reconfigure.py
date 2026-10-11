@@ -106,7 +106,7 @@ _STEPS = [
     ("desktop",    "Desktop environment",
      "Pick a curated desktop environment (GNOME / KDE) to install as a packages.toml group"),
     ("makepkg",    "makepkg.conf review",
-     "Review /etc/makepkg.conf — MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
+     "Review /etc/makepkg.conf: MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
     ("sudo",       "User / sudo verification",
      "Confirm build user and sudoers are correctly configured for makepkg -si"),
     ("disk",       "Disk space check",
@@ -473,7 +473,7 @@ def _select_new_editor(prev_editor: str, have_prev: bool, options) -> str | None
                 "  Enter editor command (e.g. nano, vi; Enter to skip): "
             )
             if not new_editor:
-                _log.ui("  No editor selected — config file edits will be skipped.")
+                _log.ui("  No editor selected: config file edits will be skipped.")
                 return None
 
         if shutil.which(new_editor):
@@ -612,7 +612,7 @@ def _persist_to_file_target(target, new_editor: str) -> None:
     plan = plan_write(target, {"EDITOR": new_editor, "VISUAL": new_editor}, existing)
     _log.ui(f"  {target.path}:")
     if plan.action == "nochange":
-        _log.ui("    already set — no change")
+        _log.ui("    already set: no change")
         return
 
     for change in plan.changes:
@@ -627,7 +627,7 @@ def _persist_to_file_target(target, new_editor: str) -> None:
     except OSError as e:
         _log.warn(f"  Could not write {target.path}: {e}")
         return
-    _log.ui(f"  Wrote {target.path} — takes effect: {target.scope_note}.")
+    _log.ui(f"  Wrote {target.path}; takes effect: {target.scope_note}.")
 
 
 def _warn_if_sysforge_toml_shadows(new_editor: str, selected: list[str]) -> None:
@@ -651,7 +651,7 @@ def _warn_if_sysforge_toml_shadows(new_editor: str, selected: list[str]) -> None
     _log.warn(
         f"  sysforge.toml [ui] editor = {configured} outranks $EDITOR, so the "
         f"{new_editor} you are about to write will be ignored by sysforge "
-        f"itself — it will keep launching {configured}. Other programs will "
+        f"itself: it will keep launching {configured}. Other programs will "
         f"use {new_editor}. Include target 1 to change both."
     )
 
@@ -684,7 +684,7 @@ def _offer_persist_editor(new_editor: str) -> None:
     if invalid:
         _log.warn(f"  Ignoring unrecognized selection: {' '.join(invalid)}")
     if not selected:
-        _log.ui("  Not persisted — the pick applies to this run only.")
+        _log.ui("  Not persisted: the pick applies to this run only.")
         return
 
     _warn_if_sysforge_toml_shadows(new_editor, selected)
@@ -815,7 +815,7 @@ def _step_editor(config, state, options, editor: str) -> str:
     else:
         # No editor on PATH — don't offer a "keep" path that would silently
         # propagate an unusable editor into the rest of the stage.
-        _log.ui("  No editor found on PATH — pick one to use for config edits.")
+        _log.ui("  No editor found on PATH: pick one to use for config edits.")
 
     new_editor = _select_new_editor(editor, have_editor, options)
     if new_editor is None:
@@ -884,7 +884,7 @@ def _open_in_editor(path: Path, editor: str) -> bool:
     so the editor can actually save; see :func:`_edit_needs_sudo`.
     """
     if not _editor_usable(editor):
-        _log.ui(f"  Skipping {path.name} — no usable editor available.")
+        _log.ui(f"  Skipping {path.name}: no usable editor available.")
         return False
     argv = [editor, str(path)]
     if _edit_needs_sudo(path):
@@ -911,13 +911,13 @@ def _review_config_file(
 ) -> None:
     exists = path.exists()
     _log.ui(
-        f"  {label}: {path}" if exists else f"  {label}: {path}  (not found — skipping)"
+        f"  {label}: {path}" if exists else f"  {label}: {path}  (not found; skipping)"
     )
     if not exists or not _interactive() or dry_run:
         return
 
     if _prompt_choice(
-        f"    {label} ({path.name}) — [e]dit / [Enter] skip: ",
+        f"    {label} ({path.name}); [e]dit / [Enter] skip: ",
         choices=("e",),
     ) != "e":
         return
@@ -955,7 +955,7 @@ def _review_config_file(
         elif action == "a":
             raise RuntimeError(f"[RECONFIGURE] Aborted at {label} validation failure")
         else:
-            _log.warn("    Skipping — file may be invalid, proceeding with caution")
+            _log.warn("    Skipping: file may be invalid, proceeding with caution")
             break
 
 
@@ -1037,7 +1037,7 @@ def _step_build_mode(config, state, options, editor: str) -> str:
 
     pkg_path = resolve_packages_path(config)
     if not pkg_path.exists():
-        _log.ui(f"  packages.toml not found at {pkg_path} — skipping")
+        _log.ui(f"  packages.toml not found at {pkg_path}: skipping")
         return editor
 
     try:
@@ -1054,8 +1054,8 @@ def _step_build_mode(config, state, options, editor: str) -> str:
 
     _log.ui(f"  File:       {pkg_path}")
     _log.ui(f"  repo_mode:  {repo_mode}")
-    _log.ui("  pacman            — repo packages installed via pacman (no source build)")
-    _log.ui("  build_from_source — repo packages cloned and built from source with profile flags")
+    _log.ui("  pacman             repo packages installed via pacman (no source build)")
+    _log.ui("  build_from_source  repo packages cloned and built from source with profile flags")
 
     if enabled:
         _log.ui(
@@ -1082,7 +1082,7 @@ def _step_build_mode(config, state, options, editor: str) -> str:
         return editor
 
     if new_mode == repo_mode:
-        _log.ui(f"  Already {repo_mode!r} — no change.")
+        _log.ui(f"  Already {repo_mode!r}: no change.")
         return editor
 
     try:
@@ -1124,7 +1124,7 @@ def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
     pkg_path = resolve_packages_path(config)
     existing = _existing_desktop_group(pkg_path)
     if existing:
-        _log.ui(f"  [group.{existing}] already configured in {pkg_path} — skipping prompt.")
+        _log.ui(f"  [group.{existing}] already configured in {pkg_path}: skipping prompt.")
         return editor
 
     choice = select_desktop(interactive=_interactive(), preselected=None)
@@ -1138,7 +1138,7 @@ def _step_desktop(config, state, options, editor: str) -> str:  # noqa: ARG001
 
     try:
         write_desktop_group(pkg_path, choice)
-        _log.ui(f"  Wrote [group.{choice}] to {pkg_path} — install with 'sysforge run packages'.")
+        _log.ui(f"  Wrote [group.{choice}] to {pkg_path}: install with 'sysforge run packages'.")
     except OSError as e:
         _log.warn(f"  Could not write {pkg_path}: {e}")
 
@@ -1246,7 +1246,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
         ) == "e":
             if not _editor_usable(editor):
                 _log.warn(
-                    f"  Editor {editor!r} is not on PATH — skipping makepkg.conf edit."
+                    f"  Editor {editor!r} is not on PATH: skipping makepkg.conf edit."
                 )
             else:
                 _log.info(f"  Opening (sudo): {editor} {conf_path}")
@@ -1254,7 +1254,7 @@ def _step_makepkg(config, state, options, editor: str) -> str:
                 if rc == -1:
                     _log.warn(f"  Editor not found: {editor!r}")
                 elif rc != 0:
-                    _log.warn(f"  Editor exited with code {rc} — makepkg.conf may be unchanged")
+                    _log.warn(f"  Editor exited with code {rc}: makepkg.conf may be unchanged")
 
     return editor
 
@@ -1283,7 +1283,7 @@ def _step_sudo(config, state, options, editor: str) -> str:
     result2 = run.probe(["id", "-Gn", user])
     groups = result2.stdout.strip().split() if result2.returncode == 0 else []
     if "wheel" in groups or "sudo" in groups:
-        _log.ui("  sudo: requires password (user is in wheel/sudo — OK)")
+        _log.ui("  sudo: requires password (user is in wheel/sudo; OK)")
     else:
         _log.warn(
             f"  sudo: user {user!r} is not in wheel or sudo group. "
@@ -1335,7 +1335,7 @@ def _step_disk(config, state, options, editor: str) -> str:
 
     if free_gb < _DISK_WARN_GB:
         _log.warn(
-            f"  ⚠  Only {free_gb:.1f} GB free — "
+            f"  ⚠  Only {free_gb:.1f} GB free: "
             f"recommended minimum is {_DISK_WARN_GB} GB"
         )
     elif n_aur and free_gb < est_gb:
@@ -1387,7 +1387,7 @@ def _step_network(config, state, options, editor: str) -> str:
         if ok:
             _log.ui(f"  {sym}  {label} ({host})")
         else:
-            _log.warn(f"  {sym}  {label} ({host}) — unreachable")
+            _log.warn(f"  {sym}  {label} ({host}): unreachable")
             all_ok = False
 
     if not all_ok:
@@ -1405,7 +1405,7 @@ def _step_gpg(config, state, options, editor: str) -> str:
     _log.ui("─── GPG keyring bootstrap ───────────────────────────")
 
     if not shutil.which("gpg"):
-        _log.warn("  gpg not found — key verification unavailable")
+        _log.warn("  gpg not found: key verification unavailable")
         return editor
 
     r = run.probe(["gpg", "--list-keys", "--with-colons"])
@@ -1459,7 +1459,7 @@ def _step_preview(config, state, options, editor: str) -> str:
 
     pkg_path = resolve_packages_path(config)
     if not pkg_path.exists():
-        _log.ui(f"  packages.toml not found at {pkg_path} — skipping")
+        _log.ui(f"  packages.toml not found at {pkg_path}: skipping")
         return editor
 
     try:
@@ -1543,7 +1543,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         except (OSError, tomllib.TOMLDecodeError) as e:
             _log.ui(f"  Toolchain: toolchain.toml present but unreadable ({e})")
     else:
-        _log.ui("  Toolchain: no toolchain.toml — toolchain stage will be a no-op")
+        _log.ui("  Toolchain: no toolchain.toml; toolchain stage will be a no-op")
 
     if KERNEL_PATH.exists():
         try:
@@ -1556,7 +1556,7 @@ def _step_preview(config, state, options, editor: str) -> str:
         except (OSError, tomllib.TOMLDecodeError) as e:
             _log.ui(f"  Kernel: kernel.toml present but unreadable ({e})")
     else:
-        _log.ui("  Kernel: no kernel.toml — kernel stage will be a no-op")
+        _log.ui("  Kernel: no kernel.toml; kernel stage will be a no-op")
 
     from sysforge.primitives import build_estimate
     from sysforge.primitives.build_state import BuildState
@@ -1616,7 +1616,7 @@ def _gate_editor_for_pipeline(options) -> None:
         return
     if not _interactive() or options.dry_run:
         _log.warn(
-            "  No usable editor resolved — build-failure recovery will not be "
+            "  No usable editor resolved: build-failure recovery will not be "
             "able to open a PKGBUILD. Set SYSFORGE_EDITOR or [ui].editor."
         )
         return
@@ -1678,7 +1678,7 @@ def _validate_all_configs(config) -> None:
 
 class ReconfigureStage(Stage):
     name = "reconfigure"
-    description = "Pre-build checkpoint — review configs and system state"
+    description = "Pre-build checkpoint: review configs and system state"
     depends_on = ["configure"]
     stateless = True
 
@@ -1718,7 +1718,7 @@ class ReconfigureStage(Stage):
                     _log.ui("Removed login reminder via sudo (/etc/profile.d/sysforge-resume.sh)")
                 else:
                     _log.warn(
-                        f"Cannot remove {reminder} — delete it manually with: sudo rm {reminder}"
+                        f"Cannot remove {reminder}; delete it manually with: sudo rm {reminder}"
                     )
 
         _show_stage_summary(state)

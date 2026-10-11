@@ -111,7 +111,7 @@ def plan_revert(bs: BuildState, targets: list, installed: set | None = None) -> 
         entry = entries.get(target_name)
         if entry is None:
             plans.append(RevertPlan(target, "skip", None, None,
-                                    "not tracked by sysforge — already stock"))
+                                    "not tracked by sysforge: already stock"))
             continue
 
         mode = entry.get("build_mode")
@@ -186,14 +186,14 @@ class RevertToStockVerb(Verb):
         actionable = [p for p in plans if p.action != "skip"]
         for p in plans:
             if p.action == "skip":
-                _log.ui(f"[revert] {p.target}: {p.reason} — nothing to do")
+                _log.ui(f"[revert] {p.target}: {p.reason}; nothing to do")
             else:
                 _log.ui(f"[revert] {p.target}: {p.reason}")
         if not actionable:
             return ExecResult(exit_code=0)
 
         if getattr(args, "dry_run", False):
-            _log.ui("[revert] dry-run — no changes made")
+            _log.ui("[revert] dry-run: no changes made")
             return ExecResult(exit_code=0)
 
         if not getattr(args, "force", False):
@@ -220,17 +220,17 @@ class RevertToStockVerb(Verb):
                     _log.error(
                         f"[revert] {p.target}: removal of {p.pkgname} failed "
                         f"({exc}); nothing changed")
-                    _log.error("[revert] stopping — remaining targets not processed")
+                    _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
                 try:
                     pacman.reinstall_repo_pkgs([p.stock_pkg])
                 except subprocess.CalledProcessError as exc:
                     _log.error(
                         f"[revert] {p.target}: removed {p.pkgname} but stock "
-                        f"reinstall of {p.stock_pkg} FAILED ({exc}) — system "
+                        f"reinstall of {p.stock_pkg} FAILED ({exc}); system "
                         f"left without this package; run "
                         f"`sudo pacman -S {p.stock_pkg}` to recover")
-                    _log.error("[revert] stopping — remaining targets not processed")
+                    _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
             elif p.action == "replace":
                 # Conflict-mode: one atomic `pacman -S` over every installed
@@ -242,7 +242,7 @@ class RevertToStockVerb(Verb):
                     _log.error(
                         f"[revert] {p.target}: reinstall of {', '.join(stocks)} "
                         f"failed ({exc}); nothing changed")
-                    _log.error("[revert] stopping — remaining targets not processed")
+                    _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
                 forget_packages(pre.ctx["state_dir"], [n for n, _ in p.members])
                 continue
@@ -254,7 +254,7 @@ class RevertToStockVerb(Verb):
                     _log.error(
                         f"[revert] {p.target}: reinstall of {p.stock_pkg} "
                         f"failed ({exc})")
-                    _log.error("[revert] stopping — remaining targets not processed")
+                    _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
             # forget this entry so `update` stops rebuilding it
             forget_packages(pre.ctx["state_dir"], [p.pkgname])

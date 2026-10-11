@@ -98,7 +98,7 @@ def get(surface: str) -> Deprecation | None:
 
 def _message(d: Deprecation) -> str:
     return (f"{d.kind.replace('_', ' ')} `{d.surface}` is deprecated since "
-            f"{d.deprecated_in} and is removed in {d.removed_in} — "
+            f"{d.deprecated_in} and is removed in {d.removed_in}: "
             f"use {d.replacement}")
 
 

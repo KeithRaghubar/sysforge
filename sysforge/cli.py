@@ -403,7 +403,7 @@ def _main():
         maybe_emit_init_notice(getattr(args, "state_dir", None))
     verb_cls = getattr(args, "verb_cls", None)
     if verb_cls is None:
-        _log.error("No verb dispatcher set for this command — argparse misconfiguration")
+        _log.error("No verb dispatcher set for this command: argparse misconfiguration")
         sys.exit(2)
     sys.exit(_dispatch(verb_cls, args))
 

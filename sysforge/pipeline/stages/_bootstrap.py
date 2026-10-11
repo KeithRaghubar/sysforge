@@ -81,7 +81,7 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     root_password = system.get("root_password") or None
     raw_username = system.get("username")
     if not raw_username:
-        _log.info("[system].username not set in bootstrap.toml — defaulting to 'builder'")
+        _log.info("[system].username not set in bootstrap.toml: defaulting to 'builder'")
     username = raw_username or "builder"
     user_password = system.get("user_password") or None
     shell = system.get("shell", "bash")

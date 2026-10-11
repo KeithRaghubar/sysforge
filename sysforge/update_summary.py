@@ -317,7 +317,7 @@ def _print_result_summary(
     if summary.not_installed:
         label = "NOT installed:" if summary.install_only else "Built, NOT installed:"
         _section(label, [
-            f"{_fmt_pkg(summary, pb)} — {reason}"
+            f"{_fmt_pkg(summary, pb)} ({reason})"
             for pb, reason in summary.not_installed.items()
         ])
         emit("    resolve the above, then `sysforge update --install-only` "
@@ -451,7 +451,7 @@ def render_versions_report(
 
     def _devel_hint() -> None:
         if unresolved_devel and not devel_resolved:
-            emit(f"  ({len(unresolved_devel)} devel package(s) unresolved — "
+            emit(f"  ({len(unresolved_devel)} devel package(s) unresolved: "
                  "pass --devel to resolve upstream versions)")
 
     sep = f" {render.middot()} "

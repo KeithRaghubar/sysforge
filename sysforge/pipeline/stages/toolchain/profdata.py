@@ -81,7 +81,7 @@ def extract_built_to_staging(
     pkgdest = Path(pkgdest_raw).expanduser() if pkgdest_raw else None
     if pkgdest:
         _log.info(
-            f"[PGO] PKGDEST={pkgdest} — searching there for Pass 3 packages",
+            f"[PGO] PKGDEST={pkgdest}: searching there for Pass 3 packages",
         )
 
     _log.ui(f"─── Pass 3: staging extraction → {staging} ────────")
@@ -280,7 +280,7 @@ def assert_pass_links_shipped_libllvm(
         raise RuntimeError(
             f"[TOOLCHAIN] {label}: the built suite linked C++ stdlib symbols "
             "against the live /usr libLLVM instead of the staged libLLVM that "
-            "ships — the Pass-4 split was defeated (find_package(LLVM) ignored "
+            "ships; the Pass-4 split was defeated (find_package(LLVM) ignored "
             "the staged prefix despite -DLLVM_DIR). Nothing was installed; the "
             "live toolchain is untouched.\n"
             f"{joined}\n"
@@ -314,7 +314,7 @@ def pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> Non
     pkgs = collect_pgo_packages(pkgbuild_map)
     if not pkgs:
         raise RuntimeError(
-            f"[TOOLCHAIN] No built packages found for {label} — "
+            f"[TOOLCHAIN] No built packages found for {label}: "
             "check that the build completed successfully"
         )
     _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
@@ -357,7 +357,7 @@ def pgo_stage_instrumented(
     all_pkgs = collect_pgo_packages(pkgbuild_map)
     if not all_pkgs:
         raise RuntimeError(
-            "[TOOLCHAIN] No built packages found for Pass 1 — "
+            "[TOOLCHAIN] No built packages found for Pass 1: "
             "check that the build completed successfully"
         )
 
@@ -475,7 +475,7 @@ def validate_pgo_environment(dry_run: bool) -> None:
     clang_path = Path("/usr/bin/clang")
     if not clang_path.exists():
         raise RuntimeError(
-            "[TOOLCHAIN] /usr/bin/clang not found — "
+            "[TOOLCHAIN] /usr/bin/clang not found; "
             "install clang before running the PGO build: sudo pacman -S clang"
         )
 
@@ -490,12 +490,12 @@ def validate_pgo_environment(dry_run: bool) -> None:
     )
     if clang_probe is None:
         raise RuntimeError(
-            f"[PGO] {clang_path} is missing — cannot validate the PGO environment"
+            f"[PGO] {clang_path} is missing: cannot validate the PGO environment"
         )
     if clang_probe.returncode != 0 or "symbol lookup error" in clang_probe.stderr:
         detail = (clang_probe.stderr.strip() or clang_probe.stdout.strip())[:300]
         raise RuntimeError(
-            f"[TOOLCHAIN] /usr/bin/clang is not functional — likely mismatched "
+            f"[TOOLCHAIN] /usr/bin/clang is not functional; likely mismatched "
             f"packages from a prior aborted PGO run:\n  {detail}\n"
             "Restore a consistent set: sudo pacman -S llvm llvm-libs clang lld compiler-rt\n"
             "(Note: sysforge no longer installs clang/lld in Pass 1, so a mismatch\n"
@@ -504,7 +504,7 @@ def validate_pgo_environment(dry_run: bool) -> None:
 
     if not _shutil.which("lld"):
         raise RuntimeError(
-            "[TOOLCHAIN] lld not found — "
+            "[TOOLCHAIN] lld not found; "
             "install lld before running the PGO build: sudo pacman -S lld"
         )
 
@@ -518,7 +518,7 @@ def validate_pgo_environment(dry_run: bool) -> None:
         readelf_so = run.capture(["readelf", "-S", str(llvm_sos[0])])
         if readelf_so is not None and "__llvm_prf_" in readelf_so.stdout:
             stale.append(
-                f"{llvm_sos[0].name} is instrumented (has __llvm_prf_* sections) — "
+                f"{llvm_sos[0].name} is instrumented (has __llvm_prf_* sections): "
                 "from a prior Pass 1 install; restore with: sudo pacman -S llvm llvm-libs"
             )
 
@@ -528,7 +528,7 @@ def validate_pgo_environment(dry_run: bool) -> None:
     # the complexity entirely.
     if system_llvm_is_instrumented():
         stale.append(
-            "libLLVMSupport.a is instrumented — profile runtime will be injected "
+            "libLLVMSupport.a is instrumented: profile runtime will be injected "
             "into LDFLAGS for Pass 2 and Pass 3 automatically"
         )
 
@@ -556,7 +556,7 @@ def validate_pgo_environment(dry_run: bool) -> None:
         )
         if answer not in ("y", "yes"):
             raise RuntimeError(
-                "[TOOLCHAIN] Aborted — restore clean packages before retrying: "
+                "[TOOLCHAIN] Aborted; restore clean packages before retrying: "
                 "sudo pacman -S llvm llvm-libs"
             )
     else:
@@ -640,7 +640,7 @@ def merge_profraw(pgo_store: Path, dry_run: bool) -> Path:
             )
             return profdata_path
         raise RuntimeError(
-            "[TOOLCHAIN] Final profraw merge produced no output — "
+            "[TOOLCHAIN] Final profraw merge produced no output: "
             + (
                 f"{len(fresh)} profraw file(s) too fresh to merge safely and no "
                 "profdata from background merges; Pass 3 may have produced no profile data"
@@ -694,7 +694,7 @@ def write_profdata_version(pgo_store: Path, pgo_map: dict[str, Path]) -> None:
         major = pgo_target_major(pgo_map)
         if major is None:
             _log.warn(
-                "[PGO] Could not determine LLVM major from PGO PKGBUILDs — "
+                "[PGO] Could not determine LLVM major from PGO PKGBUILDs: "
                 "profdata version sidecar not written",
             )
             return

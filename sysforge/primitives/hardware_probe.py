@@ -132,7 +132,7 @@ def derive_llvm_targets(host_arch: str, gpu_vendors: list[str]) -> list[str]:
         targets.append(cpu)
     else:
         _log.warn(
-            f"host arch {host_arch!r} has no LLVM target mapping — "
+            f"host arch {host_arch!r} has no LLVM target mapping: "
             "llvm_targets left empty (no filtering will be applied)",
         )
         return []

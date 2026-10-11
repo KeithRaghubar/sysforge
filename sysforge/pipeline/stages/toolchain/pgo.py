@@ -259,7 +259,7 @@ def build_llvm_pgo_inner(
                 )
             except PGOAborted:
                 _log.ui(
-                    "[PGO] Profdata reuse declined — falling through to "
+                    "[PGO] Profdata reuse declined: falling through to "
                     "full 4-pass rebuild",
                 )
         elif pgo_state == "mismatch":
@@ -299,7 +299,7 @@ def build_llvm_pgo_inner(
         # the old "Starting LLVM PGO build" log with an explicit gate.
         pgo_confirm(
             "About to start 4-pass LLVM PGO build "
-            f"({n_pgo} pgo PKGBUILD(s), {n_total} total) — "
+            f"({n_pgo} pgo PKGBUILD(s), {n_total} total): "
             "~2-3 hours; pass 3 is a long instrumented training run. "
             f"pgo_store={pgo_store}. Proceed? [y/N]:",
             default="n",
@@ -375,7 +375,7 @@ def build_llvm_pgo_inner(
             )
             profdata.pgo_stage_instrumented(pgo_map, staging1, options.dry_run)
             _log.info("[PGO] 1/4 complete (staged to "
-                    f"{staging1} — system /usr untouched)")
+                    f"{staging1}: system /usr untouched)")
 
             # Purge any profraw accumulated during Pass 1 + 2. CMake feature-
             # test programs compiled with -fprofile-generate run during
@@ -506,7 +506,7 @@ def build_llvm_pgo_inner(
             else:
                 _log.info(
                     f"[PGO] Pass 3: stage1 clang absent at {stage1_clang} "
-                    "(non_pgo_map empty — Pass 2 skipped); falling back to "
+                    "(non_pgo_map empty; Pass 2 skipped); falling back to "
                     "/usr/bin/clang. Version skew between system clang and "
                     "in-tree LLVM source may surface here.",
                 )
@@ -580,7 +580,7 @@ def build_llvm_pgo_inner(
                         except Exception as e:
                             _log.warn(
                                 f"[PGO] Training-corpus enrichment build failed "
-                                f"({', '.join(corpus_map)}): {e} — continuing with "
+                                f"({', '.join(corpus_map)}): {e}; continuing with "
                                 "LLVM-only profile data",
                             )
             finally:
@@ -601,7 +601,7 @@ def build_llvm_pgo_inner(
                         f"[PGO] Profdata is unexpectedly small "
                         f"({profdata_size // (1024 * 1024)} MiB < "
                         f"{constants.PGO_PROFDATA_MIN_BYTES // (1024 * 1024)} MiB). "
-                        "Pass 3 may not have exercised enough code paths — "
+                        "Pass 3 may not have exercised enough code paths: "
                         "check that CCACHE_DISABLE/SCCACHE_DISABLE took effect "
                         "and compilation actually ran.",
                     )
@@ -610,7 +610,7 @@ def build_llvm_pgo_inner(
                     # mis-optimises the resulting compiler, so default to no.
                     pgo_confirm(
                         f"Pass 3 profdata is suspiciously small "
-                        f"({profdata_size // (1024 * 1024)} MiB) — "
+                        f"({profdata_size // (1024 * 1024)} MiB): "
                         "instrumentation may have been bypassed. "
                         "Continue to Pass 4 with this profdata? [y/N]:",
                         default="n",
@@ -640,7 +640,7 @@ def build_llvm_pgo_inner(
         if not skip_profgen and not options.dry_run and not using_staged_cc:
             _log.info(
                 f"[PGO] staged clang not found at {staged_cc} "
-                "(clang is non-pgo) — using system clang for Pass 4",
+                "(clang is non-pgo): using system clang for Pass 4",
             )
             pass3_cc, pass3_cxx = "/usr/bin/clang", "/usr/bin/clang++"
         elif skip_profgen:
@@ -841,9 +841,9 @@ def build_llvm_pgo_inner(
         # out of the build function means a Gate-2 abort leaves nothing
         # installed and no sentinel.
         if skip_profgen:
-            _log.info("[PGO] Optimized build complete (profdata reused) — pending audit + install")
+            _log.info("[PGO] Optimized build complete (profdata reused): pending audit + install")
         else:
-            _log.info("[PGO] 4/4 build complete — pending audit + install")
+            _log.info("[PGO] 4/4 build complete: pending audit + install")
 
     finally:
         sudo_stack.close()

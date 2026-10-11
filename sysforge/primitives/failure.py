@@ -51,7 +51,7 @@ def handle_failure(scenario, message, config, fallback=None):
 
     if behaviour not in _VALID_BEHAVIOURS:
         _log.error(
-            f"Unknown behaviour {behaviour!r} for scenario {scenario!r} — defaulting to abort"
+            f"Unknown behaviour {behaviour!r} for scenario {scenario!r}: defaulting to abort"
         )
         behaviour = "abort"
 
@@ -62,7 +62,7 @@ def handle_failure(scenario, message, config, fallback=None):
         _log.error(f"[{scenario}] ERROR: {message}")
         raise RuntimeError(f"[{scenario}] {message}")
     elif behaviour == "warn_and_fallback":
-        _log.warn(f"[{scenario}] WARNING: {message} — falling back")
+        _log.warn(f"[{scenario}] WARNING: {message}; falling back")
         return fallback
     elif behaviour == "fallback":
         return fallback

@@ -197,7 +197,7 @@ class RunToolchainVerb(_RunVerbBase):
         p.add_argument("--makepkg", "-m", metavar="FLAGS",
             help="Additional makepkg flags appended to each build. "
                  "Example: -m '-f' to force rebuild of already-built packages. "
-                 "Unlike build/update, -m is required here — bare makepkg flags "
+                 "Unlike build/update, -m is required here: bare makepkg flags "
                  "are not forwarded implicitly on run subcommands. "
                  "Install flags (-i/--install) are ignored; the toolchain controls "
                  "which passes install to the system.")
@@ -226,7 +226,7 @@ class RunToolchainVerb(_RunVerbBase):
         p.add_argument("--allow-dirty-llvm", action="store_true", dest="allow_dirty_llvm",
             help="Bypass the LLVM safety pre-flight refusal on dirty or diverged "
                  "trees. PGO profdata version mismatches cannot be bypassed. "
-                 "Note: this only suppresses the refusal — it does not modify the "
+                 "Note: this only suppresses the refusal and does not modify the "
                  "tree. Use --cleansrc-force to actually overwrite the local "
                  "trees with upstream.")
         p.add_argument("--allow-version-skew", action="store_true",
@@ -241,7 +241,7 @@ class RunToolchainVerb(_RunVerbBase):
             dest="skip_build_space_check",
             help="Override the pre-build Gate-1 abort when a filesystem hosting the "
                  "staging dirs / pgo_store / build output lacks min_build_free_gb "
-                 "free (default 40 GiB). Dangerous — the multi-hour LLVM build may "
+                 "free (default 40 GiB). Dangerous: the multi-hour LLVM build may "
                  "fail partway with no space left.")
         p.add_argument("--rebuild-soname-consumers",
             dest="rebuild_soname_consumers", choices=("prompt", "auto", "off"),
@@ -363,12 +363,12 @@ class RunKernelVerb(_RunVerbBase):
             help="Like --cleansrc but bypasses the dirty/diverged guard and "
                  "overwrites the local tree unconditionally.")
         p.add_argument("--non-interactive", action="store_true", dest="non_interactive",
-            help="Disable interactive kconfig (default is interactive — the PKGBUILD's "
+            help="Disable interactive kconfig (default is interactive: the PKGBUILD's "
                  "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
                  "interactive targets are patched to `make olddefconfig` for unattended runs.")
         p.add_argument("--compiler", choices=["gcc", "llvm"], dest="compiler",
             help="Kernel-stage compiler override (gcc or llvm). Independent of the "
-                 "global toolchain stage — lets you keep gcc system-wide but build "
+                 "global toolchain stage, so you can keep gcc system-wide but build "
                  "the kernel with LLVM (or vice versa). Resolution order: this flag > "
                  "kernel.toml compiler > toolchain-stage pipeline state.")
         p.add_argument(
@@ -444,7 +444,7 @@ class RunKernelVerb(_RunVerbBase):
             help="Override the pre-install boot-critical kconfig audit (Gate 2). "
                  "By default a built kernel that drops the root filesystem / "
                  "storage controller / core boot infra aborts before install; this "
-                 "flag installs it anyway. Dangerous — can leave the system unbootable.")
+                 "flag installs it anyway. Dangerous: it can leave the system unbootable.")
         p.set_defaults(verb_cls=cls)
         return p
 

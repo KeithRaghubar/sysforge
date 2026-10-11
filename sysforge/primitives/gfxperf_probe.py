@@ -63,7 +63,7 @@ def _check_cpu_governor() -> GraphicsFinding | diag.Skip | None:
     if gov == "powersave":
         return GraphicsFinding(
             SEV_WARN, "cpu_governor",
-            "CPU scaling governor is 'powersave' — clocks stay low and can "
+            "CPU scaling governor is 'powersave': clocks stay low and can "
             "cause frame-time spikes / hitching in interactive workloads.",
             "Set a responsive governor (e.g. 'schedutil' or 'performance'). "
             "This is separate from sysforge's build throttle, which lowers "
@@ -88,7 +88,7 @@ def _check_vaapi_driver(installed: dict[str, str]) -> GraphicsFinding | None:
             "hardware video-decode bridge present (libva-nvidia-driver).")
     return GraphicsFinding(
         SEV_WARN, "vaapi_driver",
-        "libva-nvidia-driver is not installed — browsers and players fall back "
+        "libva-nvidia-driver is not installed: browsers and players fall back "
         "to CPU video decode, which drops frames on high-resolution / "
         "high-framerate video (a common cause of in-browser video stutter).",
         "Install 'libva-nvidia-driver' (the upstream nvidia-vaapi-driver bridge), "
@@ -104,7 +104,7 @@ def _check_libva_env() -> GraphicsFinding | None:
     return GraphicsFinding(
         SEV_INFO, "libva_env",
         f"video-decode env in this shell: LIBVA_DRIVER_NAME={drv or 'unset'} "
-        f"NVD_BACKEND={backend or 'unset'} — these must be set in your "
+        f"NVD_BACKEND={backend or 'unset'}; these must be set in your "
         "compositor/session to take effect; an unset value here is not proof "
         "your apps lack them.",
     )
@@ -126,7 +126,7 @@ def _check_nvidia_persistence() -> GraphicsFinding | diag.Skip | None:
                                "NVIDIA persistence mode enabled.")
     return GraphicsFinding(
         SEV_INFO, "nvidia_persistence",
-        "NVIDIA persistence mode is disabled — the driver may unload and the "
+        "NVIDIA persistence mode is disabled: the driver may unload and the "
         "GPU drop to low clocks between apps, adding latency on first use.",
         "Enable the persistence daemon: `sudo systemctl enable --now "
         "nvidia-persistenced.service`.",
@@ -144,7 +144,7 @@ def _check_nvidia_powerd() -> GraphicsFinding | diag.Skip | None:
     if state == "inactive":
         return GraphicsFinding(
             SEV_INFO, "nvidia_powerd",
-            "nvidia-powerd.service is present but inactive — Dynamic Boost "
+            "nvidia-powerd.service is present but inactive: Dynamic Boost "
             "power balancing is off.",
             "If your GPU supports Dynamic Boost, enable it: `sudo systemctl "
             "enable --now nvidia-powerd.service`.",
@@ -162,7 +162,7 @@ def _check_gl_frame_pacing() -> GraphicsFinding | None:
     return GraphicsFinding(
         SEV_INFO, "gl_frame_pacing",
         f"frame-pacing env in this shell: __GL_MaxFramesAllowed={mfa or 'unset'} "
-        f"__GL_SYNC_TO_VBLANK={vsync or 'unset'} — set in your session to tune "
+        f"__GL_SYNC_TO_VBLANK={vsync or 'unset'}; set in your session to tune "
         "buffering/vsync; unset here is not proof your apps lack them.",
     )
 
@@ -185,7 +185,7 @@ def _check_gpu_thermal() -> GraphicsFinding | diag.Skip | None:
         return GraphicsFinding(
             SEV_WARN, "gpu_thermal",
             f"GPU is {cur_t}C at this instant, within 5C of the {slow_t}C "
-            "slowdown threshold — thermal throttling can cause frame drops "
+            "slowdown threshold: thermal throttling can cause frame drops "
             "(point-in-time snapshot).",
             "Improve case airflow, clean dust, or check the fan curve.",
         )
@@ -218,7 +218,7 @@ def _check_memory_pressure() -> GraphicsFinding | diag.Skip | None:
         return GraphicsFinding(
             SEV_INFO, "memory_pressure",
             f"low free memory at this instant ({avail_pct}% available) with "
-            f"{swap_used // 1024} MiB swap in use — paging can cause hitches.",
+            f"{swap_used // 1024} MiB swap in use: paging can cause hitches.",
             "Close memory-heavy apps or add RAM/zram; re-check when the symptom "
             "recurs (this is a point-in-time snapshot).",
         )

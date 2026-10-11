@@ -657,7 +657,7 @@ def batch_install_pkgs(
                     for holder, deps in sorted(broken.items())
                     for dep in sorted(deps)
                 )
-                + " — every holder is a later member of this batch, about to "
+                + ": every holder is a later member of this batch, about to "
                 "be rebuilt and reinstalled in this run"
             )
             argv.append("--nodeps")
@@ -665,7 +665,7 @@ def batch_install_pkgs(
             _log.warn(
                 "Install would break dependencies held outside this batch: "
                 + ", ".join(sorted(set(broken) - set(allow_break_deps)))
-                + " — leaving dependency checks enforced"
+                + ": leaving dependency checks enforced"
             )
     argv += [str(p) for p in pkg_paths]
     # Interactive: inherit pacman's streams so the conflict prompt is visible
@@ -1320,12 +1320,12 @@ def get_repo_candidate_version(pkgname: str) -> str | None:
     try:
         newer = vercmp(candidate, sync_version) > 0
     except (OSError, ValueError) as e:
-        _log.warn(f"{pkgname}: vercmp failed ({e}) — using sync-DB version")
+        _log.warn(f"{pkgname}: vercmp failed ({e}); using sync-DB version")
         return sync_version
     if newer:
         _log.debug(
             f"{pkgname}: sync DB has {sync_version}, checkupdates has "
-            f"{candidate} — sync DB is stale, using {candidate}"
+            f"{candidate}; sync DB is stale, using {candidate}"
         )
         return candidate
     return sync_version

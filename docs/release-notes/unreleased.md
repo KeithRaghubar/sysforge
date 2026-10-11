@@ -100,6 +100,18 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.4.0-DEV5` — `tools/check_standards.py` passes the type checker again.** Pyright reported that `--require-bump`'s value could be `None` where it is compared against the derived bump. It cannot be at that point, since only `--derive-bump` returns before it, but the checker could not follow that. The value is now bound to a `str` first, with no change in behaviour.
+
+---
+
+- **`3.4.0-DOC1` — new guides for drift and rebuilds, the source freeze, and the kernel stage.** `update`'s drift flags, the source freeze and `run kernel` each have enough options that `--help` and the man page did not explain how they fit together. Three task-led guides now do, all linked from the README. `docs/guides/drift.md` covers what `update` rebuilds on its own (a new version) and what it only reports (toolchain and flag drift), what counts as flag drift, how to see it without touching anything (`update --offline --explain-drift`), the rebuild flags and their `[update]` defaults, and why kernel and toolchain packages are reported but never rebuilt by `update`. `docs/guides/freeze.md` covers `--frozen`, `--no-frozen` and `--thaw`, what the freeze refuses, the `source=()` downloads it cannot cover, how it differs from `--offline`, and the PGP key prompt with `auto_fetch_pgp_keys`. `docs/guides/kernel.md` covers the config review pause, unattended runs, the local-changes check, where the kernel config comes from, `kconfig_targets`, and each boot-safety check with its override.
+
+---
+
+- **`3.4.0-DOC2` — sysforge's text no longer uses em-dashes: the README, guides, man page, `--help`, completions, and the messages it prints.** Each one was rewritten with a comma, colon, semicolon, period or parentheses as its sentence needed: 33 lines of the README, 15 in `docs/guides/pgo.md`, 6 in the man page's hand-written prose, 19 `--help` strings (which also produce most of those in the generated man page), 4 in the shell completions, and more than 500 messages printed at run time, including warnings, prompts, errors, `doctor` findings and the header comments of files sysforge generates. A few now use parentheses where a colon would have run into another: a package that built but was not installed reads `bar (/etc/bar exists in filesystem)`, and a `doctor` remediation followed by its reboot caveat reads `dkms install (reflects the *running* kernel ...)`. A new `make check-standards` group, `em_dash` (standards row 30), now rejects the character in all of those places so the sweep holds. A bare `—` still marks an empty table cell. Roadmap and release-note entries keep their `` `<ID>` — <title> `` lead, which is a checked format rather than prose.
+
+---
+
 - **`3.4.0-STD1` — contributor-only (`DEV`) work now gets a release-note entry, under `## Changed`.** Since `3.3.0-STD2`, `DEV` items were kept out of the release notes entirely, and their commit subject was their only record. The notes now record every shipped item. A `DEV` entry is held to the same rule as a `DOC` entry: it may only sit under `## Changed`, so contributor-only work can never imply more than a patch release. `make check-standards` enforces the section.
 
 ## Fixed

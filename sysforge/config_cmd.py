@@ -108,7 +108,7 @@ def _diff_text(target: Path, new_path: Path) -> str:
     if moved := _moved_sections(diff):
         banner = (
             "# NOTE: these sections are present in BOTH files, only at different\n"
-            "# offsets — the -/+ pairs below are moves, not deletions:\n"
+            "# offsets; the -/+ pairs below are moves, not deletions:\n"
             + "".join(f"#   {h}\n" for h in moved)
             + "#\n"
         )
@@ -149,7 +149,7 @@ def _merge_one(target: Path, new_path: Path, use_pager: bool) -> str:
         elif ans == "m":
             argv, source = resolve_merge_tool()
             if not argv:
-                _log.warn("No merge tool found — set SYSFORGE_MERGE, "
+                _log.warn("No merge tool found: set SYSFORGE_MERGE, "
                           "sysforge.toml [ui].merge, or $DIFFPROG, or install vimdiff.")
                 continue
             _log.ui(f"  Launching {' '.join(argv)} ({source}): {target.name} {new_path.name}")
@@ -187,7 +187,7 @@ def cmd_config_merge(args) -> int:
 
     pairs = _candidates(config_dir)
     if not pairs:
-        _log.ui(f"No .sfnew/.pacnew companions in {config_dir} — nothing to merge.")
+        _log.ui(f"No .sfnew/.pacnew companions in {config_dir}: nothing to merge.")
         return 0
 
     use_pager = not getattr(args, "no_pager", False)

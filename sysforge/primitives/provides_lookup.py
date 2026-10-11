@@ -122,7 +122,7 @@ def suggest_for_soname(entry: str, *, lib32: bool = False,
             capture_output=True, text=True,
         )
     except FileNotFoundError:
-        _log.warn("pacman not found — cannot suggest candidates")
+        _log.warn("pacman not found: cannot suggest candidates")
         return []
 
     # 0 = hits; 1 = no match (normal); other = error, skip.

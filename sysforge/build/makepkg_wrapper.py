@@ -198,7 +198,7 @@ def _persist_recovery_overrides(pkgbase) -> None:
     cc, cxx, ld = ov.get("cc"), ov.get("cxx"), ov.get("ld")
     if cc is None or cxx is None or ld is None:
         _build_log.warn(
-            "Recovery override incomplete (missing cc/cxx/ld) — "
+            "Recovery override incomplete (missing cc/cxx/ld): "
             "skipping profiles.toml persist"
         )
         return
@@ -428,7 +428,7 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
     pkgs = _artifacts_for_pkgbuild(pkgbuild_dir)
     if not pkgs:
         raise RuntimeError(
-            f"no built package found in {pkgbuild_dir} — nothing to install")
+            f"no built package found in {pkgbuild_dir}: nothing to install")
     cmd = privileged_argv(["pacman", "-U"])
     if noconfirm:
         cmd.append("--noconfirm")
@@ -535,7 +535,7 @@ def _maybe_patch_llvm_targets(
     used_live = not hw_profile.is_file()
     if used_live:
         _build_log.info(
-            f"LLVM target filter: no hardware_profile.toml at {hw_profile} — "
+            f"LLVM target filter: no hardware_profile.toml at {hw_profile}; "
             f"using live detection result {targets}",
         )
     return patch_llvm_targets(pkgbuild_path, targets)
@@ -610,7 +610,7 @@ def _maybe_patch_build_linker(pkgbuild_path, pkgmeta, resolved_profile, ld_overr
 
     _build_log.info(
         f"PKGBUILD build() hardcodes -fuse-ld={hardcoded}, but effective linker "
-        f"is {effective} — rewriting to honor the effective linker"
+        f"is {effective}: rewriting to honor the effective linker"
     )
     return patch_build_linker(pkgbuild_path, effective)
 
@@ -955,7 +955,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             except ToolchainMismatchError as e:
                 if _reactive_retry_used:
                     _build_log.error(
-                        "Toolchain mismatch persists after auto-retry — "
+                        "Toolchain mismatch persists after auto-retry: "
                         "aborting (check the PKGBUILD and profile flags)"
                     )
                     raise _build_failed_error(e) from e
@@ -1058,12 +1058,12 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     _build_log.info(f"Removed patched PKGBUILD: {pkgbuild_path}")
             elif already_built:
                 _build_log.info(
-                    "Package already built — leaving patched PKGBUILD in place: "
+                    "Package already built; leaving patched PKGBUILD in place: "
                     f"{pkgbuild_path}"
                 )
             else:
                 _build_log.warn(
-                    f"Build failed — leaving patched PKGBUILD in place: {pkgbuild_path}"
+                    f"Build failed; leaving patched PKGBUILD in place: {pkgbuild_path}"
                 )
 
     # The rename dict (or None) rides back to run() so build_state records the
@@ -1359,7 +1359,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                            f"{result.error or result.status}")
         if result.status == STATUS_DIVERGED:
             _build_log.warn(
-                f"{pkgbuild_dir.name}: upstream diverged — building with local PKGBUILD"
+                f"{pkgbuild_dir.name}: upstream diverged; building with local PKGBUILD"
             )
     else:
         _build_log.info("--no-update: skipping source sync")
@@ -1394,7 +1394,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
     if pkgbuild_has_hardcoded_gcc:
         _build_log.info(
             "PKGBUILD treated as hardcoded-gcc (build-time function invokes "
-            "gcc/g++ or pkgname is lib32-*) — GCC flag guard will be applied "
+            "gcc/g++ or pkgname is lib32-*): GCC flag guard will be applied "
             "even if the active profile sets CC=clang"
         )
 
@@ -1506,7 +1506,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 except fs_provision.FsProvisionError as e:
                     _build_log.warn(
                         f"PGO store {_store} could not be group-provisioned "
-                        f"({e}) — instrumented {_pgo_pkgbase} may be unable to "
+                        f"({e}): instrumented {_pgo_pkgbase} may be unable to "
                         "write .profraw there"
                     )
                 _pgo_flag = mesa_pgo.generate_flag(_store)
@@ -1714,7 +1714,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                     _total_bytes = sum(p.stat().st_size for p in _fresh_profraw)
                     _build_log.fatal(
                         f"{len(_fresh_profraw)} stale .profraw files "
-                        f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store} — "
+                        f"({_total_bytes / 1024 / 1024:.1f} MiB) in {_pgo_store}: "
                         "instrumented LLVM binaries may be installed on this system. "
                         "Reinstall clean llvm/llvm-libs or run 'sysforge run toolchain' "
                         "to complete the PGO build."

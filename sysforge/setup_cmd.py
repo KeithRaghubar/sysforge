@@ -151,7 +151,7 @@ def cmd_setup(args) -> None:
 
     if not conf_path.exists():
         print(
-            f"[SYSFORGE] {conf_path} not found — nothing to configure.",
+            f"[SYSFORGE] {conf_path} not found: nothing to configure.",
             file=sys.stderr,
         )
         return

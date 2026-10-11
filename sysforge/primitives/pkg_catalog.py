@@ -260,7 +260,7 @@ def select_desktop(*, interactive: bool, preselected: str | None) -> str | None:
 # [group.*] serialization + write
 # ---------------------------------------------------------------------------
 
-_GROUP_HEADER = "# packages.toml — managed by sysforge packages\n"
+_GROUP_HEADER = "# packages.toml: managed by sysforge packages\n"
 _GROUP_BUILD = '\n[build]\npkgbuild_src_dir = "~/src"\n'
 
 

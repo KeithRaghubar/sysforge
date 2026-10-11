@@ -343,8 +343,8 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
 
     if shutil.which("makechrootpkg") is None:
         raise SandboxUnavailable(
-            "[security] sandbox_builds is on but makechrootpkg is not installed "
-            "— install it with: pacman -S devtools"
+            "[security] sandbox_builds is on but makechrootpkg is not installed; "
+            "install it with: pacman -S devtools"
         )
 
     chroot_dir = policy.chroot_dir
@@ -352,7 +352,7 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
         shown = chroot_dir if chroot_dir is not None else "<unset>"
         raise SandboxUnavailable(
             f"[security] sandbox_builds is on but no clean chroot exists at "
-            f"{shown}/root — create it with: mkarchroot {shown}/root base-devel "
+            f"{shown}/root; create it with: mkarchroot {shown}/root base-devel "
             f"(or point [security] sandbox_chroot_dir at an existing one)"
         )
 
@@ -366,8 +366,8 @@ def preflight(policy: SandboxPolicy, pkgbuild_path: Path) -> None:
     if stash.exists():
         raise SandboxUnavailable(
             f"refusing to sandbox: {stash} is left over from an interrupted "
-            f"build, and swapping over it would lose the upstream PKGBUILD "
-            f"— restore it with: mv {stash} {stash.parent / REQUIRED_PKGBUILD_NAME}"
+            f"build, and swapping over it would lose the upstream PKGBUILD; "
+            f"restore it with: mv {stash} {stash.parent / REQUIRED_PKGBUILD_NAME}"
         )
 
 
@@ -587,7 +587,7 @@ def provision_profile_data(policy: SandboxPolicy, exports: dict | None,
         except Exception as exc:
             raise SandboxUnavailable(
                 f"could not copy the profile data {src} into the sandbox "
-                f"chroot at {dest}: {exc} — the build would fail with "
+                f"chroot at {dest}: {exc}; the build would fail with "
                 f"clang unable to read {src.name}"
             ) from exc
 
@@ -626,7 +626,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
         root = policy.chroot_dir / "root"
         raise SandboxUnavailable(
             f"the sandbox chroot has no {', '.join(unmappable)} and sysforge "
-            f"does not know which package provides it — install it yourself "
+            f"does not know which package provides it; install it yourself "
             f"with: arch-nspawn {root} pacman -Syu <package>"
         )
 
@@ -634,7 +634,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
     root = policy.chroot_dir / "root"
     _log.info(
         "Chroot is missing " + ", ".join(sorted(missing))
-        + " — installing " + ", ".join(packages) + " into " + str(root)
+        + ": installing " + ", ".join(packages) + " into " + str(root)
     )
     try:
         run_privileged(
@@ -646,7 +646,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
         raise SandboxUnavailable(
             f"could not install the profile's toolchain "
             f"({', '.join(packages)}) into the sandbox chroot at {root}: "
-            f"{exc} — the build would fail with a missing "
+            f"{exc}; the build would fail with a missing "
             f"{', '.join(sorted(missing))}"
         ) from exc
 
@@ -687,8 +687,8 @@ def as_canonical_pkgbuild(pkgbuild_path: Path):
     if stash.exists():
         raise SandboxUnavailable(
             f"refusing to sandbox: {stash} is left over from an interrupted "
-            f"build, and swapping over it would lose the upstream PKGBUILD "
-            f"— restore it with: mv {stash} {canonical}"
+            f"build, and swapping over it would lose the upstream PKGBUILD; "
+            f"restore it with: mv {stash} {canonical}"
         )
 
     stashed = False
@@ -1255,7 +1255,7 @@ def _dep_closure(pkgbuild_path) -> list:
 
     if not Path(pkgbuild_path).is_file():
         raise SandboxUnavailable(
-            f"refusing to sandbox: cannot resolve source-built deps — "
+            f"refusing to sandbox: cannot resolve source-built deps; "
             f"{pkgbuild_path} does not exist, so the container would link "
             f"against repo versions instead of the ones this host runs"
         )
@@ -1361,8 +1361,8 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
             found.append(art)
             continue
         _log.warn(
-            f"sandbox: no built artifact for {name} {version} in {search_dir} "
-            f"— the container will use the repo version instead, which may "
+            f"sandbox: no built artifact for {name} {version} in {search_dir}; "
+            f"the container will use the repo version instead, which may "
             f"not match what this host runs"
         )
     return found
@@ -1462,7 +1462,7 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
         swap = ({_LIBLLVM_PKG} | toolchain_closure) & linked
         _log.info(
             f"sandbox: {Path(pkgbuild_path).parent.name} builds with Arch's rust, "
-            f"which is linked against the repo LLVM — using the repo "
+            f"which is linked against the repo LLVM; using the repo "
             f"{', '.join(sorted(swap))} in the container"
             + (f" instead of this host's {', '.join(dropped)}" if dropped else "")
         )
@@ -1553,7 +1553,7 @@ def check_install_set(policy: SandboxPolicy, install_pkgs, *, sync_dbs=None,
         return
     raise SandboxUnavailable(
         "refusing to sandbox: the container cannot install the packages it is "
-        "seeded with, and makechrootpkg would build on without any of them — "
+        "seeded with, and makechrootpkg would build on without any of them; "
         f"pacman says:\n{reason}\nseeded: "
         + ", ".join(Path(p).name for p in pkgs)
     )

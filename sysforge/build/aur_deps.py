@@ -89,7 +89,7 @@ def build_resolved_deps(
             try:
                 makepkg_wrapper.run(dep_pkgbuild, options=opts)
             except makepkg_wrapper.AlreadyBuilt:
-                _log.info(f"  {dep.name}: already built — installing the existing package")
+                _log.info(f"  {dep.name}: already built; installing the existing package")
             _tick.note(f"installing {dep.name}")
             makepkg_wrapper.install_built_packages(
                 dep_pkgbuild.parent, noconfirm=not interactive)

@@ -110,7 +110,7 @@ def check_pkgname_repo_collision(pkgname, options):
         return
     msg = (
         f"kernel pkgname {pkgname!r} matches an existing package in a pacman sync "
-        "repo — building it will overwrite the official package on install."
+        "repo: building it will overwrite the official package on install."
     )
     if getattr(options, "dry_run", False):
         # Dry-run verdict, not narration: the real run prompts/aborts here,
@@ -121,7 +121,7 @@ def check_pkgname_repo_collision(pkgname, options):
     unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
     if unattended:
         raise RuntimeError(
-            f"[KERNEL] {msg} Aborting unattended — rename pkgname in kernel.toml, "
+            f"[KERNEL] {msg} Aborting unattended: rename pkgname in kernel.toml, "
             "or run interactively to confirm the override."
         )
     choice = prompt_choice(
@@ -135,7 +135,7 @@ def check_pkgname_repo_collision(pkgname, options):
     )
     if choice not in ("y", "yes"):
         raise RuntimeError(
-            f"[KERNEL] kernel build aborted — pkgname {pkgname!r} collides with a "
+            f"[KERNEL] kernel build aborted: pkgname {pkgname!r} collides with a "
             "repo package and the override was not confirmed. Rename pkgname in "
             "kernel.toml."
         )
@@ -265,7 +265,7 @@ def warn_and_confirm_diverged(pkgbuild_dir, options):
     )
     if choice not in ("y", "yes"):
         raise RuntimeError(
-            f"[KERNEL] {pkgbuild_dir.name}: build aborted — diverged source not "
+            f"[KERNEL] {pkgbuild_dir.name}: build aborted; diverged source not "
             "confirmed. Rerun with --cleansrc to discard local edits."
         )
 

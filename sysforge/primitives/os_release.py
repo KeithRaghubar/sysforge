@@ -192,7 +192,7 @@ def collect_distro_findings(
     if not ident.is_primary:
         return [diag.Finding(
             "distro", diag.SEV_INFO, "distro_derivative",
-            f"{ident.label} — Arch-derived",
+            f"{ident.label}: Arch-derived",
             remediation="packaging, dependency-resolution and makepkg.conf "
                         "invariants are validated here; bootstrap, kernel "
                         "staging and graphics/DKMS checks are Arch-only")]
@@ -200,6 +200,6 @@ def collect_distro_findings(
     if explicit:
         return [diag.Finding(
             "distro", diag.SEV_INFO, "distro_primary",
-            f"{ident.label} — primary supported base")]
+            f"{ident.label}: primary supported base")]
 
     return []

@@ -96,7 +96,7 @@ def probe_toolchain_identity(state, options) -> ToolchainIdentity:
         variant = get_toolchain_variant(state)
         fingerprint = get_toolchain_fingerprint(state)
     except Exception as exc:  # noqa: BLE001 — advisory only
-        _log.debug(f"toolchain identity: stage result unreadable — {exc}")
+        _log.debug(f"toolchain identity: stage result unreadable; {exc}")
 
     # Fall back to the configured compiler's stock paths when the stage has no
     # recorded result yet, so the "before" side of a first run is not blank.

@@ -102,7 +102,7 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
                 # pipeline/runner.py). Mark the log failed and re-raise for the
                 # shared exit-code handler below.
                 log_state["success"] = False
-                _log.error(f"{verb.name}: FAILED — {e}")
+                _log.error(f"{verb.name}: FAILED; {e}")
                 logged = True
                 raise
             log_state["success"] = bool(
@@ -156,7 +156,7 @@ def _consolidated_log(verb: Verb, args, _log):
         log.open_unified_log(log_path, purge=True)
         _log.info(f"Consolidated log: {log_path}")
     except OSError as e:
-        _log.warn(f"Cannot write consolidated log to {log_path}: {e} — terminal only")
+        _log.warn(f"Cannot write consolidated log to {log_path}: {e}; terminal only")
         yield state
         return
 

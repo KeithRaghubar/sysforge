@@ -49,7 +49,7 @@ def _resolve_fetch_timeout(git_cfg: dict) -> int:
     if "fetch_timeout" in git_cfg:
         return git_cfg["fetch_timeout"]
     if "pull_timeout" in git_cfg:
-        _log.warn("`[git] pull_timeout` was removed in 3.0.0 and is ignored — "
+        _log.warn("`[git] pull_timeout` was removed in 3.0.0 and is ignored: "
                   "rename it to `fetch_timeout` to keep your value "
                   f"(using the default {_FETCH_TIMEOUT_DEFAULT}s)")
     return _FETCH_TIMEOUT_DEFAULT
@@ -164,7 +164,7 @@ def _sync_sources(
             # Divergence is not a hard failure: local PKGBUILD is kept; build
             # proceeds against it. Surface as a warning, not a blocker.
             _log.warn(
-                f"{pkgbase}: {result.error or 'divergent upstream'} — "
+                f"{pkgbase}: {result.error or 'divergent upstream'}; "
                 "build will use the local PKGBUILD; rerun with --cleansrc "
                 "to discard local edits and re-clone"
             )

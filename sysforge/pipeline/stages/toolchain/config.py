@@ -101,7 +101,7 @@ def _soname_mode(raw) -> str:
     mode = str(raw)
     if mode not in SONAME_MODES:
         _log.warn(
-            f"Unknown rebuild_soname_consumers={mode!r} in toolchain.toml — "
+            f"Unknown rebuild_soname_consumers={mode!r} in toolchain.toml; "
             f"using 'prompt' (known: {', '.join(SONAME_MODES)})",
         )
         return "prompt"
@@ -137,7 +137,7 @@ def resolve_training_corpus(tcfg: dict) -> list[str]:
             continue  # implicit base; not an "extra"
         if name not in _KNOWN_CORPUS:
             _log.warn(
-                f"[PGO] Unknown training_corpus member {name!r} — ignoring "
+                f"[PGO] Unknown training_corpus member {name!r}; ignoring "
                 f"(known: {', '.join(sorted(_KNOWN_CORPUS))})",
             )
             continue

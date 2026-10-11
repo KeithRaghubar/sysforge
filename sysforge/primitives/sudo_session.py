@@ -80,7 +80,7 @@ def _keepalive_daemon(stop_event: threading.Event, tag: str) -> None:
         if subprocess.run(["sudo", "-v"], preexec_fn=lift_for_child).returncode != 0:
             log.warn(
                 f"[{tag}]",
-                "sudo keepalive failed — install step may prompt "
+                "sudo keepalive failed: install step may prompt "
                 "for a password",
             )
 

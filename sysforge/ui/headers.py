@@ -74,14 +74,14 @@ def welcome_lines(stage_names: list[str]) -> list[str]:
     return [
         _rule(),
         f"  {_bold('SysForge bootstrap pipeline')}",
-        f"  v{_sysforge_version()} — {len(stage_names)} stages",
+        f"  v{_sysforge_version()}: {len(stage_names)} stages",
         f"  {chain}",
         _rule(),
     ]
 
 
 def closing_lines(
-    message: str = "Pipeline complete — all stages finished successfully.",
+    message: str = "Pipeline complete: all stages finished successfully.",
 ) -> list[str]:
     """Closing banner for a successful pipeline run."""
     return [

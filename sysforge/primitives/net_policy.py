@@ -119,11 +119,11 @@ def set_policy(policy: NetPolicy) -> None:
     if policy.frozen:
         if policy.thawed:
             _log.warn(
-                "source freeze ACTIVE — thawed: "
+                "source freeze ACTIVE; thawed: "
                 + ", ".join(sorted(policy.thawed))
             )
         else:
-            _log.warn("source freeze ACTIVE — no new sources will be downloaded")
+            _log.warn("source freeze ACTIVE: no new sources will be downloaded")
 
 
 def get_policy() -> NetPolicy:

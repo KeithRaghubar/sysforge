@@ -184,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="no_throttle",
         help=(
             "Ignore the configured build throttle (nice/ionice/cpu_quota/jobs) "
-            "for this run — build at normal, unthrottled priority."
+            "for this run, and build at normal, unthrottled priority."
         ),
     )
     parser.add_argument(
@@ -194,7 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Run the build at *higher* than default priority (negative niceness, "
             "best-effort IO, no CPU/job cap). Stronger than --no-throttle; "
-            "lowering niceness may need privilege (best-effort — degrades quietly)."
+            "lowering niceness may need privilege (best-effort: degrades quietly)."
         ),
     )
     parser.add_argument(
@@ -235,7 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Exempt the named pkgbases from the source freeze; everything else "
             "stays frozen. Repeatable, and accepts a comma-separated list. "
-            "Run-scoped only — there is no persistent trust list."
+            "Run-scoped only: there is no persistent trust list."
         ),
     )
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")

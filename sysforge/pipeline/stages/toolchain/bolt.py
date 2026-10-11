@@ -58,36 +58,36 @@ def build_bolt_tools(
     # -lLLVMObject. Fail fast with the reason instead of a cryptic late link error.
     if not _bolt.standalone_build_viable():
         _log.warn(
-            "[BOLT] Pass 5 skipped — BLOCKED: the BOLT tools link LLVM statically, but "
+            "[BOLT] Pass 5 skipped; BLOCKED: the BOLT tools link LLVM statically, but "
             "the PGO toolchain ships a dylib-only libLLVM without the per-component "
             "static archives a standalone llvm-bolt build needs. Building BOLT in-tree "
             "with LLVM is the only viable path (not yet implemented). PGO toolchain left "
-            "intact — see DESIGN.md §Toolchain stage (BOLT Pass 5)."
+            "intact: see DESIGN.md §Toolchain stage (BOLT Pass 5)."
         )
         return False
 
     pkgbuild_dir = (sysforge_config.get("paths", {}) or {}).get("pkgbuild_src_dir")
     if not pkgbuild_dir:
         _log.warn(
-            "[BOLT] Pass 5a skipped — no [paths] pkgbuild_src_dir to materialize "
+            "[BOLT] Pass 5a skipped: no [paths] pkgbuild_src_dir to materialize "
             "the llvm-bolt PKGBUILD into; PGO toolchain left as-is."
         )
         return False
 
     llvm_ver = verify.query_pacman_versions(("llvm",)).get("llvm")
     if not llvm_ver:
-        _log.warn("[BOLT] Pass 5a skipped — installed llvm version not found")
+        _log.warn("[BOLT] Pass 5a skipped: installed llvm version not found")
         return False
     pkgver = llvm_ver.split("-", 1)[0]  # strip pkgrel; BOLT locks to llvm pkgver
 
     try:
         pkgbuild = _bolt.materialize_pkgbuild(Path(pkgbuild_dir), pkgver)
     except OSError as e:
-        _log.warn(f"[BOLT] Pass 5a skipped — could not write llvm-bolt PKGBUILD ({e})")
+        _log.warn(f"[BOLT] Pass 5a skipped: could not write llvm-bolt PKGBUILD ({e})")
         return False
 
     _log.ui(
-        f"[BOLT] Pass 5a — building the BOLT tools (llvm-bolt {pkgver}, "
+        f"[BOLT] Pass 5a: building the BOLT tools (llvm-bolt {pkgver}, "
         "experimental: no official Arch package) against the installed libLLVM"
     )
     try:
@@ -101,7 +101,7 @@ def build_bolt_tools(
             passes.install_built_packages(Path(pkgbuild).parent, noconfirm=True)
     except Exception as e:
         _log.warn(
-            f"[BOLT] Pass 5a failed to build llvm-bolt ({e}) — PGO toolchain "
+            f"[BOLT] Pass 5a failed to build llvm-bolt ({e}): PGO toolchain "
             "left in place; BOLT optimization skipped."
         )
         return False
@@ -109,7 +109,7 @@ def build_bolt_tools(
     ok, missing = _bolt.tools_available(need_perf=False)
     if not ok:
         _log.warn(
-            f"[BOLT] llvm-bolt built but {', '.join(missing)} still not on PATH — "
+            f"[BOLT] llvm-bolt built but {', '.join(missing)} still not on PATH: "
             "skipping BOLT optimization."
         )
     return ok
@@ -162,7 +162,7 @@ def run_bolt(
     ok, missing = _bolt.tools_available(need_perf=True)
     if not ok:
         _log.warn(
-            f"[BOLT] Pass 5b skipped — {', '.join(missing)} not on PATH "
+            f"[BOLT] Pass 5b skipped: {', '.join(missing)} not on PATH "
             "(install the linux-tools `perf` package). PGO clang left in place."
         )
         return
@@ -170,7 +170,7 @@ def run_bolt(
     clang = Path("/usr/bin/clang")
     clangxx = Path("/usr/bin/clang++")
     if not clang.exists():
-        _log.warn("[BOLT] Pass 5 skipped — /usr/bin/clang not found")
+        _log.warn("[BOLT] Pass 5 skipped: /usr/bin/clang not found")
         return
 
     store = _bolt.resolve_store(tcfg.raw)
@@ -189,12 +189,12 @@ def run_bolt(
         )
         if not workload.is_file():
             _log.warn(
-                f"[BOLT] training_workload {workload} not found — Pass 5 skipped"
+                f"[BOLT] training_workload {workload} not found: Pass 5 skipped"
             )
             return
 
         _log.ui(
-            "[BOLT] Pass 5 — profiling clang on a compile job and rewriting "
+            "[BOLT] Pass 5: profiling clang on a compile job and rewriting "
             "with llvm-bolt (PGO→BOLT)"
         )
         try:
@@ -204,7 +204,7 @@ def run_bolt(
             )
             bolted = _bolt.bolt_binary(clang, fdata, out=td / "clang.bolt")
         except _bolt.BoltError as e:
-            _log.warn(f"[BOLT] Pass 5 failed ({e}) — PGO clang left in place")
+            _log.warn(f"[BOLT] Pass 5 failed ({e}): PGO clang left in place")
             return
 
         # Smoke-test the BOLTed clang *before* it replaces the system compiler.
@@ -213,7 +213,7 @@ def run_bolt(
         )
         if smoke.returncode != 0 or not (td / "s.o").exists():
             _log.warn(
-                "[BOLT] the BOLT-optimized clang failed its smoke test — "
+                "[BOLT] the BOLT-optimized clang failed its smoke test: "
                 "discarding it; the verified PGO clang stays in place"
             )
             return
@@ -222,7 +222,7 @@ def run_bolt(
             _fsp._run_priv(["install", "-Dm755", str(bolted), str(clang)])
         except _fsp.FsProvisionError as e:
             _log.warn(
-                f"[BOLT] could not install the BOLTed clang ({e}) — "
+                f"[BOLT] could not install the BOLTed clang ({e}): "
                 "PGO clang left in place"
             )
             return
@@ -234,6 +234,6 @@ def run_bolt(
                 f"bolt_llvm applied to {clang}\n", encoding="utf-8"
             )
         _log.ui(
-            "[BOLT] Pass 5 complete — /usr/bin/clang is now PGO+BOLT optimized "
+            "[BOLT] Pass 5 complete: /usr/bin/clang is now PGO+BOLT optimized "
             f"(build_mode {_bolt.BUILD_MODE})"
         )

@@ -187,7 +187,7 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
             _log.info(f"{pkgname}: ccache hits={hits} misses={misses} "
                       f"({pct}% hit rate) cache={size} files={cc_delta['files']}")
         else:
-            _log.info(f"{pkgname}: ccache — no compilations recorded "
+            _log.info(f"{pkgname}: ccache; no compilations recorded "
                       f"(cache={size} files={cc_delta['files']})")
 
     if sc_delta is not None:
@@ -199,7 +199,7 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
             _log.info(f"{pkgname}: sccache hits={hits} misses={misses} "
                       f"({pct}% hit rate) cache={sc_delta['size_str']}")
         else:
-            _log.info(f"{pkgname}: sccache — no compilations recorded "
+            _log.info(f"{pkgname}: sccache; no compilations recorded "
                       f"(cache={sc_delta['size_str']})")
 
 

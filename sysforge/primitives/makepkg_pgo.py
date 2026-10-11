@@ -294,7 +294,7 @@ def _resolve_pgo_state(pkgbuild_path: Path) -> tuple[str, str]:
     """
     toolchain_path = TOOLCHAIN_PATH
     if not toolchain_path.exists():
-        return ("absent", "toolchain.toml not found — no pgo_store configured")
+        return ("absent", "toolchain.toml not found: no pgo_store configured")
     try:
         with toolchain_path.open("rb") as f:
             tcfg = tomllib.load(f)

@@ -65,7 +65,7 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
             _log.info(f"Fallback kernel(s) present: {', '.join(fallbacks)}")
         else:
             msg = (
-                f"no fallback kernel found — installing {pkgname} as the only "
+                f"no fallback kernel found: installing {pkgname} as the only "
                 "kernel risks an unbootable system with no recovery path. "
                 "Install a stock kernel (e.g. linux-lts) first, or pass "
                 "--allow-no-fallback / set require_fallback_kernel = false."
@@ -105,14 +105,14 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
             snapshot_path = Path(state_dir) / "lsmod.snapshot"
             _log.warn(
                 f"kconfig_targets runs {'/'.join(sorted(minimizers))} against the "
-                "accumulated lsmod snapshot — modules loaded across past builds "
+                "accumulated lsmod snapshot: modules loaded across past builds "
                 "are kept, but drivers for hardware never active while capturing "
                 f"are stripped. Delete {snapshot_path} to reset the accumulated set."
             )
         else:
             _log.info(
                 "lsmod snapshot captured, but kconfig_targets runs no "
-                "localmodconfig/localyesconfig — the kernel config is not "
+                "localmodconfig/localyesconfig: the kernel config is not "
                 "minimized to loaded modules."
             )
 
@@ -122,7 +122,7 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
     if not build_headers:
         # Headers are being dropped from the build — the strongest risk surface.
         msg = (
-            f"kernel -headers subpackage disabled — {pkgname}-headers will NOT "
+            f"kernel -headers subpackage disabled: {pkgname}-headers will NOT "
             "be built/installed. Out-of-tree and DKMS modules need the matching "
             "kernel headers to compile; without them they cannot rebuild and "
             "will not load on reboot."
@@ -136,7 +136,7 @@ def gate1_preflight(kernel_cfg, options, pkgname, *, dry_run):
         _log.warn(msg)
     elif dkms:
         _log.warn(
-            f"DKMS modules present ({', '.join(dkms)}) — they must rebuild "
+            f"DKMS modules present ({', '.join(dkms)}): they must rebuild "
             f"against {pkgname}; ensure {pkgname}-headers is installed or they "
             "will not load on reboot (nvidia → black screen)."
         )
@@ -301,7 +301,7 @@ def gate_rust_preflight(fragment_path, state_dir, *, dry_run):
         return
     raise RuntimeError(
         f"[KERNEL] the kconfig fragment requests CONFIG_RUST=y, but this host "
-        f"cannot build kernel Rust — refusing before the build.\n{report}")
+        f"cannot build kernel Rust: refusing before the build.\n{report}")
 
 
 def built_kernel_release(config_path):
@@ -349,12 +349,12 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         if build_dir is not None and not skip_boot_audit:
             raise RuntimeError(
                 "[KERNEL] Gate 2: resolved kernel .config not found under the "
-                f"fresh build tree {build_dir} — boot-critical config cannot "
+                f"fresh build tree {build_dir}; boot-critical config cannot "
                 "be validated, aborting before install. Pass "
                 "--skip-boot-audit to override."
             )
         _log.warn(
-            "Gate 2: resolved kernel .config not found in build tree — "
+            "Gate 2: resolved kernel .config not found in build tree; "
             "boot-critical config could not be validated before install."
         )
         return
@@ -378,7 +378,7 @@ def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
             kconfig_map = kbuild_map.parse_kbuild_tree(config_path.parent)
         except Exception as exc:
             _log.warn(
-                f"Gate 2: kbuild module→kconfig parse failed ({exc}) — "
+                f"Gate 2: kbuild module→kconfig parse failed ({exc}); "
                 "auditing with the curated table only"
             )
     if kconfig_map and state_dir is not None:
@@ -409,7 +409,7 @@ def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
     kver = release
     if warn_running and kver and kver == kernel_safety.running_kernel_release():
         _log.warn(
-            f"Built kernel release {kver} matches the running kernel — its "
+            f"Built kernel release {kver} matches the running kernel: its "
             "/lib/modules entry will be overwritten; reboot before relying on "
             "module loading."
         )
@@ -417,7 +417,7 @@ def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
     if bricks and not skip_boot_audit:
         raise RuntimeError(
             f"[KERNEL] {len(bricks)} boot-critical config problem(s) in the "
-            "built kernel — aborting before install so the running system "
+            "built kernel: aborting before install so the running system "
             "stays bootable. Fix the kconfig and rebuild, or pass "
             f"--skip-boot-audit to override. Resolved .config: {source}"
         )
@@ -460,7 +460,7 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=N
         # tree at all, so this advisory audit silently never runs exactly
         # where a stale build makes it most relevant. Say so, visibly.
         _log.warn(
-            "kconfig drift check did not run — resolved .config not found in "
+            "kconfig drift check did not run: resolved .config not found in "
             "build tree (no fresh build this run, e.g. package already built): "
             "merged kconfig options were NOT verified against the built kernel"
         )
@@ -480,7 +480,7 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=N
 
     _log.warn(
         f"kconfig drift: {len(drifts)} option(s) sysforge merged differ in the "
-        f"resolved .config ({source}) — possibly toggled in `nconfig`, or dropped by "
+        f"resolved .config ({source}); possibly toggled in `nconfig`, or dropped by "
         "`make olddefconfig` due to unmet dependencies (advisory, not a failure)"
     )
     for d in drifts:
@@ -563,7 +563,7 @@ def kconfig_drift_lines(drifts) -> list[str]:
     """
     if drifts is None:
         return [
-            "check did NOT run — no resolved .config in the build tree "
+            "check did NOT run: no resolved .config in the build tree "
             "(no fresh build this run); merged options were not verified"
         ]
     if not drifts:
@@ -595,7 +595,7 @@ def gate3_verify(pkgbuild_dir, pkgname, bootloader, *, build_dir=None):
 
     if bricks:
         raise RuntimeError(
-            f"[KERNEL] {len(bricks)} boot-readiness problem(s) after install — "
+            f"[KERNEL] {len(bricks)} boot-readiness problem(s) after install: "
             "the new kernel may not be bootable. Resolve before rebooting "
             "(see findings above)."
         )

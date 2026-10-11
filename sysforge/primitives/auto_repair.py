@@ -303,11 +303,11 @@ def preflight_srcinfo(pkgbuild_dir: Path, behaviour: str) -> bool:
             _log.warn(".SRCINFO drift detected but regeneration failed")
             return False
         if behaviour == "auto_repair_with_warning":
-            _log.warn(f".SRCINFO drift in {pkgbuild_dir.name} — regenerated")
+            _log.warn(f".SRCINFO drift in {pkgbuild_dir.name}: regenerated")
         else:
-            _log.info(f".SRCINFO drift in {pkgbuild_dir.name} — regenerated")
+            _log.info(f".SRCINFO drift in {pkgbuild_dir.name}: regenerated")
         return True
-    _log.warn(f".SRCINFO drift in {pkgbuild_dir.name} — not repaired ({behaviour})")
+    _log.warn(f".SRCINFO drift in {pkgbuild_dir.name}: not repaired ({behaviour})")
     return False
 
 
@@ -438,7 +438,7 @@ def apply_first_match(
                                 repaired=False, aborted=True)
         if behaviour == "prompt_user" and batch:
             _log.warn(
-                f"{s.name}: matched but batch mode is active — "
+                f"{s.name}: matched but batch mode is active; "
                 "prompt_user requires interactive consent; aborting"
             )
             return RepairResult(scenario=s.name, retry_phase=s.retry_phase,

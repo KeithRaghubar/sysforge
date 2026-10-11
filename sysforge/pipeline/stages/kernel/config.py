@@ -189,7 +189,7 @@ def resolve_source(kernel_cfg, srcdir_path):
             raise RuntimeError(
                 "[KERNEL] kernel.toml source = \"git\" is no longer supported "
                 "(it never had a URL to clone from). Use \"local\", \"repo\", "
-                "or \"aur\" — or omit source to auto-resolve."
+                "or \"aur\", or omit source to auto-resolve."
             )
         if src not in constants.VALID_SOURCES:
             raise RuntimeError(
@@ -271,7 +271,7 @@ def pkgbuild_path(kernel_cfg):
             # half-removed state). Recoverable: re-run with --cleansrc to
             # re-clone. See DESIGN.md §Kernel stage source sync.
             raise RuntimeError(
-                f"[KERNEL] PKGBUILD missing from existing dir {src_dir} — "
+                f"[KERNEL] PKGBUILD missing from existing dir {src_dir}: "
                 "an interrupted --cleansrc may have left a partial tree. "
                 "Re-run with --cleansrc to re-clone, or restore the PKGBUILD."
             )

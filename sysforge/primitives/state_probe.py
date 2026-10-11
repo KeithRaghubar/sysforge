@@ -74,7 +74,7 @@ def _check_instrumented_builds(bs) -> list[diag.Finding]:
             out.append(diag.Finding(
                 "state", diag.SEV_WARN, f"pgo_record_only:{pkgbase}",
                 f"{pkgbase} has a live record-stage PGO build "
-                f"({len(profraw)} .profraw, no merged .profdata) — it is "
+                f"({len(profraw)} .profraw, no merged .profdata): it is "
                 f"instrumented and unoptimized",
                 remediation=f"finish PGO with `sysforge build {pkgbase} --pgo=use`, "
                             f"or roll back to the repo package",
@@ -147,7 +147,7 @@ def collect_state_findings(state_dir: Path | str | None = None,
         )
         msg = f"interrupted stage '{stage}' (started {started}) never completed"
         if extra:
-            msg += f" — {extra}"
+            msg += f": {extra}"
         remediation = recovery_cmd or (
             "verify the system, then clear the sentinel; the next install-bearing "
             "command will also offer recovery"

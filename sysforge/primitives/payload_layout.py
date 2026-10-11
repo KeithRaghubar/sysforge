@@ -67,7 +67,7 @@ class LayoutFinding:
     def message(self) -> str:
         return (
             f"{self.member} is nested inside /{self.directory}, whose consumer "
-            f"reads only flat files there ({self.spec}) — it will never be read"
+            f"reads only flat files there ({self.spec}): it will never be read"
         )
 
 

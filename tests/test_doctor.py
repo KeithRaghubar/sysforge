@@ -494,7 +494,7 @@ def test_with_reboot_hint_appends_and_selects():
                                    only=lambda f: f.check_id.startswith("dkms:"))
     by_id = {f.check_id: f for f in out}
     # Selected finding keeps its remediation and gains the caveat.
-    assert by_id["dkms:nvidia"].remediation.startswith("dkms install — ")
+    assert by_id["dkms:nvidia"].remediation.startswith("dkms install (")
     assert "reboot" in by_id["dkms:nvidia"].remediation
     # Non-matching finding is untouched.
     assert by_id["boot_vmlinuz_missing"].remediation == "reinstall"

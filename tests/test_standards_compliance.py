@@ -983,3 +983,54 @@ def test_local_repo_flags_a_second_home(tmp_path):
         extra={"other.py": 'SECTION = "[sysforge-local]"\n'})
     found = _load_check_standards().check_local_repo(repo)
     assert any("other.py" in f.location for f in found), found
+
+
+# ---------------------------------------------------------------------------
+# em_dash group (STD row 30, 3.4.0-DOC2)
+# ---------------------------------------------------------------------------
+
+def test_em_dash_group_is_clean_on_the_real_repo():
+    assert _load_check_standards().check_em_dash(_REPO) == []
+
+
+def test_em_dash_flags_readme_guides_man_and_completions(tmp_path):
+    for rel in ("README.md", "docs/guides/x.md", "man/sysforge.1.scd.in",
+                "man/sysforge.1", "completions/_sysforge"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("fine\nnot — fine\n", encoding="utf-8")
+    found = _load_check_standards().check_em_dash(tmp_path)
+    assert sorted(f.location for f in found) == [
+        "README.md:2", "completions/_sysforge:2", "docs/guides/x.md:2",
+        "man/sysforge.1.scd.in:2", "man/sysforge.1:2",
+    ], found
+
+
+def test_em_dash_flags_help_and_printed_text(tmp_path):
+    pkg = tmp_path / "sysforge"
+    pkg.mkdir()
+    (pkg / "cli.py").write_text(
+        'p.add_argument("--x", help="a " "b \u2014 c")\n'
+        'log(f"{x} \u2014 runtime output")\n'
+        'p.add_parser("y", description="ok")\n',
+        encoding="utf-8")
+    found = _load_check_standards().check_em_dash(tmp_path)
+    assert [f.location for f in found] == ["sysforge/cli.py:1", "sysforge/cli.py:2"], found
+
+
+def test_em_dash_allows_docstrings_and_bare_glyph(tmp_path):
+    pkg = tmp_path / "sysforge"
+    pkg.mkdir()
+    (pkg / "m.py").write_text(
+        '"""Module \u2014 docstring."""\n'
+        'def f():\n    """Function \u2014 docstring."""\n    return x or "\u2014"\n',
+        encoding="utf-8")
+    assert _load_check_standards().check_em_dash(tmp_path) == []
+
+
+def test_em_dash_ignores_release_notes_and_roadmap(tmp_path):
+    for rel in ("ROADMAP.md", "docs/release-notes/unreleased.md"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("- **`1.0.0-F1` — title.**\n", encoding="utf-8")
+    assert _load_check_standards().check_em_dash(tmp_path) == []

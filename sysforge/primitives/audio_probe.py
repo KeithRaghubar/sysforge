@@ -71,7 +71,7 @@ def _check_failed_audio_units() -> list[diag.Finding]:
             "audio", diag.SEV_ERROR, f"audio_unit_failed:{unit}",
             f"audio user service '{unit}' is in failed state",
             remediation=(f"inspect: systemctl --user status {unit}; "
-                         f"journalctl --user -u {unit} — then "
+                         f"journalctl --user -u {unit}: then "
                          f"systemctl --user restart {unit}"),
         ))
     return findings
@@ -103,7 +103,7 @@ def _check_audio_sinks() -> list[diag.Finding]:
         return []
     return [diag.Finding(
         "audio", diag.SEV_WARN, "no_audio_sink",
-        "no usable audio output sink — only the dummy (auto_null) device is "
+        "no usable audio output sink: only the dummy (auto_null) device is "
         "present; the sound device may have disappeared",
         remediation=("check `pactl list short sinks`; restart the audio stack: "
                      "systemctl --user restart wireplumber pipewire pipewire-pulse"),

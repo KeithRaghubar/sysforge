@@ -107,7 +107,7 @@ def _check_default_route() -> list[diag.Finding]:
         return []
     return [diag.Finding(
         "network", diag.SEV_WARN, "no_default_route",
-        "no default route — the system has no gateway and cannot reach off-link "
+        "no default route: the system has no gateway and cannot reach off-link "
         "hosts",
         remediation=("check link/DHCP: `ip route`, `ip link`; bring the "
                      "interface up or fix your connection manager"),
@@ -145,7 +145,7 @@ def _check_dns_conflict() -> list[diag.Finding]:
     return [diag.Finding(
         "network", diag.SEV_WARN, "dns_resolved_unmanaged",
         "systemd-resolved is active but /etc/resolv.conf is a static file, not "
-        "the resolved stub symlink — resolved's DNS configuration is being "
+        "the resolved stub symlink: resolved's DNS configuration is being "
         "overridden",
         remediation=("link resolv.conf to resolved's stub: `ln -sf "
                      "/run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`"),

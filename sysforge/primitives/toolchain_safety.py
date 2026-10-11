@@ -197,7 +197,7 @@ def check_link_resolution() -> list[ToolchainFinding]:
         if proc is None:
             findings.append(ToolchainFinding(
                 SEV_WARN, "link_resolution:ldd_missing",
-                "ldd not available — could not verify libLLVM link resolution",
+                "ldd not available: could not verify libLLVM link resolution",
                 is_brick=False,
             ))
             return findings
@@ -223,7 +223,7 @@ def check_link_resolution() -> list[ToolchainFinding]:
                 findings.append(ToolchainFinding(
                     SEV_ERROR, f"link_resolution:{label}:staging",
                     f"{label} resolves libLLVM from a staging prefix: "
-                    f"{resolved} — Pass 3 packaged a bad RPATH or the install "
+                    f"{resolved}; Pass 3 packaged a bad RPATH or the install "
                     "is incomplete",
                     "Rebuild the toolchain; the live clang/lld must load "
                     "libLLVM from /usr/lib, not /var/tmp.",
@@ -232,8 +232,8 @@ def check_link_resolution() -> list[ToolchainFinding]:
             elif not resolved.startswith(usr_lib):
                 findings.append(ToolchainFinding(
                     SEV_ERROR, f"link_resolution:{label}:shadow",
-                    f"{label} resolves libLLVM outside /usr/lib: {resolved} "
-                    "— a sibling libLLVM is shadowing the package-managed one",
+                    f"{label} resolves libLLVM outside /usr/lib: {resolved}; "
+                    "a sibling libLLVM is shadowing the package-managed one",
                     "Remove the shadowing library or fix LD_LIBRARY_PATH so "
                     "the package-managed /usr/lib/libLLVM wins.",
                     is_brick=True,
@@ -263,7 +263,7 @@ def smoke_test_compilers() -> list[ToolchainFinding]:
     if not clang.exists():
         return [ToolchainFinding(
             SEV_ERROR, "smoke:clang_missing",
-            f"{clang} not found — required as the Pass-1 bootstrap compiler",
+            f"{clang} not found: required as the Pass-1 bootstrap compiler",
             "Install clang before running the LLVM toolchain build: "
             "sudo pacman -S clang",
             is_brick=True,
@@ -279,7 +279,7 @@ def smoke_test_compilers() -> list[ToolchainFinding]:
             detail = (probe.stderr.strip() or probe.stdout.strip())[:300]
         findings.append(ToolchainFinding(
             SEV_ERROR, "smoke:clang_broken",
-            f"{clang} is not functional — likely mismatched packages from a "
+            f"{clang} is not functional; likely mismatched packages from a "
             f"prior aborted run:\n  {detail}",
             "Restore a consistent set: "
             "sudo pacman -S " + " ".join(LLVM_LOCKSTEP_SUITE),
@@ -289,7 +289,7 @@ def smoke_test_compilers() -> list[ToolchainFinding]:
     if not shutil.which("lld"):
         findings.append(ToolchainFinding(
             SEV_ERROR, "smoke:lld_missing",
-            "lld not found on PATH — required for all toolchain build passes",
+            "lld not found on PATH: required for all toolchain build passes",
             "Install lld before running the LLVM toolchain build: "
             "sudo pacman -S lld",
             is_brick=True,
@@ -335,7 +335,7 @@ def scan_abi_hazards(pkg_files: list[Path]) -> list[ToolchainFinding]:
                             f"LLVM version namespace: {sym}@{ver} "
                             "(should be GLIBCXX_*)",
                             "Rebuild with --rebuild-profdata; do not install "
-                            "these packages — they would break the live clang.",
+                            "these packages: they would break the live clang.",
                             is_brick=True,
                         ))
     return findings
@@ -455,16 +455,16 @@ def _diff_consumers_against_libllvm(
             # LLVM_<ver> node. Rebuilding the consumer re-links those to libstdc++
             # (@GLIBCXX_*), so it is healable via the consumer-rebuild path.
             if targets:
-                tgt = f" — dropped LLVM target(s): {', '.join(targets)}"
+                tgt = f"; dropped LLVM target(s): {', '.join(targets)}"
                 findings.append(ToolchainFinding(
                     SEV_ERROR, "libllvm_consumer_symbols",
                     f"{consumer.name} links {new_soname} but the {source_label} "
                     f"libLLVM does not export {len(missing)} symbol(s) it imports"
-                    f"{tgt}: {shown}{more}. mesa EGL/GL would fail to load — the "
+                    f"{tgt}: {shown}{more}. mesa EGL/GL would fail to load: the "
                     "whole desktop black-screens.",
                     "Rebuild the toolchain with the dropped target(s) kept in "
                     "LLVM_TARGETS_TO_BUILD (sysforge enforces the AMDGPU baseline "
-                    "automatically — check toolchain.toml [llvm] targets for an "
+                    "automatically: check toolchain.toml [llvm] targets for an "
                     "explicit override that omits them). To recover a system "
                     "already in this state, reinstall the official llvm-libs.",
                     is_brick=True,
@@ -485,7 +485,7 @@ def _diff_consumers_against_libllvm(
                     "was installed, so it was linked against a different build "
                     "of libLLVM (e.g. the repo one inside a sandbox container). "
                     "Until fixed mesa EGL/GL fails to load (desktop black-screens).",
-                    "Do not rebuild it the same way — check how it was built "
+                    "Do not rebuild it the same way: check how it was built "
                     "(a sandboxed build must inject the host's libLLVM; see "
                     "[security] sandbox_builds). Meanwhile restore the stock "
                     "package: sudo pacman -S <consumer package>.",
@@ -499,7 +499,7 @@ def _diff_consumers_against_libllvm(
                     f"symbol(s) it imports from the LLVM version namespace: "
                     f"{shown}{more}. The PGO (-fprofile-use) libLLVM inlined away "
                     "the weak std:: copies the stock build globbed into the "
-                    "LLVM_<ver> node — rebuilding the consumer re-links them to "
+                    "LLVM_<ver> node; rebuilding the consumer re-links them to "
                     "libstdc++. Until then mesa EGL/GL fails to load (desktop "
                     "black-screens).",
                     "Rebuild the affected libLLVM consumer(s) against the new "
@@ -599,7 +599,7 @@ def detect_residual_instrumentation() -> list[ToolchainFinding]:
             findings.append(ToolchainFinding(
                 SEV_WARN, "residual:libLLVM_so",
                 f"{llvm_sos[0].name} is instrumented (has __llvm_prf_* "
-                "sections) — from a prior aborted Pass 1 install",
+                "sections): from a prior aborted Pass 1 install",
                 "For a clean build: sudo pacman -S llvm llvm-libs",
                 is_brick=False,
             ))
@@ -607,7 +607,7 @@ def detect_residual_instrumentation() -> list[ToolchainFinding]:
     if _system_llvm_static_is_instrumented():
         findings.append(ToolchainFinding(
             SEV_WARN, "residual:libLLVMSupport_a",
-            "libLLVMSupport.a is instrumented — the profile runtime will be "
+            "libLLVMSupport.a is instrumented: the profile runtime will be "
             "injected into LDFLAGS for Pass 2 and Pass 3 automatically",
             "For a clean build: sudo pacman -S llvm",
             is_brick=False,
@@ -651,7 +651,7 @@ def check_pkgver_lockstep(
     )
     return ToolchainFinding(
         SEV_ERROR, "pkgver_lockstep",
-        f"LLVM PKGBUILD pkgver skew across lockstep members ({groups}) — "
+        f"LLVM PKGBUILD pkgver skew across lockstep members ({groups}): "
         "dependency resolution will fail at build time",
         "Sync the stale source trees before building (e.g. rerun with "
         "--cleansrc), or pass --allow-version-skew to override.",
@@ -839,7 +839,7 @@ def check_build_space(
     return ToolchainFinding(
         SEV_ERROR, "build_space",
         f"filesystem at {ancestor} has only {free_gb:.1f} GiB free "
-        f"(need ≥ {min_free_gb:g} GiB) — the LLVM build will likely fail "
+        f"(need ≥ {min_free_gb:g} GiB): the LLVM build will likely fail "
         "partway with no space left",
         "Free space on the staging/pgo_store/build filesystem, lower "
         "min_build_free_gb in toolchain.toml, or pass --skip-build-space-check.",
@@ -878,7 +878,7 @@ def check_multilib_enabled(lib32_in_scope: bool) -> ToolchainFinding | None:
     return ToolchainFinding(
         SEV_ERROR, "multilib_disabled",
         "lib32-* packages are in the toolchain build scope but the [multilib] "
-        "repo is not enabled in /etc/pacman.conf — the lib32 builds will fail "
+        "repo is not enabled in /etc/pacman.conf: the lib32 builds will fail "
         "at dependency resolution",
         "Enable [multilib] in /etc/pacman.conf (uncomment the section and its "
         "Include line, then `sudo pacman -Sy`), drop the lib32 packages from "

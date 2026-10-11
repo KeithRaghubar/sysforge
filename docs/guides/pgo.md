@@ -1,7 +1,7 @@
 # Profile-Guided Optimization with SysForge
 
 A practical guide for people who have never done PGO before. It covers *what to run* and,
-more importantly, *what to do in between* — the part no command can do for you.
+more importantly, *what to do in between*, the part no command can do for you.
 
 For the internals (how flags are injected, how renames work, why each gate exists) see
 [DESIGN.md](../../DESIGN.md). This guide only describes how to use it.
@@ -13,10 +13,10 @@ For the internals (how flags are injected, how renames work, why each gate exist
 A compiler normally guesses which code is hot. Profile-guided optimization replaces the guess
 with measurements from your own machine:
 
-1. **Record** — build a special version of the program that collects data while it runs.
-2. **Exercise** — use it the way you normally do. *This step is yours, and it decides the
+1. **Record:** build a special version of the program that collects data while it runs.
+2. **Exercise:** use it the way you normally do. *This step is yours, and it decides the
    result.*
-3. **Use** — rebuild the program, feeding the collected data to the compiler. It lays out
+3. **Use:** rebuild the program, feeding the collected data to the compiler. It lays out
    hot code together, inlines what you actually call, and moves cold code out of the way.
 
 The optimized build is only as good as step 2. A profile collected from a workload that
@@ -39,8 +39,8 @@ SysForge supports two families of profile collection:
 | Faster graphics driver (shader compile, draw-call overhead) | Package PGO | `sysforge build mesa --pgo=record` / `--pgo=use` | Yes, **if your GPU uses Mesa** (see below) |
 | Faster compiles for *everything* you build | Toolchain PGO | `sysforge run toolchain` with `compiler = "llvm"`, `pgo = true` | Yes, if you build a lot from source; costs hours once |
 | Faster kernel (syscalls, scheduling, I/O paths) | Kernel AutoFDO (+ Propeller) | `sysforge run kernel --autofdo=record\|capture\|use`, then optionally again with `--propeller` | Modest gains; two rounds, each spans a reboot |
-| Some other hot, long-lived library | Package PGO | `sysforge build <pkg> --pgo=…` | Rarely — SysForge warns unless you allow-list it |
-| Post-link layout of clang | BOLT | `toolchain.toml [bolt]` | **Currently blocked** — leave disabled |
+| Some other hot, long-lived library | Package PGO | `sysforge build <pkg> --pgo=…` | Rarely (SysForge warns unless you allow-list it) |
+| Post-link layout of clang | BOLT | `toolchain.toml [bolt]` | **Currently blocked:** leave disabled |
 
 All of these require the **LLVM toolchain** (clang + `llvm-profdata`). Under `toolchain = gcc`
 the PGO commands refuse with a hint before doing any work.
@@ -58,15 +58,15 @@ the PGO commands refuse with a hint before doing any work.
 - **Disable compiler caches for PGO packages.** Add `cache = false` to the package's
   `[[package]]` entry in `packages.toml` so ccache/sccache never mixes profiled and
   unprofiled objects.
-- **Disk and time.** Every record or use pass is a full clean build (SysForge forces this —
-  stale objects from a differently-instrumented build would corrupt the profile). Toolchain
+- **Disk and time.** Every record or use pass is a full clean build (SysForge forces this,
+  since stale objects from a differently-instrumented build would corrupt the profile). Toolchain
   PGO in particular needs ~40 GiB free and several hours.
 
 ---
 
 ## Package PGO (mesa and others)
 
-### Step 0 — check that the package is actually on your hot path
+### Step 0: check that the package is actually on your hot path
 
 For mesa this matters a lot. Games only benefit if they render through a **Mesa driver**:
 
@@ -78,7 +78,7 @@ glxinfo -B | grep -i "OpenGL vendor"        # "AMD" / "Intel" / "Mesa" = Mesa
 If you see `NVIDIA` (the proprietary driver), games go through NVIDIA's own driver, and Mesa
 PGO will do essentially nothing for them. Skip it.
 
-### Step 1 — record
+### Step 1: record
 
 ```sh
 sysforge build mesa --pgo=record
@@ -89,14 +89,14 @@ program that loads mesa writes a `.profraw` file into the store
 (`/var/cache/sysforge/pgo-mesa` for mesa, `/var/cache/sysforge/pgo/<pkgbase>` for anything
 else). No environment variables needed.
 
-**Verify it's collecting** after the first session — don't find out three evenings later:
+**Verify it's collecting** after the first session. Don't find out three evenings later:
 
 ```sh
 ls -lt /var/cache/sysforge/pgo-mesa | head      # fresh .profraw files?
 sysforge state profiles                          # store listed, size growing?
 ```
 
-### Step 2 — exercise it (the important part)
+### Step 2: exercise it (the important part)
 
 General rules that apply to any package:
 
@@ -120,7 +120,7 @@ General rules that apply to any package:
 2. **Cover every graphics API you use.** One title each for D3D9–11 (via DXVK), D3D12 (via
    vkd3d-proton), native Vulkan, and OpenGL if you play any. Each takes different paths
    through the driver.
-3. **Play normally.** Loading screens, traversal, combat, menus — that's the real hot set.
+3. **Play normally.** Loading screens, traversal, combat, menus: that's the real hot set.
 4. **Proton/Steam Runtime games run in a container** that may not see `/var/cache`. If no
    `.profraw` appears after playing a Proton game, add this to the game's launch options
    during the record phase:
@@ -132,7 +132,7 @@ General rules that apply to any package:
    (Flatpak Steam needs an equivalent `--filesystem=` override.) Remove it afterwards.
 5. **32-bit games contribute nothing.** lib32-mesa is never instrumented.
 
-### Step 3 — use
+### Step 3: use
 
 ```sh
 sysforge build mesa --pgo=use
@@ -141,7 +141,7 @@ sysforge build mesa --pgo=use
 This merges every collected `.profraw` (plus any earlier profile) into
 `mesa.profdata`, deletes the consumed raw files, and builds an optimized
 `mesa-sysforge` that replaces stock mesa. Your GPU apps should now run on the optimized
-build — check with `pacman -Q mesa-sysforge`.
+build. Check with `pacman -Q mesa-sysforge`.
 
 ### Keeping it, refreshing it, removing it
 
@@ -183,7 +183,7 @@ allow = ["mesa", "your-package"]
 
 ## Toolchain PGO (optimized clang)
 
-A PGO-optimized clang compiles everything faster — typically 10–20%. That benefits every
+A PGO-optimized clang compiles everything faster, typically 10–20%. That benefits every
 package you build afterwards, including kernels and mesa.
 
 Enable it in `toolchain.toml`:

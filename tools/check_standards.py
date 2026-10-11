@@ -70,6 +70,13 @@ Groups:
                     entry in docs/release-notes/unreleased.md. The bump
                     comparison itself is --require-bump / --derive-bump, used by
                     tools/release.sh preflight, not a group.
+    em_dash         User-facing prose (STD row 30): no U+2014 in README.md,
+                    docs/guides/, the man page source and output, completions,
+                    or any non-docstring string literal under sysforge/ (help
+                    text, printed messages, generated-file headers). A literal
+                    that is only the glyph is allowed. ROADMAP and release
+                    notes are exempt (their entry lead is a lint-enforced
+                    format).
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -78,6 +85,7 @@ Drift detection cases (verify these still fire after editing this script):
     - Add `open(p, "w")` without encoding= to a sysforge/*.py file.
     - Cite a nonexistent `tools/foo.sh` path in a CLAUDE.md file.
     - Rename a function cited as `module.symbol` in sysforge/CLAUDE.md.
+    - Put an em-dash in a log message under sysforge/ or in docs/guides/.
     - Add an ID to ROADMAP Planned that already appears in a shipped v*.md.
     - List the same ID in ROADMAP.md Planned and in docs/ROADMAP-ABANDONED.md.
     - Re-add an `## Abandoned` heading to ROADMAP.md.
@@ -1642,6 +1650,57 @@ def check_release_gates(repo: Path) -> list[Finding]:
 _UNPINNED_WITH_RE = re.compile(r"--with\s+([A-Za-z0-9_.-]+)(?![A-Za-z0-9_.-]*[=<>~])")
 
 
+# ===========================================================================
+# Group: em_dash  (user-facing prose — STD row 30, 3.4.0-DOC2)
+# ===========================================================================
+
+_EM_DASH = "—"
+# Prose a user reads. ROADMAP and release notes are out of scope: their
+# ``- **`<ID>` — <title>.**`` lead is a lint-enforced format, not prose.
+_EM_DASH_FILES = ("README.md", "man/sysforge.1.scd.in", "man/sysforge.1")
+_EM_DASH_GLOBS = ("docs/guides/*.md", "completions/*")
+_EM_DASH_MSG = "em-dash (U+2014); use a comma, colon, period or parentheses"
+
+
+def _docstring_nodes(tree: ast.AST) -> set[ast.AST]:
+    out: set[ast.AST] = set()
+    for n in ast.walk(tree):
+        if (isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and n.body and isinstance(n.body[0], ast.Expr)):
+            out.add(n.body[0].value)
+    return out
+
+
+def check_em_dash(repo: Path) -> list[Finding]:
+    findings: list[Finding] = []
+    paths = [repo / f for f in _EM_DASH_FILES]
+    for pattern in _EM_DASH_GLOBS:
+        paths.extend(sorted(repo.glob(pattern)))
+    for path in paths:
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo)
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _EM_DASH in line:
+                findings.append(Finding("em_dash", "error", f"{rel}:{n}", _EM_DASH_MSG))
+    # Every string literal under sysforge/ can reach the user: --help text,
+    # log and prompt messages, exception text, generated-file headers.
+    # Docstrings are developer prose and stay out; so does a literal that is
+    # only the glyph (an empty-cell placeholder or a glyph-table key).
+    pkg = repo / "sysforge"
+    for py in sorted(pkg.rglob("*.py")) if pkg.is_dir() else []:
+        rel = py.relative_to(repo)
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(rel))
+        skip = _docstring_nodes(tree)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and node not in skip and _EM_DASH in node.value
+                    and node.value.strip() != _EM_DASH):
+                findings.append(Finding("em_dash", "error", f"{rel}:{node.lineno}",
+                                        f"string literal: {_EM_DASH_MSG}"))
+    return findings
+
+
 def _make_recipes(text: str) -> dict[str, str]:
     """``{target: recipe text}`` for simple ``target:`` rules (tab-led lines)."""
     recipes: dict[str, str] = {}
@@ -1671,6 +1730,7 @@ GROUPS = {
     "deprecations":   check_deprecations,
     "semver_bump":    check_semver_bump,
     "release_gates":  check_release_gates,
+    "em_dash":        check_em_dash,
 }
 
 
@@ -1736,7 +1796,8 @@ def main(argv: list[str] | None = None) -> int:
             print(bump)
             return 0
         print(f"required = {bump} (from: {evidence})")
-        if BUMP_ORDER.index(args.require_bump) < BUMP_ORDER.index(bump):
+        required = str(args.require_bump)  # set: only --derive-bump returned above
+        if BUMP_ORDER.index(required) < BUMP_ORDER.index(bump):
             print(f"ERROR: --bump={args.require_bump} is weaker than the "
                   f"accumulated release notes require ({bump})", file=sys.stderr)
             return 1

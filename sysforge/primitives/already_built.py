@@ -66,10 +66,10 @@ def resolve_already_built(
     _log = log.get_logger(tag)
     unattended = not interactive or bool(non_interactive) or not is_interactive()
     if unattended:
-        _log.info("Kernel package already built — proceeding to audit + install")
+        _log.info("Kernel package already built: proceeding to audit + install")
         return AlreadyBuiltAction.REUSE
     _log.warn(
-        "Kernel package already built (stale package in PKGDEST) — makepkg "
+        "Kernel package already built (stale package in PKGDEST): makepkg "
         "skipped the build, so the interactive kconfig review did NOT run."
     )
     choice = prompt_choice(
@@ -84,7 +84,7 @@ def resolve_already_built(
     if choice == "a":
         raise RuntimeError(
             f"[{tag}] aborted: package already built"
-            + (f" — {abort_hint}" if abort_hint else "")
+            + (f": {abort_hint}" if abort_hint else "")
         )
     return (
         AlreadyBuiltAction.REBUILD if choice == "r" else AlreadyBuiltAction.REUSE

@@ -151,7 +151,7 @@ def render_entry(
     """
     sort_key = template.get("sort-key")
     out = [
-        f"{MANAGED_HEADER_PREFIX} (template: {template.filename}, role: {role}) — "
+        f"{MANAGED_HEADER_PREFIX} (template: {template.filename}, role: {role}); "
         "regenerated on every kernel build; edit the template instead",
         f"title {title}",
     ]
@@ -263,7 +263,7 @@ def resolve_template(
             if boots_kernel(e, kernel):
                 return _as_template(e)
     raise BootEntryError(
-        "no usable loader entry to clone — write one loader entry for a working "
+        "no usable loader entry to clone: write one loader entry for a working "
         'kernel in /boot/loader/entries, or set boot_entries = "off" in kernel.toml'
     )
 
@@ -348,8 +348,8 @@ def plan_sync(
         name = entry_filename(kernel, prefix)
         if any(e.filename == name and not is_managed(e) for e in entries):
             notes.append(
-                f"cannot write {name}: an entry you own already has that name "
-                "— rename it, or set boot_entries_prefix"
+                f"cannot write {name}: an entry you own already has that name; "
+                "rename it, or set boot_entries_prefix"
             )
             skipped.append(kernel)
             continue
@@ -365,7 +365,7 @@ def plan_sync(
         if missing:
             notes.append(
                 f"cannot write {name}: it would reference {', '.join(missing)}, "
-                "which do not exist under /boot — set boot_entries = \"off\" and "
+                "which do not exist under /boot; set boot_entries = \"off\" and "
                 "write this entry by hand"
             )
             skipped.append(kernel)
@@ -408,13 +408,13 @@ def check_boot_path(run=None) -> None:
     path = (r.stdout or "").strip()
     if r.returncode != 0 or not path:
         raise BootEntryError(
-            f"bootctl could not locate the boot partition ({(r.stderr or '').strip()}) — "
+            f"bootctl could not locate the boot partition ({(r.stderr or '').strip()}): "
             'mount it, or set boot_entries = "off" in kernel.toml'
         )
     if Path(path) != BOOT_DIR:
         raise BootEntryError(
             f"systemd-boot reads entries from {path}, but kernels install to {BOOT_DIR}; "
-            "managed entries cannot reference them — set boot_entries = \"off\" in "
+            "managed entries cannot reference them: set boot_entries = \"off\" in "
             "kernel.toml (UKI / kernel-install setups manage their own entries)"
         )
 

@@ -139,7 +139,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
                 f"{live.get('started_at', '?')}."
             )
         _log.error(
-            f"{e}{detail} Wait for it to finish, or kill it — this run cannot "
+            f"{e}{detail} Wait for it to finish, or kill it: this run cannot "
             "proceed and must not clear a live run's sentinel."
         )
         return False
@@ -180,7 +180,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     # Emit explicit instructions instead so the manual path is obvious.
     if not is_interactive():
         _log.error(
-            "Cannot prompt for recovery — stdin is not a TTY. "
+            "Cannot prompt for recovery: stdin is not a TTY. "
             "Run sysforge in an interactive terminal to use the prompt, "
             f"or clear the sentinel manually: rm {sentinel.path}"
         )
@@ -208,7 +208,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
         if sentinel.path.exists():
             _log.error(
                 f"Tried to clear sentinel but file is still present at "
-                f"{sentinel.path}. Possible state-dir mismatch — verify "
+                f"{sentinel.path}. Possible state-dir mismatch: verify "
                 "$SYSFORGE_STATE_DIR and any --state-dir flag match the path "
                 "above, then remove the file manually."
             )
@@ -230,12 +230,12 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     try:
         proc = subprocess.run(recovery_cmd.split(), check=False, preexec_fn=lift_for_child)  # noqa: TID251 — operator's recovery command runs on the TTY
     except FileNotFoundError:
-        _log.error("Recovery command binary missing — cannot run recovery")
+        _log.error("Recovery command binary missing: cannot run recovery")
         return False
     if proc.returncode != 0:
         _log.error(
             f"Recovery command exited {proc.returncode}; the live system "
-            "may still be inconsistent — sentinel left in place",
+            "may still be inconsistent: sentinel left in place",
         )
         return False
     sentinel.clear()
@@ -246,7 +246,7 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     if sentinel.path.exists():
         _log.error(
             f"Recovery ran but sentinel file is still present at "
-            f"{sentinel.path}. Possible state-dir mismatch — verify "
+            f"{sentinel.path}. Possible state-dir mismatch: verify "
             "$SYSFORGE_STATE_DIR and any --state-dir flag match the path "
             "above, then remove the file manually."
         )

@@ -114,7 +114,7 @@ def _run_stage_with_change_report(stage, config, state, options):
             # automatically (see log.py), so only strings built for
             # non-log emitters need render.em_dash()/arrow() explicitly.
             except Exception as e:  # noqa: BLE001 — advisory blocks never block
-                _log.warn(f"{stage.name}: change summary extras unavailable — {e}")
+                _log.warn(f"{stage.name}: change summary extras unavailable; {e}")
 
         outcome = change_report.classify(
             rows, stage_failed=stage_error is not None, unavailable=unavailable
@@ -128,7 +128,7 @@ def _run_stage_with_change_report(stage, config, state, options):
             emit=_log.ui,
         )
     except Exception as e:  # noqa: BLE001 — reporting can never fail a build
-        _log.warn(f"{stage.name}: change summary failed to render — {e}")
+        _log.warn(f"{stage.name}: change summary failed to render; {e}")
     finally:
         # The reporting block above guards Exception, but stage.run() is caught
         # with BaseException — so a KeyboardInterrupt landing in the snapshot/
@@ -190,13 +190,13 @@ def run_stage_standalone(stage, config, options):
             _log.info(f"Unified log: {unified_log_path}")
         except PermissionError:
             unified_log_active = False
-            _log.warn(f"Cannot write unified log to {unified_log_path} — logging to terminal only")
+            _log.warn(f"Cannot write unified log to {unified_log_path}: logging to terminal only")
 
     _log.info(f"Invocation: {_INVOCATION}")
     success = False
     try:
         if options.dry_run:
-            _log.info(f"[dry-run] would run stage: {stage.name} — {stage.description}")
+            _log.info(f"[dry-run] would run stage: {stage.name}; {stage.description}")
         else:
             _log.info(f"── Stage: {stage.name} ── {stage.description}")
             # 3.1.0-F5: point a fresh install at the TOML that decides what
@@ -210,12 +210,12 @@ def run_stage_standalone(stage, config, options):
                     state.save()
                 except PermissionError:
                     _log.warn(
-                        f"Cannot write state to {state_dir} — progress will not be checkpointed"
+                        f"Cannot write state to {state_dir}: progress will not be checkpointed"
                     )
             _log.info(f"{stage.name}: complete")
         success = True
     except RuntimeError as e:
-        _log.fatal(f"{stage.name}: FAILED — {e}")
+        _log.fatal(f"{stage.name}: FAILED; {e}")
     finally:
         if unified_log_active:
             log.close_unified_log(success=success, persist=True)
@@ -278,7 +278,7 @@ def run_pipeline(config, options, stages=None):
     elif options.resume:
         start_idx = _find_resume_index(stages, state)
         if start_idx == len(stages):
-            _log.info("All stages already done — nothing to resume.")
+            _log.info("All stages already done: nothing to resume.")
             return
         _log.info(f"Resuming from stage: {stages[start_idx].name}")
 
@@ -320,7 +320,7 @@ def run_pipeline(config, options, stages=None):
             status = state.stage_status(stage.name)
 
             if status == "done":
-                _log.info(f"{stage.name}: already done — skipping")
+                _log.info(f"{stage.name}: already done; skipping")
                 continue
 
             if options.dry_run:
@@ -380,7 +380,7 @@ def run_pipeline(config, options, stages=None):
             except RuntimeError as e:
                 state.mark_failed(stage.name, str(e))
                 state.save()
-                _log.error(f"{stage.name}: FAILED — {e}")
+                _log.error(f"{stage.name}: FAILED; {e}")
                 _log.fatal("State saved. Run with --resume to continue after fixing the issue.")
 
         if not options.dry_run:

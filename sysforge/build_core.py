@@ -251,7 +251,7 @@ def install_missing_repo_deps(pkgbuild_paths, *, exclude=frozenset(),
             installed_deps_out.extend(repo_missing)
     except RuntimeError as e:
         _log.error(str(e))
-        _log.warn("makedep pre-install failed — some builds may fail")
+        _log.warn("makedep pre-install failed: some builds may fail")
 
 
 def prepare_deps(
@@ -354,7 +354,7 @@ def prepare_deps(
                 installed_deps_out.extend(built_dep_names)
     except RuntimeError as e:
         _log.error(f"AUR dep resolution failed: {e}")
-        _log.warn("AUR dep resolution failed — some builds may fail")
+        _log.warn("AUR dep resolution failed: some builds may fail")
     return True
 
 
@@ -566,7 +566,7 @@ def install_built(
         for p, details in culprits.items():
             not_installed[p] = "; ".join(details)
             _log.warn(
-                f"Not installing {p.name}: {'; '.join(details)} — "
+                f"Not installing {p.name}: {'; '.join(details)}; "
                 "move the file aside (or remove the package owning it) and "
                 "run `sysforge update --install-only`"
             )
@@ -707,7 +707,7 @@ def _order_targets_by_intra_deps(targets) -> tuple[list, dict[str, set[str]]]:
         ordered_names = list(sorter.static_order())
     except CycleError as e:
         _log.warn(
-            f"intra-batch dependency cycle ({' -> '.join(e.args[1])}) — "
+            f"intra-batch dependency cycle ({' -> '.join(e.args[1])}): "
             "keeping original build order"
         )
         return list(targets), intra_deps
@@ -815,7 +815,7 @@ def _post_install_libllvm_check(installed_files: list) -> list:
         _log.error(f"post-install: {f.message}")
     if findings:
         _log.error(
-            "post-install: a libLLVM consumer no longer resolves its symbols — "
+            "post-install: a libLLVM consumer no longer resolves its symbols; "
             "the desktop may fail to start on next login. Restore the prior "
             "version from the pre-build snapshot or with "
             "`sudo pacman -U /var/cache/pacman/pkg/<previous package>`, then "
@@ -844,7 +844,7 @@ def _refuse_skewed_install(target, findings: list, state_dir, outcome) -> None:
     libs = sorted({lib for f in findings for lib in f.libs})
     msg = (
         f"refusing to install: {len(findings)} versioned symbol(s) unresolved by "
-        f"source-built {', '.join(libs)} — built against a different build of "
+        f"source-built {', '.join(libs)}; built against a different build of "
         f"that library than this host runs; installing it would fail to load"
     )
     _log.error(f"{target.pkgbase}: {msg}")
@@ -895,7 +895,7 @@ def _keep_credentials_for_the_build() -> None:
     if not sudo_session.authenticate():
         raise RuntimeError(
             "[SYSFORGE] sudo authentication failed or timed out before the "
-            "build — nothing was built or installed. Re-run when you can "
+            "build: nothing was built or installed. Re-run when you can "
             "answer the prompt."
         )
     stack.enter_context(sudo_session.keepalive(tag="BUILD"))
@@ -1029,7 +1029,7 @@ def build_and_install(
             )
             if decision == DECISION_ABORT:
                 _log.ui(
-                    "[SYSFORGE] Aborted at PKGBUILD review — "
+                    "[SYSFORGE] Aborted at PKGBUILD review: "
                     "nothing was built or installed."
                 )
                 outcome.aborted = True
@@ -1107,7 +1107,7 @@ def build_and_install(
         )
     if not proceed:
         _log.ui(
-            "[SYSFORGE] Aborted at dependency PKGBUILD review — "
+            "[SYSFORGE] Aborted at dependency PKGBUILD review: "
             "nothing was built or installed."
         )
         outcome.aborted = True
@@ -1146,7 +1146,7 @@ def build_and_install(
                 if failed_deps:
                     _log.warn(
                         f"{target.pkgbase}: intra-batch dep(s) "
-                        f"{', '.join(sorted(failed_deps))} failed to build — "
+                        f"{', '.join(sorted(failed_deps))} failed to build; "
                         "building against the installed version"
                     )
                 pending_bases = [
@@ -1268,7 +1268,7 @@ def build_and_install(
                         # was; fail loudly so it can't regress unnoticed.
                         msg = (
                             "makepkg reported already built despite -f "
-                            "(forced rebuild) — refusing to reuse the stale "
+                            "(forced rebuild): refusing to reuse the stale "
                             "artifact"
                         )
                         _log.error(f"{target.pkgbase}: {msg}")
@@ -1290,7 +1290,7 @@ def build_and_install(
                         continue
                     if existing:
                         _log.info(
-                            f"{target.pkgbase}: package already built — "
+                            f"{target.pkgbase}: package already built; "
                             "installing existing artifact"
                         )
                         outcome.built_pkg_files.extend(existing)

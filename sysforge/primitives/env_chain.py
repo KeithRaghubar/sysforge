@@ -527,7 +527,7 @@ def validate_env_chain(snap: EnvChainSnapshot) -> list[str]:
     warnings: list[str] = []
     if snap.sysforge.get("SYSFORGE_STATE_DIR") is None:
         warnings.append(
-            "SYSFORGE_STATE_DIR is unset — sysforge will use the XDG fallback "
+            "SYSFORGE_STATE_DIR is unset: sysforge will use the XDG fallback "
             "($XDG_STATE_HOME/sysforge, default ~/.local/state/sysforge). If "
             "this is unexpected, your shell init "
             "files may not be exporting it for this kind of shell (login vs "
@@ -535,7 +535,7 @@ def validate_env_chain(snap: EnvChainSnapshot) -> list[str]:
         )
     if snap.python.get("VIRTUAL_ENV") is None:
         warnings.append(
-            "VIRTUAL_ENV is unset — running outside a Python venv. This is fine "
+            "VIRTUAL_ENV is unset: running outside a Python venv. This is fine "
             "for an installed sysforge but unusual for a dev checkout."
         )
     if snap.toolchain.get("CC") is None and snap.toolchain.get("CXX") is None:
@@ -662,9 +662,9 @@ def format_env_chain(snap: EnvChainSnapshot, *, verbosity: int = 0) -> str:
             f"{snap.sysforge_config_profile!r})"
         )
     if snap.config_load_error:
-        lines.append(f"    sysforge_config: not loaded — {snap.config_load_error}")
+        lines.append(f"    sysforge_config: not loaded; {snap.config_load_error}")
     if snap.parse_caveats:
-        lines.append("  parse caveats (lines skipped — expansion or non-trivial syntax):")
+        lines.append("  parse caveats (lines skipped; expansion or non-trivial syntax):")
         for name in sorted(snap.parse_caveats):
             lines.append(f"    {name}: {snap.parse_caveats[name]}")
 
@@ -715,7 +715,7 @@ _NOT_OFFERED_REASONS = {
     "pam_env_override": "PAM syntax (pam_env.conf)",
     "systemd_user": "systemd user manager, not a file",
     "sysforge_config": "profiles.toml build env, not a login var",
-    "system_zshenv": "system zsh init — use /etc/environment instead",
+    "system_zshenv": "system zsh init: use /etc/environment instead",
     "system_zprofile": "login shells only",
     "system_zshrc": "interactive shells only",
     "system_zlogin": "login shells only",

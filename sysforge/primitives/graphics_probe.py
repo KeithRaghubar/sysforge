@@ -92,7 +92,7 @@ def _check_nvidia_modeset() -> GraphicsFinding | None:
             return None
         return GraphicsFinding(
             SEV_ERROR, "nvidia_modeset",
-            "nvidia-drm modeset disabled — Wayland compositors cannot present "
+            "nvidia-drm modeset disabled: Wayland compositors cannot present "
             "through NVIDIA GBM. Games render black or hang on first frame.",
             "Add `options nvidia-drm modeset=1` to /etc/modprobe.d/nvidia.conf "
             "and regenerate initramfs (e.g. `sudo mkinitcpio -P`). Reboot.",
@@ -133,7 +133,7 @@ def _check_nvidia_fbdev() -> GraphicsFinding | diag.Skip | None:
         return None
     return GraphicsFinding(
         SEV_WARN, "nvidia_fbdev",
-        "nvidia-drm fbdev disabled on kernel >= 6.11 — NVIDIA recommends "
+        "nvidia-drm fbdev disabled on kernel >= 6.11: NVIDIA recommends "
         "fbdev=1 for Wayland presentation with recent kernels.",
         "Add `options nvidia-drm fbdev=1` alongside `modeset=1` in "
         "/etc/modprobe.d/nvidia.conf and regenerate initramfs.",
@@ -339,7 +339,7 @@ def _check_steam_gpu_accel() -> GraphicsFinding | diag.Skip | None:
             SEV_WARN, "steam_gpu_accel",
             "Steam client GPU-accelerated web views are enabled. Known to "
             "render black on NVIDIA+Wayland in recent Steam builds (client "
-            "store/library only — separate from game-window rendering).",
+            "store/library only: separate from game-window rendering).",
             "Steam → Settings → Interface → uncheck "
             "'Enable GPU accelerated rendering in web views', then restart "
             "Steam.",

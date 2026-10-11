@@ -588,7 +588,7 @@ def find_abi_issues(so_paths: list[Path], *,
             issues.append(AbiFinding(
                 so=so_path.name, kind="missing_needed",
                 message=(
-                    f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache — "
+                    f"{so_path.name}: NEEDED lib {soname!r} not found in ldconfig cache; "
                     "may not be installed or ldconfig not yet run"
                 ),
             ))
@@ -613,7 +613,7 @@ def package_abi_findings(pkg_path: Path) -> list[AbiFinding]:
     """
     so_members = _list_sos_in_pkg(pkg_path)
     if not so_members:
-        _log.info(f"{pkg_path.name}: no shared libraries — skipping ABI check")
+        _log.info(f"{pkg_path.name}: no shared libraries; skipping ABI check")
         return []
 
     _log.info(

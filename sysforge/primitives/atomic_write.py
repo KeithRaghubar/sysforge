@@ -107,7 +107,7 @@ def _replace_privileged(target: Path, data: bytes, mode: int, uid, gid, tag: str
         except RuntimeError as e:
             with contextlib.suppress(RuntimeError):
                 run_privileged(["rm", "-f", str(staged)], tag=tag, operation="rm")
-            raise OSError(f"{e} — {target} unchanged") from e
+            raise OSError(f"{e}: {target} unchanged") from e
     finally:
         src.unlink(missing_ok=True)
 

@@ -100,7 +100,7 @@ def _set_makepkg_conf(cfg: BootstrapConfig) -> None:
 
     conf_path = Path(cfg.target) / "etc/makepkg.conf"
     if not conf_path.exists():
-        _log.warn(f"{conf_path} not found — skipping [makepkg] settings")
+        _log.warn(f"{conf_path} not found: skipping [makepkg] settings")
         return
 
     from sysforge.primitives.config import set_makepkg_conf_keys
@@ -112,7 +112,7 @@ def _set_pacman_parallel_downloads(cfg: BootstrapConfig) -> None:
     n = cfg.parallel_downloads
     pacman_conf = Path(cfg.target) / "etc/pacman.conf"
     if not pacman_conf.exists():
-        _log.warn(f"{pacman_conf} not found — skipping ParallelDownloads")
+        _log.warn(f"{pacman_conf} not found: skipping ParallelDownloads")
         return
 
     text = pacman_conf.read_text()
@@ -143,7 +143,7 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
     # (avoid using 'which' — it is not part of the Arch base install)
     if not (Path(cfg.target) / "usr/bin/reflector").exists():
         _log.warn(
-            "reflector not found in chroot — skipping mirrorlist update. "
+            "reflector not found in chroot: skipping mirrorlist update. "
             "Install reflector and re-run, or update /etc/pacman.d/mirrorlist manually."
         )
         return
@@ -160,7 +160,7 @@ def _run_reflector(cfg: BootstrapConfig) -> None:
     _log.info(f"Running reflector: {' '.join(cmd[1:])}")
     result = _chroot(cfg.target, cmd, check=False)
     if result.returncode != 0:
-        _log.warn(f"reflector exited {result.returncode} — mirrorlist may be unchanged")
+        _log.warn(f"reflector exited {result.returncode}: mirrorlist may be unchanged")
     else:
         _log.info("Mirrorlist updated.")
 
@@ -178,7 +178,7 @@ def _sync_pacman_dbs(cfg: BootstrapConfig) -> None:
         result = _chroot(cfg.target, ["pacman", flag], check=False)
         if result.returncode != 0:
             _log.warn(
-                f"pacman {flag} exited {result.returncode} — "
+                f"pacman {flag} exited {result.returncode}: "
                 f"{label} db may be unsynced"
             )
         else:
@@ -338,7 +338,7 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
         if target_src.exists():
             shutil.rmtree(target_src)
         _log.warn(
-            "No local sysforge source tree found — cloning from "
+            "No local sysforge source tree found: cloning from "
             f"{_SYSFORGE_REPO_URL} inside the chroot."
         )
         _chroot(cfg.target, ["git", "clone", "--depth", "1", _SYSFORGE_REPO_URL, "/root/sysforge"])
@@ -584,7 +584,7 @@ def _set_default_shell(cfg: BootstrapConfig) -> None:
     # Verify shell exists in the chroot
     if not (Path(cfg.target) / shell_path.lstrip("/")).exists():
         _log.warn(
-            f"{cfg.shell} not found at {shell_path} in chroot — "
+            f"{cfg.shell} not found at {shell_path} in chroot: "
             f"install it first (e.g. add to pacstrap packages)"
         )
         return
@@ -607,7 +607,7 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
         _log.info("Root password set.")
     else:
         _log.warn(
-            "No root_password in bootstrap.toml — set it manually after reboot:\n"
+            "No root_password in bootstrap.toml; set it manually after reboot:\n"
             f"  arch-chroot {cfg.target} passwd root"
         )
 
@@ -618,7 +618,7 @@ def _set_root_password(cfg: BootstrapConfig) -> None:
 
 class ConfigureStage(Stage):
     name = "configure"
-    description = "Sysforge-specific tuning — makepkg.conf, mirrors, desktop group"
+    description = "Sysforge-specific tuning: makepkg.conf, mirrors, desktop group"
     depends_on = ["install", "hardware"]
 
     def run(self, config, state, options):  # noqa: ARG002
@@ -634,7 +634,7 @@ class ConfigureStage(Stage):
             if cfg.root_password:
                 _log.ui("[dry-run] would set root password from bootstrap.toml")
             else:
-                _log.ui("[dry-run] no root_password — will warn at runtime")
+                _log.ui("[dry-run] no root_password: will warn at runtime")
             if cfg.shell != "bash":
                 _log.ui(f"[dry-run] would set default shell: {cfg.shell}")
             _log.ui("[dry-run] would copy /etc/sysforge/ to target")

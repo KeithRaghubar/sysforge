@@ -25,7 +25,7 @@ def vercmp(ver_a: str, ver_b: str) -> int:
     """
     result = run.capture(["vercmp", ver_a, ver_b])
     if result is None:
-        raise RuntimeError("vercmp not found on PATH — is pacman installed?")
+        raise RuntimeError("vercmp not found on PATH: is pacman installed?")
 
     stdout = result.stdout.strip()
     try:

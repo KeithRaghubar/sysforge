@@ -256,7 +256,7 @@ def _pin_findings_for(config_dict, pkg) -> list[diag.Finding]:
         return [diag.Finding(
             category=_CATEGORY, severity=diag.SEV_WARN,
             check_id="rust-pin-unresolved",
-            message=f"{pkg}: no PKGBUILD under pkgbuild_src_dir — "
+            message=f"{pkg}: no PKGBUILD under pkgbuild_src_dir; "
                     f"cannot check for a rust-toolchain.toml pin",
             remediation="check the name, or fetch its sources first")]
     src_dir = Path(pkgbuild).parent
@@ -272,7 +272,7 @@ def _pin_findings_for(config_dict, pkg) -> list[diag.Finding]:
         return [diag.Finding(
             category=_CATEGORY, severity=diag.SEV_INFO,
             check_id="rust-no-pin",
-            message=f"{pkg}: no rust-toolchain.toml — builds with the "
+            message=f"{pkg}: no rust-toolchain.toml; builds with the "
                     f"effective default toolchain")]
     channel, _raw = pin
     if _toolchain_installed(channel):
@@ -283,8 +283,8 @@ def _pin_findings_for(config_dict, pkg) -> list[diag.Finding]:
     return [diag.Finding(
         category=_CATEGORY, severity=diag.SEV_WARN,
         check_id="rust-pin-missing",
-        message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml "
-                f"— not installed; rustup will fetch it mid-build",
+        message=f"{pkg}: pins Rust `{channel}` via rust-toolchain.toml, "
+                f"not installed; rustup will fetch it mid-build",
         remediation=f"rustup toolchain install {channel}")]
 
 

@@ -107,7 +107,7 @@ _sysforge_pkg_names() {
   fi
   pkgs=("${(@f)$(sysforge completions packages 2>/dev/null | grep -m $((limit + 1)) -- "^${PREFIX}")}")
   if (( $#pkgs > limit )); then
-    zle -M "${limit}+ candidates — type more characters to narrow"
+    zle -M "${limit}+ candidates; type more characters to narrow"
     _sysforge_clear_msg() {
       zle -M ""
       add-zle-hook-widget -d zle-line-pre-redraw _sysforge_clear_msg
@@ -474,7 +474,7 @@ _sysforge_state_subcommands() {
     'profiles:list collected optimization profiles (and optionally purge one)'
     'boot-entries:show which loader entry boots each kernel'
     'failed:list recorded build failures (with any diagnosed fix)'
-    'forget:stop maintaining package(s) — delete their build_state record'
+    'forget:stop maintaining package(s) (delete their build_state record)'
   )
   _describe 'subcommand' subcommands
 }
@@ -688,7 +688,7 @@ _sysforge_env() {
 }
 
 _sysforge_help() {
-  # `sysforge help [COMMAND [SUBCOMMAND]]` — first word is any verb, second is
+  # `sysforge help [COMMAND [SUBCOMMAND]]`: first word is any verb, second is
   # that verb's subcommand when it has one (2.5.0-F2).
   case $CURRENT in
     2) _sysforge_commands ;;

@@ -65,7 +65,7 @@ class ArtifactListVerb(Verb):
         if on_path is False:
             root = artifacts.default_script_root()
             _log.warn(
-                f"{root} is not on PATH — scripts deployed there will not be "
+                f"{root} is not on PATH: scripts deployed there will not be "
                 f"runnable by name. Add it to PATH in your shell profile."
             )
 
@@ -219,8 +219,8 @@ class ArtifactReviewVerb(Verb):
         _log.ui(f"Adopted {adopted} artifact(s).")
         if skipped_unknown:
             _log.ui(
-                f"Skipped {skipped_unknown} candidate(s) with unknown ownership "
-                "— re-run with --include-unknown to adopt them."
+                f"Skipped {skipped_unknown} candidate(s) with unknown ownership: "
+                "re-run with --include-unknown to adopt them."
             )
         if failed:
             _log.ui(f"{failed} candidate(s) could not be adopted; see errors above.")
@@ -390,7 +390,7 @@ class ArtifactDeployVerb(Verb):
         if artifacts.CLASS_SCRIPT in deployed_classes and artifacts.script_root_on_path() is False:
             root = artifacts.default_script_root()
             _log.warn(
-                f"{root} is not on PATH — the script you just deployed will "
+                f"{root} is not on PATH: the script you just deployed will "
                 f"not be runnable by name. Add it to PATH in your shell profile."
             )
         return ExecResult(exit_code=1 if failed else 0)
@@ -437,7 +437,7 @@ class ArtifactRemoveVerb(Verb):
             return ExecResult(exit_code=1)
         if art.cls == artifacts.CLASS_HOOK:
             _log.warn(
-                f"{art.name} is a pacman hook — removing it changes what "
+                f"{art.name} is a pacman hook: removing it changes what "
                 "happens on your next pacman transaction."
             )
         try:

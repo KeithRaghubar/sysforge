@@ -446,7 +446,7 @@ _sysforge_env() {
     :
 }
 
-# `sysforge help [COMMAND [SUBCOMMAND]]` — first word is any verb, second is
+# `sysforge help [COMMAND [SUBCOMMAND]]`: first word is any verb, second is
 # that verb's subcommand when it has one (2.5.0-F2).
 _sysforge_help() {
     if [[ -z $subverb ]]; then

@@ -150,7 +150,7 @@ def _confirm(cfg: BootstrapConfig) -> None:
     # aborts. This stops a stray run from silently wiping a populated disk.
     if _has_existing_partitions(cfg.device):
         print(log.downgrade_glyphs(
-            f"  {cfg.device} already has an existing partition table — its "
+            f"  {cfg.device} already has an existing partition table: its "
             f"partitions will be erased."
         ))
         print()
@@ -164,7 +164,7 @@ def _confirm(cfg: BootstrapConfig) -> None:
         )
         if answer not in ("y", "yes"):
             raise RuntimeError(
-                "[PARTITION] Aborted by user — existing partitions left intact."
+                "[PARTITION] Aborted by user: existing partitions left intact."
             )
         return
 

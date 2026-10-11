@@ -136,7 +136,7 @@ def review_target(
         if reviewed_commit:
             _log.warn(
                 f"{pkgbase}: recorded reviewed commit {_short(reviewed_commit)} "
-                "no longer exists in the clone (re-clone?) — "
+                "no longer exists in the clone (re-clone?); "
                 "falling back to a full-content review"
             )
         base = _EMPTY_TREE
@@ -144,13 +144,13 @@ def review_target(
 
     if not interactive:
         _log.ui(
-            f"auto-accepted: {pkgbase} — {what}; "
+            f"auto-accepted: {pkgbase}; {what}; "
             "rerun with --review to inspect the diff"
         )
         return DECISION_ACCEPT
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         _log.warn(
-            f"{pkgbase}: {what} — auto-accepting (non-interactive run); "
+            f"{pkgbase}: {what}; auto-accepting (non-interactive run); "
             "run interactively or use `sysforge build` to review the diff"
         )
         return DECISION_ACCEPT
@@ -173,7 +173,7 @@ def review_target(
         if answer == "v":
             patch = _git(pkgbuild_dir, "diff", _color_flag(), base, head)
             if patch is None:
-                _log.warn(f"{pkgbase}: git diff failed — cannot display patch")
+                _log.warn(f"{pkgbase}: git diff failed; cannot display patch")
                 continue
             with maybe_pager(True):
                 print(patch)
@@ -261,7 +261,7 @@ def review_deps(
             for name, pkgbuild_dir, base, head in changed:
                 patch = _git(pkgbuild_dir, "diff", _color_flag(), base, head)
                 if patch is None:
-                    _log.warn(f"{name}: git diff failed — cannot display patch")
+                    _log.warn(f"{name}: git diff failed; cannot display patch")
                     continue
                 with maybe_pager(True):
                     print(f"### {name}\n{patch}")

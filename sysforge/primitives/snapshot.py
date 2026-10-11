@@ -79,7 +79,7 @@ def create_snapper_snapshot(config: str, description: str) -> str | None:
 
 def create_raw_snapshot() -> Path | None:
     if not shutil.which("btrfs"):
-        _log.warn("  btrfs command not found — cannot take raw snapshot")
+        _log.warn("  btrfs command not found: cannot take raw snapshot")
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = Path("/.snapshots") / f"sysforge-pre-build-{stamp}"
@@ -105,7 +105,7 @@ def ensure_pre_build_snapshot(config: dict, *, dry_run: bool = False,
     _done = True  # a single decision per process, even when we skip below
 
     if not root_is_btrfs():
-        _log.info("  root is not btrfs — skipping pre-build snapshot")
+        _log.info("  root is not btrfs: skipping pre-build snapshot")
         return
 
     snapper_cfg = snapper_config_for_root()
@@ -131,5 +131,5 @@ def ensure_pre_build_snapshot(config: dict, *, dry_run: bool = False,
         if dest:
             _log.ui(
                 f"  Pre-build snapshot created: {dest} "
-                "(not auto-reaped — you own its cleanup)"
+                "(not auto-reaped; you own its cleanup)"
             )

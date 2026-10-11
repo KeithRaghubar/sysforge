@@ -297,8 +297,8 @@ def test_not_installed_leaves_built_section_and_header(capsys, monkeypatch):
     built, _, rest = out.partition("Built, NOT installed:")
     assert "cosmic-files-git: 1.8 → 1.9" in built
     assert "cosmic-greeter-git" not in built
-    assert ("cosmic-greeter-git: 1.8 → 1.9 — "
-            "/etc/pam.d/cosmic-greeter exists in filesystem") in rest
+    assert ("cosmic-greeter-git: 1.8 → 1.9 ("
+            "/etc/pam.d/cosmic-greeter exists in filesystem)") in rest
     assert "sysforge update --install-only" in rest
 
 
@@ -309,7 +309,7 @@ def test_not_installed_under_install_only(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "0 installed, 1 NOT installed," in out
     assert "NOT installed:" in out and "Installed:" not in out
-    assert "a — why" in out
+    assert "a (why)" in out
 
 
 def test_not_installed_section_omitted_when_empty(capsys, monkeypatch):

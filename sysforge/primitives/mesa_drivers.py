@@ -75,7 +75,7 @@ def _read_switch_and_overrides(path: Path):
         with path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError) as e:
-        _log.warn(f"failed to read {path}: {e} — mesa driver filtering disabled")
+        _log.warn(f"failed to read {path}: {e}; mesa driver filtering disabled")
         return (False, None, None)
     section = data.get("mesa")
     if not isinstance(section, dict):
@@ -133,7 +133,7 @@ def _ensure_mesa_software_baseline(
             result.extend(added)
             _log.info(
                 f"added mandatory software {axis} driver(s) {', '.join(added)} "
-                f"to resolved set {list(resolved)} — mesa needs a software "
+                f"to resolved set {list(resolved)}: mesa needs a software "
                 "fallback (headless / VM / GPU-reset recovery); a reduced build "
                 "that drops them leaves no working renderer"
             )

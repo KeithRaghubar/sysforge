@@ -128,14 +128,14 @@ def _match_rust_missing_std(text: str, active: str | None) -> FixSuggestion | No
         return FixSuggestion(
             signature="rust:E0463",
             message=(
-                f"rust std crate missing for target {target} — "
+                f"rust std crate missing for target {target}: "
                 "the active rust toolchain has no std for this target"
             ),
             fix_cmd=_suggest_rustup_target(target, active),
         )
     return FixSuggestion(
         signature="rust:E0463",
-        message="rust std crate missing — the active rust toolchain can't find std",
+        message="rust std crate missing: the active rust toolchain can't find std",
         fix_cmd="rustup target list --installed   # check which targets the active toolchain has",
     )
 
@@ -166,7 +166,7 @@ def _match_meson_unknown_opts(text: str, active: str | None) -> FixSuggestion | 
     return FixSuggestion(
         signature="meson:unknown-options",
         message=(
-            "meson rejected an option that used to exist — likely a stale "
+            "meson rejected an option that used to exist: likely a stale "
             "build/ directory from a previous version of the project"
         ),
         fix_cmd="rm -rf src/build  # then re-run the build",
@@ -256,7 +256,7 @@ def _match_cuda_host_gcc(text: str, active: str | None) -> FixSuggestion | None:
         )
     else:
         message = (
-            "nvcc rejected the system host compiler — the system gcc is newer "
+            "nvcc rejected the system host compiler: the system gcc is newer "
             "than this CUDA toolkit supports"
         )
     if ccbin:
@@ -310,7 +310,7 @@ def _match_lib32_reduced_target_llvm(text: str, active: str | None) -> FixSugges
         message=(
             "lib32 libLLVM was built with a reduced LLVM_TARGETS_TO_BUILD, but "
             "lib32-clang compiles its offload tools against the all-target 64-bit "
-            "/usr/include/llvm headers — the un-built target backends can't link"
+            "/usr/include/llvm headers: the un-built target backends can't link"
         ),
         fix_cmd=(
             "build lib32-llvm/lib32-clang with the full target set: via sysforge, "
@@ -335,7 +335,7 @@ def _match_broken_llvm_toolchain(text: str, active: str | None) -> FixSuggestion
     return FixSuggestion(
         signature="toolchain:llvm-broken",
         message=(
-            "the installed clang/libLLVM are mismatched — clang cannot run "
+            "the installed clang/libLLVM are mismatched: clang cannot run "
             "(likely a clang↔llvm-libs version skew or a half-installed "
             "toolchain upgrade)"
         ),
@@ -373,7 +373,7 @@ def _match_lib32_clang_libgcc(text: str, active: str | None) -> FixSuggestion | 
         signature="toolchain:lib32-clang-libgcc",
         message=(
             "clang -m32 + ld.lld can't find the 32-bit libgcc_s runtime it "
-            "implicitly links — CMake/meson then reports the compiler as "
+            "implicitly links: CMake/meson then reports the compiler as "
             "'broken', but clang is fine; this lib32 package needs the gcc "
             "toolchain (gcc -m32 links its own multilib libgcc)"
         ),
@@ -491,7 +491,7 @@ def _match_pkgconfig_version_gate(text: str, active: str | None) -> FixSuggestio
         has_git = False
     if has_git:
         parts.append(
-            f"an AUR {owner}-git exists — adopting it trades the repos' "
+            f"an AUR {owner}-git exists: adopting it trades the repos' "
             f"soname-rebuild guarantee for owning its rebuilds yourself"
         )
     else:

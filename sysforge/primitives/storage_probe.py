@@ -92,7 +92,7 @@ def _check_disk_space(config: dict | None, doctor_cfg: dict) -> list[diag.Findin
     return [diag.Finding(
         "storage", diag.SEV_WARN, "disk_low",
         f"only {free_gb:.1f} GB free of {total_gb:.1f} GB on the build dir "
-        f"({build_dir}) — under the {low:.0f} GB threshold",
+        f"({build_dir}): under the {low:.0f} GB threshold",
         remediation="free space: clear build caches (`sysforge clean` / rm -rf "
                     "~/builds/*), trim the pacman cache (`paccache -r`), or prune "
                     "old package versions",
@@ -165,7 +165,7 @@ def _check_fstab(fstab_path: str | Path = "/etc/fstab") -> list[diag.Finding]:
         f"{'y' if len(dangling) == 1 else 'ies'} no longer resolve to a present "
         f"device: {sample}{more}",
         remediation="fix or remove the stale entry, or add `nofail` if the mount "
-                    "is optional — otherwise the next boot may drop to emergency mode",
+                    "is optional: otherwise the next boot may drop to emergency mode",
     )]
 
 
