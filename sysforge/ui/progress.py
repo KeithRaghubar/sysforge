@@ -89,6 +89,7 @@ _RESTORE = _ESC + "8"
 _INDEX = _ESC + "D"
 _RESET_REGION = _ESC + "[r"
 _CLEAR_LINE = _ESC + "[2K"
+_ERASE_BELOW = _ESC + "[J"
 
 _TTY_PREFIX = "[SYSFORGE][PROGRESS] "
 _PLAIN_PREFIX = "[PROGRESS] "
@@ -373,6 +374,16 @@ def _release_seq() -> str:
     # resumes from the real content row, not the bottom of an otherwise-empty
     # screen (the stranded-blank-lines bug).
     _bar.reserved = False
+    if _bar.resize_pending:
+        # After a resize the bar is no longer reliably on row `rows`: a taller
+        # window pulls scrollback in and shifts everything, cursor included,
+        # down by the rows gained. Clearing the old row then erases a content
+        # line and leaves the stale bar for establish's index to scroll into
+        # the output. What a resize preserves is order: the bar is still below
+        # the content cursor. Erase from the cursor down (normally only the
+        # cursor line's empty tail plus the bar).
+        _trace(f"release-resized rows={_bar.rows}")
+        return f"{_SAVE}{_RESET_REGION}{_RESTORE}{_ERASE_BELOW}"
     _trace(f"release rows={_bar.rows}")
     return f"{_SAVE}{_RESET_REGION}{_ESC}[{_bar.rows};1H{_CLEAR_LINE}{_RESTORE}"
 
@@ -408,9 +419,9 @@ def _draw() -> None:
         return
     frame = ""
     if bar.resize_pending:
-        bar.resize_pending = False
         _trace("resize")
-        frame += _release_seq()
+        frame += _release_seq()          # reads resize_pending; clear it after
+        bar.resize_pending = False
         _refresh_size()
     text = _compose(bar, _monotonic())
     if text is None:

@@ -636,6 +636,44 @@ def test_sigwinch_only_flags_and_next_frame_applies(monkeypatch):
     assert progress._bar.resize_pending is False
 
 
+def _term_size(monkeypatch, cols, rows):
+    monkeypatch.setattr(shutil, "get_terminal_size",
+                        lambda fallback=(80, 24): __import__("os").terminal_size((cols, rows)))
+
+
+def test_resize_release_erases_below_cursor_not_the_stale_row(monkeypatch):
+    """A taller window moves the old bar off its old row: the emulator pulls
+    scrollback in and shifts everything (cursor included) down. Clearing the
+    old absolute row would erase a content line and leave the stale bar for
+    establish's index to scroll into the output. The bar is always below the
+    content cursor, so erase from there instead."""
+    _term_size(monkeypatch, 80, 24)
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("x")
+    buf.reset()
+    _term_size(monkeypatch, 80, 40)
+    progress._on_sigwinch()
+    progress._ticker_step()
+    frame = buf.writes[0]
+    assert "\x1b[24;1H" not in frame               # never address the stale row
+    erase = frame.index("\x1b[r\x1b8\x1b[J")       # reset region, back to content, erase below
+    assert erase < frame.index("\x1b[1;39r")       # ...before the new region goes up
+
+
+def test_shutdown_with_resize_pending_erases_below_cursor(monkeypatch):
+    _term_size(monkeypatch, 80, 24)
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("x")
+    buf.reset()
+    _term_size(monkeypatch, 80, 40)
+    progress._on_sigwinch()
+    progress.shutdown()
+    assert "\x1b[24;1H" not in buf.getvalue()
+    assert "\x1b8\x1b[J" in buf.getvalue()
+
+
 def test_resize_during_child_yield_applies_on_exit(monkeypatch):
     buf = _fake_tty_stderr(monkeypatch)
     progress.init()

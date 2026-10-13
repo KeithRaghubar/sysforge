@@ -350,8 +350,14 @@ def run_with_pty(
 
     prev_winch = None
     is_main_thread = threading.current_thread() is threading.main_thread()
+    # Set by _on_winch, consumed by the forward loop: a resize resets the
+    # emulator's scroll region, so the bar is repainted before the next chunk
+    # rather than after up to _REFRESH_S of full-screen scrolling.
+    winched = False
 
     def _on_winch(sig, frame):
+        nonlocal winched
+        winched = True
         new_sz = shutil.get_terminal_size(fallback=(80, 24))
         _set_winsize(master_fd, max(1, new_sz.lines - reserve_bottom_rows), new_sz.columns)
         if callable(prev_winch):
@@ -398,6 +404,19 @@ def run_with_pty(
         buf = ""
         last_activity = time.monotonic()
         last_refresh = last_activity
+
+        def _maybe_refresh() -> None:
+            nonlocal last_refresh, winched
+            if boundary is None or not boundary.at_boundary:
+                return
+            if not winched and time.monotonic() - last_refresh < _REFRESH_S:
+                return
+            winched = False
+            # A repaint must never be the reason a build stops.
+            with contextlib.suppress(Exception):
+                hooks.refresh()
+            last_refresh = time.monotonic()
+
         with forwarding:
             while True:
                 now = time.monotonic()
@@ -435,6 +454,8 @@ def run_with_pty(
                         # Never fail a build for a diagnostic write.
                         with contextlib.suppress(Exception):
                             raw_dump.write(chunk)
+                    if winched:
+                        _maybe_refresh()
                     if forward_bytes:
                         # Display only — line_callback below still receives every
                         # byte, so classification and the filter can't drift apart.
@@ -452,12 +473,7 @@ def run_with_pty(
                         line, buf = buf[:idx], buf[idx + 1:]
                         line_callback(line.rstrip("\r"))
                         last_activity = time.monotonic()
-                if (boundary is not None and boundary.at_boundary
-                        and time.monotonic() - last_refresh >= _REFRESH_S):
-                    # A repaint must never be the reason a build stops.
-                    with contextlib.suppress(Exception):
-                        hooks.refresh()
-                    last_refresh = time.monotonic()
+                _maybe_refresh()
 
         if query_filter is not None:
             tail = query_filter.flush()

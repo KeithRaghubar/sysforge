@@ -683,6 +683,29 @@ def test_refresh_happens_only_at_stream_boundaries(tmp_path, recording_hooks, mo
     assert rec.events[-1] == "forwarding-exit"
 
 
+def test_resize_repaints_before_the_next_chunk_is_forwarded(tmp_path, recording_hooks, monkeypatch):
+    """A resize resets the emulator's scroll region to the full screen, so
+    every forwarded line until the next repaint can scroll the bar row into
+    the output. Don't wait out the refresh throttle: repaint before the
+    first chunk that follows the resize."""
+    monkeypatch.setattr(pty_runner, "_REFRESH_S", 30.0)
+    rec = recording_hooks
+    rec.sink = _capture_stdout_buffer(monkeypatch)
+    child = (
+        "import os, signal, time\n"
+        "os.write(1, b'A\\n'); time.sleep(0.3)\n"
+        "os.kill(os.getppid(), signal.SIGWINCH); time.sleep(0.3)\n"
+        "os.write(1, b'B\\n'); time.sleep(0.3)\n"
+    )
+    rc = run_with_pty(
+        [sys.executable, "-c", child],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lambda _l: None, forward_bytes=True,
+    )
+    assert rc == 0
+    assert [f for _w, f in rec.refreshes] == [b"A\r\n"], rec.refreshes
+
+
 def test_no_forwarding_hooks_without_forward_bytes(tmp_path, recording_hooks, monkeypatch):
     recording_hooks.sink = _capture_stdout_buffer(monkeypatch)
     rc = run_with_pty(
