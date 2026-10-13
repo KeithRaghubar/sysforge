@@ -364,7 +364,7 @@ _sysforge_state() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --no-confirm --no-pager" -- "$cur") )
             ;;
         profiles)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager --state-dir" -- "$cur") )
             ;;
         boot-entries)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--no-pager" -- "$cur") )

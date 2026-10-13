@@ -208,6 +208,65 @@ KCONFIG_SILENT_EQUIVALENT = {
     "oldconfig": "olddefconfig",
 }
 
+# 3.4.0-F3: the opt-in compile-time hardening set (kernel.toml `hardening`),
+# from the kernel's self-protection recommendations, checked against Arch's
+# x86_64 config. Merged at the LOWEST precedence, so a device, hardware, fdo or
+# manual entry overrides any token (with a conflict warning). Most tokens are
+# already on in Arch's config: listing them pins them against a base config or
+# kconfig sequence that would otherwise drop them. Every symbol here is a
+# `bool` and architecture-independent, so the set applies unchanged on the gcc
+# and llvm paths and raises no drift warning on a supported build.
+#
+# DKMS-safe by construction: never module-signature enforcement
+# (MODULE_SIG_FORCE) or a forced lockdown mode, which would leave an unsigned
+# DKMS module (NVIDIA on the tested hardware) unloadable on the next boot.
+# gates.gate_dkms_module_enforcement guards the merged result for a manual
+# entry; test_hardening_set_never_enforces_module_signatures_or_lockdown pins
+# this set. The runtime half (sysctl.d, kernel command line) is system policy
+# and deliberately absent (docs/design/20-scope.md).
+HARDENING_KCONFIG = {
+    # Memory protections: W^X kernel and module text, guard-paged stacks
+    "CONFIG_STRICT_KERNEL_RWX": "y",
+    "CONFIG_STRICT_MODULE_RWX": "y",
+    "CONFIG_DEBUG_WX": "y",
+    "CONFIG_VMAP_STACK": "y",
+    "CONFIG_SCHED_STACK_END_CHECK": "y",
+    # Address-space randomisation
+    "CONFIG_RANDOMIZE_BASE": "y",
+    "CONFIG_RANDOMIZE_MEMORY": "y",
+    "CONFIG_RANDOMIZE_KSTACK_OFFSET": "y",
+    "CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT": "y",
+    # Compiler-inserted checks
+    "CONFIG_STACKPROTECTOR": "y",
+    "CONFIG_STACKPROTECTOR_STRONG": "y",
+    "CONFIG_FORTIFY_SOURCE": "y",
+    "CONFIG_HARDENED_USERCOPY": "y",
+    "CONFIG_INIT_STACK_ALL_ZERO": "y",
+    # Allocator hardening
+    "CONFIG_SLAB_FREELIST_RANDOM": "y",
+    "CONFIG_SLAB_FREELIST_HARDENED": "y",
+    "CONFIG_SLAB_BUCKETS": "y",
+    "CONFIG_SHUFFLE_PAGE_ALLOCATOR": "y",
+    "CONFIG_INIT_ON_ALLOC_DEFAULT_ON": "y",
+    # Measurable runtime cost: zeroes every freed page/object (a few percent
+    # on allocation-heavy work). Not on in Arch's config.
+    "CONFIG_INIT_ON_FREE_DEFAULT_ON": "y",
+    # Small runtime cost: clears call-used registers on function return,
+    # shrinking ROP gadgets. Not on in Arch's config.
+    "CONFIG_ZERO_CALL_USED_REGS": "y",
+    # Corruption detection: a detected list corruption BUGs instead of
+    # continuing on a corrupted structure. Not on in Arch's config.
+    "CONFIG_LIST_HARDENED": "y",
+    "CONFIG_BUG_ON_DATA_CORRUPTION": "y",
+    # Attack surface
+    "CONFIG_STRICT_DEVMEM": "y",
+    "CONFIG_IO_STRICT_DEVMEM": "y",
+    "CONFIG_SECCOMP": "y",
+    "CONFIG_SECCOMP_FILTER": "y",
+    "CONFIG_SECURITY_YAMA": "y",
+    "CONFIG_COMPAT_BRK": "n",
+}
+
 # F2: hotplug driver classes re-enabled as modules AFTER config minimization
 # (localmodconfig strips drivers for hardware not currently plugged in). Merged
 # via a dedicated post-minimization fragment (sysforge.hotplug.config) so the
@@ -440,6 +499,11 @@ def write_kconfig_fragment(
          by the stage for an ``--autofdo`` build); labeled ``fdo`` in the fragment
       4. kernel.toml [[kconfig]]                 — manual overrides, validated
 
+    Under ``kernel.toml hardening = true`` (3.4.0-F3), ``HARDENING_KCONFIG``
+    sits below all four, labeled ``hardening``; any source that sets one of its
+    tokens to a different value wins with a WARN. ``kconfig_merge = false``
+    with ``hardening = true`` raises, since the set could not apply.
+
     Manual-vs-hardware conflicts are logged as WARN; manual wins. Device
     entries are machine-derived advisories — a hardware/manual entry overrides
     them silently. If no entries exist from any source, no fragment is written.
@@ -459,6 +523,12 @@ def write_kconfig_fragment(
     path is None when no fragment was written (no entries, or dry-run).
     """
     extra_kconfig = extra_kconfig or {}
+    if kernel_cfg.hardening and not kernel_cfg.kconfig_merge:
+        raise RuntimeError(
+            "[KERNEL] kernel.toml hardening = true needs the kconfig fragment to "
+            "apply the hardening set, but kconfig_merge = false disables it. Set "
+            "kconfig_merge = true, or hardening = false."
+        )
     # Master gate: kconfig_merge = false disables the fragment outright. Remove
     # any stale fragment so a prior run's sysforge.config isn't merged by the
     # PKGBUILD — "off" must mean off.
@@ -499,8 +569,21 @@ def write_kconfig_fragment(
                 "disable the requested optimization)",
             )
 
-    # Merge: device base, hardware, feature(fdo), manual on top
-    merged = {**device_kconfig, **hw_kconfig, **extra_kconfig, **manual_kconfig}
+    # Hardening (3.4.0-F3) is the floor: every other source overrides it, and
+    # each override is said, since it switches off a protection the user opted in to.
+    hardening_kconfig = dict(HARDENING_KCONFIG) if kernel_cfg.hardening else {}
+    for label, source_kconfig in (("device", device_kconfig), ("hardware_profile", hw_kconfig),
+                                  ("feature(fdo)", extra_kconfig), ("kernel.toml", manual_kconfig)):
+        for option, value in source_kconfig.items():
+            if option in hardening_kconfig and hardening_kconfig[option] != value:
+                _log.warn(
+                    f"kconfig conflict on {option}: hardening={hardening_kconfig[option]!r}, "
+                    f"{label}={value!r}; {label} wins over the hardening set",
+                )
+
+    # Merge: hardening floor, device base, hardware, feature(fdo), manual on top
+    merged = {**hardening_kconfig, **device_kconfig, **hw_kconfig,
+              **extra_kconfig, **manual_kconfig}
 
     if not merged:
         _log.info("No kconfig entries from any source: skipping fragment")
@@ -520,6 +603,7 @@ def write_kconfig_fragment(
     manual_count = 0
     device_count = 0
     fdo_count = 0
+    hardening_count = 0
     for option, value in merged.items():
         if option in manual_kconfig:
             source = "manual"
@@ -530,15 +614,20 @@ def write_kconfig_fragment(
         elif option in hw_kconfig:
             source = "hardware"
             hw_count += 1
-        else:
+        elif option in device_kconfig:
             source = "device"
             device_count += 1
+        else:
+            source = "hardening"
+            hardening_count += 1
         lines.append(f"# source: {source}")
         lines.append(format_kconfig_line(option, value))
 
     counts = f"{hw_count} hardware, {device_count} device, {manual_count} manual"
     if fdo_count:
         counts += f", {fdo_count} fdo"
+    if hardening_count:
+        counts += f", {hardening_count} hardening"
     if dry_run:
         _log.ui(
             f"[dry-run] would write kconfig fragment ({counts}): {fragment_path}",

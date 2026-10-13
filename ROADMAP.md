@@ -114,17 +114,10 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.4.0-B14` | update --help says --explain-drift does no source sync, but it does | med | small | patch |
-| `3.4.0-B17` | a mistyped [bench] table breaks toolchain.toml parsing for every verb | med | small | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
 | `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
-| `3.4.0-F3` | an opt-in, DKMS-safe compile-time kernel hardening set | med | medium | minor |
 | `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
-| `3.4.0-B18` | rebuilding the toolchain at the same version leaves an old GAIN looking current | low | small | patch |
-| `3.4.0-B20` | state profiles looks up the bench result the wrong way | low | small | patch |
-| `3.4.0-B21` | bench toolchain unpacks about 440 MB into $TMPDIR | low | small | patch |
-| `3.4.0-F10` | bench toolchain always times stock first in every round | low | small | patch |
-| `3.4.0-B19` | bench toolchain's stock fetch fails in cases pacman itself would get through | low | medium | patch |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
@@ -280,40 +273,6 @@ canonical ordering.
   currently needs forensic reconstruction.
   **Standards home on adoption:** none.
 
-- **`3.4.0-F3` — an opt-in, DKMS-safe compile-time kernel hardening set.** Promoted from `3.1.0-Q1`,
-  which asked whether sysforge should take a position on kernel hardening. The scope boundary is now
-  decided. sysforge owns the **compile-time `CONFIG_*` half**, because the kernel stage already decides
-  kernel config. The **runtime half stays out of scope**: `/etc/sysctl.d`, kernel command-line
-  hardening, and `kptr_restrict`/`unprivileged_bpf_disabled`-style sysctls are system policy, which
-  `docs/design/20-scope.md` already excludes. Add a top-level `kernel.toml` key (for example
-  `hardening = false`; placed above `[fdo]` per the file's table-header rule, with
-  `_KNOWN_TOP_KEYS` extended in `tools/check_shipped.py`). When it is on, the stage merges a curated
-  hardening set into the `sysforge.config` fragment at the **lowest** precedence, so manual
-  `[[kconfig]]` entries and hardware-profile entries override it with the usual conflict warning, and
-  so the set survives `localmodconfig` minimisation like any other fragment entry.
-  **The set is DKMS-safe by construction:** it never contains module-signature enforcement
-  (`MODULE_SIG_FORCE`) or a lockdown mode that blocks unsigned modules, because on the tested
-  hardware (NVIDIA through DKMS) those leave the next boot without a graphics driver. Add a guard on the
-  *merged* result, so it also catches a manual entry: if the resolved config enforces module
-  signatures or lockdown while `kernel_safety.list_dkms_modules()` is non-empty, refuse before the
-  build and name the modules. This follows the `3.0.0-F1` precedent of preflighting a
-  `CONFIG_*` requirement rather than proceeding silently. Pick the token list at implementation time from the
-  kernel's own self-protection recommendations, checked against the current Arch config. Tokens Arch
-  already enables still belong in the set, to protect them from minimisation. Tokens with a
-  measurable runtime cost (for example `INIT_ON_FREE_DEFAULT_ON`) go in with a comment, which is
-  why the whole set is opt-in. The guide and `kernel.toml` comments state the runtime half is
-  deliberately not covered. Tests: the key off leaves the fragment unchanged; the key on merges at lowest
-  precedence and a manual entry wins; the DKMS guard refuses on a merged sig-force result with
-  modules present and passes without them; and an assertion that the curated set contains no
-  sig-enforcement or lockdown token.
-  *Priority: med · Effort: medium · Bump: minor* — an additive opt-in with no default change; the
-  effort is the merge precedence plus the DKMS guard and its tests, not the token list.
-  **Standards home on adoption:** a scope citation for the Arch wiki
-  [Security](https://wiki.archlinux.org/title/Security) page in `docs/design/20-scope.md` next to
-  `System_maintenance` and `General_recommendations`, which also narrows that file's "security
-  hardening as a whole" exclusion to the runtime half. It is **not** a `21-standards.md` row,
-  because the page is too broad to enforce as a whole.
-
 - **`3.4.0-F4` — a revert or forget is remembered, so `update` doesn't quietly re-adopt the
   package.** Promoted from `3.2.0-Q2`, which asked what the unit of "stop maintaining this" is.
   The mechanical half has shipped. `3.2.0-B15` fixed the reconcile key, and conflict-mode `revert`
@@ -383,18 +342,6 @@ canonical ordering.
   adding a field is a minor change, renaming or removing one is major and bumps `schema`. The row
   is enforced by the schema-fixture tests.
 
----
-
-- **`3.4.0-F10` — `bench toolchain` always times stock first in every round.** Each round runs
-  stock then sysforge (`bench_harness.run_interleaved`), so any systematic within-round order
-  effect (a compiler warming caches the other reuses, a turbo budget spent by the first job) lands
-  on the same side every time. Alternating the order per round (ABBA) cancels it at no cost in
-  runs. Keep one untimed warm-up per compiler. Tests: the call order over four rounds is
-  stock, sysforge, sysforge, stock, stock, sysforge, sysforge, stock; per-label sample counts
-  unchanged. Files under `## Changed`: it changes how the number is measured, not the interface.
-  *Priority: low · Effort: small · Bump: patch* — low because interleaving already spreads drift
-  and no order effect has been observed; small because it is the loop in one function.
-
 
 ### Bugs
 
@@ -413,75 +360,6 @@ canonical ordering.
   `--explain-drift` run makes no scheduler request (or the help text names `--offline`).
   *Priority: med · Effort: small · Bump: patch* — med because the help promises a read-only,
   no-network report and the run does network I/O; small because it is one gate or one string.
-
----
-
-- **`3.4.0-B17` — a mistyped `[bench]` table breaks `toolchain.toml` parsing for every verb.**
-  `ToolchainConfig.from_toml` reads `[bench] corpus` without checking types, so `corpus = 5`
-  raises `TypeError` and `bench = "x"` raises `AttributeError` while the config loads. That is
-  not limited to `bench toolchain`: `run toolchain` and `state profiles` load the same config and
-  fail with a traceback over a key that configures no build. Validate in `from_toml` the way
-  `_soname_mode` does: warn and fall back to the default (built-in workload) rather than abort,
-  accepting a string or a list of strings. Tests: `corpus = 5`, `corpus = [1]` and `bench = "x"`
-  each warn and parse to `bench_corpus == ()`; a valid list is unchanged.
-  *Priority: med · Effort: small · Bump: patch* — med because a one-character typo in an advisory
-  table takes down the toolchain stage; small because it is one parse site.
-
----
-
-- **`3.4.0-B18` — rebuilding the toolchain at the same version leaves an old GAIN looking
-  current.** `bench_state.is_stale` compares only the installed `pacman -Q` version and the
-  workload fingerprint. A toolchain rebuild with a fresh profile (`--rebuild-profdata`, a broader
-  `training_corpus`, new flags) keeps the same `pkgver-pkgrel`, so `state profiles` keeps showing
-  the previous build's ratio without `(stale)`. Record `build_state`'s `built_at` for `clang` in
-  `bench.toml` and treat a different value as stale. An older `bench.toml` without the field
-  then loads as stale rather than failing. Tests: same version with a newer `built_at` is stale;
-  equal values are not; a result missing the field is stale.
-  *Priority: low · Effort: small · Bump: patch* — low because the number was right when measured
-  and a re-run fixes it; small because the field already exists in `build_state.toml`.
-
----
-
-- **`3.4.0-B19` — `bench toolchain`'s stock fetch fails in cases pacman itself would get
-  through.** Three gaps in `primitives/stock_pkg.py`. `%l` names only the first `Server`, so a
-  lagging mirror, or a sync DB newer than that mirror, gives a 404 where pacman would try the next
-  mirror; the error should try the remaining servers (`pacman-conf --repo <repo> Server`) before
-  giving up. A cached archive that fails the checksum is a hard error rather than a fallback to
-  downloading a fresh copy into the temp dir (the cache file itself is never touched). And `pacman
-  -Sp` resolves dependencies against the installed system, so an unrelated transaction-prepare
-  failure (a conflict, a versioned dependency) blocks a bench that only needs two archives;
-  `-Sp -dd` decouples that. Tests: first server 404 then second succeeds; corrupt cache plus
-  `--offline` still errors, without `--offline` downloads; the argv carries `-dd`.
-  *Priority: low · Effort: medium · Bump: patch* — low because the common case (cache hit, healthy
-  mirror) works; medium for the mirror fallback and its tests.
-
----
-
-- **`3.4.0-B20` — `state profiles` looks up the bench result the wrong way.** `_toolchain_gain`
-  calls `resolve_state_dir(None)`, which on an unprovisioned `/var/lib/sysforge` enters the
-  `fs_provision` path that can ask for sudo, from a read-only listing; it also ignores
-  `--state-dir`, so a result saved with `bench toolchain --state-dir X` never shows in GAIN (give
-  `state profiles` the same `--state-dir` flag). It re-hashes the whole configured `[bench]
-  corpus` on every listing, a hidden cost for a large corpus; compare a cheaper key (paths, sizes,
-  mtimes) first and hash only when that changed. And it reaches into the private
-  `bench_cmd._load_tcfg`; make the loader public or share the toolchain loader `state_cmd` already
-  has. Completions and the man page gain the flag. Tests: `--state-dir` is honoured; no
-  provisioning call happens when the default dir is unwritable; an unchanged corpus is not re-hashed.
-  *Priority: low · Effort: small · Bump: patch* — low because it only matters with a non-default
-  state dir or a large corpus; small because each part is a few lines.
-
----
-
-- **`3.4.0-B21` — `bench toolchain` unpacks about 440 MB into `$TMPDIR`.** The whole `usr/` tree
-  of `clang` and `llvm-libs` is extracted into a `TemporaryDirectory`, and a downloaded archive
-  stays beside it until the run ends. On Arch `$TMPDIR` is usually `/tmp`, a tmpfs, so that is RAM
-  for the length of the run, and a small tmpfs fails the extraction outright. Extract only what
-  the compiler needs (`usr/bin/clang*`, `usr/lib/libclang-cpp.so*`, `usr/lib/libLLVM*.so*`,
-  `usr/lib/clang/`), delete a downloaded archive once it is unpacked, and say in the PGO guide how
-  much space the run uses. Tests: `extract` passes the member list to `bsdtar`; a downloaded
-  archive is gone after extraction; a cached one is left alone.
-  *Priority: low · Effort: small · Bump: patch* — low because it works on a typical desktop;
-  small because it is one argv and one unlink.
 
 
 ### Open questions

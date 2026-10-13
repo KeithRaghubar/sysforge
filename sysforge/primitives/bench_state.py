@@ -6,8 +6,9 @@
 bench_state.py — ``<state_dir>/bench.toml``, the last bench result per target (3.4.0-F6).
 
 The one reader and writer. A result is keyed by target (``[toolchain]``) and
-carries the installed version and workload fingerprint it was measured on, so
-``is_stale`` can tell ``state profiles`` when either has since moved.
+carries the installed version, the build's ``built_at`` and the workload
+fingerprint it was measured on, so ``is_stale`` can tell ``state profiles`` when
+any of them has since moved.
 
 The write deliberately does not go through ``atomic_write.replace_file``: that
 seam escalates through the privilege seam when the direct write is refused, and
@@ -39,6 +40,13 @@ class BenchResult:
     installed_median_s: float
     ratio: float | None  # None across a major-version gap
     measured_at: str
+    # build_state's built_at for clang (3.4.0-B18): a rebuild with a fresh
+    # profile keeps pkgver-pkgrel, so the version alone can't date the build.
+    # "" for a result recorded before the field existed, which reads as stale.
+    built_at: str = ""
+    # bench_workload.stat_key of a configured corpus (3.4.0-B20): lets
+    # ``state profiles`` skip re-hashing it while paths, sizes and mtimes match.
+    corpus_key: str = ""
 
 
 # What a hand-edited table must still hold for ``load`` to trust it (TOML may
@@ -47,7 +55,10 @@ _FIELD_TYPES: dict[str, type | tuple[type, ...]] = {
     "installed_version": str, "stock_version": str, "corpus": str,
     "fingerprint": str, "runs": int, "stock_median_s": (int, float),
     "installed_median_s": (int, float), "ratio": (int, float), "measured_at": str,
+    "built_at": str, "corpus_key": str,
 }
+# Fields an older bench.toml may lack; ``load`` keeps the dataclass default.
+_OPTIONAL = frozenset({"ratio", "built_at", "corpus_key"})
 
 
 def now_iso() -> str:
@@ -119,14 +130,23 @@ def load(state_dir: Path, target: str) -> BenchResult | None:
     if not isinstance(table, dict):
         return None
     kwargs: dict[str, Any] = {f.name: table.get(f.name) for f in fields(BenchResult)}
-    for key, value in kwargs.items():
-        if value is None and key == "ratio":
+    for key, value in list(kwargs.items()):
+        if value is None and key in _OPTIONAL:
+            if key != "ratio":
+                del kwargs[key]
             continue
         if not isinstance(value, _FIELD_TYPES[key]) or isinstance(value, bool):
             return None
     return BenchResult(**kwargs)
 
 
-def is_stale(result: BenchResult, installed_version: str | None, fingerprint: str) -> bool:
-    """The installed build or the workload has moved since *result* was measured."""
-    return result.installed_version != installed_version or result.fingerprint != fingerprint
+def is_stale(result: BenchResult, installed_version: str | None, fingerprint: str,
+             built_at: str | None) -> bool:
+    """The installed build or the workload has moved since *result* was measured.
+
+    *built_at* is build_state's timestamp for the installed clang; a result with
+    none recorded is stale, since nothing ties it to the current build.
+    """
+    return (result.installed_version != installed_version
+            or result.fingerprint != fingerprint
+            or not result.built_at or result.built_at != built_at)

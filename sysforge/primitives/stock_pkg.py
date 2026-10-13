@@ -13,9 +13,17 @@ use ``pacman -Sw`` (root-only, writes the system cache). It asks
 when one exists, otherwise downloads as the user into a temp dir, and checks
 the checksum before anything is extracted. ``build_sandbox.fetch_repo_packages``
 is the privileged sibling for builds that install into a container.
+
+It gets through where pacman would (3.4.0-B19): ``-Sp -dd`` so an unrelated
+dependency problem on the host can't block two archive lookups, the repo's
+other ``Server`` mirrors when the first one fails, and a fresh download when a
+cached archive fails its checksum. Only what the compiler needs is unpacked,
+and a downloaded archive is deleted once it is (3.4.0-B21): ``$TMPDIR`` is
+usually a tmpfs, so the full ~440 MB ``usr/`` tree would sit in RAM.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import http.client
 import shutil
@@ -29,6 +37,11 @@ from sysforge.primitives.local_repo import REPO_NAME
 
 _FORMAT = "%n|%v|%r|%f|%l|%h"
 _TIMEOUT_S = 60
+# What a stock clang needs to compile -O2 -c: the driver and its symlinks, the
+# two shared libraries it loads, and the resource dir (builtin headers).
+EXTRACT_MEMBERS = ("usr/bin/clang", "usr/bin/clang++", "usr/bin/clang-[0-9]*",
+                   "usr/lib/libclang-cpp.so*",
+                   "usr/lib/libLLVM*.so*", "usr/lib/clang")
 
 
 class StockUnavailable(RuntimeError):
@@ -48,10 +61,11 @@ class StockPkg:
 def resolve(names: Sequence[str]) -> list[StockPkg]:
     """The sync-DB build of each of *names*, in order. Raises ``StockUnavailable``.
 
-    ``-Sp`` also prints any dependency pacman would pull in; only the requested
-    names are kept.
+    ``-dd`` skips dependency resolution: the bench needs the named archives
+    only, and resolving against the installed system lets an unrelated conflict
+    or versioned dependency fail the lookup. Only the requested names are kept.
     """
-    res = run.probe(["pacman", "-Sp", "--print-format", _FORMAT, *names])
+    res = run.probe(["pacman", "-Sp", "-dd", "--print-format", _FORMAT, *names])
     rows: dict[str, StockPkg] = {}
     for line in res.stdout.splitlines() if res.returncode == 0 else []:
         parts = line.strip().split("|")
@@ -88,34 +102,102 @@ def _cached(pkg: StockPkg) -> Path | None:
     return None
 
 
-def obtain(pkg: StockPkg, workdir: Path, *, offline: bool,
-           opener=urllib.request.urlopen) -> Path:
-    """A verified archive of *pkg*: cached in place, else downloaded into *workdir*."""
-    path = _cached(pkg)
-    if path is None:
-        if offline:
-            raise StockUnavailable(
-                f"{pkg.filename} is not in the pacman cache and --offline was given")
-        path = Path(workdir) / pkg.filename
+def _repo_servers(repo: str) -> list[str]:
+    """Every ``Server`` pacman would try for *repo*, in order (empty on failure)."""
+    res = run.probe(["pacman-conf", "--repo", repo, "Server"])
+    if res.returncode != 0:
+        return []
+    return [line.strip().rstrip("/") for line in res.stdout.splitlines() if line.strip()]
+
+
+def _urls(pkg: StockPkg) -> list[str]:
+    """``%l`` (the first mirror) first, then the repo's other mirrors."""
+    urls = [pkg.location]
+    for server in _repo_servers(pkg.repo):
+        url = f"{server}/{pkg.filename}"
+        if url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _download(pkg: StockPkg, dest: Path, opener) -> None:
+    """Fetch *pkg* into *dest* from the first mirror that serves a verified copy."""
+    errors = []
+    for url in _urls(pkg):
         try:
-            with opener(pkg.location, timeout=_TIMEOUT_S) as src, path.open("wb") as dst:
+            with opener(url, timeout=_TIMEOUT_S) as src, dest.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
         except (OSError, http.client.HTTPException, ValueError) as exc:
             # OSError covers URLError/HTTPError and socket timeouts; a response
             # cut short raises IncompleteRead (HTTPException), a location
             # urllib cannot open raises ValueError.
-            raise StockUnavailable(f"could not download {pkg.location}: {exc}") from exc
-    if _sha256(path) != pkg.sha256:
+            errors.append(f"{url}: {exc}")
+            continue
+        if _sha256(dest) == pkg.sha256:
+            return
+        errors.append(f"{url}: does not match the sync database checksum")
+    dest.unlink(missing_ok=True)
+    raise StockUnavailable(f"could not download {pkg.filename} ({'; '.join(errors)})")
+
+
+def obtain(pkg: StockPkg, workdir: Path, *, offline: bool,
+           opener=urllib.request.urlopen) -> Path:
+    """A verified archive of *pkg*: cached in place, else downloaded into *workdir*.
+
+    A cached copy that fails the checksum is passed over (never modified) for
+    a fresh download; with *offline* there is nothing to fall back to.
+    """
+    cached = _cached(pkg)
+    if cached is not None:
+        if _sha256(cached) == pkg.sha256:
+            return cached
+        if offline:
+            raise StockUnavailable(
+                f"{cached} does not match the sync database checksum and "
+                "--offline was given; not using it")
+    elif offline:
         raise StockUnavailable(
-            f"{path} does not match the sync database checksum; not using it")
+            f"{pkg.filename} is not in the pacman cache and --offline was given")
+    path = Path(workdir) / pkg.filename
+    _download(pkg, path, opener)
     return path
 
 
-def extract(archives: Sequence[Path], prefix: Path) -> None:
-    """Unpack each archive's ``usr/`` tree under *prefix*. Raises ``StockUnavailable``."""
+def _matches(name: str, pattern: str) -> bool:
+    """bsdtar's pattern rule: the entry itself or any parent directory matches."""
+    parts = name.rstrip("/").split("/")
+    return any(fnmatch.fnmatchcase("/".join(parts[:i]), pattern)
+               for i in range(1, len(parts) + 1))
+
+
+def _members(archive: Path) -> list[str]:
+    """The :data:`EXTRACT_MEMBERS` patterns present in *archive*.
+
+    bsdtar fails on a pattern an archive lacks, and each package carries only
+    part of the set (``libLLVM`` is in ``llvm-libs``, the rest in ``clang``).
+    """
+    res = run.probe(["bsdtar", "-tf", str(archive)])
+    if res.returncode != 0:
+        raise StockUnavailable(f"could not read {archive}: {(res.stderr or '').strip()}")
+    names = res.stdout.splitlines()
+    return [pat for pat in EXTRACT_MEMBERS if any(_matches(n, pat) for n in names)]
+
+
+def extract(archives: Sequence[Path], prefix: Path, *,
+            downloaded_in: Path | None = None) -> None:
+    """Unpack what the compiler needs from each archive under *prefix*.
+
+    An archive under *downloaded_in* (the caller's temp dir, where ``obtain``
+    downloads) is deleted once unpacked; a cached one is never touched. Raises
+    ``StockUnavailable``.
+    """
     Path(prefix).mkdir(parents=True, exist_ok=True)
     for archive in archives:
-        res = run.probe(["bsdtar", "-xf", str(archive), "-C", str(prefix), "usr"])
-        if res.returncode != 0:
-            raise StockUnavailable(
-                f"could not extract {archive}: {(res.stderr or '').strip()}")
+        members = _members(archive)
+        if members:
+            res = run.probe(["bsdtar", "-xf", str(archive), "-C", str(prefix), *members])
+            if res.returncode != 0:
+                raise StockUnavailable(
+                    f"could not extract {archive}: {(res.stderr or '').strip()}")
+        if downloaded_in is not None and Path(archive).parent == Path(downloaded_in):
+            Path(archive).unlink(missing_ok=True)

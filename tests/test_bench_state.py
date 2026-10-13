@@ -10,7 +10,7 @@ def _r(**kw):
     base = dict(installed_version="23.1.1-1", stock_version="23.1.1-1",
                 corpus='built-in "synthetic" TUs', fingerprint="f" * 64, runs=5,
                 stock_median_s=4.21, installed_median_s=3.52, ratio=1.196,
-                measured_at="2026-10-11T10:30:00Z")
+                measured_at="2026-10-11T10:30:00Z", built_at="2026-10-10T08:00:00Z")
     base.update(kw)
     return bs.BenchResult(**base)
 
@@ -39,12 +39,34 @@ def test_missing_and_malformed_load_none(tmp_path):
     assert bs.load(tmp_path, "toolchain") is None
 
 
+_AT = "2026-10-10T08:00:00Z"
+
+
 def test_is_stale():
     r = _r()
-    assert not bs.is_stale(r, "23.1.1-1", "f" * 64)
-    assert bs.is_stale(r, "23.1.2-1", "f" * 64)
-    assert bs.is_stale(r, "23.1.1-1", "e" * 64)
-    assert bs.is_stale(r, None, "f" * 64)
+    assert not bs.is_stale(r, "23.1.1-1", "f" * 64, _AT)
+    assert bs.is_stale(r, "23.1.2-1", "f" * 64, _AT)
+    assert bs.is_stale(r, "23.1.1-1", "e" * 64, _AT)
+    assert bs.is_stale(r, None, "f" * 64, _AT)
+
+
+def test_same_version_rebuild_is_stale():
+    """3.4.0-B18: a toolchain rebuild with a fresh profile keeps pkgver-pkgrel,
+    so the build's own timestamp is what tells the old ratio apart."""
+    assert bs.is_stale(_r(), "23.1.1-1", "f" * 64, "2026-10-12T09:00:00Z")
+    assert bs.is_stale(_r(), "23.1.1-1", "f" * 64, None)
+
+
+def test_result_without_built_at_loads_as_stale(tmp_path):
+    """A bench.toml written before the field existed loads, and reads as stale."""
+    bs.save(tmp_path, "toolchain", _r())
+    path = tmp_path / bs.FILENAME
+    path.write_text("".join(
+        line for line in path.read_text().splitlines(keepends=True)
+        if not line.startswith("built_at")))
+    old = bs.load(tmp_path, "toolchain")
+    assert old is not None and old.ratio == 1.196
+    assert bs.is_stale(old, "23.1.1-1", "f" * 64, _AT)
 
 
 def test_save_never_escalates_on_an_unwritable_dir(tmp_path, monkeypatch):

@@ -601,27 +601,31 @@ def _load_toolchain_cfg() -> dict | None:
     return _try_load_toml(TOOLCHAIN_PATH) if TOOLCHAIN_PATH.exists() else None
 
 
-def _bench_state_dir():
+def _bench_state_dir(args):
+    """``--state-dir``, else the usual resolution, never provisioning: a listing
+    must not ask for sudo to create /var/lib/sysforge (3.4.0-B20)."""
     from sysforge.primitives.paths import resolve_state_dir
-    return resolve_state_dir(None)[0]
+    return resolve_state_dir(getattr(args, "state_dir", None), provision=False)[0]
 
 
-def _toolchain_gain() -> str:
+def _toolchain_gain(state_dir) -> str:
     """The ``instr-pgo`` row's GAIN cell, from ``bench.toml`` (3.4.0-F6).
 
-    ``1.20x``, ``1.20x (stale)`` once clang or the bench workload has moved since
-    the measurement, or ``-`` with no result (or none with a ratio, as across a
+    ``1.20x``, ``1.20x (stale)`` once clang (its version or, for a same-version
+    rebuild, its ``built_at``) or the bench workload has moved since the
+    measurement, or ``-`` with no result (or none with a ratio, as across a
     major-version gap).
     """
     from sysforge import bench_core
     from sysforge.primitives import bench_state
 
-    result = bench_state.load(_bench_state_dir(), bench_core.TARGET)
+    result = bench_state.load(state_dir, bench_core.TARGET)
     if result is None or result.ratio is None:
         return "-"
-    fp = bench_core.current_fingerprint(bench_core.load_tcfg())
+    fp = bench_core.current_fingerprint(bench_core.load_tcfg(), result)
     stale = fp is None or bench_state.is_stale(
-        result, bench_core.installed_version("clang"), fp)
+        result, bench_core.installed_version("clang"), fp,
+        bench_core.recorded_built_at(state_dir))
     return f"{result.ratio:.2f}x" + (" (stale)" if stale else "")
 
 
@@ -680,7 +684,8 @@ def cmd_state_profiles(args) -> int:
         def _is_toolchain(r) -> bool:
             return r.method == "instr-pgo" and not r.target
 
-        gain = _toolchain_gain() if any(_is_toolchain(r) for r in rows) else "-"
+        gain = (_toolchain_gain(_bench_state_dir(args))
+                if any(_is_toolchain(r) for r in rows) else "-")
         table = [
             (
                 r.method + (f"/{r.target}" if r.target else ""),
@@ -745,6 +750,8 @@ class StateProfilesVerb(Verb):
                  "a TTY. A later rebuild is then unprofiled until you collect again.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
+        p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
+            help="Override state directory (where `bench toolchain` recorded the GAIN figure).")
         p.set_defaults(verb_cls=cls)
         return p
 

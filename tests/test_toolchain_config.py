@@ -311,6 +311,28 @@ def test_bench_corpus_parsed_and_defaulted():
     assert ToolchainConfig.from_toml({"bench": {"corpus": "/one"}}).bench_corpus == ("/one",)
 
 
+@pytest.mark.parametrize("data", [
+    {"bench": {"corpus": 5}},
+    {"bench": {"corpus": [1]}},
+    {"bench": {"corpus": ["/ok", 2]}},
+    {"bench": "x"},
+])
+def test_mistyped_bench_table_warns_and_falls_back(data, capsys):
+    """3.4.0-B17: `[bench]` configures no build, so a typo in it must not take
+    down every verb that loads toolchain.toml — warn and use the built-in
+    workload, the way `_soname_mode` handles its advisory knob."""
+    cfg = ToolchainConfig.from_toml(data)
+    assert cfg.bench_corpus == ()
+    assert cfg.bench_after_build is False
+    assert "[bench]" in capsys.readouterr().err
+
+
+def test_valid_bench_corpus_list_is_not_warned_about(capsys):
+    cfg = ToolchainConfig.from_toml({"bench": {"corpus": ["/a", "/b"]}})
+    assert cfg.bench_corpus == ("/a", "/b")
+    assert capsys.readouterr().err == ""
+
+
 def test_reuse_digest_ignores_the_bench_table():
     """[bench] tunes a read-only verb; editing it must not invalidate the Pass-4
     reuse cache, and a config without it hashes exactly as before."""

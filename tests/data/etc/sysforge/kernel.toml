@@ -217,6 +217,25 @@ pkgname = "linux-sysforge"
 #   Set false to build the fragment from [kconfig] + manual entries only.
 # device_kconfig = true
 
+# hardening — default: false — merge a curated compile-time hardening set
+#   into the sysforge.config fragment: W^X kernel and module memory, address
+#   and stack randomisation, stack protector, FORTIFY_SOURCE, hardened usercopy,
+#   allocator freelist hardening, zeroed stack and heap memory, list-corruption
+#   checks, and a smaller /dev/mem and syscall surface. Most of the set is
+#   already on in Arch's config; listing it keeps a base config or kconfig
+#   sequence from dropping it. Three tokens are not on in Arch's config, and two
+#   of those cost runtime: INIT_ON_FREE_DEFAULT_ON (zeroes freed memory, a few
+#   percent on allocation-heavy work) and ZERO_CALL_USED_REGS (small). The set
+#   sits BELOW every other fragment source: a device, hardware or [[kconfig]]
+#   entry for the same option wins, with a warning, so you can opt one token back
+#   out, e.g. option = "CONFIG_INIT_ON_FREE_DEFAULT_ON", value = "n".
+#   It never enforces module signatures or a lockdown mode, which would leave
+#   DKMS modules (such as NVIDIA's) unloadable; a manual [[kconfig]] entry that
+#   does is refused before the build while DKMS modules are registered.
+#   Compile-time only: runtime hardening (sysctl.d, kernel command line) is
+#   system policy and deliberately not covered. Needs kconfig_merge = true.
+# hardening = false
+
 # ---------------------------------------------------------------------------
 # [fdo] — keep a collected AutoFDO / Propeller profile applied
 #

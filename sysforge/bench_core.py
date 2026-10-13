@@ -63,6 +63,13 @@ def _build_entry(state_dir: Path) -> dict | None:
     return BuildState(state_dir).get("clang")
 
 
+def recorded_built_at(state_dir: Path) -> str | None:
+    """build_state's ``built_at`` for clang: what dates the build a result measured."""
+    entry = _build_entry(Path(state_dir)) or {}
+    value = entry.get("built_at")
+    return str(value) if value else None
+
+
 def load_tcfg():
     """The typed toolchain.toml, or ``None`` (absent or unparseable: the defaults)."""
     from sysforge.pipeline.stages.toolchain import config as tconfig
@@ -84,18 +91,24 @@ def _workload(tcfg, tmp: Path) -> bench_workload.Workload:
     return bench_workload.default_workload(tmp)
 
 
-def current_fingerprint(tcfg) -> str | None:
+def current_fingerprint(tcfg, recorded: bench_state.BenchResult | None = None) -> str | None:
     """The fingerprint the bench would measure today (``state profiles`` staleness).
 
     ``None`` when the configured corpus no longer resolves: no current workload
-    can match a stored result, so the caller treats it as stale.
+    can match a stored result, so the caller treats it as stale. With a
+    *recorded* result whose ``corpus_key`` still matches the corpus's paths,
+    sizes and mtimes, its fingerprint is returned without reading the sources.
     """
     corpus = _corpus(tcfg)
     if not corpus:
         return bench_workload.default_fingerprint()
     try:
-        return bench_workload.configured_workload(corpus).fingerprint
-    except ValueError:
+        files = bench_workload.corpus_files(corpus)
+        if recorded and recorded.corpus_key and \
+                bench_workload.stat_key(files) == recorded.corpus_key:
+            return recorded.fingerprint
+        return bench_workload.fingerprint(files)
+    except (ValueError, OSError):
         return None
 
 
@@ -188,7 +201,7 @@ def _measure(tcfg, runs: int, offline: bool, fail: Callable[[str], None]):
                 archives.append(stock_pkg.obtain(p, tmp, offline=offline))
             prefix = tmp / "stock"
             _phase("unpacking stock clang")
-            stock_pkg.extract(archives, prefix)
+            stock_pkg.extract(archives, prefix, downloaded_in=tmp)
             _probe_stock(prefix)
         except stock_pkg.StockUnavailable as exc:
             fail(f"bench toolchain: no stock clang to compare against: {exc}")
@@ -264,6 +277,8 @@ def run_toolchain_bench(state_dir: Path, *, runs: int = DEFAULT_RUNS,
             installed_median_s=round(i_stat.median, 4),
             ratio=None if ratio is None else round(ratio, 4),
             measured_at=bench_state.now_iso(),
+            built_at=str(entry.get("built_at") or ""),
+            corpus_key=workload.stat_key,
         ))
     except OSError as exc:
         _log.warn(f"could not record the result in {state_dir}: {exc}")

@@ -528,7 +528,8 @@ _sysforge_state_orphans() {
 _sysforge_state_profiles() {
   _arguments \
     '--purge[delete one profile store (METHOD or METHOD/TARGET)]:store:(instr-pgo pgo-mesa pgo autofdo propeller bolt)' \
-    '--no-pager[do not pipe output through $PAGER]'
+    '--no-pager[do not pipe output through $PAGER]' \
+    '--state-dir[override state directory]:dir:_directories'
 }
 
 _sysforge_state_boot_entries() {

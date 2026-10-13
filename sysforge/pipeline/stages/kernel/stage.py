@@ -87,6 +87,7 @@ def log_resolution_summary(
     _log.ui(f"  kconfig:    {kconfig_target} ({kconfig_counts})")
     _log.ui(f"  base cfg:   {base_config_source}")
     _log.ui(f"  fdo:        {fdo_label}")
+    _log.ui(f"  hardening:  {'on' if kernel_cfg.hardening else 'off'}")
     _log.ui(
         f"  subpkgs:    headers={'on' if build_headers else 'off'} "
         f"docs={'on' if build_docs else 'off'}"
@@ -516,6 +517,9 @@ class KernelStage(Stage):
         # A CONFIG_RUST=y fragment needs host Rust tooling the kernel tree
         # pins; refuse now rather than let olddefconfig drop it (3.0.0-F1).
         gates.gate_rust_preflight(fragment_path, state_dir, dry_run=options.dry_run)
+        # Module-signature enforcement or a forced lockdown would leave the
+        # host's DKMS modules unloadable on the next boot (3.4.0-F3).
+        gates.gate_dkms_module_enforcement(fragment_path, dry_run=options.dry_run)
 
         # Advisory lock around the whole build → audit → install window so two
         # concurrent `sysforge run kernel` runs sharing this state dir can't

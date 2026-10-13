@@ -304,6 +304,52 @@ def gate_rust_preflight(fragment_path, state_dir, *, dry_run):
         f"cannot build kernel Rust: refusing before the build.\n{report}")
 
 
+# Tokens that make the kernel refuse an unsigned module at load time. DKMS
+# builds its modules unsigned unless the user wires up a signing key, so on a
+# host with DKMS modules (NVIDIA on the tested hardware) any of these leaves
+# the next boot without those drivers (3.4.0-F3).
+DKMS_UNSAFE_KCONFIG = {
+    "CONFIG_MODULE_SIG_FORCE": "y",
+    "CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY": "y",
+    "CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY": "y",
+}
+
+
+def gate_dkms_module_enforcement(fragment_path, *, dry_run):
+    """Refuse a fragment that enforces module signatures while DKMS modules exist.
+
+    Runs on the merged fragment, so it catches a manual ``[[kconfig]]`` entry as
+    well as anything a future set might add; the opt-in hardening set never
+    contains these tokens (3.4.0-F3). The same shape as the ``CONFIG_RUST``
+    preflight: a hard failure before the build, downgraded in dry-run. Lists
+    DKMS modules only when an enforcing token is present, since ``dkms status``
+    is the expensive half.
+    """
+    if fragment_path is None:
+        return
+    try:
+        requested = kernel_safety.parse_kconfig_text(
+            Path(fragment_path).read_text(encoding="utf-8"))
+    except OSError:
+        return
+    enforcing = [opt for opt, val in DKMS_UNSAFE_KCONFIG.items() if requested.get(opt) == val]
+    if not enforcing:
+        return
+    modules = kernel_safety.list_dkms_modules()
+    if not modules:
+        return
+    message = (
+        f"the kconfig fragment sets {', '.join(f'{o}=y' for o in enforcing)}, which "
+        "refuses unsigned modules, and DKMS builds these unsigned: "
+        f"{', '.join(modules)}. The next boot would load none of them. Remove "
+        "the entry from kernel.toml, or sign the DKMS modules first."
+    )
+    if dry_run:
+        _log.ui(f"[KERNEL] {message}\n(dry-run: would abort before the build)")
+        return
+    raise RuntimeError(f"[KERNEL] refusing before the build: {message}")
+
+
 def built_kernel_release(config_path):
     """Read the built kernel's release string from kbuild's kernel.release."""
     if config_path is None:

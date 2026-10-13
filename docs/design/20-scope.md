@@ -27,7 +27,11 @@ than a package builder:
   snapshot);
 - user-data hygiene;
 - the broader general-recommendations territory — networking, user management,
-  locale/input configuration, and security hardening as a whole.
+  locale/input configuration, and **runtime** security hardening (`sysctl.d`,
+  the kernel command line, `kptr_restrict`/`unprivileged_bpf_disabled`-style
+  sysctls), which is system policy. The **compile-time** half is in scope,
+  because the kernel stage already decides the kernel config: `kernel.toml
+  hardening` (`3.4.0-F3`) merges a curated `CONFIG_*` set, opt-in and DKMS-safe.
 
 **Distribution support tiers.** SysForge assumes `pacman`/`makepkg` and nothing
 narrower. Three tiers, mirroring the tested-hardware tier language:
@@ -46,6 +50,7 @@ paths. A genuine behavioural divergence is a new roadmap item, not a branch.
 debug*, the Arch wiki's
 [System maintenance](https://wiki.archlinux.org/title/System_maintenance) and
 [General recommendations](https://wiki.archlinux.org/title/General_recommendations)
-pages are the reference for which maintenance topics are worth covering — filtered
+pages are the reference (with [Security](https://wiki.archlinux.org/title/Security)
+for the compile-time kernel hardening half only, `3.4.0-F3`) for which maintenance topics are worth covering — filtered
 through the in/out-of-scope boundary above. New maintenance work should trace back
 to a concrete topic on those pages rather than diverging from them.

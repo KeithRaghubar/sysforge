@@ -237,8 +237,12 @@ sysforge bench toolchain --offline  # use the stock package only from the pacman
 The bench gives no pass or fail verdict, because what counts as a worthwhile gain depends
 on your machine and on what you compile. It installs nothing and needs no sudo: the stock
 clang is unpacked into a temporary directory. If the stock package isn't in the pacman
-cache it is downloaded as your user and checked against the sync database's checksum
-before it is used. While it runs, the progress line names the step: fetching each stock
+cache, or the cached copy fails its checksum, it is downloaded as your user from your
+configured mirrors (trying each in turn, as pacman does) and checked against the sync
+database's checksum before it is used. Only the compiler and the libraries it loads are
+unpacked, about 260 MB in `$TMPDIR` for the length of the run, and a downloaded package
+(about 105 MB for both) is deleted once it is unpacked. On Arch `$TMPDIR` is usually `/tmp`,
+a RAM-backed tmpfs; set `TMPDIR` to a disk directory if that is too small. While it runs, the progress line names the step: fetching each stock
 package, unpacking it, the warm-up, then each timed round (`round 3/5`).
 
 By default the workload is a pair of built-in source files that no profile is trained on.
@@ -268,8 +272,10 @@ the bench can't run then, the toolchain install is not affected: you get a line 
 and you can run `sysforge bench toolchain` later.
 
 The result is recorded, and `sysforge state profiles` shows it in the GAIN column next to
-the toolchain profile. It is marked `(stale)` once clang is upgraded or the workload
-changes; run the bench again to refresh it.
+the toolchain profile. It is marked `(stale)` once clang is upgraded or rebuilt (even at
+the same version, for example with `--rebuild-profdata`) or the workload changes; run the
+bench again to refresh it. If you ran the bench with `--state-dir`, pass the same
+`--state-dir` to `state profiles` to see it.
 
 If the stock and installed clang versions differ, the report says so, because the ratio
 then includes upstream changes as well as the optimization. Across a major-version gap it

@@ -339,6 +339,8 @@ class KernelConfig:
     keep_hotplug_drivers: bool = False
     capture_lsmod_snapshot: bool = True
     manual_kconfig: tuple = ()
+    # Merge kconfig.HARDENING_KCONFIG at lowest precedence (3.4.0-F3)
+    hardening: bool = False
 
     # Boot-safety gates
     boot_audit: bool = True
@@ -380,6 +382,7 @@ class KernelConfig:
             keep_hotplug_drivers=bool(data.get("keep_hotplug_drivers", False)),
             capture_lsmod_snapshot=bool(data.get("capture_lsmod_snapshot", True)),
             manual_kconfig=tuple(data.get("kconfig", []) or ()),
+            hardening=bool(data.get("hardening", False)),
             boot_audit=bool(data.get("boot_audit", True)),
             require_fallback_kernel=bool(data.get("require_fallback_kernel", True)),
             min_boot_free_mb=int(data.get("min_boot_free_mb", 200)),

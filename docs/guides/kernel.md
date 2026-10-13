@@ -113,9 +113,10 @@ Your kernel's `.config` is built up in layers, each applied over the one before:
    "overlay"`, that base is laid over the PKGBUILD's config instead of replacing it, so options
    new in this kernel keep the packager's choices.
 2. **sysforge's fragment**, which merges, in increasing priority:
+   - the hardening set, if you set `hardening = true` (see [Hardening](#hardening) below);
    - drivers for the devices in this machine, from the hardware stage (`device_kconfig`);
    - CPU and platform options, from the hardware stage;
-   - your own `[[kconfig]]` entries in `kernel.toml`, which win over both:
+   - your own `[[kconfig]]` entries in `kernel.toml`, which win over all of them:
 
      ```toml
      [[kconfig]]
@@ -130,6 +131,46 @@ After the build, sysforge warns about any option it merged that did not survive 
 config. Usually you turned it off in the menu, or a step such as `olddefconfig` dropped it
 because something it depends on is off. This is a warning only. To skip the fragment entirely,
 set `kconfig_merge = false`.
+
+### Hardening
+
+`hardening = true` in `kernel.toml` adds a curated set of compile-time hardening options to the
+fragment, taken from the kernel's own self-protection recommendations:
+
+```toml
+hardening = true
+```
+
+It covers read-only, non-executable kernel and module memory, address and stack randomisation,
+the stack protector and `FORTIFY_SOURCE`, hardened copies to and from user space, allocator
+hardening, zeroed stack and heap memory, checks that stop on a corrupted kernel list, and a
+smaller `/dev/mem` and system-call surface. Arch's own config already turns most of these on.
+Listing them keeps a different base config, or a step such as `localmodconfig`, from dropping
+them. Three are not on in Arch's config: `BUG_ON_DATA_CORRUPTION`, and two that cost some speed,
+`INIT_ON_FREE_DEFAULT_ON` (zeroes memory as it is freed, a few percent on allocation-heavy work)
+and `ZERO_CALL_USED_REGS` (small). `sysforge run kernel --dry-run` shows `hardening: on` in the
+build plan.
+
+The set has the lowest priority in the fragment. Any other entry for the same option wins, with
+a warning, so you can turn one back off:
+
+```toml
+[[kconfig]]
+option = "CONFIG_INIT_ON_FREE_DEFAULT_ON"
+value = "n"
+```
+
+**It never makes the kernel require signed modules.** Module signature enforcement
+(`MODULE_SIG_FORCE`) and a forced lockdown mode would stop unsigned DKMS modules, such as
+`nvidia-open-dkms`, from loading, and the next boot would have no graphics driver. If you add one
+of those yourself as a `[[kconfig]]` entry while DKMS modules are registered, sysforge refuses
+before the build and names the modules.
+
+This covers only the options compiled into the kernel. Runtime hardening, such as `sysctl.d`
+settings and kernel command-line options, is system policy and outside what sysforge manages;
+see the Arch wiki's [Security](https://wiki.archlinux.org/title/Security) page. `hardening`
+needs `kconfig_merge` on: with `kconfig_merge = false` the run refuses rather than build an
+unhardened kernel.
 
 ---
 
@@ -222,6 +263,7 @@ mkinitcpio -P`), the step whose absence would leave the kernel unbootable.
 | build from a timer or script | `sysforge run kernel --non-interactive` |
 | start from my running kernel's config | `base_config = "running"` or `--base-config running` |
 | force a config option | a `[[kconfig]]` entry in `kernel.toml` |
+| add the compile-time hardening set | `hardening = true` |
 | pick the config steps | `kconfig_targets = [...]` |
 | discard local edits to the kernel tree | `sysforge run kernel --cleansrc` |
 | build with clang | `compiler = "llvm"` or `--compiler llvm` |

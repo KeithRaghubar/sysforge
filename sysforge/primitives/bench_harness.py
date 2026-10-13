@@ -72,6 +72,12 @@ def run_interleaved(
 ) -> dict[str, list[float]]:
     """Wall time per round, per label: one warm-up, then *runs* alternating rounds.
 
+    The order within a round flips every round (ABBA, 3.4.0-F10): a systematic
+    within-round effect, such as caches the first compiler warms for the second
+    or a turbo budget the first one spends, then lands on each side equally
+    instead of always on whichever label comes first. The warm-up keeps the
+    declared order; it is untimed.
+
     *on_round* receives ``"warm-up"`` and then ``"round i/N"`` before each
     round starts (3.4.0-F9), so a caller can show progress without this
     primitive knowing about the display.
@@ -84,9 +90,10 @@ def run_interleaved(
     for label, job in jobs.items():
         _round(label, job, runner)  # warm-up, untimed
     samples: dict[str, list[float]] = {label: [] for label in jobs}
+    forward = list(jobs.items())
     for i in range(1, runs + 1):
         report(f"round {i}/{runs}")
-        for label, job in jobs.items():
+        for label, job in (forward if i % 2 else forward[::-1]):
             start = clock()
             _round(label, job, runner)
             samples[label].append(clock() - start)

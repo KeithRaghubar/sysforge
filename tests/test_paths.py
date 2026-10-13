@@ -164,3 +164,20 @@ def test_resolve_provisions_default_when_possible(monkeypatch):
     path, source = resolve_state_dir()
     assert source == "default"
     assert str(path) == "/var/lib/sysforge"
+
+
+def test_resolve_without_provisioning_never_escalates(monkeypatch):
+    """3.4.0-B20: read-only callers pass provision=False; an unwritable default
+    is then read where this user's runs would have written (the XDG fallback
+    when it exists), and fs_provision is never reached."""
+    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
+    from sysforge.primitives import fs_provision
+    monkeypatch.setattr(_state_mod, "_state_dir_is_writable", lambda p: False)
+
+    def _boom(*a, **k):
+        raise AssertionError("provisioned")
+
+    monkeypatch.setattr(fs_provision, "ensure_writable_dir", _boom)
+    path, source = resolve_state_dir(provision=False)
+    assert path in (_state_mod.DEFAULT_STATE_DIR, _state_mod.FALLBACK_STATE_DIR)
+    assert source in ("default", "xdg-fallback")

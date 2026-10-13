@@ -89,7 +89,7 @@ def _state_dir_is_writable(path: Path) -> bool:
     return path.parent.exists() and os.access(path.parent, os.W_OK)
 
 
-def resolve_state_dir(cli_override=None):
+def resolve_state_dir(cli_override=None, *, provision: bool = True):
     """
     Resolve the state directory from CLI flag, env var, or default.
     Returns (Path, source_str) where source_str describes which was used.
@@ -99,6 +99,11 @@ def resolve_state_dir(cli_override=None):
     from source without root), falls back to the XDG state dir
     ($XDG_STATE_HOME/sysforge, default ~/.local/state/sysforge) and logs
     a one-time info message so the location is transparent.
+
+    ``provision=False`` is for read-only callers (``state profiles``): an
+    unwritable default is never provisioned (that path can ask for sudo), and
+    the XDG fallback, if it exists, is read instead, since it is where this
+    user's earlier runs wrote when provisioning was refused (3.4.0-B20).
     """
     from sysforge import log
 
@@ -123,6 +128,11 @@ def resolve_state_dir(cli_override=None):
         chosen = Path(env_val)
         _log.info(f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
         return chosen, "SYSFORGE_STATE_DIR"
+
+    if not provision:
+        if not _state_dir_is_writable(DEFAULT_STATE_DIR) and FALLBACK_STATE_DIR.is_dir():
+            return FALLBACK_STATE_DIR, "xdg-fallback"
+        return DEFAULT_STATE_DIR, "default"
 
     if not _state_dir_is_writable(DEFAULT_STATE_DIR):
         # Attempt to provision the default into the shared root:sysforge tree

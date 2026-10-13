@@ -54,8 +54,8 @@ def test_run_interleaved_order_warmup_and_timing():
         "sysforge": bh.Job((("i1",),)),
     }
     out = bh.run_interleaved(jobs, 2, runner=runner, clock=lambda: float(next(ticks)))
-    # warm-up round (untimed) then 2 timed rounds, labels alternating
-    assert [c[0] for c in calls] == ["s1", "s2", "i1"] * 3
+    # warm-up round (untimed) then 2 timed rounds, label order alternating (ABBA)
+    assert [c[0] for c in calls] == ["s1", "s2", "i1"] * 2 + ["i1", "s1", "s2"]
     assert calls[0][1] == {"LD_LIBRARY_PATH": "/x"} and calls[2][1] is None
     assert len(out["stock"]) == 2 and len(out["sysforge"]) == 2
     assert all(t == 1.0 for t in out["stock"] + out["sysforge"])
@@ -86,4 +86,22 @@ def test_run_interleaved_reports_each_round_before_running_it():
 
     jobs = {"stock": bh.Job((("s",),)), "sysforge": bh.Job((("i",),))}
     bh.run_interleaved(jobs, 2, runner=runner, on_round=events.append)
-    assert events == ["warm-up", "s", "i", "round 1/2", "s", "i", "round 2/2", "s", "i"]
+    assert events == ["warm-up", "s", "i", "round 1/2", "s", "i", "round 2/2", "i", "s"]
+
+
+def test_run_interleaved_alternates_which_compiler_goes_first():
+    """3.4.0-F10: a within-round order effect (warmed caches, a spent turbo
+    budget) must not land on the same side every round, so the order flips
+    each round; the warm-up keeps the declared order and stays untimed."""
+    order = []
+
+    def runner(argv, env):
+        order.append(argv[0])
+        return SimpleNamespace(returncode=0, stderr="")
+
+    jobs = {"stock": bh.Job((("stock",),)), "sysforge": bh.Job((("sysforge",),))}
+    out = bh.run_interleaved(jobs, 4, runner=runner)
+    assert order[:2] == ["stock", "sysforge"]  # warm-up
+    assert order[2:] == ["stock", "sysforge", "sysforge", "stock",
+                         "stock", "sysforge", "sysforge", "stock"]
+    assert len(out["stock"]) == 4 and len(out["sysforge"]) == 4

@@ -31,7 +31,8 @@ def happy(tmp_path, monkeypatch):
         bench_core, "_build_entry",
         lambda state_dir: (
             {"build_mode": env["build_mode"], "pkgver": env["recorded"][0],
-             "pkgrel": env["recorded"][1], "epoch": env["recorded"][2]}
+             "pkgrel": env["recorded"][1], "epoch": env["recorded"][2],
+             "built_at": "2026-10-10T08:00:00Z"}
             if env["build_mode"] else None))
     monkeypatch.setattr(bench_core, "load_tcfg", lambda: None)
     monkeypatch.setattr(sp, "resolve", lambda names: [
@@ -39,7 +40,7 @@ def happy(tmp_path, monkeypatch):
         for n in names])
     monkeypatch.setattr(sp, "obtain",
                         lambda pkg, workdir, offline: Path(workdir) / pkg.filename)
-    monkeypatch.setattr(sp, "extract", lambda archives, prefix: None)
+    monkeypatch.setattr(sp, "extract", lambda archives, prefix, **kw: None)
     monkeypatch.setattr(bench_core, "_probe_stock", lambda prefix: None)
 
     def fake_run(jobs, runs, on_round=None):
@@ -60,6 +61,8 @@ def test_success_reports_ratio_and_persists(tmp_path, happy, capsys):
     assert "stock/sysforge: 1.20x" in err and "built-in synthetic TUs" in err
     r = bs.load(tmp_path, "toolchain")
     assert r.ratio == pytest.approx(4.2 / 3.5, abs=1e-4) and r.runs == 3
+    # 3.4.0-B18: dated by the build it measured, not only by its version
+    assert r.built_at == "2026-10-10T08:00:00Z"
 
 
 def test_stock_job_uses_the_extracted_prefix_libs(tmp_path, happy):

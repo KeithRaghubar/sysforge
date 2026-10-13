@@ -178,6 +178,13 @@ recovery command.
 	localyesconfig are warned against as high-risk/low-reward: they
 	over-minimize to modules currently loaded and accumulate the lsmod
 	snapshot at <state_dir>/lsmod.snapshot (delete it to reset).
+	kernel.toml *hardening* (default: false) merges a curated
+	compile-time hardening set into the fragment at the lowest
+	precedence (any other entry for the same option wins, with a
+	warning). It never enforces module signatures or a lockdown mode,
+	and a manual entry that does is refused before the build while
+	DKMS modules are registered. Runtime hardening (sysctl.d, the
+	kernel command line) is not covered.
 	Read by: *run toolchain* / *run kernel*, *run pipeline*,
 	*run reconfigure*, *state boot-entries*, and *doctor* on the matching axes.
 	toolchain.toml [bench] *corpus* (default: unset) names the source

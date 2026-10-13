@@ -5364,3 +5364,149 @@ def test_kernel_build_strips_syncdeps_and_installs_deps_first(tmp_path, monkeypa
     assert (dk, bk) == ("deps", "build")
     assert "linux-git" in exclude
     assert set(SYNC_FLAGS) <= set(strip)
+
+
+# ---------------------------------------------------------------------------
+# 3.4.0-F3 — opt-in, DKMS-safe compile-time hardening set
+# ---------------------------------------------------------------------------
+
+def test_hardening_defaults_off():
+    assert kcfg({}).hardening is False
+    assert kcfg({"hardening": True}).hardening is True
+
+
+def test_hardening_off_leaves_the_fragment_unchanged(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    kernel_cfg = kcfg({"pkgname": "linux-git", "pkgbuild_src_dir": str(builds),
+                       "kconfig": [{"option": "CONFIG_HZ_1000", "value": "y"}]})
+    result, *_ = write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+    content = result.read_text()
+    assert "# source: hardening" not in content
+    assert not any(opt in content for opt in _km.kconfig.HARDENING_KCONFIG)
+
+
+def test_hardening_on_merges_the_curated_set(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    kernel_cfg = kcfg({"pkgname": "linux-git", "pkgbuild_src_dir": str(builds),
+                       "hardening": True})
+    result, *_ = write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+    assert result is not None
+    text = result.read_text()
+    requested = kernel_safety.parse_kconfig_text(text)
+    for option, value in _km.kconfig.HARDENING_KCONFIG.items():
+        assert requested.get(option) == value, option
+    assert "# source: hardening" in text
+
+
+def test_hardening_is_lowest_precedence_and_overrides_warn(tmp_path):
+    """Manual [[kconfig]] and hardware-profile entries both beat the set, with
+    the usual conflict warning, so a user can opt one token back out."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    hw = make_hardware_profile(tmp_path, kconfig={"CONFIG_ZERO_CALL_USED_REGS": "n"})
+    kernel_cfg = kcfg({
+        "pkgname": "linux-git", "pkgbuild_src_dir": str(builds), "hardening": True,
+        "kconfig": [{"option": "CONFIG_INIT_ON_FREE_DEFAULT_ON", "value": "n"}],
+    })
+    with _capture_logs() as logs:
+        result, *_ = write_kconfig_fragment(
+            kernel_cfg, {"hardware_profile": str(hw)}, dry_run=False)
+    requested = kernel_safety.parse_kconfig_text(result.read_text())
+    assert requested["CONFIG_INIT_ON_FREE_DEFAULT_ON"] == "n"
+    assert requested["CONFIG_ZERO_CALL_USED_REGS"] == "n"
+    warns = _warn_messages(logs)
+    assert any("CONFIG_INIT_ON_FREE_DEFAULT_ON" in m and "hardening" in m for m in warns)
+    assert any("CONFIG_ZERO_CALL_USED_REGS" in m and "hardening" in m for m in warns)
+
+
+def test_hardening_with_kconfig_merge_off_refuses(tmp_path):
+    """Without the fragment the set cannot apply; refuse rather than build an
+    unhardened kernel the user asked to harden (the --autofdo precedent)."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    kernel_cfg = kcfg({"pkgname": "linux-git", "pkgbuild_src_dir": str(builds),
+                       "hardening": True, "kconfig_merge": False})
+    with pytest.raises(RuntimeError, match="kconfig_merge"):
+        write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+
+
+def test_hardening_set_never_enforces_module_signatures_or_lockdown():
+    """DKMS-safe by construction: nothing in the set can leave an
+    out-of-tree module (NVIDIA through DKMS) unloadable on the next boot."""
+    hset = _km.kconfig.HARDENING_KCONFIG
+    for option, value in _km.gates.DKMS_UNSAFE_KCONFIG.items():
+        assert hset.get(option) != value, option
+    assert not any("LOCKDOWN" in o or "LOCK_DOWN" in o for o in hset)
+    assert not any(o.startswith("CONFIG_MODULE_SIG") for o in hset)
+
+
+@pytest.mark.parametrize("option", [
+    "CONFIG_MODULE_SIG_FORCE",
+    "CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY",
+    "CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY",
+])
+def test_dkms_guard_refuses_enforcement_with_dkms_modules(tmp_path, monkeypatch, option):
+    frag = tmp_path / "sysforge.config"
+    frag.write_text(f"CONFIG_HZ_1000=y\n{option}=y\n")
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: ["nvidia", "v4l2loopback"])
+    with pytest.raises(RuntimeError, match=r"nvidia, v4l2loopback") as ei:
+        _km.gates.gate_dkms_module_enforcement(frag, dry_run=False)
+    assert option in str(ei.value)
+
+
+def test_dkms_guard_passes_without_dkms_modules(tmp_path, monkeypatch):
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("CONFIG_MODULE_SIG_FORCE=y\n")
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: [])
+    _km.gates.gate_dkms_module_enforcement(frag, dry_run=False)
+    _km.gates.gate_dkms_module_enforcement(None, dry_run=False)
+
+
+def test_dkms_guard_ignores_a_fragment_that_enforces_nothing(tmp_path, monkeypatch):
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("# CONFIG_MODULE_SIG_FORCE is not set\nCONFIG_LOCK_DOWN_KERNEL_FORCE_NONE=y\n")
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules",
+                        lambda: (_ for _ in ()).throw(AssertionError("listed")))
+    _km.gates.gate_dkms_module_enforcement(frag, dry_run=False)
+
+
+def test_dkms_guard_dry_run_reports_without_raising(tmp_path, monkeypatch):
+    frag = tmp_path / "sysforge.config"
+    frag.write_text("CONFIG_MODULE_SIG_FORCE=y\n")
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: ["nvidia"])
+    with _capture_logs() as logs:
+        _km.gates.gate_dkms_module_enforcement(frag, dry_run=True)
+    assert any("would abort" in str(c) for c in logs.ui.call_args_list)
+
+
+def test_dkms_guard_refuses_a_manual_sig_force_before_the_build(tmp_path, monkeypatch):
+    """The guard runs on the merged result, so it catches a manual entry too."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds,
+                         kconfig=[{"option": "CONFIG_MODULE_SIG_FORCE", "value": "y"}])
+    state = PipelineState(tmp_path / "state")
+    opts = make_options(state_dir=tmp_path / "state")
+    monkeypatch.setattr(kernel_safety, "list_dkms_modules", lambda: ["nvidia"])
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN) as mock_build, \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        with pytest.raises(RuntimeError, match="nvidia"):
+            KernelStage().run({}, state, opts)
+    mock_build.assert_not_called()
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_resolution_summary_says_whether_hardening_is_on(tmp_path, on):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = PipelineState(tmp_path / "state")
+    p = make_kernel_toml(tmp_path, builds)
+    p.write_text(p.read_text() + f"hardening = {'true' if on else 'false'}\n")
+    opts = make_options(state_dir=tmp_path / "state", dry_run=True)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    ui = _ui_messages(logs)
+    assert any(m.strip() == f"hardening:  {'on' if on else 'off'}" for m in ui), ui

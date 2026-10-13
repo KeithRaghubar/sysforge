@@ -97,11 +97,17 @@ _DEFAULT_FILES = (("bench_workload.cpp", _CXX_TU), ("bench_workload.c", _C_TU))
 
 @dataclass(frozen=True)
 class Workload:
-    """What the bench compiles: a display label, the sources, their fingerprint."""
+    """What the bench compiles: a display label, the sources, their fingerprint.
+
+    ``stat_key`` is the cheap stand-in for the fingerprint (paths, sizes,
+    mtimes; ``stat_key``), empty for the built-in TUs, whose fingerprint costs
+    nothing to compute.
+    """
 
     label: str
     files: tuple[Path, ...]
     fingerprint: str
+    stat_key: str = ""
 
 
 def _digest(named: Sequence[tuple[str, bytes]]) -> str:
@@ -115,6 +121,21 @@ def _digest(named: Sequence[tuple[str, bytes]]) -> str:
 def fingerprint(files: Sequence[Path]) -> str:
     """SHA256 over each file's name and bytes, order-independent."""
     return _digest([(p.name, p.read_bytes()) for p in files])
+
+
+def stat_key(files: Sequence[Path]) -> str:
+    """SHA256 over each file's path, size and mtime: no file content is read.
+
+    ``state profiles`` compares this against the recorded key first and only
+    re-hashes a corpus whose key moved (3.4.0-B20), so listing stays cheap for
+    a large corpus. A content change that keeps size and mtime is missed, the
+    same trade make and ccache's direct mode accept.
+    """
+    h = hashlib.sha256()
+    for p in sorted(files):
+        st = p.stat()
+        h.update(f"{p}\0{st.st_size}\0{st.st_mtime_ns}\0".encode("utf-8"))
+    return h.hexdigest()
 
 
 def default_fingerprint() -> str:
@@ -133,7 +154,13 @@ def default_workload(dest_dir: Path) -> Workload:
 
 
 def configured_workload(entries: Sequence[str]) -> Workload:
-    """``toolchain.toml [bench] corpus`` → a workload. Raises ``ValueError``.
+    """``toolchain.toml [bench] corpus`` → a workload. Raises ``ValueError``."""
+    files = corpus_files(entries)
+    return Workload(", ".join(entries), files, fingerprint(files), stat_key(files))
+
+
+def corpus_files(entries: Sequence[str]) -> tuple[Path, ...]:
+    """Resolve ``[bench] corpus`` entries to source files. Raises ``ValueError``.
 
     Each entry is a source file or a directory (recursed, sorted), filtered to
     :data:`SOURCE_SUFFIXES`. A missing entry, or a corpus with no sources at
@@ -156,7 +183,7 @@ def configured_workload(entries: Sequence[str]) -> Workload:
             f"[bench] corpus {', '.join(entries)} holds no C/C++ sources "
             f"({' '.join(SOURCE_SUFFIXES)})"
         )
-    return Workload(", ".join(entries), tuple(files), fingerprint(files))
+    return tuple(files)
 
 
 def compile_argv(cc: str, cxx: str, src: Path, out: Path) -> list[str]:

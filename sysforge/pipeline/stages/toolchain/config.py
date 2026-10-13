@@ -108,6 +108,31 @@ def _soname_mode(raw) -> str:
     return mode
 
 
+def _bench_table(raw) -> tuple[tuple[str, ...], bool]:
+    """Validate ``[bench]`` into ``(corpus, after_build)``, warning rather than failing.
+
+    ``[bench]`` configures no build, yet every verb that loads toolchain.toml
+    parses it, so a typo here must not abort ``run toolchain`` or ``state
+    profiles`` (3.4.0-B17). A malformed table or ``corpus`` falls back to the
+    built-in workload, the same warn-and-default shape as ``_soname_mode``.
+    """
+    if raw is None:
+        return (), False
+    if not isinstance(raw, dict):
+        _log.warn("[bench] in toolchain.toml is not a table; using the built-in workload")
+        return (), False
+    corpus = raw.get("corpus", [])
+    if isinstance(corpus, str):
+        corpus = [corpus]
+    if not isinstance(corpus, list) or not all(isinstance(c, str) for c in corpus):
+        _log.warn(
+            f"[bench] corpus={corpus!r} in toolchain.toml is not a path or list of "
+            "paths; using the built-in workload",
+        )
+        corpus = []
+    return tuple(corpus), bool(raw.get("after_build", False))
+
+
 # Known training-corpus members. "llvm" is the implicit base — the 4-pass build
 # compiles LLVM's own source regardless, so listing it is a no-op. Extra members
 # (currently only "mesa") are compiled by the instrumented stage1 clang during
@@ -278,10 +303,7 @@ class ToolchainConfig:
             return None
         pkgs = data.get("packages", {}) or {}
         bcfg = bolt_config(data)
-        bench = data.get("bench", {}) or {}
-        corpus = bench.get("corpus", [])
-        if isinstance(corpus, str):
-            corpus = [corpus]
+        corpus, after_build = _bench_table(data.get("bench"))
         return cls(
             raw=data,
             enabled=bool(data.get("enabled", False)),
@@ -301,8 +323,8 @@ class ToolchainConfig:
             lib32_pkgs=tuple(pkgs.get("lib32", constants.DEFAULT_LLVM_LIB32)),
             training_corpus=tuple(resolve_training_corpus(data)),
             bolt=BoltConfig(**bcfg),
-            bench_corpus=tuple(str(c) for c in corpus),
-            bench_after_build=bool(bench.get("after_build", False)),
+            bench_corpus=corpus,
+            bench_after_build=after_build,
         )
 
 
