@@ -71,6 +71,9 @@ Mechanism lives in the cited §DESIGN section.
 - **Unified run-log**: `log.open_unified_log`/`close_unified_log`; verbs opt in via
   `Verb.unified_log_basename`. §Logging.
 - **Flag-drift**: `flag_drift.resolve_flag_drift` (pure); sole consumer `update` Phase 4.3. §update.
+  Out-of-profile inputs (python/mesa/llvm/PGO profile) go through `build_inputs.resolve_build_inputs`
+  on **both** sides (`_record_build_state` and the drift sub-axis): a new input is added there,
+  never recorded from what a patcher reported applying (`3.2.0-F18`). §Reconvergence.
 - **Config→flag precedence**: `config.resolve_flag_default(args, attr, cfg, key)` is the sole seam
   for `store_true` CLI flags falling back to a config default (CLI wins). §primitives / §`update.py`.
 - **`toolchain` profile-field expansion**: `profile._expand_toolchain`; `[defaults] toolchain` sync
@@ -85,6 +88,9 @@ Mechanism lives in the cited §DESIGN section.
   siblings, so a split set demotes as a unit (`3.2.0-B15`) — an exact-pkgname lookup silently misses
   both. A member displaced by a *differently named* stock package is surfaced, never demoted
   (`update_split.annotate_split_members`, `3.2.0-B31`). Stop via `state forget`. §update.
+  The *decision* to stop is the opt-out record (`opt_out.OptOutList`, `3.4.0-F4`): written only via
+  `verbs.shared.forget_packages(opt_out=…)` (revert/forget, never uninstall), subtracted only in
+  `update_assemble._assemble_package_set`, cleared only by an explicit adoption.
 - **`revert-to-stock` branch = rename mode, not a suffix test**: `revert_cmd.plan_revert` classifies
   via `profile.is_optimized_build_mode` then `rename_mode_for_build_mode` — plain `source_built`→
   `reinstall` (`pacman -S <name>`), `conflict` optimized→`replace` (**one** `pacman -S` of every

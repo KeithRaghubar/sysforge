@@ -80,3 +80,20 @@ def test_no_untracked_section_when_all_foreign_tracked(tmp_path, capsys):
         cmd_state_list(_args(state_dir))
     out = capsys.readouterr().out
     assert "Untracked foreign packages" not in out
+
+
+def test_opted_out_section_lists_records_and_leaves_untracked(tmp_path, capsys):
+    """3.4.0-F4: opt-out records are shown, and an opted-out foreign package is
+    not called untracked (`update` will *not* pick it up)."""
+    from sysforge.primitives.opt_out import VIA_FORGET, OptOutList
+    state_dir = tmp_path / "state"
+    OptOutList(state_dir).add("mesa", ["mesa", "vulkan-radeon"], via=VIA_FORGET)
+    OptOutList(state_dir).add("foo-git", ["foo-git"], via=VIA_FORGET)
+    with patch("sysforge.primitives.pacman.get_foreign_packages",
+               return_value={"foo-git": "12.4.2-1", "bar-bin": "2.0-1"}):
+        cmd_state_list(_args(state_dir))
+    out = capsys.readouterr().out
+    assert "Opted out (2):" in out
+    assert "mesa  by `forget`" in out and "[vulkan-radeon]" in out
+    assert "Untracked foreign packages (1)" in out
+    assert "foo-git 12.4.2-1" not in out

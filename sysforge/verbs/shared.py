@@ -187,7 +187,8 @@ def rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | None
 # build_state demotion
 # ---------------------------------------------------------------------------
 
-def forget_packages(state_dir, pkgnames: list[str]) -> tuple[list[str], list[str]]:
+def forget_packages(state_dir, pkgnames: list[str], *,
+                    opt_out: str | None = None) -> tuple[list[str], list[str]]:
     """Stop maintaining the named package(s): delete their build_state records.
 
     build_state is the authority for what ``sysforge update`` rebuilds from
@@ -208,6 +209,12 @@ def forget_packages(state_dir, pkgnames: list[str]) -> tuple[list[str], list[str
     a name list rather than an ``args`` namespace, because two of its three
     callers are not the ``forget`` verb and were synthesising a fake namespace
     to call it.
+
+    ``opt_out`` (``opt_out.VIA_REVERT`` / ``VIA_FORGET``, 3.4.0-F4) also records
+    the decision in ``opted-out.toml``, one record per stock pkgbase covering
+    every forgotten member (renamed and stock spellings), so ``update`` does
+    not re-adopt the package. ``uninstall`` passes none: a removed package is
+    outside the installed set, and a later reinstall is a fresh decision.
     """
     from sysforge.primitives.build_state import BuildState
 
@@ -230,7 +237,29 @@ def forget_packages(state_dir, pkgnames: list[str]) -> tuple[list[str], list[str
 
     if forgotten:
         bs.save()
+        if opt_out:
+            _record_opt_out(state_dir, {pn: all_pkgs[pn] for pn in forgotten}, opt_out)
     return forgotten, missing
+
+
+def _record_opt_out(state_dir, entries: dict[str, dict], via: str) -> None:
+    """Write one opt-out record per stock pkgbase for the forgotten entries."""
+    from sysforge.primitives.opt_out import OptOutList
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+
+    suffix = f"-{RENAME_SUFFIX}"
+    by_base: dict[str, set[str]] = {}
+    for pn, e in entries.items():
+        # Keyed by the stock pkgbase: after a revert the installed package is
+        # the stock one, which is what update's adoption sources will see.
+        base = e.get("origin_pkgbase") or e.get("pkgbase") or pn
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+        stock = pn[: -len(suffix)] if pn.endswith(suffix) else pn
+        by_base.setdefault(base, set()).update({pn, stock})
+    record = OptOutList(state_dir)
+    for base, names in sorted(by_base.items()):
+        record.add(base, names, via=via)
 
 
 def profile_store_names(state_dir, pkgnames) -> list[str]:

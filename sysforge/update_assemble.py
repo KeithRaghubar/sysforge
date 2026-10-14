@@ -44,6 +44,7 @@ _log = log.get_logger("UPDATE")
 def _assemble_package_set(
     args, bs: BuildState, config: dict,
     build_cfg: dict, overrides_by_name: dict[str, dict],
+    *, opted_out: dict[str, dict] | None = None,
 ) -> tuple[dict[str, dict], set[str], dict[str, dict]]:
     """Phase 1: build the unified {pkgname: entry} dict from the live install set.
 
@@ -72,6 +73,13 @@ def _assemble_package_set(
     pipeline stage owns them; they're partitioned out after entries are
     built for every target name, not subtracted from scope up front, so the
     advisory check in ``update.py`` can still version-check them.
+
+    ``opted_out`` (``opt_out.OptOutList.load()``, 3.4.0-F4) is subtracted from
+    the target set after every adoption source has been applied: a reverted or
+    forgotten package stays out however it would have been re-adopted. Each
+    suppressed name is reported once at info level, naming the source that
+    would have re-adopted it. A name given on the command line is an explicit
+    adoption and is never subtracted (``update`` clears its record).
     """
     build_state_pkgs = bs.all_packages()
 
@@ -111,6 +119,30 @@ def _assemble_package_set(
                     or n in source_built
                     or (repo_mode_source and n not in foreign)}
 
+    # 3.4.0-F4: the user's "stop maintaining this" outranks every passive
+    # adoption source. Explicit names on the command line are an adoption.
+    filter_names: list[str] = getattr(args, "pkgnames", None) or []
+    if opted_out:
+        from sysforge.primitives.opt_out import covering
+        for name in sorted(target_names - set(filter_names)):
+            base = covering(opted_out, name)
+            if base is None:
+                continue
+            target_names.discard(name)
+            if name in foreign:
+                why = "foreign (AUR) package"
+            elif name in behavior_overridden:
+                why = "packages.toml override"
+            elif repo_mode_source:
+                why = 'repo_mode = "build_from_source"'
+            else:
+                why = "build_state record"
+            _log.info(
+                f"{name}: not re-adopted ({why}): opted out by "
+                f"`{opted_out[base]['via']}` of {base}. Remove that policy to "
+                f"stop this notice, or `sysforge build {name}` to maintain it again"
+            )
+
     # Stage-owned packages: skipped by default so `sysforge update` doesn't
     # double-process kernel-owned packages alongside `sysforge run kernel`.
     # Authoritative source is ``owner_stage`` recorded in build_state by the
@@ -118,7 +150,6 @@ def _assemble_package_set(
     # before any stamp exists. ``--include-stage-owned`` overrides the skip
     # (also includes packages explicitly named on the command line).
     include_stage_owned = bool(getattr(args, "include_stage_owned", False))
-    filter_names: list[str] = getattr(args, "pkgnames", None) or []
     explicit_set = set(filter_names)
     stage_owned: dict[str, str] = {}
     if not include_stage_owned:

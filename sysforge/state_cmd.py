@@ -52,15 +52,24 @@ def cmd_state_list(args):
     from sysforge.primitives.build_state import BuildState
     from sysforge.pipeline.state import resolve_state_dir
 
+    from sysforge.primitives.opt_out import OptOutError, OptOutList
+
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
     bs = BuildState(state_dir)
     entries = bs.all_packages()
     use_pager = not getattr(args, "no_pager", False)
+    try:
+        opted_out = OptOutList(state_dir).load()
+    except OptOutError as e:
+        _log.warn(str(e))
+        opted_out = {}
+    opted_names = {n for e in opted_out.values() for n in e["pkgnames"]}
 
     with _maybe_pager(use_pager):
         if not entries:
             print(f"No build state recorded in {state_dir / 'build_state.toml'}")
-            _print_untracked_foreign(set())
+            _print_opted_out(opted_out)
+            _print_untracked_foreign(opted_names)
             return
 
         rows = []
@@ -96,7 +105,23 @@ def cmd_state_list(args):
                 f"{ver:<{max_ver}}  {mode:<{max_mode}}  {pdir}"
             )
         print(f"\n  {len(rows)} recorded package(s)")
-        _print_untracked_foreign(set(entries.keys()))
+        _print_opted_out(opted_out)
+        _print_untracked_foreign(set(entries.keys()) | opted_names)
+
+
+def _print_opted_out(opted_out: dict[str, dict]) -> None:
+    """Print the revert/forget opt-out records (3.4.0-F4), when non-empty."""
+    if not opted_out:
+        return
+    print(f"\n  Opted out ({len(opted_out)}):")
+    for base, e in sorted(opted_out.items()):
+        members = [n for n in e["pkgnames"] if n != base]
+        extra = f"  [{', '.join(members)}]" if members else ""
+        print(f"    {base}  by `{e['via']}` at {e['at']}{extra}")
+    print(
+        "    (`sysforge update` will not re-adopt these; `sysforge build <pkg>` "
+        "or `sysforge packages add <pkg>` takes one back)"
+    )
 
 
 def _print_untracked_foreign(tracked: set[str]) -> None:
@@ -512,10 +537,14 @@ def cmd_state_forget(args):
     from sysforge.verbs.shared import forget_packages
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-    forgotten, missing = forget_packages(state_dir, getattr(args, "pkgnames", None) or [])
+    from sysforge.primitives.opt_out import VIA_FORGET
+    forgotten, missing = forget_packages(
+        state_dir, getattr(args, "pkgnames", None) or [], opt_out=VIA_FORGET)
 
     if forgotten:
         print(f"Stopped tracking {len(forgotten)} package(s): {', '.join(forgotten)}")
+        print("  (`update` will not re-adopt it; `sysforge build <pkg>` or "
+              "`sysforge packages add <pkg>` takes it back.)")
         print("  (installed package left in place; it keeps the sf-build group, so "
               "`pacman -Syu` won't touch it.")
         print("   Reinstall the repo binary with `pacman -S <pkg>` to fully revert.)")
@@ -927,7 +956,9 @@ class StateForgetVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("forget",
             help="Stop maintaining PKG(s): delete their build_state record so "
-                 "`sysforge update` no longer rebuilds them from source. The installed "
+                 "`sysforge update` no longer rebuilds them from source, and "
+                 "remember the decision so update does not re-adopt them (`build` or "
+                 "`packages add` takes one back). The installed "
                  "package is left in place (still pinned by the sf-build group).")
         p.add_argument("pkgnames", nargs="+", metavar="PKG",
             help="Package name(s) or pkgbase(s) to stop tracking. A pkgbase forgets "

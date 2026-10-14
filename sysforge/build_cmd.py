@@ -467,6 +467,18 @@ class BuildVerb(Verb):
             resolve_state_dir,
         )
         state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+        # 3.4.0-F4: building a package is an explicit adoption — lift any
+        # revert/forget opt-out so the next `update` maintains it again.
+        if not getattr(args, "dry_run", False):
+            from sysforge.primitives.opt_out import OptOutError, OptOutList
+            try:
+                cleared = OptOutList(state_dir).clear(
+                    {t.pkgbase for t in targets} | set(packages))
+            except OptOutError as e:
+                _log.error(str(e))
+                return ExecResult(exit_code=1)
+            for base in cleared:
+                _log.ui(f"{base}: maintained again (opt-out lifted by `build`)")
         _pstate = PipelineState(state_dir)
         active_variant = get_toolchain_variant(_pstate)
         active_fingerprint = get_toolchain_fingerprint(_pstate)

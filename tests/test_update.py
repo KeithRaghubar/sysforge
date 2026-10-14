@@ -1018,6 +1018,32 @@ def test_explain_drift_lists_flag_drift_and_exits(update_scenario, capsys):
     assert "htop" in out
 
 
+def test_explain_drift_makes_no_network_requests(update_scenario, capsys, monkeypatch):
+    """3.4.0-B14: the report is read-only and network-free even without
+    --offline — no source sync (scheduler request), no AUR name-cache warm."""
+    import sysforge.update as _upd
+    import sysforge.update_sync as _sync
+    calls: list[str] = []
+
+    class _SpyScheduler:
+        # Construction is offline-safe; any request/RPC on it is network I/O.
+        def __getattr__(self, name):
+            calls.append(f"scheduler.{name}")
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(_sync, "get_scheduler", lambda *a, **k: _SpyScheduler())
+    monkeypatch.setattr(_upd, "fetch_aur_name_cache",
+                        lambda *a, **k: calls.append("aur_name_cache"))
+    installed, foreign = _seed_flag_drift(update_scenario)
+    builds = update_scenario.run(
+        _make_args(explain_drift=True, offline=False),
+        installed=installed, foreign=foreign,
+    )
+    assert calls == []
+    assert builds == []
+    assert "different flags" in capsys.readouterr().out
+
+
 def test_rebuild_on_flag_drift_promotes_to_rebuild(update_scenario):
     installed, foreign = _seed_flag_drift(update_scenario)
     builds = update_scenario.run(

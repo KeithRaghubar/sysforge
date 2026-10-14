@@ -1276,6 +1276,24 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         # leaves any prior value sticky.
         from sysforge.primitives.pkgbuild_review import head_commit as _review_head
         _reviewed = _review_head(pkgbuild_path.parent)
+        # Out-of-profile inputs (3.2.0-F18), through the same resolver flag
+        # drift re-derives with, so a rebuild always clears the drift it
+        # reports. The compiler is resolved as the PGO reuse branch does.
+        # Best-effort: a failure keeps the prior (sticky) value.
+        try:
+            from sysforge.primitives.build_inputs import (
+                resolve_build_inputs, serialize_build_inputs,
+            )
+            _inputs = serialize_build_inputs(resolve_build_inputs(
+                pkgmeta, state_dir=_state_dir,
+                cc=(options.cc_override
+                    or (resolved_profile.get("CC") if resolved_profile else None)
+                    or os.environ.get("CC", "")),
+                owner_stage=options.owner_stage,
+            ))
+        except Exception as e:  # noqa: BLE001 — never block the record
+            _build_log.debug(f"build inputs not resolved for {pkgbase}: {e}")
+            _inputs = None
         for name in pkgnames:
             ep, ver, rel = filename_versions.get(name, (
                 globals_.get("epoch", "0"),
@@ -1298,6 +1316,7 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                 toolchain_fingerprint=_fingerprint,
                 reviewed_commit=_reviewed,
                 origin_pkgbase=origin_pkgbase,
+                build_inputs=_inputs,
                 build_seconds=build_elapsed,
                 sandboxed=_prov is not None,
             )

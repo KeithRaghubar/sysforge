@@ -63,7 +63,6 @@ from sysforge.pipeline.state import (
 )
 from sysforge.primitives.aur import fetch_aur_name_cache
 from sysforge.primitives.build_state import (
-    BUILD_MODE_SOURCE,
     BuildState,
     group_by_pkgbase,
 )
@@ -79,6 +78,7 @@ from sysforge.primitives.config import (
 )
 from sysforge.primitives.flag_drift import (
     STATUS_PARSE_ERROR,
+    drift_candidate,
     resolve_flag_drift,
 )
 from sysforge.primitives.llvm_state import (
@@ -88,6 +88,7 @@ from sysforge.primitives.llvm_state import (
     render_preflight as render_llvm_preflight,
 )
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives.opt_out import OptOutError, OptOutList
 from sysforge.primitives.pacman import (
     checkupdates_map,
     diff_installed,
@@ -838,8 +839,13 @@ def _phase_init(run: UpdateRun) -> int | None:
     _ui_progress.phase("loading state and config")
     run.timer = PhaseTimer()
     run.install_only = getattr(run.args, "install_only", False)
-    run.offline = getattr(run.args, "offline", False) or run.install_only
-    if run.install_only:
+    # --explain-drift implies offline (3.4.0-B14): both drift axes read only
+    # build_state and the local PKGBUILDs, so fetching sources first is network
+    # I/O the report never uses.
+    explain_drift = getattr(run.args, "explain_drift", False) is True
+    run.offline = (getattr(run.args, "offline", False) or run.install_only
+                   or explain_drift)
+    if run.install_only or explain_drift:
         run.args.offline = True
     if not run.offline:
         fetch_aur_name_cache()
@@ -933,8 +939,22 @@ def _phase_init(run: UpdateRun) -> int | None:
 def _phase_assemble(run: UpdateRun) -> int | None:
     """Phase 1: Package set assembly."""
     _ui_progress.phase("assembling package set")
+    # 3.4.0-F4: reverted/forgotten packages stay out of every passive adoption
+    # source. `update <pkg>` is an explicit adoption and clears the record —
+    # but only on a run that mutates; a read-only report changes nothing.
+    opt_out_list = OptOutList(run.state_dir)
+    try:
+        explicit = getattr(run.args, "pkgnames", None) or []
+        if explicit and not _read_only_run(run.args):
+            for base in opt_out_list.clear(explicit):
+                _log.ui(f"{base}: maintained again (named on the command line)")
+        opted_out = opt_out_list.load()
+    except OptOutError as e:
+        _log.error(str(e))
+        return 1
     packages, run.unrecorded_names, run.stage_owned_packages = _assemble_package_set(
         run.args, run.bs, run.config, run.build_cfg, run.overrides_by_name,
+        opted_out=opted_out,
     )
 
     if not packages:
@@ -943,7 +963,7 @@ def _phase_assemble(run: UpdateRun) -> int | None:
         # packages recorded by `sysforge build` with no override). Every
         # phase in between no-ops on an empty package set.
         _has_source_built_entries = any(
-            e.get("build_mode") == BUILD_MODE_SOURCE for e in run.bs.all_packages().values()
+            drift_candidate(e) for e in run.bs.all_packages().values()
         )
         if not _has_source_built_entries:
             print(
@@ -1153,7 +1173,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             entry = run.bs.get(name)
             if entry is not None:
                 break
-        if not entry or entry.get("build_mode") != BUILD_MODE_SOURCE:
+        if not entry or not drift_candidate(entry):
             continue
         if _flag_cgroups is None:
             # Hoisted: the drift comparison is against the *effective* flags
@@ -1167,6 +1187,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
             sandbox_policy=build_sandbox.get_policy(),
+            state_dir=run.state_dir,
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(
@@ -1195,7 +1216,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         if _fold_filter and not (_fold_filter & ({pkgbase} | set(pkgnames))):
             continue
         entry = _fold_entry[pkgbase]
-        if entry.get("build_mode") != BUILD_MODE_SOURCE:
+        if not drift_candidate(entry):
             continue
         if _flag_cgroups is None:
             _flag_cgroups = load_conflict_groups()
@@ -1206,6 +1227,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             system_assignments=_flag_sysconf,
             preserved_system_tokens=_flag_ptokens,
             sandbox_policy=build_sandbox.get_policy(),
+            state_dir=run.state_dir,
         )
         if fd.status == STATUS_PARSE_ERROR:
             _log.warn(

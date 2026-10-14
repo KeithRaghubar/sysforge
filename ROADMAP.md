@@ -113,11 +113,8 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
-| `3.4.0-B14` | update --help says --explain-drift does no source sync, but it does | med | small | patch |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
-| `3.2.0-F18` | build inputs applied outside the resolved profile never register as drift, so changing them leaves stale packages installed silently | med | medium | minor |
 | `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
-| `3.4.0-F4` | a revert or forget is remembered, so update doesn't quietly re-adopt the package | med | medium | minor |
 | `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
 | `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
@@ -225,38 +222,6 @@ canonical ordering.
 
 ---
 
-- **`3.2.0-F18` — build inputs applied outside the resolved profile never register as drift, so
-  changing them leaves stale packages installed silently.** Flag drift (Phase 4.3) compares only
-  `serialize_effective_flags`, and `SYSFORGE_KEYS` rightly excludes the scheduling/throttle keys
-  that cannot change output. But several settings *do* change the built artifact and reach the build
-  through seams the profile never sees: `sysforge.toml [build] python` (the interpreter pinned by
-  `makepkg_env.resolve_build_python` — a Python package built against one minor version installs
-  into that version's `site-packages`, so a pin change or a system Python bump breaks it with no
-  signal), `[mesa] filter_drivers`/`gallium`/`vulkan` and `toolchain.toml [llvm] targets` (both
-  patched into the PKGBUILD by `_maybe_patch_mesa_drivers` / `_maybe_patch_llvm_targets`, and both
-  auto-detected from the hardware profile, so a GPU swap changes them too — the hardware stage
-  reports the diff but nothing links it to a rebuild), and the PGO flag spliced in via
-  `effective_flags_extra` (`--pgo=use` / store reuse), which bypasses `flags_string`. Record a
-  second per-package field, `build_inputs`, at `_record_build_state` — the resolved values
-  themselves, not a hash, so `--explain-drift` can render a per-key diff in `flag_drift.diff_flags`'
-  `+added` / `-removed` vocabulary — and re-derive it at drift time through the same resolvers
-  (`resolve_build_python`, `resolve_or_detect_mesa_drivers`, `resolve_or_detect_llvm_targets`), the
-  B11 one-function-both-sides rule. For Python, record the interpreter's `major.minor` rather than
-  its path so a patch-level system update does not drift every package. Surface it as a sub-axis of
-  flag drift (same reporting, same `--rebuild-on-flag-drift` promotion) rather than a fourth CLI
-  axis; a missing field on pre-existing entries reads as "unknown, not drifted" so the upgrade does
-  not flag the whole build_state at once. Out of scope: `kernel.toml` kconfig inputs (stage-owned,
-  rebuilt explicitly by `run kernel`, and already diffed request-vs-result by
-  `_gate2_kconfig_drift`) and the LLVM PGO/BOLT settings the toolchain stage owns; LLVM's `targets`
-  lands only in the build-state-wide fold, reported with the owning-stage hint like any other
-  stage-owned entry. Tests: record/re-derive parity per input, the missing-field no-drift upgrade
-  path, python `major.minor` normalisation, and one gcc-path + one llvm-path case for the PGO input.
-  *Priority: med · Effort: medium · Bump: minor* — med because each case is a silent-stale-artifact
-  class, the python one reachable by an ordinary distro update; medium because four inputs each need
-  a record site and a re-derive site, plus a build_state schema field and the fold/explain plumbing.
-
----
-
 - **`3.2.0-F19` — an interactive build's failure reason is never logged.** In interactive mode
   makepkg's stdout/stderr go straight to the terminal, so neither the unified run-log
   (`sysforge-run-kernel.log`) nor the per-package log (`sysforge_<pkg>.log`) records why a build
@@ -272,38 +237,6 @@ canonical ordering.
   *Priority: med · Effort: medium · Bump: minor* — diagnosability; every interactive-stage failure
   currently needs forensic reconstruction.
   **Standards home on adoption:** none.
-
-- **`3.4.0-F4` — a revert or forget is remembered, so `update` doesn't quietly re-adopt the
-  package.** Promoted from `3.2.0-Q2`, which asked what the unit of "stop maintaining this" is.
-  The mechanical half has shipped. `3.2.0-B15` fixed the reconcile key, and conflict-mode `revert`
-  is already pkgbase-atomic: `plan_revert` collects every installed split member and swaps them all
-  in one `pacman -S`, and `verbs/shared.forget_packages` forgets the whole pkgbase. What is still
-  missing is a durable **decision**. Today "stop maintaining" means only that the build_state
-  record is gone, and `update_assemble` rebuilds the target set every run from independent sources,
-  two of which re-adopt a reverted package with no notice: a non-inert `packages.toml` override
-  (`behavior_overridden`), and `repo_mode = "build_from_source"`, which pulls in every installed
-  repo package and so re-targets anything just reverted to stock. Persist an opt-out record in the
-  state dir (its own file, following the `artifacts-ignored.toml` precedent, keyed by pkgbase so a
-  split set opts out together). `revert` and `state forget` write it. The update assembly subtracts
-  it from `target_names` after every adoption source has been applied, and reports each suppressed
-  name once at `info` level, naming the source that would have re-adopted it (for example
-  "packages.toml override" or "repo_mode build_from_source") so the user can remove that policy.
-  **Only an explicit adoption clears the record**: `build <pkg>`, `update <pkg>` (the
-  `explicit_set` path) and `packages add <pkg>`. Passive sources never do. `state list` shows
-  opted-out entries so the record can be inspected. `uninstall` writes no record, because a
-  removed package is outside the installed set and a later reinstall is a fresh decision.
-  **Rejected alternatives:** pkgbase-atomic revert (already shipped as above, so not a choice any
-  more) and pkgname-precise revert that refuses when siblings survive (it would hand the user a
-  manual step and leave the policy path open). Completions and the man page pick up any new
-  `state list` column or flag in the same change. Tests: revert and then update with a non-inert
-  override suppresses the package and reports it; the same with `repo_mode =
-  "build_from_source"`; an explicit `build`/`update <pkg>`/`packages add` clears the record and
-  re-adopts; a split set opts out and clears as one pkgbase; and `uninstall` leaves no record.
-  *Priority: med · Effort: medium · Bump: minor* — med because both re-adoption paths are reachable
-  by ordinary use (`packages add`, or the source-everything repo mode); medium for a new persisted
-  file, the assembly subtraction, three clearing sites and the reporting.
-  **Standards home on adoption:** none new; `docs/design/` gains the opt-out record under the
-  update-assembly and revert sections.
 
 ---
 
@@ -341,25 +274,6 @@ canonical ordering.
   **Standards home on adoption:** a new `21-standards.md` row for the JSON output contract:
   adding a field is a minor change, renaming or removing one is major and bumps `schema`. The row
   is enforced by the schema-fixture tests.
-
-
-### Bugs
-
-- **`3.4.0-B14` — `update --help` says `--explain-drift` does no source sync, but it does.** The
-  flag's help text ends "Informational; no source sync, no rebuild." The report itself exits
-  after the drift phases, but those run after `update`'s normal Phase 2 source sync, so a plain
-  `sysforge update --explain-drift` clones and fetches every in-scope package first. Only
-  `--offline` skips it (`update_sync._sync_sources` returns early on `offline` alone). A user who
-  reads the help and runs the report to check drift without touching the network gets a full
-  sync. Fix one side: either skip the sync under `--explain-drift` (flag drift is network-free;
-  toolchain drift needs only the walk's `results`, which a version check can build from local
-  PKGBUILDs) or make the help say "add --offline to skip source sync". The first is better,
-  since the report never uses fetched sources, but check whether toolchain-drift detection of
-  a `NEEDS_REBUILD` package depends on the synced version. `docs/guides/drift.md` currently
-  recommends `--offline --explain-drift` because of this; update it in the same change. Test: an
-  `--explain-drift` run makes no scheduler request (or the help text names `--offline`).
-  *Priority: med · Effort: small · Bump: patch* — med because the help promises a read-only,
-  no-network report and the run does network I/O; small because it is one gate or one string.
 
 
 ### Open questions

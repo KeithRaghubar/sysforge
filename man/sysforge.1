@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-13"
+.TH "sysforge" "1" "2026\-10\-14"
 .PP
 .PP
 .SH NAME
@@ -913,7 +913,7 @@ Clear all recorded failures and exit.\&
 .PP
 \fBsysforge state forget\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
 .PP
-Stop maintaining PKG(s): delete their build_state record so `sysforge update` no longer rebuilds them from source.\& The installed package is left in place (still pinned by the sf\-build group).\&
+Stop maintaining PKG(s): delete their build_state record so `sysforge update` no longer rebuilds them from source, and remember the decision so update does not re\-adopt them (`build` or `packages add` takes one back).\& The installed package is left in place (still pinned by the sf\-build group).\&
 .PP
 \fBPKG\fR
 .RS 4
@@ -1626,7 +1626,7 @@ Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a 
 .PP
 \fBsysforge revert\-to\-stock\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
 .PP
-Undo a source\-built/optimized package back to the repo version.\&
+Undo a source\-built/optimized package back to the repo version; update will not re\-adopt it until you `build` or `packages add` it.\&
 .PP
 \fBPKG\fR
 .RS 4

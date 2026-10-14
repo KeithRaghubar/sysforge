@@ -42,6 +42,7 @@ from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman, profile, prompt
 from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.opt_out import VIA_REVERT
 from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.verbs.shared import (
     emit_orphaned_profiles,
@@ -159,7 +160,8 @@ class RevertToStockVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser(
             "revert-to-stock",
-            help="undo a source-built/optimized package back to the repo version",
+            help="undo a source-built/optimized package back to the repo version; "
+                 "update will not re-adopt it until you `build` or `packages add` it",
         )
         p.add_argument("packages", nargs="+", metavar="PKG",
             help="package name(s) to revert (stock or -sysforge name)")
@@ -244,7 +246,8 @@ class RevertToStockVerb(Verb):
                         f"failed ({exc}); nothing changed")
                     _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
-                forget_packages(pre.ctx["state_dir"], [n for n, _ in p.members])
+                forget_packages(pre.ctx["state_dir"], [n for n, _ in p.members],
+                                opt_out=VIA_REVERT)
                 continue
             else:  # "reinstall" (plain) — one atomic `pacman -S`; on failure
                    # nothing changed.
@@ -257,7 +260,7 @@ class RevertToStockVerb(Verb):
                     _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
             # forget this entry so `update` stops rebuilding it
-            forget_packages(pre.ctx["state_dir"], [p.pkgname])
+            forget_packages(pre.ctx["state_dir"], [p.pkgname], opt_out=VIA_REVERT)
 
         # Demote any that pacman now owns (belt-and-suspenders alongside forget).
         bs = BuildState(pre.ctx["state_dir"])

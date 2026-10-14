@@ -38,7 +38,7 @@ Pass --rebuild-on-flag-drift to rebuild, or --explain-drift to list.
 See exactly what changed, without building or downloading anything:
 
 ```bash
-sysforge update --offline --explain-drift
+sysforge update --explain-drift
 ```
 
 `--explain-drift` lists both axes and exits. Each flag-drifted package gets a per-key diff
@@ -53,9 +53,9 @@ sysforge update --offline --explain-drift
   CFLAGS: '-O2 -march=native ...' → '-O3 -march=native ...'
 ```
 
-Pass `--offline`: without it, `--explain-drift` still syncs package sources before it reports.
-Flag drift itself never needs the network, because it compares your local PKGBUILD and config
-against what `build_state.toml` recorded.
+The report never touches the network: it skips the source sync and every version lookup, because
+both axes compare your local PKGBUILD, config and toolchain against what `build_state.toml`
+recorded.
 
 When the diff is what you meant, rebuild the drifted packages:
 
@@ -79,11 +79,27 @@ package:
 - turning the build sandbox (`[security] sandbox_builds`, or a profile's `sandbox_builds`) on or
   off, since a sandboxed build links against different dependency versions. This one shows up
   as its own diff line: `sandboxed: False → True`.
+- a change to a build input that never passes through a profile. Each shows up as its own
+  diff line, named by the input:
+  - `python`: the Python minor version for a package that depends on Python at runtime, so
+    `[build] python` in `sysforge.toml` or a distro Python upgrade (`3.13 → 3.14`). A patch
+    release such as 3.13.1 → 3.13.2 does not count;
+  - `mesa_gallium` / `mesa_vulkan`: mesa's driver lists, with `[mesa] filter_drivers` on, after
+    you change `[mesa] gallium`/`vulkan` or swap the GPU they are detected from;
+  - `llvm_targets`: LLVM's target list, after a `toolchain.toml [llvm] targets` change or a
+    GPU swap. LLVM belongs to the toolchain stage, so this is reported with a
+    `sysforge run toolchain` hint rather than rebuilt by `update`;
+  - `pgo_profile`: the PGO profile an `update` rebuild would reuse from the package's store, so
+    one that appeared (`+pgo_profile`) or was deleted (`-pgo_profile`) since the build. A package
+    built with `--pgo=use` is checked for these inputs too, though not for its profile flags.
+
+  A package built before sysforge recorded its build inputs shows no build-input drift until
+  its next rebuild.
 
 Two cases never show flag drift:
 
 - A PKGBUILD with `options=('!buildflags')`: makepkg ignores the configured flags, so a flag
-  change cannot affect it. The sandbox line above still applies.
+  change cannot affect it. The sandbox and build-input lines above still apply.
 - A package built before sysforge recorded flags. Rebuild it once and it is tracked from then on.
 
 ---
@@ -172,7 +188,7 @@ rebuilding (--rebuild-on-flag-drift): mesa, ffmpeg; not queued: linux-sysforge (
 
 | I want to... | Run |
 | --- | --- |
-| see all drift, touching nothing | `sysforge update --offline --explain-drift` |
+| see all drift, touching nothing | `sysforge update --explain-drift` |
 | rebuild what my profile change affected | `sysforge update --rebuild-on-flag-drift` |
 | rebuild after switching compilers | `sysforge update --rebuild-on-toolchain-drift` |
 | rebuild one package | `sysforge build <pkg>` |

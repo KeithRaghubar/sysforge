@@ -419,3 +419,24 @@ def test_summary_lists_not_installed_apart_from_built(capsys):
     out = capsys.readouterr().err
     assert "Built:       foo\n" in out
     assert "Not installed: bar (/etc/bar exists in filesystem)" in out
+
+
+def test_build_lifts_a_revert_opt_out(monkeypatch, tmp_path):
+    """3.4.0-F4: `build <pkg>` is an explicit adoption — it clears the
+    revert/forget record so the next `update` maintains the package again."""
+    from sysforge.primitives.opt_out import VIA_REVERT, OptOutList
+    OptOutList(tmp_path).add("htop", ["htop"], via=VIA_REVERT)
+    targets, _ = _run_build(monkeypatch, tmp_path, "htop", is_repo=False)
+    assert [t.pkgbase for t in targets] == ["htop"]
+    assert OptOutList(tmp_path).load() == {}
+
+
+def test_build_skipped_at_the_repo_gate_keeps_the_opt_out(monkeypatch, tmp_path):
+    """A target the opt-in gate skips was not adopted, so its record stays."""
+    from sysforge.primitives.opt_out import VIA_REVERT, OptOutList
+    OptOutList(tmp_path).add("htop", ["htop"], via=VIA_REVERT)
+    cfg = {"packages_file": str(tmp_path / "packages.toml")}
+    targets, _ = _run_build(monkeypatch, tmp_path, "htop", is_repo=True,
+                            force=False, interactive=False, config=cfg)
+    assert targets == []
+    assert "htop" in OptOutList(tmp_path).load()

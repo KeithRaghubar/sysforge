@@ -83,6 +83,11 @@ To stop maintaining one:
 - `sysforge revert-to-stock <pkg>` reinstalls the repo build over it and demotes it in one step.
 - `sudo pacman -S <pkg>` works too; the next `update` reconciles it back to stock.
 
+`forget` and `revert-to-stock` are remembered: `update` will not pick the package back up
+through a `packages.toml` entry or `repo_mode = "build_from_source"` (`sysforge state list`
+shows these). `sysforge build <pkg>`, `sysforge update <pkg>` or `sysforge packages add <pkg>`
+takes it back.
+
 ### Common commands
 
 **Build and maintain packages**

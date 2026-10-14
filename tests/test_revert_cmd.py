@@ -297,4 +297,5 @@ def test_execute_conflict_split_one_transaction_and_forgets_all(tmp_path, monkey
         ["mesa-docs", "mesa", "vulkan-radeon"], replace=True)
     remove.assert_not_called()
     forget.assert_called_once_with(
-        tmp_path, ["mesa-docs-sysforge", "mesa-sysforge", "vulkan-radeon-sysforge"])
+        tmp_path, ["mesa-docs-sysforge", "mesa-sysforge", "vulkan-radeon-sysforge"],
+        opt_out="revert")

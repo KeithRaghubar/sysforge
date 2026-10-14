@@ -19,12 +19,15 @@ the caller decides how to surface each outcome (``update`` under ``[UPDATE]``).
 
 Public API:
     diff_flags(stored, current) -> list[str]
+    drift_candidate(entry) -> bool
     resolve_flag_drift(entry, config, conflict_groups, system_conf_path=None,
                        system_assignments=None,
                        preserved_system_tokens=None,
-                       sandbox_policy=None) -> FlagDriftResult
+                       sandbox_policy=None, state_dir=None) -> FlagDriftResult
 """
 from __future__ import annotations
+
+import os
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +100,49 @@ def diff_flags(stored: str, current: str) -> list[str]:
     return diffs
 
 
+def _is_pgo_mode(build_mode: str | None) -> bool:
+    from sysforge.primitives import mesa_pgo
+    return build_mode in (mesa_pgo.BUILD_MODE, mesa_pgo.GENERIC_BUILD_MODE)
+
+
+def drift_candidate(entry: dict) -> bool:
+    """Whether ``entry`` is judged by flag drift at all.
+
+    A ``source_built`` entry is judged on every sub-axis. A PGO build
+    (``pgo`` / ``pgo_mesa``) is judged on the build-inputs sub-axis only, and
+    only once it has recorded ``build_inputs`` (3.2.0-F18): its profile flags
+    were never compared, and that stays unchanged.
+    """
+    mode = entry.get("build_mode")
+    return mode == BUILD_MODE_SOURCE or (
+        _is_pgo_mode(mode) and "build_inputs" in entry)
+
+
+def _inputs_diff(entry: dict, pkgmeta: dict, resolved: dict,
+                 state_dir) -> list[str]:
+    """Per-key diff of the recorded vs re-derived out-of-profile inputs.
+
+    The build-inputs sub-axis (3.2.0-F18): re-derived through the same
+    ``build_inputs.resolve_build_inputs`` the record site calls, with the
+    compiler resolved the same way. A record without the field is unknown and
+    never drifts, so an upgrade does not flag every pre-existing entry.
+    """
+    if state_dir is None or "build_inputs" not in entry:
+        return []
+    from sysforge.primitives.build_inputs import (
+        resolve_build_inputs, serialize_build_inputs,
+    )
+    try:
+        current = serialize_build_inputs(resolve_build_inputs(
+            pkgmeta, state_dir=state_dir,
+            cc=resolved.get("CC") or os.environ.get("CC", ""),
+            owner_stage=entry.get("owner_stage"),
+        ))
+    except Exception:  # noqa: BLE001 — unresolvable now is unknown, not drift
+        return []
+    return diff_flags(entry["build_inputs"] or "", current)
+
+
 def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[str]:
     """``  sandboxed: <old> → <new>`` when the recorded sandbox state differs.
 
@@ -124,7 +170,7 @@ def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[
 def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
                        system_conf_path=None, system_assignments=None,
                        preserved_system_tokens=None,
-                       sandbox_policy=None) -> FlagDriftResult:
+                       sandbox_policy=None, state_dir=None) -> FlagDriftResult:
     """Compare one recorded build's stored flags against a fresh resolution.
 
     ``entry`` is a ``build_state.toml`` record for a pkgbase; it must carry
@@ -154,18 +200,23 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
     ``STATUS_PARSE_ERROR`` with the message in ``error`` so callers can decide how
     to surface it.
     """
-    if entry.get("build_mode") != BUILD_MODE_SOURCE:
+    inputs_only = _is_pgo_mode(entry.get("build_mode"))
+    if not drift_candidate(entry) or (inputs_only and state_dir is None):
         return FlagDriftResult(status=STATUS_NOT_PROFILED)
 
     pkgbuild_path = Path(entry["pkgbuild_dir"]) / "PKGBUILD"
     if not pkgbuild_path.exists():
         return FlagDriftResult(status=STATUS_NO_PKGBUILD, pkgbuild_path=pkgbuild_path)
 
-    stored_flags = entry.get("flags_string")
+    stored_flags = None if inputs_only else entry.get("flags_string")
     # The no-flags short-circuit used to come first; it now waits for the
-    # sandbox sub-axis below, which needs the resolved profile. A record with
-    # neither flags nor a sandbox field still returns NO_FLAGS without parsing.
-    if not stored_flags and (sandbox_policy is None or "sandboxed" not in entry):
+    # sandbox and build-inputs sub-axes below, which need the resolved
+    # profile. A record with neither flags nor either sub-axis field still
+    # returns NO_FLAGS without parsing.
+    sandbox_judged = (not inputs_only and sandbox_policy is not None
+                      and "sandboxed" in entry)
+    inputs_judged = state_dir is not None and "build_inputs" in entry
+    if not stored_flags and not sandbox_judged and not inputs_judged:
         return FlagDriftResult(status=STATUS_NO_FLAGS, pkgbuild_path=pkgbuild_path)
 
     try:
@@ -186,13 +237,16 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
         pkgmeta, matched, config, conflict_groups,
         extracted_profile=extracted_profile,
     )
-    # 3.4.0-B3: judged before the !buildflags / no-flags returns, because the
-    # sandbox changes output even where makepkg ignores conf flags.
-    sandbox_diff = _sandbox_diff(entry, resolved, sandbox_policy, build_mode=build_mode)
+    # 3.4.0-B3 / 3.2.0-F18: judged before the !buildflags / no-flags returns,
+    # because the sandbox and the out-of-profile inputs change output even
+    # where makepkg ignores conf flags. The sub-axes share one diff list.
+    sub_diffs = (_sandbox_diff(entry, resolved, sandbox_policy, build_mode=build_mode)
+                    if sandbox_judged else [])
+    sub_diffs += _inputs_diff(entry, pkgmeta, resolved, state_dir)
 
     if not stored_flags:
-        if sandbox_diff:
-            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sandbox_diff,
+        if sub_diffs:
+            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sub_diffs,
                                    pkgbuild_path=pkgbuild_path)
         return FlagDriftResult(status=STATUS_NO_FLAGS, pkgbuild_path=pkgbuild_path)
 
@@ -201,8 +255,8 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
     # build. A change in those flags cannot affect the built package, so flag
     # drift must not fire a rebuild here (F9) — but the sandbox still can.
     if option_disabled(pkgmeta, "buildflags"):
-        if sandbox_diff:
-            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sandbox_diff,
+        if sub_diffs:
+            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sub_diffs,
                                    stored_flags=stored_flags,
                                    pkgbuild_path=pkgbuild_path)
         return FlagDriftResult(
@@ -228,7 +282,7 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
             line for line in stored_flags.splitlines()
             if line.partition("=")[0].strip() not in KERNEL_CLEAN_KEYS
         )
-    diffs = diff_flags(stored_flags, current_flags) + sandbox_diff
+    diffs = diff_flags(stored_flags, current_flags) + sub_diffs
     return FlagDriftResult(
         status=STATUS_DRIFTED if diffs else STATUS_IN_SYNC,
         diffs=diffs,

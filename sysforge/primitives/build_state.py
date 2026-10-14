@@ -84,6 +84,7 @@ _ENTRY_KEYS = (
     "origin_pkgbase",
     "build_seconds",
     "sandboxed",
+    "build_inputs",
 )
 
 # build_mode values. "source_built" replaced the legacy "profiled" token (which
@@ -209,7 +210,8 @@ class BuildState:
                reviewed_commit: str | None = None,
                origin_pkgbase: str | None = None,
                build_seconds: int | None = None,
-               sandboxed: bool | None = None) -> None:
+               sandboxed: bool | None = None,
+               build_inputs: str | None = None) -> None:
         """Record build metadata for a single package name.
 
         ``built_at`` defaults to now; callers performing a repair pass may
@@ -277,6 +279,12 @@ class BuildState:
         sub-axis. Serialized as a native TOML bool. Sticky like the other
         provenance fields; absent on entries written before the field existed,
         which flag drift reads as "unknown, not drifted".
+
+        ``build_inputs`` (3.2.0-F18) is the out-of-profile inputs the build
+        resolved (``build_inputs.resolve_build_inputs``, serialized as
+        ``KEY=value`` lines; ``""`` when none apply). Read by flag drift's
+        build-inputs sub-axis. Sticky; absent on older entries, which flag
+        drift reads as "unknown, not drifted".
         """
         entry: dict[str, Any] = {
             "pkgver": pkgver,
@@ -338,6 +346,10 @@ class BuildState:
             entry["sandboxed"] = bool(sandboxed)
         elif "sandboxed" in prior:
             entry["sandboxed"] = prior["sandboxed"]
+        if build_inputs is not None:
+            entry["build_inputs"] = build_inputs
+        elif "build_inputs" in prior:
+            entry["build_inputs"] = prior["build_inputs"]
         # build_seconds — a bounded ring (last 5 whole-second build durations,
         # newest last) serialized as a CSV string, so a per-package build-time
         # estimate can take the outlier-robust median. A None caller (backfill /

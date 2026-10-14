@@ -181,6 +181,19 @@ def cmd_packages_add(args):
     )
     print(f"{'Updated' if drop_name else 'Added'} {pkg}: {overrides_str}")
 
+    # 3.4.0-F4: an override written by name is an explicit adoption, so it
+    # lifts a revert/forget opt-out (a passive override never does).
+    from sysforge.primitives.opt_out import OptOutError, OptOutList
+    from sysforge.primitives.paths import resolve_state_dir
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    try:
+        cleared = OptOutList(state_dir).clear([pkg])
+    except OptOutError as e:
+        print(f"[SYSFORGE] {e}", file=sys.stderr)
+        sys.exit(1)
+    for base in cleared:
+        print(f"{base}: maintained again (opt-out lifted by `packages add`)")
+
 
 # ---------------------------------------------------------------------------
 # packages add-group
