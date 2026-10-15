@@ -342,6 +342,18 @@ def _main():
     args = parser.parse_args()
     log.set_verbosity(_resolve_verbosity(args))
     log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
+    # --json (3.4.0-F7): stdout carries only the verb's document, so the guard
+    # starts before any startup logging (which --dry-run sends to stdout).
+    from sysforge.primitives import json_out
+    if json_out.requested(args):
+        with json_out.reserved_stdout():
+            _main_after_parse(args)
+    else:
+        _main_after_parse(args)
+
+
+def _main_after_parse(args) -> None:
+    """Everything ``main`` does once the arguments are parsed."""
     # Source freeze (3.0.0-F2): resolve once, install before any verb runs, so
     # every egress seam sees the same policy no matter how deep it sits.
     from sysforge.primitives.config import load_sysforge_toml

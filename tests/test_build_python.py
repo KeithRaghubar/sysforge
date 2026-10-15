@@ -94,18 +94,14 @@ def test_invoke_makepkg_prepends_build_python_dir_to_path(monkeypatch, tmp_path)
 
     captured: dict = {}
 
-    class _FakeProc:
-        def wait(self):
-            return 0
-
-    def _fake_popen(cmd, cwd=None, env=None, **kw):
+    def _fake_pty(cmd, cwd=None, env=None, **kw):
         captured["env"] = env
-        return _FakeProc()
+        return 0
 
-    monkeypatch.setattr(makepkg_invoke.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(makepkg_invoke, "run_with_pty", _fake_pty)
 
-    # interactive=True takes the Popen path (no pty), which is the simplest
-    # seam to observe the env the child would inherit.
+    # run_with_pty is the seam both branches hand the child's env to; the
+    # interactive one needs no line-classification setup.
     makepkg_invoke.invoke_makepkg(
         pkgbuild, conf, {"makepkg_flags": []}, interactive=True
     )

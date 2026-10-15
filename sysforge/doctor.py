@@ -36,6 +36,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import diagnostics as diag
+from sysforge.primitives import json_out
 from sysforge.primitives import pacman
 from sysforge.primitives import pkgfiles_probe
 from sysforge.primitives import restart_probe
@@ -792,27 +793,33 @@ def _with_reboot_hint(
     return out
 
 
-def _collect_toolchain_findings(config) -> list[diag.Finding]:
+def _ran(findings, *check_ids) -> diag.AxisResult:
+    """An axis of always-runnable checks: every listed check ran (3.4.0-F5)."""
+    return diag.AxisResult(list(findings), diag.Roster(ran=list(check_ids)))
+
+
+def _collect_toolchain_findings(config) -> diag.AxisResult:
     """Configured-vs-installed toolchain provenance (custom LLVM requested but
     stock repo LLVM installed, or PGO profdata skew). Built on
     ``llvm_state.detect_toolchain_config_mismatch`` — provenance reporting, not
     a third toolchain health probe."""
     from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
-    return diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config))
+    return _ran(diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config)),
+                "toolchain_provenance")
 
 
-def _collect_rust_findings(config, args) -> list[diag.Finding]:
+def _collect_rust_findings(config, args) -> diag.AxisResult:
     """Rust-toolchain provenance (effective toolchain, non-stable default, and
     rust-toolchain.toml pins for package targets). Advisory, read-only —
     see ``primitives/rust_probe.py``."""
     from sysforge.primitives import rust_probe
     packages = getattr(args, "packages", None) if args is not None else None
     derived = getattr(args, "derived_targets", None) if args is not None else None
-    return rust_probe.collect_rust_findings(config, packages=packages,
-                                            derived=derived or ())
+    return rust_probe.collect_rust_result(config, packages=packages,
+                                          derived=derived or ())
 
 
-def _collect_cache_findings(config) -> list[diag.Finding]:
+def _collect_cache_findings(config) -> diag.AxisResult:
     """Compile-cache *readiness* before a build relies on it (2.2.0-F1) — the
     point-in-time analog of ``--cache-report``'s per-build effectiveness. Reuses
     ``cache_probe.check_cache_readiness`` (the one home for cache knowledge); no
@@ -826,12 +833,14 @@ def _collect_cache_findings(config) -> list[diag.Finding]:
     from sysforge.primitives import cache_probe
 
     rows = cache_probe.check_cache_readiness()
+    # Each tool's readiness is always determinable (absent is an answer).
+    roster = diag.Roster(ran=[f"cache:{r['tool']}" for r in rows])
     if all(r["state"] == "absent" for r in rows):
-        return [diag.Finding(
+        return diag.AxisResult([diag.Finding(
             "cache", diag.SEV_INFO, "cache_none",
             "no compile cache configured (ccache/sccache absent); builds won't "
             "benefit from caching",
-            remediation="install ccache and/or sccache to speed up rebuilds")]
+            remediation="install ccache and/or sccache to speed up rebuilds")], roster)
 
     out: list[diag.Finding] = []
     for r in rows:
@@ -840,22 +849,29 @@ def _collect_cache_findings(config) -> list[diag.Finding]:
                 "cache", diag.SEV_WARN, f"cache_misconfigured:{r['tool']}",
                 f"{r['tool']} installed but not ready: {r['detail']}",
                 remediation=r["remediation"] or ""))
-    return out
+    return diag.AxisResult(out, roster)
 
 
-def _collect_hardware_findings() -> list[diag.Finding]:
+def _collect_hardware_findings() -> diag.AxisResult:
     """Device-driver coverage + the *running* kernel's boot-config gaps — the
     on-the-spot analog of the kernel stage's audit ("device X has no driver")."""
     from sysforge.primitives import device_probe, kernel_safety
     from sysforge.primitives.dep_analysis import _parse_kernel_config
 
+    roster = diag.Roster(ran=["device_drivers"])
     devices = device_probe.enumerate_devices()
     findings = list(device_probe.check_unsupported_devices(devices=devices))
     running_cfg = _parse_kernel_config()
     if running_cfg:
+        roster.ran.append("kernel_boot_config")
         findings += kernel_safety.audit_resolved_config(running_cfg, devices=devices)
+    else:
+        roster.skipped.append((
+            "kernel_boot_config",
+            "running kernel config not exposed (/proc/config.gz)"))
     # The whole axis reads the running kernel's config + bound drivers.
-    return _with_reboot_hint(diag.adapt_many("hardware", findings))
+    return diag.AxisResult(
+        _with_reboot_hint(diag.adapt_many("hardware", findings)), roster)
 
 
 def _collect_graphics_findings(config) -> diag.AxisResult:
@@ -876,23 +892,25 @@ def _collect_gfxperf_findings(config) -> diag.AxisResult:
     return diag.AxisResult(diag.adapt_many("gfxperf", res.findings), res.roster)
 
 
-def _collect_distro_findings(*, explicit: bool = False) -> list[diag.Finding]:
+def _collect_distro_findings(*, explicit: bool = False) -> diag.AxisResult:
     """Report the running distribution and its support tier, read from
     ``os-release(5)``. Read-only, no subprocess. ``primitives/os_release.py`` is
     the *only* home for distro identity — never sniff ``pacman.conf``,
     ``/etc/arch-release``, or the hostname."""
     from sysforge.primitives import os_release
-    return os_release.collect_distro_findings(explicit=explicit)
+    return _ran(os_release.collect_distro_findings(explicit=explicit), "os_release")
 
 
-def _collect_pacman_findings() -> list[diag.Finding]:
+def _collect_pacman_findings() -> diag.AxisResult:
     """Local pacman-db consistency, stale lock, unmerged .pacnew/.pacsave,
     orphans, plus sysforge libalpm-hook drift. Read-only — never syncs or
     writes. See ``primitives/system_probe.py`` / ``primitives/pacman_hooks.py``."""
     from sysforge.primitives import system_probe
-    findings = system_probe.collect_system_findings()
-    findings += _collect_hook_findings()
-    return findings
+    res = system_probe.collect_system_result()
+    roster = res.roster or diag.Roster()
+    findings = res.findings + diag.record_many(roster, "pacman_hooks",
+                                               _collect_hook_findings())
+    return diag.AxisResult(findings, roster)
 
 
 def _collect_hook_findings() -> list[diag.Finding]:
@@ -913,55 +931,55 @@ def _collect_hook_findings() -> list[diag.Finding]:
     return out
 
 
-def _collect_state_findings(args) -> list[diag.Finding]:
+def _collect_state_findings(args) -> diag.AxisResult:
     """sysforge's own state integrity: recorded build failures, an interrupted
     stage sentinel, build_state drift. Read-only — does not recover or save.
     See ``primitives/state_probe.py``."""
     from sysforge.primitives import state_probe
-    return state_probe.collect_state_findings(
+    return state_probe.collect_state_result(
         state_dir=getattr(args, "state_dir", None))
 
 
-def _collect_services_findings() -> list[diag.Finding]:
+def _collect_services_findings() -> diag.AxisResult:
     """Live service/driver runtime health: failed systemd units, firmware a
     driver requested but could not load. See ``primitives/runtime_probe.py``."""
     from sysforge.primitives import runtime_probe
     # Failed units are live; firmware-load failures are from this boot's log.
-    return _with_reboot_hint(
-        runtime_probe.collect_runtime_findings(),
-        only=lambda f: f.check_id == "missing_firmware")
+    res = runtime_probe.collect_runtime_result()
+    return diag.AxisResult(_with_reboot_hint(
+        res.findings, only=lambda f: f.check_id == "missing_firmware"), res.roster)
 
 
-def _collect_audio_findings() -> list[diag.Finding]:
+def _collect_audio_findings() -> diag.AxisResult:
     """Live PipeWire/WirePlumber sound-stack health: failed audio user services
     and a vanished output sink. Read-only — never restarts a unit. User-scoped,
     so it degrades to clean under sudo (no reachable session bus). See
     ``primitives/audio_probe.py``."""
     from sysforge.primitives import audio_probe
-    return audio_probe.collect_audio_findings()
+    return audio_probe.collect_audio_result()
 
 
-def _collect_network_findings() -> list[diag.Finding]:
+def _collect_network_findings() -> diag.AxisResult:
     """Live network/connectivity configuration health: no default route,
     connection-manager ownership conflicts (>1 enabled manager), and a DNS
     provisioner conflict (resolved active but /etc/resolv.conf static). Read-only
     — never makes a network call or mutates a unit. See
     ``primitives/network_probe.py``."""
     from sysforge.primitives import network_probe
-    return network_probe.collect_network_findings()
+    return network_probe.collect_network_result()
 
 
-def _collect_storage_findings(config) -> list[diag.Finding]:
+def _collect_storage_findings(config) -> diag.AxisResult:
     """Storage / filesystem health: free space on the build dir and /etc/fstab
     integrity (entries whose device/UUID/label no longer resolve). Read-only —
     never mounts or writes. See ``primitives/storage_probe.py``."""
     from sysforge.primitives import config as cfgmod
     from sysforge.primitives import storage_probe
     doctor_cfg = cfgmod.load_sysforge_toml().get("doctor", {}) or {}
-    return storage_probe.collect_storage_findings(config, doctor_cfg=doctor_cfg)
+    return storage_probe.collect_storage_result(config, doctor_cfg=doctor_cfg)
 
 
-def _collect_boot_findings() -> list[diag.Finding]:
+def _collect_boot_findings() -> diag.AxisResult:
     """Running-system boot readiness — the analog of the kernel stage's gates
     1/3, reusing ``kernel_safety``: per-kernel boot artifacts (vmlinuz +
     initramfs + boot entry), a recovery fallback, /boot space, and DKMS modules
@@ -969,6 +987,7 @@ def _collect_boot_findings() -> list[diag.Finding]:
     from sysforge.primitives import kernel_safety
 
     out: list[diag.Finding] = []
+    roster = diag.Roster(ran=["bootable_kernels"])
     kernels = kernel_safety.find_fallback_kernels()
     if not kernels:
         out.append(diag.Finding(
@@ -985,21 +1004,33 @@ def _collect_boot_findings() -> list[diag.Finding]:
     kfindings = []
     for suffix in kernels:
         kfindings += kernel_safety.verify_boot_artifacts(suffix)
+    if kernels:
+        roster.ran.append("boot_artifacts")
+    else:
+        roster.skipped.append(("boot_artifacts", "no bootable kernel to verify"))
+    # check_boot_mount_space returns None both when /boot is healthy and when
+    # it is not separately mounted; either way the check ran.
+    roster.ran.append("boot_space")
     space = kernel_safety.check_boot_mount_space()
     if space is not None:
         kfindings.append(space)
-    with contextlib.suppress(Exception):
+    try:
         kfindings += kernel_safety.check_dkms_for_kernel(
             kernel_safety.running_kernel_release())
+    except Exception as e:  # noqa: BLE001 — best-effort, reported as a skip
+        roster.skipped.append(("dkms_modules", f"could not query DKMS: {e}"))
+    else:
+        roster.ran.append("dkms_modules")
 
     out += diag.adapt_many("boot", kfindings)
     # Boot-artifact / /boot-space findings are filesystem-live (clear on the
     # next run); only the DKMS check is scoped to the running kernel.
-    out += _boot_entry_audit_findings()
-    return _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:"))
+    out += diag.record_many(roster, "boot_entries", _boot_entry_audit_findings())
+    return diag.AxisResult(
+        _with_reboot_hint(out, only=lambda f: f.check_id.startswith("dkms:")), roster)
 
 
-def _boot_entry_audit_findings() -> list[diag.Finding]:
+def _boot_entry_audit_findings() -> list[diag.Finding] | diag.Skip:
     """sysforge-managed loader-entry health (3.3.0-F5), systemd-boot only.
 
     ``boot_entry_missing`` is filtered: ``verify_boot_artifacts`` already reports
@@ -1012,17 +1043,17 @@ def _boot_entry_audit_findings() -> list[diag.Finding]:
     with contextlib.suppress(Exception):
         kc = kconfig.load()
         if kc is None or kconfig.resolve_bootloader(kc, None) != "systemd-boot":
-            return []
+            return diag.Skip("sysforge-managed entries are systemd-boot only")
         ents = boot_entries.load_entries(boot_entries.entries_dir())
         return [
             diag.Finding("boot", diag.SEV_WARN, check_id, msg, remediation=rem)
             for check_id, msg, rem in boot_entries.audit(ents, boot_entries.existing_images())
             if check_id != "boot_entry_missing"
         ]
-    return []
+    return diag.Skip("boot entries unreadable")
 
 
-def _collect_restart_findings() -> list[diag.Finding]:
+def _collect_restart_findings() -> diag.AxisResult:
     """Processes still running superseded code after an upgrade (2.4.0-F2).
 
     Evidence-based: a ``(deleted)`` mapping in ``/proc/<pid>/maps`` means the
@@ -1080,16 +1111,16 @@ def _collect_restart_findings() -> list[diag.Finding]:
             "restart", diag.SEV_INFO, "restart:partial_coverage",
             "some processes could not be inspected, so this list may be incomplete",
             remediation="re-run as `sudo sysforge doctor system --restart` for full coverage"))
-    return out
+    return _ran(out, "stale_processes")
 
 
-def _collect_integrity_findings(args) -> list[diag.Finding]:
+def _collect_integrity_findings(args) -> diag.AxisResult:
     """`pacman -Qkk` package-file verification (opt-in --integrity axis).
 
     Read-only. Honors package targets so `doctor --integrity <pkg>` scopes the
     scan; a bare `--integrity` verifies every installed package."""
     packages = list(getattr(args, "packages", None) or [])
-    return pkgfiles_probe.collect_integrity_findings(packages or None)
+    return pkgfiles_probe.collect_integrity_result(packages or None)
 
 
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
@@ -1130,13 +1161,24 @@ _AXIS_FLAGS: dict[str, str] = {
 }
 
 
+def _abi_axis_result(walk) -> diag.AxisResult:
+    """The abi walk as an axis with a roster (3.4.0-F5)."""
+    findings = walk.run()
+    roster = diag.Roster()
+    if getattr(walk, "scanned", 0):
+        roster.ran.append("depends_and_linkage")
+    else:
+        roster.skipped.append(("depends_and_linkage", "no installed target to scan"))
+    return diag.AxisResult(findings, roster)
+
+
 def _system_axes(config, args=None) -> dict[str, diag.Axis]:
     """Build the axis registry. Producer lookups go through module globals so
     tests can monkeypatch a ``_collect_*`` function."""
     return {
         "abi": diag.Axis(
             "abi", "package depends + ABI linkage",
-            lambda: _abi_walk_for(args, config).run(),
+            lambda: _abi_axis_result(_abi_walk_for(args, config)),
             clean_msg=("every target's depends are satisfied and all sonames "
                        "resolve")),
         "distro": diag.Axis(
@@ -1270,6 +1312,10 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
     for ax in axes:
         progress.phase(f"doctor: {ax.label}")
         results[ax.name] = diag.run_axis(ax)
+    if json_out.requested(args):
+        docs = [diag.axis_document(ax.name, ax.label, results[ax.name]) for ax in axes]
+        json_out.emit("doctor", {"scope": "system", "axes": docs})
+        return sum(d["errors"] for d in docs)
     errors = 0
     for ax in axes:
         res = results[ax.name]
@@ -1284,7 +1330,8 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk) -> int:
+def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk,
+                     json_docs: list | None = None) -> int:
     """Run + render the selected package-scope axes; return the error count.
 
     ``abi`` renders grouped by package (its findings carry a ``subject``), the
@@ -1299,6 +1346,11 @@ def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk) -> int:
             continue
         progress.phase(f"doctor: {ax.label}")
         res = diag.run_axis(ax)
+        if json_docs is not None:
+            # --json (3.4.0-F7): collect instead of render.
+            json_docs.append(diag.axis_document(ax.name, ax.label, res))
+            errors += json_docs[-1]["errors"]
+            continue
         errors += diag.render_axis(
             _log, ax.label, res.findings,
             clean_msg=ax.clean_msg, quiet=args.quiet,
@@ -1417,10 +1469,18 @@ def cmd_doctor_pkg(args):
         return 2
 
     walk = _abi_walk_for(args, config)
-    axis_error_count = _render_pkg_axes(args, config, axis_names, walk)
+    json_docs: list | None = [] if json_out.requested(args) else None
+    axis_error_count = _render_pkg_axes(args, config, axis_names, walk, json_docs)
 
     ran_abi = "abi" in axis_names
-    if ran_abi:
+    if json_out.requested(args):
+        json_out.emit("doctor", {
+            "scope": "pkg",
+            "axes": json_docs,
+            "affected": [{"name": n, "issues": c, "tag": t or None}
+                         for n, c, t in walk.affected] if ran_abi else [],
+        })
+    elif ran_abi:
         _render_walk_summary(walk, bool(getattr(args, "suggest", False)))
 
     # --apply bridge: hand REBUILD candidates to `sysforge update`. The guard
@@ -1645,6 +1705,15 @@ def _add_system_axis_flags(p):
              "Read-only; never restores.")
     p.add_argument("--quiet", "-q", action="store_true",
         help="Suppress clean lines; print only findings.")
+    _add_json_flag(p)
+
+
+def _add_json_flag(p) -> None:
+    """``--json`` on every doctor entry point (3.4.0-F7)."""
+    p.add_argument("--json", action="store_true", dest="json",
+        help="Print one JSON document (schema 1) on stdout instead of the "
+             "report: each axis's findings and the checks it ran and skipped. "
+             "Everything else goes to stderr; the exit code is unchanged.")
 
 
 class DoctorSystemVerb(Verb):
@@ -1747,6 +1816,7 @@ class DoctorPkgVerb(Verb):
             help="Skip the y/N prompt before --apply rebuilds.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Report what --apply would rebuild without invoking the build.")
+        _add_json_flag(p)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -1762,6 +1832,10 @@ class DoctorPkgVerb(Verb):
         return "sysforge-doctor.log"
 
     def pre_check(self, args) -> PreCheckResult:
+        if json_out.requested(args) and getattr(args, "apply", False):
+            return PreCheckResult(blocker=(
+                "--json is a read-only report; it cannot be combined with "
+                "--apply, which rebuilds packages"), exit_code=2)
         if not hasattr(args, "config") or args.config is None:
             args.config = _load_config() or {}
         # Split targets by provenance so the rust axis can collapse
@@ -1781,6 +1855,7 @@ def _add_doctor_group_flags(p):
     # since it modifies the sweep rather than selecting one.
     p.add_argument("--quiet", "-q", action="store_true",
         help="Suppress clean lines; print only findings.")
+    _add_json_flag(p)
 
 
 #: `sysforge doctor`: system / pkg. Bare `doctor` is `doctor system` (2.6.1-F1);

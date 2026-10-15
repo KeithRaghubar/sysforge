@@ -65,6 +65,11 @@ def cmd_state_list(args):
         opted_out = {}
     opted_names = {n for e in opted_out.values() for n in e["pkgnames"]}
 
+    from sysforge.primitives import json_out
+    if json_out.requested(args):
+        json_out.emit("state-list", _state_list_document(entries, opted_out, opted_names))
+        return
+
     with _maybe_pager(use_pager):
         if not entries:
             print(f"No build state recorded in {state_dir / 'build_state.toml'}")
@@ -74,16 +79,10 @@ def cmd_state_list(args):
 
         rows = []
         for pkgname, rec in sorted(entries.items()):
-            pkgver = rec.get("pkgver", "")
-            pkgrel = rec.get("pkgrel", "")
-            ver = f"{pkgver}-{pkgrel}" if pkgrel else pkgver
-            epoch = rec.get("epoch", "0")
-            if epoch and epoch != "0":
-                ver = f"{epoch}:{ver}"
             rows.append((
                 pkgname,
                 rec.get("pkgbase", ""),
-                ver,
+                _format_version(rec),
                 rec.get("build_mode", ""),
                 rec.get("pkgbuild_dir", ""),
             ))
@@ -109,6 +108,50 @@ def cmd_state_list(args):
         _print_untracked_foreign(set(entries.keys()) | opted_names)
 
 
+# Per-package fields in `state list --json` (3.4.0-F7). An explicit list, not
+# every build_state key: the document is a contract (adding a field is minor,
+# renaming or removing one bumps json_out.SCHEMA_VERSION).
+_JSON_ENTRY_FIELDS = ("pkgbase", "build_mode", "pkgbuild_dir", "built_at",
+                      "source", "owner_stage", "toolchain_variant")
+
+
+def _format_version(rec: dict) -> str:
+    pkgver = rec.get("pkgver", "")
+    pkgrel = rec.get("pkgrel", "")
+    ver = f"{pkgver}-{pkgrel}" if pkgrel else pkgver
+    epoch = rec.get("epoch", "0")
+    return f"{epoch}:{ver}" if epoch and epoch != "0" else ver
+
+
+def _untracked_foreign(tracked: set[str]) -> dict[str, str]:
+    from sysforge.primitives.pacman import get_foreign_packages
+    try:
+        foreign = get_foreign_packages()
+    except Exception:
+        return {}
+    return {n: foreign[n] for n in sorted(set(foreign) - tracked)}
+
+
+def _state_list_document(entries: dict, opted_out: dict, opted_names: set) -> dict:
+    """The `state list --json` body: the same three sections the table shows."""
+    packages = []
+    for name, rec in sorted(entries.items()):
+        row = {"name": name, "version": _format_version(rec)}
+        row.update({k: rec.get(k) for k in _JSON_ENTRY_FIELDS})
+        packages.append(row)
+    return {
+        "packages": packages,
+        "opted_out": [
+            {"pkgbase": base, "via": e["via"], "at": e["at"], "pkgnames": e["pkgnames"]}
+            for base, e in sorted(opted_out.items())
+        ],
+        "untracked_foreign": [
+            {"name": n, "version": v}
+            for n, v in _untracked_foreign(set(entries) | opted_names).items()
+        ],
+    }
+
+
 def _print_opted_out(opted_out: dict[str, dict]) -> None:
     """Print the revert/forget opt-out records (3.4.0-F4), when non-empty."""
     if not opted_out:
@@ -126,18 +169,12 @@ def _print_opted_out(opted_out: dict[str, dict]) -> None:
 
 def _print_untracked_foreign(tracked: set[str]) -> None:
     """Print the foreign-but-untracked-by-sysforge section, when non-empty."""
-    from sysforge.primitives.pacman import get_foreign_packages
-
-    try:
-        foreign = get_foreign_packages()
-    except Exception:
-        return
-    untracked = sorted(set(foreign) - tracked)
+    untracked = _untracked_foreign(tracked)
     if not untracked:
         return
     print(f"\n  Untracked foreign packages ({len(untracked)}):")
-    for name in untracked:
-        print(f"    {name} {foreign[name]}")
+    for name, version in untracked.items():
+        print(f"    {name} {version}")
     print(
         "    (installed via `pacman -Qm` but with no build_state.toml entry: "
         "`sysforge update` will pick these up the next time their pkgbase "
@@ -570,6 +607,10 @@ class StateListVerb(Verb):
         p = sub.add_parser("list", help="Tabulate build_state.toml entries.")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
+        p.add_argument("--json", action="store_true", dest="json",
+            help="Print one JSON document (schema 1) on stdout instead of the "
+                 "table: recorded packages, opted-out packages and untracked "
+                 "foreign packages. Never paged.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.set_defaults(verb_cls=cls)

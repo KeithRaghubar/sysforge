@@ -95,14 +95,16 @@ def _resolv_conf_state() -> tuple[str, str | None]:
     return ("missing", None)
 
 
-def _check_default_route() -> list[diag.Finding]:
+def _check_default_route() -> list[diag.Finding] | diag.Skip:
     """`ip route show default` — warn when the host has no gateway.
 
-    ip absent or a nonzero exit → no findings (don't guess about connectivity).
+    ip absent or a nonzero exit → a skip (don't guess about connectivity).
     """
     proc = _run(["ip", "route", "show", "default"])
-    if proc is None or proc.returncode != 0:
-        return []
+    if proc is None:
+        return diag.Skip("ip not installed (iproute2)")
+    if proc.returncode != 0:
+        return diag.Skip("`ip route` failed")
     if "default" in proc.stdout:
         return []
     return [diag.Finding(
@@ -152,10 +154,15 @@ def _check_dns_conflict() -> list[diag.Finding]:
     )]
 
 
+def collect_network_result() -> diag.AxisResult:
+    """Run all network checks, with the ran/skipped roster (3.4.0-F5). Read-only."""
+    return diag.run_checks([
+        ("default_route", _check_default_route),
+        ("connection_managers", _check_manager_conflict),
+        ("dns_resolver", _check_dns_conflict),
+    ])
+
+
 def collect_network_findings() -> list[diag.Finding]:
-    """Run all network checks; return findings (read-only, never mutates)."""
-    findings: list[diag.Finding] = []
-    findings += _check_default_route()
-    findings += _check_manager_conflict()
-    findings += _check_dns_conflict()
-    return findings
+    """The findings of :func:`collect_network_result` (skips dropped)."""
+    return collect_network_result().findings

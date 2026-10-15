@@ -126,6 +126,10 @@ sysforge bench toolchain        # time your optimized clang against the stock re
 sysforge help [COMMAND]         # help for sysforge or one command (same as --help)
 ```
 
+For scripts, status bars and timers, `state list`, `doctor` and `update --dry-run` take `--json`:
+stdout then carries one JSON document with a top-level `"schema"` version and nothing else.
+Fields may be added in a minor release; a renamed or removed field bumps `"schema"`.
+
 **Config and your own artifacts**
 
 ```bash

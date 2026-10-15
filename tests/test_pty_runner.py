@@ -751,3 +751,68 @@ def test_a_failing_refresh_never_breaks_the_build(tmp_path, recording_hooks, mon
         line_callback=lambda _l: None, forward_bytes=True,
     )
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# interactive=True: the two-way proxy (3.2.0-F19)
+# ---------------------------------------------------------------------------
+
+_INTERACTIVE_CHILD = (
+    "import os, sys\n"
+    "print('tty' if os.isatty(0) else 'notty', flush=True)\n"
+    "fd = os.open('/dev/tty', os.O_RDWR)\n"  # needs a controlling terminal
+    "os.close(fd)\n"
+    "print('ctty-ok', flush=True)\n"
+    "line = sys.stdin.readline().strip()\n"
+    "print('got ' + line, flush=True)\n"
+    "sys.exit(3)\n"
+)
+
+
+def _pipe_stdin(monkeypatch, data: bytes):
+    r, w = os.pipe()
+    os.write(w, data)
+    os.close(w)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(fileno=lambda: r))
+    return r
+
+
+def test_interactive_proxy_pumps_stdin_and_owns_a_controlling_tty(tmp_path, monkeypatch):
+    sink = _capture_stdout_buffer(monkeypatch)
+    _pipe_stdin(monkeypatch, b"typed-answer\n")
+    lines: list[str] = []
+    rc = run_with_pty(
+        [sys.executable, "-c", _INTERACTIVE_CHILD],
+        cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+        line_callback=lines.append, forward_bytes=False, interactive=True,
+    )
+    assert rc == 3
+    # The child's stdin is the pty, it can open /dev/tty, and it read what
+    # the parent's stdin carried. The pty also echoes the typed line, and
+    # since the pipe is pumped at once that echo may come first.
+    assert "tty" in lines and "notty" not in lines
+    assert "ctty-ok" in lines
+    assert "got typed-answer" in lines
+    # interactive forces forwarding even when the caller passed False.
+    assert b"got typed-answer" in sink.getvalue()
+
+
+def test_interactive_proxy_restores_a_terminal_stdin(tmp_path, monkeypatch):
+    import pty as _pty
+    import termios
+    _capture_stdout_buffer(monkeypatch)
+    master, slave = _pty.openpty()
+    try:
+        before = termios.tcgetattr(slave)
+        monkeypatch.setattr(sys, "stdin", SimpleNamespace(fileno=lambda: slave))
+        rc = run_with_pty(
+            [sys.executable, "-c", "print('done')"],
+            cwd=tmp_path, env={"PATH": "/usr/bin:/bin"},
+            line_callback=lambda _l: None, forward_bytes=True, interactive=True,
+        )
+        assert rc == 0
+        # Raw mode for the run, cooked mode restored after it.
+        assert termios.tcgetattr(slave) == before
+    finally:
+        os.close(master)
+        os.close(slave)

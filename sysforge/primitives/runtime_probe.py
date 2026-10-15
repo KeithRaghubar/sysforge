@@ -40,11 +40,11 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
         return None
 
 
-def _check_failed_units() -> list[diag.Finding]:
+def _check_failed_units() -> list[diag.Finding] | diag.Skip:
     """`systemctl --failed` — each failed unit becomes a finding."""
     proc = _run(["systemctl", "--failed", "--no-legend", "--plain"])
     if proc is None:
-        return []
+        return diag.Skip("systemctl not available")
     findings: list[diag.Finding] = []
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -62,10 +62,14 @@ def _check_failed_units() -> list[diag.Finding]:
     return findings
 
 
-def _check_missing_firmware() -> list[diag.Finding]:
+def _check_missing_firmware() -> list[diag.Finding] | diag.Skip:
     """Best-effort: kernel firmware-load failures from the current boot's log."""
     proc = _run(["journalctl", "-k", "-b", "--no-pager", "-o", "cat"])
-    if proc is None or proc.returncode != 0 or not proc.stdout:
+    if proc is None:
+        return diag.Skip("journalctl not available")
+    if proc.returncode != 0:
+        return diag.Skip("journal not readable by this user; add it to the systemd-journal group")
+    if not proc.stdout:
         return []
     missing: list[str] = []
     seen: set[str] = set()
@@ -99,12 +103,16 @@ _RE_BOOT_ERROR = re.compile(
 )
 
 
-def _check_boot_errors() -> list[diag.Finding]:
+def _check_boot_errors() -> list[diag.Finding] | diag.Skip:
     """F19: broaden the journal scan beyond firmware — surface error-priority
     lines from the current boot (failed-start, core dumps, filesystem/OOM
     errors) as one deduped, capped finding. Current-boot scoped, read-only."""
     proc = _run(["journalctl", "-b", "-p", "err", "--no-pager", "-o", "cat"])
-    if proc is None or proc.returncode != 0 or not proc.stdout:
+    if proc is None:
+        return diag.Skip("journalctl not available")
+    if proc.returncode != 0:
+        return diag.Skip("journal not readable by this user; add it to the systemd-journal group")
+    if not proc.stdout:
         return []
     hits: list[str] = []
     seen: set[str] = set()
@@ -129,10 +137,15 @@ def _check_boot_errors() -> list[diag.Finding]:
     )]
 
 
+def collect_runtime_result() -> diag.AxisResult:
+    """Run all services/runtime checks, with the ran/skipped roster (3.4.0-F5)."""
+    return diag.run_checks([
+        ("failed_units", _check_failed_units),
+        ("missing_firmware", _check_missing_firmware),
+        ("boot_errors", _check_boot_errors),
+    ])
+
+
 def collect_runtime_findings() -> list[diag.Finding]:
-    """Run all services/runtime checks; return findings (read-only)."""
-    findings: list[diag.Finding] = []
-    findings += _check_failed_units()
-    findings += _check_missing_firmware()
-    findings += _check_boot_errors()
-    return findings
+    """The findings of :func:`collect_runtime_result` (skips dropped)."""
+    return collect_runtime_result().findings

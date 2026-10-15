@@ -291,5 +291,17 @@ def _pin_findings_for(config_dict, pkg) -> list[diag.Finding]:
 def collect_rust_findings(config_dict, packages=None, *, derived=()) -> list[diag.Finding]:
     """Public axis producer: effective-toolchain findings plus, for any package
     targets, rust-toolchain.toml pin findings."""
-    return (collect_active_findings()
-            + collect_pin_findings(config_dict, packages, derived=derived))
+    return collect_rust_result(config_dict, packages, derived=derived).findings
+
+
+def collect_rust_result(config_dict, packages=None, *, derived=()) -> diag.AxisResult:
+    """:func:`collect_rust_findings` with the ran/skipped roster (3.4.0-F5):
+    the pin check does not apply when no package target was named."""
+    def _pins():
+        if not packages and not derived:
+            return diag.Skip("no package targets named")
+        return collect_pin_findings(config_dict, packages, derived=derived)
+    return diag.run_checks([
+        ("active_toolchain", collect_active_findings),
+        ("toolchain_pins", _pins),
+    ])

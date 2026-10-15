@@ -45,7 +45,7 @@ def test_failed_units_ignores_non_unit_lines(monkeypatch):
 
 def test_failed_units_no_systemctl(monkeypatch):
     monkeypatch.setattr(runtime_probe, "_run", _dispatch({}))
-    assert runtime_probe._check_failed_units() == []
+    assert isinstance(runtime_probe._check_failed_units(), diag.Skip)
 
 
 # --- missing firmware -------------------------------------------------------
@@ -79,7 +79,7 @@ def test_missing_firmware_journal_unreadable(monkeypatch):
     # journalctl present but exits non-zero (no permission) → degrade silently.
     monkeypatch.setattr(runtime_probe, "_run",
                         _dispatch({"journalctl": _proc(stdout="", rc=1)}))
-    assert runtime_probe._check_missing_firmware() == []
+    assert isinstance(runtime_probe._check_missing_firmware(), diag.Skip)
 
 
 def test_collect_runtime_findings_combines(monkeypatch):
@@ -115,4 +115,4 @@ def test_boot_errors_clean_when_no_matches(monkeypatch):
 def test_boot_errors_journal_unreadable(monkeypatch):
     monkeypatch.setattr(runtime_probe, "_run",
                         _dispatch({"journalctl": _proc(stdout="", rc=1)}))
-    assert runtime_probe._check_boot_errors() == []
+    assert isinstance(runtime_probe._check_boot_errors(), diag.Skip)

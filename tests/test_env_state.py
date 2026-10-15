@@ -362,17 +362,26 @@ def _capture_popen_kwargs(pkgbuild_path, conf_path, resolved_profile, **kwargs):
     return captured.get("kwargs", {})
 
 
-def test_interactive_inherits_stdio(tmp_path):
-    """interactive=True: child inherits parent stdout/stderr so unbuffered
-    prompts (pacman conflict, sudo) reach the terminal immediately."""
+def test_interactive_runs_under_the_two_way_pty_proxy(tmp_path, monkeypatch):
+    """interactive=True: makepkg runs under run_with_pty's interactive proxy
+    (3.2.0-F19), which keeps prompts and nconfig working (the child owns a
+    full-size pty as its controlling terminal; every byte is forwarded) while
+    the output still reaches the logs. It replaced inheriting the parent's
+    stdio, which left an interactive failure's reason out of every log."""
+    from sysforge.primitives import makepkg_invoke
     pb = _fake_pkgbuild(tmp_path)
     conf = tmp_path / "makepkg.conf"
     conf.write_text("")
-    kwargs = _capture_popen_kwargs(pb, conf, {}, interactive=True)
-    assert "stdout" not in kwargs, (
-        f"interactive=True must NOT pipe stdout (got stdout={kwargs.get('stdout')!r})")
-    assert "stderr" not in kwargs, (
-        f"interactive=True must NOT pipe stderr (got stderr={kwargs.get('stderr')!r})")
+    seen = {}
+
+    def _fake_pty(cmd, **kw):
+        seen.update(kw)
+        return 0
+    monkeypatch.setattr(makepkg_invoke, "run_with_pty", _fake_pty)
+    invoke_makepkg(pb, conf, {}, interactive=True)
+    assert seen["interactive"] is True
+    assert seen["forward_bytes"] is True
+    assert "reserve_bottom_rows" not in seen  # the child gets the whole screen
 
 
 def test_noninteractive_uses_pty(tmp_path):

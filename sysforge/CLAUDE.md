@@ -70,6 +70,10 @@ Mechanism lives in the cited §DESIGN section.
   `_ENTRY_KEYS` (`primitives/build_state.py`), which `BuildState._serialize` writes. §primitives-layer.
 - **Unified run-log**: `log.open_unified_log`/`close_unified_log`; verbs opt in via
   `Verb.unified_log_basename`. §Logging.
+- **Machine-readable output** (`--json`): `primitives/json_out.py` only — `reserved_stdout()` (entered by
+  `cli.main` and `verbs.runner.run_verb`; re-entrant) + one `emit(kind, body)`; never `print(json.dumps…)`.
+  Build the body from the renderer's own result objects; a new field updates its
+  `tests/data/json-schema/` schema in the same change (standards row 32). §Standards.
 - **Flag-drift**: `flag_drift.resolve_flag_drift` (pure); sole consumer `update` Phase 4.3. §update.
   Out-of-profile inputs (python/mesa/llvm/PGO profile) go through `build_inputs.resolve_build_inputs`
   on **both** sides (`_record_build_state` and the drift sub-axis): a new input is added there,

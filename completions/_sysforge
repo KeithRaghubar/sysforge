@@ -196,6 +196,7 @@ _sysforge_update() {
     $_sysforge_help_spec \
     '--packages[path to packages.toml override file]:file:_files' \
     '--dry-run[show what would be rebuilt without doing it]' \
+    '--json[with --dry-run: print a JSON document]' \
     '--devel[rebuild VCS packages newer than installed]' \
     '--offline[no network: no source sync, clone or AUR RPC]' \
     '--install-only[install pre-built PKGDEST artifacts only]' \
@@ -246,6 +247,7 @@ _sysforge_doctor() {
     $_sysforge_help_spec \
     '1: :_sysforge_doctor_subcommands' \
     '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
+    '--json[print one JSON document on stdout instead of the report]' \
     '*:: :->args'
 
   case $state in
@@ -286,7 +288,8 @@ _sysforge_doctor_system() {
     '--audio[failed audio services + vanished output sink]' \
     '--network[default route, manager and DNS conflicts]' \
     '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in)]' \
-    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]'
+    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
+    '--json[print one JSON document on stdout instead of the report]'
 }
 
 _sysforge_doctor_pkg() {
@@ -305,6 +308,7 @@ _sysforge_doctor_pkg() {
     '--apply[hand REBUILD candidates to sysforge update; implies --suggest]' \
     '--no-confirm[skip the y/N prompt before --apply rebuilds]' \
     '--dry-run[report --apply work without rebuilding]' \
+    '(--apply)--json[print one JSON document on stdout instead of the report]' \
     '*:installed package:_sysforge_installed_pkg_names'
 }
 
@@ -515,7 +519,8 @@ _sysforge_bench_toolchain() {
 _sysforge_state_list() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
-    '--no-pager[do not pipe output through $PAGER]'
+    '--no-pager[do not pipe output through $PAGER]' \
+    '--json[print one JSON document on stdout instead of the table]'
 }
 
 _sysforge_state_orphans() {

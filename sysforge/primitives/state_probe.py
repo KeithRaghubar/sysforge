@@ -37,7 +37,7 @@ def _short_error(text: str, limit: int = 160) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def _check_instrumented_builds(bs) -> list[diag.Finding]:
+def _check_instrumented_builds(bs) -> list[diag.Finding] | diag.Skip:
     """F14: flag any package left on a live *record-stage* PGO build — a bare
     ``.profraw`` store with no merged ``.profdata``. That build is instrumented
     (unoptimized, transient), so the user should either finish PGO
@@ -51,13 +51,13 @@ def _check_instrumented_builds(bs) -> list[diag.Finding]:
     try:
         from sysforge.primitives import mesa_pgo
     except Exception:
-        return []
+        return diag.Skip("PGO store module unavailable")
     out: list[diag.Finding] = []
     seen: set[str] = set()
     try:
         entries = bs.all_packages()
     except Exception:
-        return []
+        return diag.Skip("build_state unreadable")
     for pkgname, entry in sorted(entries.items()):
         pkgbase = (entry.get("pkgbase") or entry.get("origin_pkgbase")
                    or pkgname)
@@ -85,12 +85,21 @@ def _check_instrumented_builds(bs) -> list[diag.Finding]:
 def collect_state_findings(state_dir: Path | str | None = None,
                            installed: dict[str, str] | None = None,
                            ) -> list[diag.Finding]:
-    """Return state-integrity findings. All inputs are optional for testability.
+    """The findings of :func:`collect_state_result` (skips dropped)."""
+    return collect_state_result(state_dir, installed).findings
+
+
+def collect_state_result(state_dir: Path | str | None = None,
+                         installed: dict[str, str] | None = None,
+                         ) -> diag.AxisResult:
+    """Return state-integrity findings with the ran/skipped roster (3.4.0-F5).
+    All inputs are optional for testability.
 
     ``state_dir`` resolves through the usual ``SYSFORGE_STATE_DIR`` chain when
     ``None``; ``installed`` is fetched via ``pacman -Q`` when ``None``.
     """
     findings: list[diag.Finding] = []
+    roster = diag.Roster()
 
     from sysforge.primitives.paths import resolve_state_dir
     from sysforge.primitives.build_state import BuildState
@@ -99,13 +108,19 @@ def collect_state_findings(state_dir: Path | str | None = None,
         resolved_dir, _ = resolve_state_dir(state_dir)
         bs = BuildState(resolved_dir)
     except Exception as exc:  # state dir unreadable / malformed
-        return [diag.Finding(
+        roster.ran.append("state_readable")
+        for check_id in ("build_failures", "stage_sentinel", "pgo_record_only",
+                         "state_drift"):
+            roster.skipped.append((check_id, "sysforge state unreadable"))
+        return diag.AxisResult([diag.Finding(
             "state", diag.SEV_WARN, "state:unreadable",
             f"could not read sysforge state: {exc}",
             remediation="check SYSFORGE_STATE_DIR and build_state.toml integrity",
-        )]
+        )], roster)
+    roster.ran.append("state_readable")
 
     # --- recorded build failures -------------------------------------------
+    roster.ran.append("build_failures")
     for pkgbase, rec in sorted(bs.all_failures().items()):
         msg = _short_error(rec.get("error", ""))
         when = rec.get("failed_at", "?")
@@ -137,6 +152,9 @@ def collect_state_findings(state_dir: Path | str | None = None,
         record = StageSentinel(resolved_dir).get_active()
     except Exception:
         record = None
+        roster.skipped.append(("stage_sentinel", "sentinel unreadable"))
+    else:
+        roster.ran.append("stage_sentinel")
     if record:
         stage = record.get("stage", "?")
         started = record.get("started_at", "?")
@@ -158,7 +176,8 @@ def collect_state_findings(state_dir: Path | str | None = None,
         ))
 
     # --- live instrumented / record-only PGO builds (F14) ------------------
-    findings += _check_instrumented_builds(bs)
+    findings += diag.record_many(roster, "pgo_record_only",
+                                 _check_instrumented_builds(bs))
 
     # --- build-state drift vs pacman (read-only) ---------------------------
     if installed is None:
@@ -167,7 +186,10 @@ def collect_state_findings(state_dir: Path | str | None = None,
             installed = pacman.get_all_installed_packages()
         except Exception:
             installed = None
-    if installed is not None:
+    if installed is None:
+        roster.skipped.append(("state_drift", "installed package list unavailable"))
+    else:
+        roster.ran.append("state_drift")
         recorded = set(bs.all_packages().keys())
         zombies = recorded - set(installed.keys())
         if zombies:
@@ -181,4 +203,4 @@ def collect_state_findings(state_dir: Path | str | None = None,
                 remediation="run `sysforge update` to reconcile the state mirror",
             ))
 
-    return findings
+    return diag.AxisResult(findings, roster)

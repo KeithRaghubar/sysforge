@@ -52,12 +52,12 @@ def test_failed_units_no_user_bus_degrades(monkeypatch):
     # `systemctl --user` with no session bus exits nonzero → no findings.
     monkeypatch.setattr(audio_probe, "_run",
                         _dispatch({"systemctl": _proc(stdout="", rc=1)}))
-    assert audio_probe._check_failed_audio_units() == []
+    assert isinstance(audio_probe._check_failed_audio_units(), diag.Skip)
 
 
 def test_failed_units_no_systemctl(monkeypatch):
     monkeypatch.setattr(audio_probe, "_run", _dispatch({}))
-    assert audio_probe._check_failed_audio_units() == []
+    assert isinstance(audio_probe._check_failed_audio_units(), diag.Skip)
 
 
 # --- vanished output sink ---------------------------------------------------
@@ -87,14 +87,14 @@ def test_real_sink_present_is_clean(monkeypatch):
 
 def test_no_sink_no_pactl_degrades(monkeypatch):
     monkeypatch.setattr(audio_probe, "_run", _dispatch({}))
-    assert audio_probe._check_audio_sinks() == []
+    assert isinstance(audio_probe._check_audio_sinks(), diag.Skip)
 
 
 def test_no_sink_server_unreachable_degrades(monkeypatch):
     # pactl present but can't reach the server (run under sudo, no runtime dir).
     monkeypatch.setattr(audio_probe, "_run",
                         _dispatch({"pactl": _proc(stdout="", rc=1)}))
-    assert audio_probe._check_audio_sinks() == []
+    assert isinstance(audio_probe._check_audio_sinks(), diag.Skip)
 
 
 # --- combiner ---------------------------------------------------------------

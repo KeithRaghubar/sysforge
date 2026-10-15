@@ -84,6 +84,20 @@ def _classify(is_backup: bool, reasons: set[str]) -> tuple[str, str]:
     return diag.SEV_WARN, "integrity_altered"
 
 
+def collect_integrity_result(packages: list[str] | None = None) -> diag.AxisResult:
+    """:func:`collect_integrity_findings` with the roster (3.4.0-F5). An
+    unrunnable or unparseable ``pacman -Qkk`` is a skip; its WARN stays, since
+    the axis is opt-in and the user asked for the answer."""
+    findings = collect_integrity_findings(packages)
+    roster = diag.Roster()
+    unavailable = [f for f in findings if f.check_id == "integrity_unavailable"]
+    if unavailable:
+        roster.skipped.append(("pacman_qkk", unavailable[0].message))
+    else:
+        roster.ran.append("pacman_qkk")
+    return diag.AxisResult(findings, roster)
+
+
 def collect_integrity_findings(
     packages: list[str] | None = None,
 ) -> list[Finding]:

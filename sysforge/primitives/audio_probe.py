@@ -48,15 +48,17 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
         return None
 
 
-def _check_failed_audio_units() -> list[diag.Finding]:
+def _check_failed_audio_units() -> list[diag.Finding] | diag.Skip:
     """`systemctl --user --failed` filtered to the audio unit family.
 
     A nonzero exit means the user session bus is unreachable (e.g. running under
-    sudo) — degrade to no findings rather than guess.
+    sudo) — a skip rather than a guess.
     """
     proc = _run(["systemctl", "--user", "--failed", "--no-legend", "--plain"])
-    if proc is None or proc.returncode != 0:
-        return []
+    if proc is None:
+        return diag.Skip("systemctl not available")
+    if proc.returncode != 0:
+        return diag.Skip("no user session bus; running under sudo?")
     findings: list[diag.Finding] = []
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -77,15 +79,17 @@ def _check_failed_audio_units() -> list[diag.Finding]:
     return findings
 
 
-def _check_audio_sinks() -> list[diag.Finding]:
+def _check_audio_sinks() -> list[diag.Finding] | diag.Skip:
     """`pactl list short sinks` — warn when only the dummy device remains.
 
-    pactl absent or the server unreachable (nonzero exit) → no findings. Empty
+    pactl absent or the server unreachable (nonzero exit) → a skip. Empty
     output with a clean exit is treated the same as the dummy-only case.
     """
     proc = _run(["pactl", "list", "short", "sinks"])
-    if proc is None or proc.returncode != 0:
-        return []
+    if proc is None:
+        return diag.Skip("pactl not installed (libpulse)")
+    if proc.returncode != 0:
+        return diag.Skip("sound server unreachable")
     real: list[str] = []
     for line in proc.stdout.splitlines():
         line = line.strip()
@@ -110,9 +114,14 @@ def _check_audio_sinks() -> list[diag.Finding]:
     )]
 
 
+def collect_audio_result() -> diag.AxisResult:
+    """Run all audio checks, with the ran/skipped roster (3.4.0-F5). Read-only."""
+    return diag.run_checks([
+        ("audio_units", _check_failed_audio_units),
+        ("audio_sinks", _check_audio_sinks),
+    ])
+
+
 def collect_audio_findings() -> list[diag.Finding]:
-    """Run all audio checks; return findings (read-only, never mutates)."""
-    findings: list[diag.Finding] = []
-    findings += _check_failed_audio_units()
-    findings += _check_audio_sinks()
-    return findings
+    """The findings of :func:`collect_audio_result` (skips dropped)."""
+    return collect_audio_result().findings

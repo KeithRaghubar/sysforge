@@ -212,7 +212,7 @@ _sysforge_fetch() {
 
 _sysforge_update() {
     _sysforge_flag_arg && return
-    local flags="--packages --dry-run --devel --offline --install-only --interactive \
+    local flags="--packages --dry-run --json --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
         --review --no-review --sysupgrade --no-sysupgrade \
         --no-sysupgrade-report \
@@ -241,7 +241,7 @@ _sysforge_doctor() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-q --quiet" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-q --quiet --json" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "system pkg" -- "$cur") )
         fi
@@ -251,12 +251,12 @@ _sysforge_doctor() {
         system)
             local sys_flags="--distro --graphics --gfxperf --hardware --toolchain \
                 --rust --cache --pacman --state --boot --restart --storage \
-                --services --audio --network --integrity -q --quiet"
+                --services --audio --network --integrity -q --quiet --json"
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "$sys_flags" -- "$cur") )
             ;;
         pkg)
             local pkg_flags="--abi --rust --integrity --all --repo --graphics \
-                --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run"
+                --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run --json"
             if [[ $cur == -* ]]; then
                 COMPREPLY=( $(compgen -W "$pkg_flags" -- "$cur") )
             else
@@ -358,7 +358,7 @@ _sysforge_state() {
     fi
     case "$subverb" in
         list)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --json" -- "$cur") )
             ;;
         orphans)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --no-confirm --no-pager" -- "$cur") )

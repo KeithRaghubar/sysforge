@@ -38,12 +38,12 @@ def test_default_route_present_is_clean(monkeypatch):
 
 def test_default_route_no_ip_tool_degrades(monkeypatch):
     monkeypatch.setattr(network_probe, "_run", lambda cmd: None)
-    assert network_probe._check_default_route() == []
+    assert isinstance(network_probe._check_default_route(), diag.Skip)
 
 
 def test_default_route_nonzero_exit_degrades(monkeypatch):
     monkeypatch.setattr(network_probe, "_run", lambda cmd: _proc(stdout="", rc=1))
-    assert network_probe._check_default_route() == []
+    assert isinstance(network_probe._check_default_route(), diag.Skip)
 
 
 # --- connection-manager ownership conflict ----------------------------------

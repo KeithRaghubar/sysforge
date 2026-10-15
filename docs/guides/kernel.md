@@ -59,6 +59,11 @@ adds no second menu or pause.
 The review needs a real terminal. A run with its output piped or captured falls back to an
 unattended run and warns.
 
+An interactive build's output is still logged. The whole of it goes to the kernel's
+per-package log, and if the build fails, its last lines also go to the run log
+(`sysforge-run-kernel.log`), so you can see why a build failed after the terminal has
+scrolled past it.
+
 ---
 
 ## Running unattended

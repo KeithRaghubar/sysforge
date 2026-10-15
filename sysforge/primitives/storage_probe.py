@@ -74,14 +74,14 @@ def _resolve_build_dir(config: dict | None) -> str | None:
     return cfgmod.resolve_pkgbuild_src_dir(config)
 
 
-def _check_disk_space(config: dict | None, doctor_cfg: dict) -> list[diag.Finding]:
+def _check_disk_space(config: dict | None, doctor_cfg: dict) -> list[diag.Finding] | diag.Skip:
     """F17: warn when the build dir's free space is under ``disk_low_gb``."""
     build_dir = _resolve_build_dir(config)
     if not build_dir:
-        return []
+        return diag.Skip("no build directory configured")
     space = probe_free_space(build_dir)
     if space is None:
-        return []
+        return diag.Skip(f"free space on {build_dir} unreadable")
     free_gb, total_gb = space
     try:
         low = float(doctor_cfg.get("disk_low_gb", DEFAULT_DISK_LOW_GB))
@@ -140,12 +140,12 @@ def _fs_spec_resolves(fs_spec: str) -> bool:
         return False
 
 
-def _check_fstab(fstab_path: str | Path = "/etc/fstab") -> list[diag.Finding]:
+def _check_fstab(fstab_path: str | Path = "/etc/fstab") -> list[diag.Finding] | diag.Skip:
     """F18: flag fstab entries whose fs-spec no longer resolves."""
     try:
         text = Path(fstab_path).read_text(encoding="utf-8")
     except OSError:
-        return []
+        return diag.Skip(f"{fstab_path} unreadable")
     dangling: list[str] = []
     for fs_spec, mount_point, fs_type, options in _iter_fstab_entries(text):
         if fs_type in _PSEUDO_FSTYPES or fs_type in _NETWORK_FSTYPES:
@@ -174,11 +174,22 @@ def collect_storage_findings(config: dict | None = None,
                              doctor_cfg: dict | None = None,
                              fstab_path: str | Path = "/etc/fstab",
                              ) -> list[diag.Finding]:
-    """Run all storage/filesystem checks; return findings (read-only)."""
+    """The findings of :func:`collect_storage_result` (skips dropped)."""
+    return collect_storage_result(config, doctor_cfg=doctor_cfg,
+                                  fstab_path=fstab_path).findings
+
+
+def collect_storage_result(config: dict | None = None,
+                           *,
+                           doctor_cfg: dict | None = None,
+                           fstab_path: str | Path = "/etc/fstab",
+                           ) -> diag.AxisResult:
+    """Run all storage/filesystem checks, with the ran/skipped roster
+    (3.4.0-F5). Read-only."""
     if doctor_cfg is None:
         from sysforge.primitives import config as cfgmod
         doctor_cfg = cfgmod.load_sysforge_toml().get("doctor", {}) or {}
-    findings: list[diag.Finding] = []
-    findings += _check_disk_space(config, doctor_cfg)
-    findings += _check_fstab(fstab_path)
-    return findings
+    return diag.run_checks([
+        ("disk_space", lambda: _check_disk_space(config, doctor_cfg)),
+        ("fstab", lambda: _check_fstab(fstab_path)),
+    ])

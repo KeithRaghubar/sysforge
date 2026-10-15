@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sysforge/update-dry-run.schema.json",
+  "title": "sysforge update --dry-run --json (schema 1)",
+  "type": "object",
+  "required": ["schema", "kind", "offline", "packages", "drift", "sync_failures"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "update-dry-run"},
+    "offline": {"type": "boolean"},
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pkgbase", "pkgnames", "action", "installed", "available",
+                     "source", "has_build_record"],
+        "additionalProperties": false,
+        "properties": {
+          "pkgbase": {"type": "string"},
+          "pkgnames": {"type": "array", "items": {"type": "string"}},
+          "action": {"type": "string"},
+          "installed": {"type": ["string", "null"]},
+          "available": {"type": ["string", "null"]},
+          "source": {"type": ["string", "null"]},
+          "has_build_record": {"type": "boolean"}
+        }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "required": ["toolchain", "flags"],
+      "additionalProperties": false,
+      "properties": {
+        "toolchain": {
+          "type": "object",
+          "required": ["active", "rebuild", "packages"],
+          "additionalProperties": false,
+          "properties": {
+            "active": {"type": ["string", "null"]},
+            "rebuild": {"type": "boolean"},
+            "packages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["pkgbase", "recorded", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "pkgbase": {"type": "string"},
+                  "recorded": {"type": "string"},
+                  "reason": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "flags": {
+          "type": "object",
+          "required": ["rebuild", "packages"],
+          "additionalProperties": false,
+          "properties": {
+            "rebuild": {"type": "boolean"},
+            "packages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["pkgbase", "diff"],
+                "additionalProperties": false,
+                "properties": {
+                  "pkgbase": {"type": "string"},
+                  "diff": {"type": "array", "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "sync_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pkgbase", "status", "error"],
+        "additionalProperties": false,
+        "properties": {
+          "pkgbase": {"type": "string"},
+          "status": {"type": "string"},
+          "error": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}

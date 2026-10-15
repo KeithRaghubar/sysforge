@@ -155,6 +155,37 @@ def record(roster: Roster, check_id: str, result):
     return result
 
 
+def record_many(roster: Roster, check_id: str, result) -> list:
+    """:func:`record` for a check that returns a *list* of findings.
+
+    ``Skip`` → skipped (returns ``[]``); ``None`` or a list → ran, returning
+    the findings (possibly none) for the caller to collect (3.4.0-F5).
+    """
+    if isinstance(result, Skip):
+        roster.skipped.append((check_id, result.reason))
+        return []
+    roster.ran.append(check_id)
+    return list(result or [])
+
+
+def run_checks(checks) -> "AxisResult":
+    """Run ``[(check_id, zero-arg callable), ...]`` into one :class:`AxisResult`.
+
+    The shared collector for list-shaped axes (3.4.0-F5): each callable returns
+    a list of findings, a single finding, ``None`` (ran, healthy) or a
+    :class:`Skip` (could not run). Order of findings follows ``checks``.
+    """
+    roster = Roster()
+    findings: list = []
+    for check_id, fn in checks:
+        result = fn()
+        if result is None or isinstance(result, (list, tuple, Skip)):
+            findings += record_many(roster, check_id, result)
+        else:
+            findings.append(record(roster, check_id, result))
+    return AxisResult(findings, roster)
+
+
 # ---------------------------------------------------------------------------
 # Adapters — convert the existing probe dataclasses to Finding
 # ---------------------------------------------------------------------------
@@ -214,6 +245,34 @@ def from_fix_suggestion(suggestion, *, category: str = "build") -> Finding:
 # ---------------------------------------------------------------------------
 # Reductions
 # ---------------------------------------------------------------------------
+
+def axis_document(name: str, label: str, res: "AxisResult") -> dict:
+    """One axis as a ``doctor --json`` entry (3.4.0-F7).
+
+    Built from the same :class:`AxisResult` :func:`render_axis` reads, so the
+    two outputs cannot disagree. ``roster`` is ``null`` only for an axis whose
+    producer raised; a skip appears under ``roster.skipped``, never as a
+    finding.
+    """
+    roster = None
+    if res.roster is not None:
+        roster = {
+            "ran": list(res.roster.ran),
+            "skipped": [{"check": c, "reason": r} for c, r in res.roster.skipped],
+        }
+    return {
+        "name": name,
+        "label": label,
+        "errors": error_count(res.findings),
+        "findings": [
+            {"severity": f.severity, "check_id": f.check_id, "message": f.message,
+             "remediation": f.remediation, "fix_cmd": f.fix_cmd,
+             "is_brick": f.is_brick, "subject": f.subject}
+            for f in res.findings
+        ],
+        "roster": roster,
+    }
+
 
 def error_count(findings: Iterable[Finding]) -> int:
     """Count findings that should drive a non-zero exit (error severity or brick)."""

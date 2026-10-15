@@ -358,7 +358,7 @@ def test_integrity_producer_forwards_packages(monkeypatch):
     seen = {}
     monkeypatch.setattr(
         doctor.pkgfiles_probe, "collect_integrity_findings",
-        lambda packages=None: seen.setdefault("pkgs", packages) or [],
+        lambda packages=None: seen.update(pkgs=packages) or [],
     )
     doctor._collect_integrity_findings(_make_args(packages=["pacman"]))
     assert seen["pkgs"] == ["pacman"]
@@ -393,7 +393,7 @@ def test_collect_cache_findings_both_absent_is_info(monkeypatch):
         {"tool": "sccache", "installed": False, "state": "absent",
          "detail": "not installed", "remediation": None},
     ])
-    findings = doctor._collect_cache_findings(None)
+    findings = doctor._collect_cache_findings(None).findings
     assert len(findings) == 1
     assert findings[0].severity == diag.SEV_INFO
     assert findings[0].category == "cache"
@@ -409,7 +409,7 @@ def test_collect_cache_findings_misconfigured_is_warn(monkeypatch):
         {"tool": "sccache", "installed": False, "state": "absent",
          "detail": "not installed", "remediation": None},
     ])
-    findings = doctor._collect_cache_findings(None)
+    findings = doctor._collect_cache_findings(None).findings
     assert len(findings) == 1
     assert findings[0].severity == diag.SEV_WARN
     assert findings[0].remediation
@@ -423,7 +423,7 @@ def test_collect_cache_findings_all_ok_is_clean(monkeypatch):
         {"tool": "sccache", "installed": True, "state": "ok",
          "detail": "cache dir /y, max size 10 GiB", "remediation": None},
     ])
-    assert doctor._collect_cache_findings(None) == []
+    assert doctor._collect_cache_findings(None).findings == []
 
 
 def test_cache_axis_registered_between_toolchain_and_hardware():
@@ -466,7 +466,7 @@ def test_collect_boot_findings_adapts_brick_finding(monkeypatch):
         is_brick=True)
     _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"],
                          verify={"linux": [brick]})
-    findings = doctor._collect_boot_findings()
+    findings = doctor._collect_boot_findings().findings
     hit = [f for f in findings if f.check_id == "boot_vmlinuz_missing"]
     assert len(hit) == 1
     assert hit[0].is_brick and hit[0].is_error
@@ -475,13 +475,13 @@ def test_collect_boot_findings_adapts_brick_finding(monkeypatch):
 
 def test_collect_boot_findings_warns_on_single_kernel(monkeypatch):
     _patch_kernel_safety(monkeypatch, kernels=["linux"])
-    findings = doctor._collect_boot_findings()
+    findings = doctor._collect_boot_findings().findings
     assert any(f.check_id == "boot_no_fallback" for f in findings)
 
 
 def test_collect_boot_findings_clean_with_fallback(monkeypatch):
     _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"])
-    assert doctor._collect_boot_findings() == []
+    assert doctor._collect_boot_findings().findings == []
 
 
 def test_with_reboot_hint_appends_and_selects():
@@ -513,7 +513,7 @@ def test_collect_boot_findings_dkms_carries_reboot_hint(monkeypatch):
         kernel_safety.SEV_WARN, "dkms:nvidia",
         "DKMS module 'nvidia' is not built", "dkms install", is_brick=False)
     _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"], dkms=[dkms])
-    findings = doctor._collect_boot_findings()
+    findings = doctor._collect_boot_findings().findings
     hit = [f for f in findings if f.check_id == "dkms:nvidia"]
     assert len(hit) == 1
     assert "reboot" in hit[0].remediation
@@ -526,9 +526,9 @@ def test_collect_services_findings_firmware_carries_reboot_hint(monkeypatch):
                       "firmware not loaded", remediation="install firmware")
     unit = diag.Finding("services", diag.SEV_ERROR, "failed_unit:foo.service",
                         "failed", remediation="inspect")
-    monkeypatch.setattr(runtime_probe, "collect_runtime_findings",
-                        lambda: [fw, unit])
-    out = {f.check_id: f for f in doctor._collect_services_findings()}
+    monkeypatch.setattr(runtime_probe, "collect_runtime_result",
+                        lambda: diag.AxisResult([fw, unit], diag.Roster()))
+    out = {f.check_id: f for f in doctor._collect_services_findings().findings}
     assert "reboot" in out["missing_firmware"].remediation
     assert out["failed_unit:foo.service"].remediation == "inspect"
 
@@ -1783,7 +1783,7 @@ def test_restart_findings_warn_per_package(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert len(findings) == 1
     f = findings[0]
     assert f.severity == doctor.diag.SEV_WARN
@@ -1803,7 +1803,7 @@ def test_restart_findings_user_unit_uses_user_flag(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert "systemctl --user restart wireplumber.service" in findings[0].remediation
 
 
@@ -1814,7 +1814,7 @@ def test_restart_findings_partial_adds_info(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert len(findings) == 1
     assert findings[0].severity == doctor.diag.SEV_INFO
     assert "sudo" in findings[0].remediation
@@ -1827,7 +1827,7 @@ def test_restart_findings_clean_is_empty(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    assert doctor._collect_restart_findings() == []
+    assert doctor._collect_restart_findings().findings == []
 
 
 def test_restart_findings_kernel_reboot_names_kernel(monkeypatch):
@@ -1840,7 +1840,7 @@ def test_restart_findings_kernel_reboot_names_kernel(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert len(findings) == 1
     assert "installed kernel" in findings[0].remediation
 
@@ -1858,7 +1858,7 @@ def test_restart_findings_pid1_reboot_does_not_mention_kernel(monkeypatch):
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert len(findings) == 1
     assert "kernel" not in findings[0].remediation
     assert "reboot" in findings[0].remediation
@@ -1877,7 +1877,7 @@ def test_restart_findings_untiered_entry_reported_as_info_no_remediation(monkeyp
     monkeypatch.setattr(doctor.restart_probe, "scan_stale_processes",
                         lambda **kw: rep)
 
-    findings = doctor._collect_restart_findings()
+    findings = doctor._collect_restart_findings().findings
     assert len(findings) == 1
     assert findings[0].severity == doctor.diag.SEV_INFO
     assert findings[0].remediation == ""
@@ -2143,7 +2143,9 @@ def test_boot_entry_audit_findings_skips_grub(monkeypatch):
     from sysforge.pipeline.stages.kernel import config as kconfig
     cfg = kconfig.KernelConfig.from_toml({"enabled": True, "bootloader": "grub"})
     monkeypatch.setattr(kconfig, "load", lambda: cfg)
-    assert doctor._boot_entry_audit_findings() == []
+    # 3.4.0-F5: not applicable to GRUB, so a skip rather than "clean".
+    from sysforge.primitives import diagnostics as diag
+    assert isinstance(doctor._boot_entry_audit_findings(), diag.Skip)
 
 
 def test_collect_boot_findings_includes_audit(monkeypatch):
@@ -2151,7 +2153,8 @@ def test_collect_boot_findings_includes_audit(monkeypatch):
     _patch_kernel_safety(monkeypatch, kernels=["linux", "linux-lts"])
     marker = diag.Finding("boot", diag.SEV_WARN, "boot_entry_dangling", "m", remediation="r")
     monkeypatch.setattr(doctor, "_boot_entry_audit_findings", lambda: [marker])
-    assert any(f.check_id == "boot_entry_dangling" for f in doctor._collect_boot_findings())
+    findings = doctor._collect_boot_findings().findings
+    assert any(f.check_id == "boot_entry_dangling" for f in findings)
 
 
 # ---------------------------------------------------------------------------

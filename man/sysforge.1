@@ -331,6 +331,11 @@ Limit update to these package names (default: all sysforge\-managed packages).\&
 Show what would be rebuilt without doing it.\&
 .PP
 .RE
+\fB\-\-json\fR
+.RS 4
+With \-\-dry\-run: print one JSON document (schema 1) on stdout instead of the summary: each package'\&s verdict and both drift axes.\& Everything else goes to stderr; the exit code is unchanged.\&
+.PP
+.RE
 \fB\-\-devel\fR
 .RS 4
 Resolve and rebuild VCS packages (\-git, \-svn, \-hg, \-bzr) whose upstream HEAD has advanced past the installed version.\& Resolution runs makepkg \-\-nobuild per VCS package; up\-to\-date packages are skipped, not rebuilt.\& Per\-package upstream commits recorded in build_state are reused on subsequent runs to short\-circuit the resolve via git ls\-remote.\&
@@ -548,6 +553,11 @@ Diagnose system health (`doctor system`) or package health (`doctor pkg`).\& Bar
 Suppress clean lines; print only findings.\&
 .PP
 .RE
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
+.PP
+.RE
 \fBConfiguration:\fR profiles.\&toml; toolchain.\&toml and kernel.\&toml on their axes
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
@@ -643,6 +653,11 @@ Verify package\-owned files against alpm'\&s recorded mtree via `pacman \-Qkk`: 
 Suppress clean lines; print only findings.\&
 .PP
 .RE
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
+.PP
+.RE
 .SS doctor pkg
 .PP
 \fBsysforge doctor pkg\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
@@ -712,6 +727,11 @@ Skip the y/N prompt before \-\-apply rebuilds.\&
 \fB\-\-dry\-run\fR
 .RS 4
 Report what \-\-apply would rebuild without invoking the build.\&
+.PP
+.RE
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
 .PP
 .RE
 .SS resolve
@@ -798,6 +818,11 @@ Tabulate build_state.\&toml entries.\&
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
 Override state directory.\&
+.PP
+.RE
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the table: recorded packages, opted\-out packages and untracked foreign packages.\& Never paged.\&
 .PP
 .RE
 \fB\-\-no\-pager\fR

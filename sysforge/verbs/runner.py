@@ -33,7 +33,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import journal
+from sysforge.primitives import journal, json_out
 from sysforge.primitives.stage_sentinel import sentinel_scope
 from sysforge.ui import progress
 from sysforge.verbs.base import Verb
@@ -57,11 +57,16 @@ def run_verb(verb: Verb, args) -> int:
     _log = log.get_logger(tag)
 
     label = (verb.name or "verb").removeprefix("run-")
-    progress.phase(f"{label}: starting…")
-    try:
-        return _run_verb_inner(verb, args, _log)
-    finally:
-        progress.phase(None)
+    # 3.4.0-F7: under --json stdout carries only the verb's one document;
+    # everything else printed during the run, the progress phases included,
+    # goes to stderr.
+    reserve = json_out.reserved_stdout() if json_out.requested(args) else nullcontext()
+    with reserve:
+        progress.phase(f"{label}: starting…")
+        try:
+            return _run_verb_inner(verb, args, _log)
+        finally:
+            progress.phase(None)
 
 
 def _run_verb_inner(verb: Verb, args, _log) -> int:

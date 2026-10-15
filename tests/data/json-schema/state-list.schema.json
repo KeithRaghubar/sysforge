@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sysforge/state-list.schema.json",
+  "title": "sysforge state list --json (schema 1)",
+  "type": "object",
+  "required": ["schema", "kind", "packages", "opted_out", "untracked_foreign"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "state-list"},
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "pkgbase", "build_mode", "pkgbuild_dir",
+                     "built_at", "source", "owner_stage", "toolchain_variant"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": "string"},
+          "pkgbase": {"type": ["string", "null"]},
+          "build_mode": {"type": ["string", "null"]},
+          "pkgbuild_dir": {"type": ["string", "null"]},
+          "built_at": {"type": ["string", "null"]},
+          "source": {"type": ["string", "null"]},
+          "owner_stage": {"type": ["string", "null"]},
+          "toolchain_variant": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "opted_out": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["pkgbase", "via", "at", "pkgnames"],
+        "additionalProperties": false,
+        "properties": {
+          "pkgbase": {"type": "string"},
+          "via": {"enum": ["revert", "forget"]},
+          "at": {"type": "string"},
+          "pkgnames": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "untracked_foreign": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": "string"}
+        }
+      }
+    }
+  }
+}

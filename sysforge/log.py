@@ -367,6 +367,18 @@ def close_pkg_log(success: bool = True, persist: bool = False) -> None:
     _pkg_log_fh = None
 
 
+def write_pkg_log(line: str) -> None:
+    """Append one raw line to the per-package log only (no-op when none is open).
+
+    For streams too verbose for the unified run log: an interactive makepkg's
+    whole output is teed here, and only its failure tail is repeated through a
+    normal logger into both files (3.2.0-F19).
+    """
+    if _pkg_log_fh is not None:
+        with contextlib.suppress(Exception):
+            _pkg_log_fh.write(line if line.endswith("\n") else line + "\n")
+
+
 def _write_to_files(line: str, raw: bool = False) -> None:
     """Write a line to all open file handles. raw=True skips formatting."""
     for fh in (_unified_log_fh, _pkg_log_fh):

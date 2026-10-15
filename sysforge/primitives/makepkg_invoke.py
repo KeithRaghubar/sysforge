@@ -142,6 +142,23 @@ def _is_makepkg_verdict(line: str) -> bool:
     return line.strip().startswith("==>")
 
 
+_build_tail_log = log.get_logger("BUILD")
+
+
+def _log_interactive_failure_tail(tail: list, returncode: int) -> None:
+    """Repeat an interactive build's last lines under ``[BUILD]`` (3.2.0-F19).
+
+    DEBUG: written to the unified run log and the per-package log, shown on
+    the terminal only at ``-vvv`` (the user just watched these lines scroll by).
+    """
+    _build_tail_log.debug(
+        f"--- last {len(tail)} line(s) of interactive makepkg output "
+        f"(build failed, exit {returncode}) ---")
+    for line in tail:
+        _build_tail_log.debug(line)
+    _build_tail_log.debug("--- end interactive makepkg output ---")
+
+
 def select_failure_tail(lines: list, limit: int) -> list:
     """Choose the slice of captured output most likely to explain the failure.
 
@@ -455,19 +472,32 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
 
     _makepkg_log.info(f"Running {' '.join(cmd)} in {build_dir} with MAKEPKG_CONF={conf_path}")
 
-    # Interactive branch: inherit the parent's stdio so unbuffered prompts
-    # (pacman conflict, sudo password, gpg signing key) reach the terminal
-    # before the user is asked to type. Trades the line-classification path
-    # (toolchain-mismatch retry, stdout-match AlreadyBuilt, missing-dep
-    # prettification, captured_output for auto_repair) for prompt visibility.
+    # Interactive branch: makepkg owns the terminal so prompts (pacman
+    # conflict, gpg signing key) and full-screen tools (the kernel's nconfig)
+    # work. It runs under run_with_pty's two-way proxy (3.2.0-F19): what the
+    # user sees and types is unchanged, but every line also reaches us, so the
+    # whole stream is teed into the per-package log and a failure's last lines
+    # land in the unified run log and the diagnosis. Before this the logs said
+    # only "Build failed" and every interactive failure needed forensics.
     # Exit-code signals (13 → AlreadyBuilt, 8 → install failure) still fire.
     if interactive:
+        from sysforge.primitives import progress_hooks
+        interactive_lines: list[str] = []
+
+        def _tee(line: str) -> None:
+            clean = strip_ansi(line)
+            interactive_lines.append(clean)
+            log.write_pkg_log(clean)
+
         try:
-            proc = subprocess.Popen(  # noqa: TID251 — interactive makepkg with its own preexec_fn
-                cmd, cwd=build_dir, env=env,
-                preexec_fn=make_child_preexec(child_mem_cap),
-            )
-            returncode = proc.wait()
+            with progress_hooks.hooks().yield_terminal("child"):
+                returncode = run_with_pty(
+                    cmd, cwd=build_dir, env=env,
+                    line_callback=_tee,
+                    forward_bytes=True,
+                    preexec_fn=make_child_preexec(child_mem_cap),
+                    interactive=True,
+                )
         finally:
             # The container-side conf is only needed while makepkg runs; the
             # classification below reads captured output and side-car logs.
@@ -478,6 +508,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 raise AlreadyBuilt(pkgbuild_path)
             if returncode == 8:
                 _makepkg_log.error("Dependency resolution failed.")
+            tail = select_failure_tail(interactive_lines, MAKEPKG_FAILURE_TAIL_LINES)
+            if tail:
+                _log_interactive_failure_tail(tail, returncode)
             cpe = subprocess.CalledProcessError(returncode, "makepkg")
             # Interactive mode inherits the TTY, so makepkg's stdout was never
             # captured. Recover a diagnosis from the build's side-car logs
@@ -493,7 +526,8 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 # Interactive stdout was never captured; recover the build
                 # output from the LOGDEST log (if OPTIONS+=log) so the matchers
                 # have text beyond the meson/cmake side-cars.
-                _log_lines = _logdest_tail(pkgbuild_path)
+                # The captured tail comes first: it is what the user saw.
+                _log_lines = tail + list(_logdest_tail(pkgbuild_path) or [])
                 _suggestions = _build_diagnose(_log_lines, diag_dir)
                 if _suggestions:
                     _makepkg_log.info(_render_diag_suggestions(_suggestions))
@@ -501,7 +535,10 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                     cpe.diagnosis = _suggestions  # pyright: ignore[reportAttributeAccessIssue]
             except Exception as _diag_e:
                 _makepkg_log.debug(f"interactive postflight diagnosis skipped: {_diag_e}")
-            # Deliberate dynamic attr, read via getattr by callers.
+            # Deliberate dynamic attr, read via getattr by callers. Left empty
+            # on purpose although the lines are now captured: auto-repair walks
+            # it and may rewrite the build tree, which an interactive build has
+            # never been subject to; 3.2.0-F19 changes what is logged only.
             cpe.captured_output = []  # pyright: ignore[reportAttributeAccessIssue]
             raise cpe
         if on_success is not None:

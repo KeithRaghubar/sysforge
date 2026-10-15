@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sysforge/doctor.schema.json",
+  "title": "sysforge doctor --json (schema 1)",
+  "type": "object",
+  "required": ["schema", "kind", "scope", "axes"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "doctor"},
+    "scope": {"enum": ["system", "pkg"]},
+    "affected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "issues", "tag"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "issues": {"type": "integer"},
+          "tag": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "axes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "label", "errors", "findings", "roster"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "label": {"type": "string"},
+          "errors": {"type": "integer"},
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["severity", "check_id", "message", "remediation",
+                           "fix_cmd", "is_brick", "subject"],
+              "additionalProperties": false,
+              "properties": {
+                "severity": {"enum": ["info", "warn", "error"]},
+                "check_id": {"type": "string"},
+                "message": {"type": "string"},
+                "remediation": {"type": "string"},
+                "fix_cmd": {"type": ["string", "null"]},
+                "is_brick": {"type": "boolean"},
+                "subject": {"type": "string"}
+              }
+            }
+          },
+          "roster": {
+            "type": ["object", "null"],
+            "required": ["ran", "skipped"],
+            "additionalProperties": false,
+            "properties": {
+              "ran": {"type": "array", "items": {"type": "string"}},
+              "skipped": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["check", "reason"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "check": {"type": "string"},
+                    "reason": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -57,6 +57,7 @@ import sys
 import termios
 import threading
 import time
+import tty
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -281,6 +282,34 @@ def _open_raw_dump(rows: int, cols: int, reserve: int):
         return None
 
 
+def _controlling_tty_preexec(inner: Callable[[], None]) -> Callable[[], None]:
+    """Child-side: make the pty on fd 0 the controlling terminal, then run
+    ``inner``. Runs after ``start_new_session``'s ``setsid()`` and after the
+    stdio ``dup2``s, so fd 0 is already the pty slave."""
+    def _preexec() -> None:
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        inner()
+    return _preexec
+
+
+def _enter_raw_stdin() -> tuple[Optional[int], Optional[tuple]]:
+    """Parent-side: the stdin fd to pump into the child, and the saved terminal
+    attributes to restore (``(fd, attrs)``), or ``None`` when stdin is not a
+    terminal. No usable stdin (a test harness, a closed fd) means no pump."""
+    try:
+        fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None, None
+    if not os.isatty(fd):
+        return fd, None
+    try:
+        attrs = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    except termios.error:
+        return fd, None
+    return fd, (fd, attrs)
+
+
 def run_with_pty(
     cmd: list[str],
     *,
@@ -292,6 +321,7 @@ def run_with_pty(
     idle_callback: Optional[Callable[[Optional[str]], None]] = None,
     idle_timeout_s: float = 30.0,
     reserve_bottom_rows: int = 0,
+    interactive: bool = False,
 ) -> int:
     """Spawn cmd with stdout+stderr attached to a pty. Returns the child's
     return code.
@@ -314,7 +344,20 @@ def run_with_pty(
     idle_timeout_s seconds. It receives either the latest ``\\r``-overwritten
     buffer segment (so tools like ninja that redraw a status line in place
     still surface progress) or ``None`` when the child has produced no output
-    at all in the window. The buffer is not mutated by the heartbeat path."""
+    at all in the window. The buffer is not mutated by the heartbeat path.
+
+    ``interactive`` (3.2.0-F19) makes this a full two-way proxy, like
+    ``script(1)``: the pty is the child's stdin, stdout, stderr *and*
+    controlling terminal (``setsid`` + ``TIOCSCTTY``), and the parent copies
+    its own stdin into the pty, with a terminal stdin switched to raw mode for
+    the duration (always restored). Prompts and full-screen tools (``nconfig``)
+    keep working, Ctrl-C reaches the child through the pty's line discipline,
+    and ``line_callback`` still sees every line, which is how an interactive
+    build's output reaches the logs. No rows are reserved (the child owns the
+    screen; the caller yields the terminal) and every byte is forwarded."""
+    if interactive:
+        reserve_bottom_rows = 0
+        forward_bytes = True
     master_fd, slave_fd = pty.openpty()
 
     sz = shutil.get_terminal_size(fallback=(80, 24))
@@ -322,7 +365,9 @@ def run_with_pty(
     _set_winsize(slave_fd, _pty_rows, sz.columns)
     raw_dump = _open_raw_dump(_pty_rows, sz.columns, reserve_bottom_rows)
 
-    if reserve_bottom_rows:
+    if interactive:
+        stdin_arg = slave_fd
+    elif reserve_bottom_rows:
         # 3.2.0-B3: hand the child *our* pty as stdin too, rather than the
         # inherited terminal. A window size is a property of the tty device,
         # not of the fd, so inheriting real stdin leaves fd0 reporting the full
@@ -364,6 +409,8 @@ def run_with_pty(
             prev_winch(sig, frame)
 
     proc: Optional[subprocess.Popen] = None
+    stdin_fd: Optional[int] = None
+    saved_tty = None
     try:
         if is_main_thread:
             try:
@@ -371,6 +418,10 @@ def run_with_pty(
             except (OSError, ValueError):
                 prev_winch = None
 
+        base_preexec = preexec_fn or lift_for_child
+        child_preexec = (
+            _controlling_tty_preexec(base_preexec) if interactive else base_preexec
+        )
         proc = subprocess.Popen(
             cmd,
             cwd=str(cwd),
@@ -379,11 +430,16 @@ def run_with_pty(
             stdout=slave_fd,
             stderr=slave_fd,
             close_fds=True,
+            # Interactive: a session of its own, so the pty can become its
+            # controlling terminal (see _controlling_tty_preexec).
+            start_new_session=interactive,
             # 3.4.0-B11: default to lifting the controller's RLIMIT_AS cap.
-            preexec_fn=preexec_fn or lift_for_child,
+            preexec_fn=child_preexec,
         )
         os.close(slave_fd)
         slave_fd = -1
+        if interactive:
+            stdin_fd, saved_tty = _enter_raw_stdin()
 
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         # 3.2.0-B17: only when the child's stdin is *our* pty rather than the
@@ -428,10 +484,24 @@ def run_with_pty(
                 if boundary is not None and boundary.at_boundary:
                     waits.append(max(0.0, _REFRESH_S - (now - last_refresh)))
                 wait = min(waits) if waits else None
+                watch = [master_fd] if stdin_fd is None else [master_fd, stdin_fd]
                 try:
-                    ready, _, _ = select.select([master_fd], [], [], wait)
+                    ready, _, _ = select.select(watch, [], [], wait)
                 except (OSError, ValueError):
                     break
+                if stdin_fd is not None and stdin_fd in ready:
+                    # Keystrokes (and terminal replies) go to the child.
+                    try:
+                        data = os.read(stdin_fd, 4096)
+                    except OSError:
+                        data = b""
+                    if data:
+                        with contextlib.suppress(OSError):
+                            os.write(master_fd, data)
+                    else:
+                        stdin_fd = None  # our stdin hit EOF: stop watching it
+                    if master_fd not in ready:
+                        continue
                 if not ready:
                     # Idle timeout: surface progress without consuming the buffer.
                     # buf may hold an incomplete line (no \n yet); pass only the
@@ -489,6 +559,10 @@ def run_with_pty(
         proc.wait()
         return proc.returncode
     finally:
+        if saved_tty is not None:
+            # Always give the user their terminal back in cooked mode.
+            with contextlib.suppress(Exception):
+                termios.tcsetattr(saved_tty[0], termios.TCSADRAIN, saved_tty[1])
         if raw_dump is not None:
             with contextlib.suppress(Exception):
                 raw_dump.close()

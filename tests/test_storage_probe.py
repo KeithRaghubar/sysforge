@@ -6,6 +6,7 @@ beyond a monkeypatched ``probe_free_space``.
 """
 from __future__ import annotations
 
+from sysforge.primitives import diagnostics as diag
 from sysforge.primitives import storage_probe
 
 
@@ -41,7 +42,7 @@ def test_disk_space_clean_over_threshold(monkeypatch):
 
 def test_disk_space_no_build_dir(monkeypatch):
     monkeypatch.setattr(storage_probe, "_resolve_build_dir", lambda c: None)
-    assert storage_probe._check_disk_space({}, {}) == []
+    assert isinstance(storage_probe._check_disk_space({}, {}), diag.Skip)
 
 
 # --- fstab integrity (F18) --------------------------------------------------
@@ -82,4 +83,4 @@ def test_fstab_skips_pseudo_network_and_nofail(tmp_path, monkeypatch):
 
 
 def test_fstab_unreadable_yields_nothing():
-    assert storage_probe._check_fstab("/nonexistent/fstab/path") == []
+    assert isinstance(storage_probe._check_fstab("/nonexistent/fstab/path"), diag.Skip)

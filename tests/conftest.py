@@ -970,7 +970,10 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
 
             monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
 
-        def run(self, args, *, installed, foreign=None):
+        def run(self, args, *, installed, foreign=None, via_runner=False):
+            """``via_runner`` drives the verb through ``verbs.runner.run_verb``
+            (pre_check, the --json stdout guard, the run log) instead of
+            calling ``cmd_update`` directly."""
             from sysforge.update import cmd_update
             foreign = foreign or {}
             # Steer the real config loaders at the harness's on-disk config
@@ -988,7 +991,12 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
             # behavior. `run()` keeps returning the recorded builds (every
             # existing caller reads those); the code lands on the scenario so
             # exit-code tests can assert it without a second harness.
-            self.exit_code = cmd_update(args)
+            if via_runner:
+                from sysforge.update import UpdateVerb
+                from sysforge.verbs.runner import run_verb
+                self.exit_code = run_verb(UpdateVerb(), args)
+            else:
+                self.exit_code = cmd_update(args)
             return builds
 
     return _Scenario()

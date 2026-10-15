@@ -114,9 +114,6 @@ canonical ordering.
 | `3.0.0-F3` | update's PKGBUILD review gate is silent in exactly the unattended case | high | medium | major |
 | `3.1.0-F4` | a first run should confirm before it changes anything, and setup should offer to persist that posture | high | medium | major |
 | `3.1.0-F3` | no way to declare an AUR-free posture; update reaches for the AUR unconditionally | med | medium | minor |
-| `3.2.0-F19` | an interactive build's failure reason is never logged | med | medium | minor |
-| `3.4.0-F5` | sixteen doctor axes still can't say which checks they skipped | low | medium | minor |
-| `3.4.0-F7` | no verb has machine-readable output, so scripts must parse prose meant for people | low | medium | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -219,61 +216,6 @@ canonical ordering.
   is the migration path, not a separate convenience, which is why the parts ship together.
   **Standards home on adoption:** none new — but the runtime config-write seam from (a) is a
   candidate "one home" row if a third key ever needs it.
-
----
-
-- **`3.2.0-F19` — an interactive build's failure reason is never logged.** In interactive mode
-  makepkg's stdout/stderr go straight to the terminal, so neither the unified run-log
-  (`sysforge-run-kernel.log`) nor the per-package log (`sysforge_<pkg>.log`) records why a build
-  failed. They record only `Build failed — leaving patched PKGBUILD in place` and `Kernel stage FAILED
-  before applying changes`. The 2026-09-28 `3.2.0-B36` failure could only be diagnosed after the
-  fact by reading `.config` generations in the build tree. A 2026-08-15 kernel run in the same log
-  failed with no reason at all. Tee makepkg's combined output into the per-package log while keeping
-  the terminal attached: run makepkg under a pty (the `pty_runner` seam the non-interactive path
-  already uses) and copy the stream to the log, so prompts and `nconfig` still work. On failure, repeat
-  the last N lines (after `strip_ansi`) in the unified log under `[BUILD]`, and feed them to
-  `build_diag._MATCHERS` as the non-interactive path does. Needs a test that a failing interactive
-  build leaves its last output lines in both logs.
-  *Priority: med · Effort: medium · Bump: minor* — diagnosability; every interactive-stage failure
-  currently needs forensic reconstruction.
-  **Standards home on adoption:** none.
-
----
-
-- **`3.4.0-F5` — sixteen doctor axes still can't say which checks they skipped.** `3.1.0-F1` added
-  the ran/skipped roster (`diag.Skip`, `Roster`, `AxisResult`) and migrated `graphics` and
-  `gfxperf`; every other axis returns a bare finding list, so `-vvv` prints `roster: not reported
-  by this axis` for it and a probe that bailed out still looks the same as one that passed.
-  Migrate the remaining axes (`toolchain`, `rust`, `cache`, `hardware`, `pacman`, `state`, `boot`,
-  `restart`, `storage`, `services`, `audio`, `network`, `integrity`, `distro`, `abi`) one module
-  at a time: `_check_*`-shaped probes change only their "could not check" returns to
-  `diag.Skip`; inline collectors build a `Roster` directly.
-  *Priority: low · Effort: medium · Bump: minor* — observability only; each axis is independent,
-  so it can land piecemeal.
-  **Standards home on adoption:** none new — row 25 governs where the roster prints.
-
----
-
-- **`3.4.0-F7` — no verb has machine-readable output, so scripts must parse prose meant for
-  people.** `state list`, `doctor` and `update --dry-run` each answer a question a status bar, a
-  notification hook or a timer wrapper would want to ask ("what is drifted?", "what failed?",
-  "what would rebuild?"). Their only output is `ui()` prose, which is reworded freely (the `-vv`
-  roster wording changed in `3.1.0-F1`). Add `--json` to those three. Each emits one JSON
-  document on stdout carrying a top-level `"schema": 1`, and nothing else goes to stdout in that
-  mode: narration goes to stderr or is suppressed, and a stray `ui()` line is a bug. Build each
-  document from the same result objects the human renderer reads (`AxisResult`/`Roster` for
-  `doctor`, the update result model for `--dry-run`, the build_state rows for `state list`), so the
-  two outputs cannot disagree. Exit codes stay unchanged. Out of scope: mutating verbs (`build`,
-  real `update`), whose output is a log and not an answer. Completions and the man page pick up
-  the flag in the same change. Tests: each verb's JSON validates against a committed schema
-  fixture; stdout holds nothing but the document under `-v`/`-vv`; and a `doctor` skip appears in
-  the document as a skip.
-  *Priority: low · Effort: medium · Bump: minor* — low because no current workflow is blocked;
-  it mainly makes the unattended path (`3.0.0-F3`) observable once that lands. Medium for three
-  serializers plus the stdout discipline.
-  **Standards home on adoption:** a new `21-standards.md` row for the JSON output contract:
-  adding a field is a minor change, renaming or removing one is major and bumps `schema`. The row
-  is enforced by the schema-fixture tests.
 
 
 ### Open questions

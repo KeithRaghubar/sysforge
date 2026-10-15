@@ -47,11 +47,11 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess | None:
         return None
 
 
-def _check_db_consistency() -> list[diag.Finding]:
+def _check_db_consistency() -> list[diag.Finding] | diag.Skip:
     """`pacman -Dk` — surface unsatisfied dependencies in the local db."""
     proc = _run(["pacman", "-Dk"])
     if proc is None:
-        return []
+        return diag.Skip("pacman not available")
     # -Dk prints per-package OK lines to stdout and problems to stderr; a
     # non-zero exit means at least one inconsistency. Collect the substantive
     # problem lines (not the "checking <pkg>" / "all OK" chatter).
@@ -141,10 +141,12 @@ def _pacfile_finding(files: list[str], check_id: str, summary: str,
     )
 
 
-def _check_orphans() -> list[diag.Finding]:
+def _check_orphans() -> list[diag.Finding] | diag.Skip:
     """`pacman -Qtdq` — true orphans (unrequired dependency packages)."""
     proc = _run(["pacman", "-Qtdq"])
-    if proc is None or proc.returncode != 0:
+    if proc is None:
+        return diag.Skip("pacman not available")
+    if proc.returncode != 0:
         # Non-zero / empty = no orphans (pacman exits 1 when the query is empty).
         return []
     orphans = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
@@ -160,7 +162,7 @@ def _check_orphans() -> list[diag.Finding]:
     )]
 
 
-def _check_pkg_cache(doctor_cfg: dict) -> list[diag.Finding]:
+def _check_pkg_cache(doctor_cfg: dict) -> list[diag.Finding] | diag.Skip:
     """F15: warn when the pacman package cache exceeds a size threshold.
 
     Resolves the cache dir(s) through pacman's own config
@@ -176,7 +178,7 @@ def _check_pkg_cache(doctor_cfg: dict) -> list[diag.Finding]:
         from sysforge.primitives.pacman import get_pacman_cache_dirs
         cache_dirs = get_pacman_cache_dirs()
     except Exception:
-        return []
+        return diag.Skip("pacman cache directory could not be resolved")
     total = 0
     seen: set[Path] = set()
     for d in cache_dirs:
@@ -203,7 +205,7 @@ def _check_pkg_cache(doctor_cfg: dict) -> list[diag.Finding]:
     )]
 
 
-def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding]:
+def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding] | diag.Skip:
     """F16: warn when the mirrorlist is stale (file mtime age). No network call."""
     try:
         stale_days = float(doctor_cfg.get("mirrorlist_stale_days",
@@ -213,7 +215,7 @@ def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding]:
     try:
         mtime = _MIRRORLIST.stat().st_mtime
     except OSError:
-        return []
+        return diag.Skip(f"{_MIRRORLIST} unreadable")
     age_days = (time.time() - mtime) / 86400
     if age_days < stale_days:
         return []
@@ -227,16 +229,22 @@ def _check_mirror_freshness(doctor_cfg: dict) -> list[diag.Finding]:
     )]
 
 
-def collect_system_findings(doctor_cfg: dict | None = None) -> list[diag.Finding]:
-    """Run all pacman/system-integrity checks; return findings (read-only)."""
+def collect_system_result(doctor_cfg: dict | None = None) -> diag.AxisResult:
+    """Run all pacman/system-integrity checks, with the ran/skipped roster
+    (3.4.0-F5). Read-only."""
     if doctor_cfg is None:
         from sysforge.primitives import config as cfgmod
         doctor_cfg = cfgmod.load_sysforge_toml().get("doctor", {}) or {}
-    findings: list[diag.Finding] = []
-    findings += _check_db_consistency()
-    findings += _check_stale_lock()
-    findings += _check_pacfiles()
-    findings += _check_orphans()
-    findings += _check_pkg_cache(doctor_cfg)
-    findings += _check_mirror_freshness(doctor_cfg)
-    return findings
+    return diag.run_checks([
+        ("pacman_db_consistency", _check_db_consistency),
+        ("pacman_db_lock", _check_stale_lock),
+        ("pacfiles", _check_pacfiles),
+        ("orphans", _check_orphans),
+        ("pkg_cache", lambda: _check_pkg_cache(doctor_cfg)),
+        ("mirrorlist_age", lambda: _check_mirror_freshness(doctor_cfg)),
+    ])
+
+
+def collect_system_findings(doctor_cfg: dict | None = None) -> list[diag.Finding]:
+    """The findings of :func:`collect_system_result` (skips dropped)."""
+    return collect_system_result(doctor_cfg).findings

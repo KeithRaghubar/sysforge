@@ -88,6 +88,7 @@ from sysforge.primitives.llvm_state import (
     render_preflight as render_llvm_preflight,
 )
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
+from sysforge.primitives import json_out
 from sysforge.primitives.opt_out import OptOutError, OptOutList
 from sysforge.primitives.pacman import (
     checkupdates_map,
@@ -819,6 +820,7 @@ class UpdateRun:
     _rebuild_tc_drift: bool = False
     _rebuild_fl_drift: bool = False
     drifted: list[tuple[str, str, str]] = field(default_factory=list)
+    flag_drifted: list[tuple[str, list[str]]] = field(default_factory=list)
     # Phase 5: build
     to_build: list[_UpdateResult] = field(default_factory=list)
     pending_pacman_upgrade: list[_UpdateResult] = field(default_factory=list)
@@ -1071,7 +1073,8 @@ def _phase_summary(run: UpdateRun) -> int | None:
     """Phase 4: Summary + dry-run gate."""
     # --versions renders its own focused table below and would otherwise print
     # two overlapping reports for one walk (3.1.0-F6).
-    if not getattr(run.args, "versions", False):
+    # --json (3.4.0-F7) replaces the summary with the dry-run document.
+    if not getattr(run.args, "versions", False) and not json_out.requested(run.args):
         _print_summary(run.results, run.args)
 
     _ui_progress.phase("checking toolchain and flag drift")
@@ -1238,6 +1241,7 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             flag_drifted.append((pkgbase, fd.diffs))
             fold_drifted[pkgbase] = entry.get("owner_stage")
 
+    run.flag_drifted = flag_drifted
     if flag_drifted:
         sample = ", ".join(pb for pb, _ in flag_drifted[:3])
         more = f" (+{len(flag_drifted) - 3} more)" if len(flag_drifted) > 3 else ""
@@ -1323,6 +1327,8 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
         return 0
 
     if getattr(run.args, "dry_run", False):
+        if json_out.requested(run.args):
+            json_out.emit("update-dry-run", _dry_run_document(run))
         _emit_timings(run.timer, run.args)
         return 0
 
@@ -1376,6 +1382,39 @@ def _phase_flag_drift(run: UpdateRun) -> int | None:
             )
 
     run.timer.stop()
+
+
+def _dry_run_document(run: UpdateRun) -> dict:
+    """The ``update --dry-run --json`` body (3.4.0-F7), built from the same
+    ``run.results`` and drift lists the human summary and advisories read.
+    ``rebuild`` on a drift axis says whether this run's flags would promote it.
+    """
+    return {
+        "offline": bool(run.offline),
+        "packages": [
+            {"pkgbase": r.pkgbase, "pkgnames": list(r.pkgnames), "action": r.action,
+             "installed": r.installed_ver, "available": r.pkgbuild_ver,
+             "source": r.source, "has_build_record": r.has_build_record}
+            for r in run.results
+        ],
+        "drift": {
+            "toolchain": {
+                "active": run.active_variant,
+                "rebuild": bool(run._rebuild_tc_drift),
+                "packages": [{"pkgbase": pb, "recorded": rv, "reason": why}
+                             for pb, rv, why in sorted(run.drifted)],
+            },
+            "flags": {
+                "rebuild": bool(run._rebuild_fl_drift),
+                "packages": [{"pkgbase": pb, "diff": [d.strip() for d in diffs]}
+                             for pb, diffs in sorted(run.flag_drifted)],
+            },
+        },
+        "sync_failures": [
+            {"pkgbase": pb, "status": st, "error": err or None}
+            for pb, (st, err) in sorted((run.sync_failures or {}).items())
+        ],
+    }
 
 
 def _phase_build(run: UpdateRun) -> int | None:
@@ -1810,6 +1849,10 @@ class UpdateVerb(Verb):
             help="Check for and rebuild outdated sysforge-managed packages.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show what would be rebuilt without doing it.")
+        p.add_argument("--json", action="store_true", dest="json",
+            help="With --dry-run: print one JSON document (schema 1) on stdout "
+                 "instead of the summary: each package's verdict and both drift "
+                 "axes. Everything else goes to stderr; the exit code is unchanged.")
         p.add_argument("--devel", action="store_true", dest="devel",
             help="Resolve and rebuild VCS packages (-git, -svn, -hg, -bzr) whose "
                  "upstream HEAD has advanced past the installed version. "
@@ -1950,6 +1993,11 @@ class UpdateVerb(Verb):
         return p
 
     def pre_check(self, args) -> PreCheckResult:
+        if json_out.requested(args) and not getattr(args, "dry_run", False):
+            # 3.4.0-F7: a real update's output is a log, not an answer.
+            return PreCheckResult(
+                blocker="--json needs --dry-run: only the plan is machine-readable",
+                exit_code=2)
         if getattr(args, "install_only", False):
             conflicts = [
                 ("--makepkg", getattr(args, "makepkg", None)),

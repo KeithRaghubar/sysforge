@@ -174,6 +174,19 @@ def test_mirrorlist_fresh_clean(monkeypatch, tmp_path):
     assert system_probe._check_mirror_freshness({"mirrorlist_stale_days": 14}) == []
 
 
-def test_mirrorlist_absent_clean(monkeypatch, tmp_path):
+def test_mirrorlist_absent_is_a_skip_not_clean(monkeypatch, tmp_path):
+    # 3.4.0-F5: "could not check" is a skip, distinct from "checked, fine".
     monkeypatch.setattr(system_probe, "_MIRRORLIST", tmp_path / "nope")
-    assert system_probe._check_mirror_freshness({}) == []
+    got = system_probe._check_mirror_freshness({})
+    assert isinstance(got, diag.Skip) and "unreadable" in got.reason
+
+
+def test_collect_system_result_reports_a_roster(monkeypatch, tmp_path):
+    monkeypatch.setattr(system_probe, "_MIRRORLIST", tmp_path / "nope")
+    monkeypatch.setattr(system_probe, "_run", lambda cmd: None)
+    res = system_probe.collect_system_result({})
+    skipped = dict(res.roster.skipped)
+    assert {"pacman_db_consistency", "orphans", "mirrorlist_age"} <= set(skipped)
+    assert "pacman_db_lock" in res.roster.ran
+    # The list API drops skips: no finding from a check that never ran.
+    assert system_probe.collect_system_findings({}) == res.findings
