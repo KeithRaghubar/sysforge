@@ -872,6 +872,57 @@ def test_reviewed_commit_recorded_and_sticky(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# [reviewed] namespace — review baseline saved on accept (3.5.0-B8)
+# ---------------------------------------------------------------------------
+
+def test_set_reviewed_round_trips_outside_the_install_mirror(tmp_path):
+    """An accepted review is saved per pkgbase in its own namespace, so a
+    package that was reviewed but never built gets no install record (which
+    `update` would treat as tracked)."""
+    bs = BuildState(tmp_path)
+    bs.set_reviewed("htop", "abc123")
+    bs.save()
+    reloaded = BuildState(tmp_path)
+    assert reloaded.reviewed_commit("htop") == "abc123"
+    assert reloaded.all_packages() == {}
+    with (tmp_path / "build_state.toml").open("rb") as f:
+        assert tomllib.load(f)["reviewed"] == {"htop": "abc123"}
+
+
+def test_reviewed_commit_prefers_namespace_over_legacy_entry(tmp_path):
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path,
+              build_mode="source_built", reviewed_commit="legacy")
+    bs.set_reviewed("htop", "accepted")
+    assert bs.reviewed_commit("htop", ["htop"]) == "accepted"
+
+
+def test_reviewed_commit_falls_back_to_legacy_entry_field(tmp_path):
+    """State written before 3.5.0-B8 carries the baseline on the install
+    record; it still counts until the next accept replaces it."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="lib32-foo", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="foo", pkgbuild_dir=tmp_path,
+              build_mode="source_built", reviewed_commit="legacy")
+    assert bs.reviewed_commit("foo", ["foo", "lib32-foo"]) == "legacy"
+    assert bs.reviewed_commit("foo") is None
+    assert bs.reviewed_commit("bar", ["bar"]) is None
+
+
+def test_reviewed_survives_reconcile_demotion(tmp_path):
+    """Demotion strips source provenance from the install record, but the
+    review of the clone stays valid."""
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="htop", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="htop", pkgbuild_dir=tmp_path, build_mode="source_built")
+    bs.set_reviewed("htop", "abc123")
+    bs.reconcile_external_installs({"htop"})
+    assert bs.get("htop")["build_mode"] == "pacman"
+    assert bs.reviewed_commit("htop", ["htop"]) == "abc123"
+
+
+# ---------------------------------------------------------------------------
 # build_seconds field — bounded ring of last 5 build durations
 # ---------------------------------------------------------------------------
 

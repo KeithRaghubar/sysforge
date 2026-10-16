@@ -228,7 +228,7 @@ def test_prompt_accept(tmp_path, monkeypatch, capsys):
     _tty(monkeypatch, ["a"])
     assert review_target("htop", d, old) == DECISION_ACCEPT
     out = capsys.readouterr().out
-    assert "source changed since last accepted build" in out
+    assert "source changed since last accepted review" in out
     assert "PKGBUILD" in out  # --stat names the changed file
 
 

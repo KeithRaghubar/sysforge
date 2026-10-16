@@ -393,6 +393,59 @@ def test_prepare_deps_review_accept_builds_deps(tmp_path):
     assert kwargs["mode"] == "prompt" and kwargs["trusted"] is False
 
 
+def test_prepare_deps_review_accept_saves_each_dep_head(tmp_path):
+    """3.5.0-B8: a batched accept saves every reviewed dep's HEAD before any
+    dep builds, keyed by its clone's pkgbase; a refusal saves none."""
+    from sysforge.primitives.build_state import BuildState
+    state_dir = tmp_path / "state"
+    target = _make_target(tmp_path)
+    deps = [SimpleNamespace(name=n, source="aur",
+                            pkgbuild_path=tmp_path / b / "PKGBUILD")
+            for n, b in (("libdep", "libdep"), ("lib32-libx", "libx"))]
+
+    def _gate(decision):
+        with contextlib.ExitStack() as stack:
+            for p in _dep_gate_patches(deps):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch("sysforge.build.aur_deps.build_resolved_deps", return_value=[]))
+            stack.enter_context(
+                patch("sysforge.build_core.review_deps", return_value=decision))
+            stack.enter_context(patch("sysforge.build_core.head_commit",
+                                      side_effect=lambda d: f"head-{Path(d).name}"))
+            build_core.prepare_deps([target.pkgbuild_path], {},
+                                    state_dir=state_dir, review="prompt",
+                                    refused_out={})
+        return BuildState(state_dir)
+
+    bs = _gate(build_core.DECISION_REFUSED)
+    assert bs.reviewed_commit("libdep") is None
+    bs = _gate("accept")
+    assert bs.reviewed_commit("libdep") == "head-libdep"
+    assert bs.reviewed_commit("libx") == "head-libx"
+
+
+def test_prepare_deps_review_reads_reviewed_namespace(tmp_path):
+    from sysforge.primitives.build_state import BuildState
+    state_dir = tmp_path / "state"
+    bs = BuildState(state_dir)
+    bs.set_reviewed("libx", "accepted")
+    bs.save()
+    target = _make_target(tmp_path)
+    dep = SimpleNamespace(name="lib32-libx", source="aur",
+                          pkgbuild_path=tmp_path / "libx" / "PKGBUILD")
+    with contextlib.ExitStack() as stack:
+        for p in _dep_gate_patches([dep]):
+            stack.enter_context(p)
+        stack.enter_context(patch("sysforge.build.aur_deps.build_resolved_deps"))
+        rd = stack.enter_context(
+            patch("sysforge.build_core.review_deps", return_value="clean"))
+        build_core.prepare_deps([target.pkgbuild_path], {},
+                                state_dir=state_dir, review="prompt")
+    (entries,), _ = rd.call_args
+    assert entries == [("lib32-libx", tmp_path / "libx", "accepted")]
+
+
 def test_prepare_deps_refusal_refuses_every_dependent(tmp_path):
     """Two targets share a changed AUR dep; a third needs nothing changed.
     The sharers are refused, the third's deps still build."""
@@ -1391,13 +1444,15 @@ from sysforge.primitives.build_state import BuildState  # noqa: E402
 
 
 def _run_gated(targets, *, decisions=None, review="prompt", state_dir=None,
-               run_capture=None, review_trusted=frozenset()):
+               run_capture=None, review_trusted=frozenset(), run_fails=False):
     """Drive build_and_install with the gate decision function stubbed and
     the build/install externals from _patch_build_env neutralised."""
     calls = []
 
     def _fake_run(pkgbuild_path, options=None):
         calls.append(Path(pkgbuild_path))
+        if run_fails:
+            raise RuntimeError("makepkg failed")
 
     def _decide(pkgbase, pkgbuild_dir, reviewed_commit, *, mode, trusted=False):
         if run_capture is not None:
@@ -1518,6 +1573,106 @@ def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
         run_capture=seen,
     )
     assert seen == [("foo", "abc123", "prompt", False)]
+
+
+def test_review_gate_reads_reviewed_namespace_by_pkgbase(tmp_path):
+    """3.5.0-B8: the baseline lives in [reviewed], keyed by pkgbase."""
+    state_dir = tmp_path / "state"
+    bs = BuildState(state_dir)
+    bs.set_reviewed("foo", "fromaccept")
+    bs.save()
+    seen = []
+    _run_gated([_make_target(tmp_path, "foo")], decisions={"foo": "accept"},
+               state_dir=state_dir, run_capture=seen)
+    assert seen == [("foo", "fromaccept", "prompt", False)]
+
+
+# 3.5.0-B8: the review baseline is saved when the change is accepted, not when
+# the build succeeds, so a failed build never re-presents an accepted diff.
+
+def _gated_with_head(tmp_path, decisions, *, review="prompt", run_fails=False,
+                     review_trusted=frozenset()):
+    state_dir = tmp_path / "state"
+    targets = [_make_target(tmp_path, name) for name in decisions]
+    with patch("sysforge.build_core.head_commit",
+               side_effect=lambda d: f"head-{Path(d).name}"):
+        outcome, _, _ = _run_gated(targets, decisions=decisions, review=review,
+                                   state_dir=state_dir, run_fails=run_fails,
+                                   review_trusted=review_trusted)
+    return outcome, BuildState(state_dir)
+
+
+def test_review_accept_saves_head_before_the_build(tmp_path):
+    seen_at_build = []
+
+    def _fake_run(pkgbuild_path, options=None):
+        seen_at_build.append(
+            BuildState(tmp_path / "state").reviewed_commit("foo"))
+
+    with patch("sysforge.build_core.head_commit", return_value="newhead"):
+        foo = _make_target(tmp_path, "foo")
+        with contextlib.ExitStack() as stack:
+            for p in _patch_build_env(run_side_effect=_fake_run,
+                                      snapshot_return=[],
+                                      install_capture=lambda files: True):
+                stack.enter_context(p)
+            stack.enter_context(patch("sysforge.build_core.review_target",
+                                      return_value="accept"))
+            build_core.build_and_install([foo], config={}, sync_source=False,
+                                         review="prompt",
+                                         state_dir=tmp_path / "state")
+    assert seen_at_build == ["newhead"]
+
+
+def test_review_accept_baseline_survives_a_failed_build(tmp_path):
+    outcome, bs = _gated_with_head(tmp_path, {"foo": "accept"}, run_fails=True)
+    assert outcome.failed_pkgs
+    assert bs.reviewed_commit("foo") == "head-foo"
+
+
+def test_review_skip_and_refusal_save_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_core, "change_summary", lambda d, rc: "changed")
+    _, bs = _gated_with_head(
+        tmp_path, {"foo": DECISION_SKIP, "bar": build_core.DECISION_REFUSED,
+                   "baz": "accept"})
+    assert bs.reviewed_commit("foo") is None
+    assert bs.reviewed_commit("bar") is None
+    assert bs.reviewed_commit("baz") == "head-baz"
+
+
+def test_review_accepts_before_an_abort_are_kept(tmp_path):
+    """Each accept is consent on its own; a later abort in the same run does
+    not withdraw it."""
+    outcome, bs = _gated_with_head(tmp_path, {"foo": "accept", "bar": DECISION_ABORT})
+    assert outcome.aborted
+    assert bs.reviewed_commit("foo") == "head-foo"
+    assert bs.reviewed_commit("bar") is None
+
+
+def test_review_accept_mode_and_trusted_source_save_baseline(tmp_path):
+    _, bs = _gated_with_head(tmp_path, {"foo": "accept"}, review="accept")
+    assert bs.reviewed_commit("foo") == "head-foo"
+    other = tmp_path / "other"
+    other.mkdir()
+    _, bs = _gated_with_head(other, {"bar": "accept"},
+                             review_trusted=frozenset({"aur"}))
+    assert bs.reviewed_commit("bar") == "head-bar"
+
+
+def test_review_off_saves_no_baseline(tmp_path):
+    state_dir = tmp_path / "state"
+    with patch("sysforge.build_core.head_commit", return_value="h"):
+        _run_gated([_make_target(tmp_path, "foo")], decisions=None,
+                   review="off", state_dir=state_dir)
+    assert BuildState(state_dir).reviewed_commit("foo") is None
+
+
+def test_review_clean_and_no_git_save_nothing(tmp_path):
+    from sysforge.primitives.pkgbuild_review import DECISION_CLEAN, DECISION_NO_GIT
+    _, bs = _gated_with_head(tmp_path, {"foo": DECISION_CLEAN,
+                                        "bar": DECISION_NO_GIT})
+    assert bs.reviewed_commit("foo") is None
+    assert bs.reviewed_commit("bar") is None
 
 
 # ---------------------------------------------------------------------------

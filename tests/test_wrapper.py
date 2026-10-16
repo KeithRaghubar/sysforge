@@ -517,6 +517,16 @@ def _record(tmp_path, variant="pgo_llvm", fingerprint="fp-host"):
                                         record_build_mode=None, build_elapsed=1)
 
 
+def test_record_site_never_stamps_a_review_baseline(tmp_path, monkeypatch):
+    """3.5.0-B8: the baseline is saved by the review gate on accept. A
+    build, including one run with the gate off, must not advance it."""
+    monkeypatch.setattr("sysforge.primitives.pkgbuild_review.head_commit",
+                        lambda d: "builthead")
+    cap = _spy_record(monkeypatch)
+    _record(tmp_path)
+    assert cap.get("reviewed_commit") is None
+
+
 def test_record_site_host_build_records_host_values(tmp_path, monkeypatch):
     from sysforge.primitives import build_sandbox
     build_sandbox.clear_provenance()

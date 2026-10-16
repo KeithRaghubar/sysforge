@@ -73,6 +73,7 @@ from sysforge.primitives.pkgbuild_review import (
     MODE_OFF,
     MODE_PROMPT,
     change_summary,
+    head_commit,
     review_deps,
     review_target,
 )
@@ -351,8 +352,8 @@ def prepare_deps(
                               "off ([aur] enabled = false)")
         # Dependency review gate — batched, all-or-nothing (no per-dep skip:
         # dropping a dep breaks its dependent). Mirrors the target gate's
-        # modes; reviewed_commit stamps already exist for dep builds because
-        # makepkg_wrapper records them unconditionally.
+        # modes, including saving the baseline on accept (3.5.0-B8). A dep
+        # carries no pkgbase; its clone dir is named for it.
         buildable = [
             d for d in aur_deps
             if d.source == "aur" and getattr(d, "pkgbuild_path", None) is not None
@@ -370,7 +371,7 @@ def prepare_deps(
                 return (
                     d.name,
                     d.pkgbuild_path.parent,
-                    (bs_deps.get(d.name) or {}).get("reviewed_commit"),
+                    bs_deps.reviewed_commit(d.pkgbuild_path.parent.name, [d.name]),
                 )
 
             changed: list[str] = []
@@ -387,9 +388,15 @@ def prepare_deps(
                 if refused_out is not None:
                     reason = f"needs {', '.join(sorted(changed))}, whose source changed"
                     refused_out.update({name: reason for name in affected})
-            elif (decision == DECISION_ACCEPT and review == MODE_ACCEPT
-                  and not dep_trusted and accepted_out is not None):
-                accepted_out.extend(changed)
+            elif decision == DECISION_ACCEPT:
+                _save_review_baseline(
+                    bs_deps,
+                    [(d.pkgbuild_path.parent.name, d.pkgbuild_path.parent)
+                     for d in buildable if d.pkgbuild_path is not None],
+                )
+                if (review == MODE_ACCEPT and not dep_trusted
+                        and accepted_out is not None):
+                    accepted_out.extend(changed)
         if aur_deps:
             built_dep_names = build_resolved_deps(
                 aur_deps,
@@ -406,6 +413,27 @@ def prepare_deps(
         _log.error(f"AUR dep resolution failed: {e}")
         _log.warn("AUR dep resolution failed: some builds may fail")
     return True
+
+
+def _save_review_baseline(bs: BuildState, accepted: list[tuple[str, Path]]) -> None:
+    """Save each accepted clone's HEAD as its review baseline (3.5.0-B8).
+
+    Runs at accept time, before anything builds, so a failed build never
+    re-presents a diff the user already accepted. ``bs`` was loaded by the
+    gate just before; nothing else writes build_state while it prompts.
+    Best-effort: a state write error never blocks the build.
+    """
+    try:
+        changed = False
+        for pkgbase, pkgbuild_dir in accepted:
+            head = head_commit(pkgbuild_dir)
+            if head is not None:
+                bs.set_reviewed(pkgbase, head)
+                changed = True
+        if changed:
+            bs.save()
+    except Exception as e:  # noqa: BLE001 — bookkeeping only; never fail a build
+        _log.warn(f"review baseline not saved: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1076,12 +1104,8 @@ def build_and_install(
         bs_review = BuildState(_review_state_dir)
         kept = []
         for t in targets:
-            entry = None
-            for pn in (getattr(t, "pkgnames", None) or []):
-                entry = bs_review.get(pn)
-                if entry is not None:
-                    break
-            reviewed = (entry or {}).get("reviewed_commit")
+            reviewed = bs_review.reviewed_commit(
+                t.pkgbase, getattr(t, "pkgnames", None) or [])
             pkgbuild_dir = Path(t.pkgbuild_path).parent
             trusted = (getattr(t, "source", None) or "aur") in review_trusted
             decision = review_target(
@@ -1102,8 +1126,12 @@ def build_and_install(
                 outcome.review_refused[t.pkgbase] = (
                     change_summary(pkgbuild_dir, reviewed) or "unreviewed source change")
                 continue
-            if decision == DECISION_ACCEPT and review == MODE_ACCEPT and not trusted:
-                outcome.review_accepted.append(t.pkgbase)
+            if decision == DECISION_ACCEPT:
+                # Saved now, not after the build (3.5.0-B8): accepting is the
+                # consent, and a later abort or failed build doesn't undo it.
+                _save_review_baseline(bs_review, [(t.pkgbase, pkgbuild_dir)])
+                if review == MODE_ACCEPT and not trusted:
+                    outcome.review_accepted.append(t.pkgbase)
             kept.append(t)  # accept | clean | no_git
         targets = kept
         if not targets:

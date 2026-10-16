@@ -273,7 +273,7 @@ class BuildVerb(Verb):
                  "[build] review_trusted_sources (by default Arch's own packaging repos).")
         review_group.add_argument("--no-review", action="store_true", dest="no_review",
             help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
-                 "packages whose source changed since the last accepted build). "
+                 "packages whose source changed since the last accepted review). "
                  "Also configurable via [build] review = false in packages.toml.")
         p.add_argument("--force", action="store_true", dest="force",
             help="Unconditionally build all arguments from source for this run "

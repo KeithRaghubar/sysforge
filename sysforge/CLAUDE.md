@@ -70,8 +70,10 @@ Mechanism lives in the cited §DESIGN section.
   (`3.2.0-B33`). Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
 - **PKGBUILD review gate**: `build_and_install(review=…, review_trusted=…)` →
   `pkgbuild_review.review_target`; both verbs resolve via `resolve_review_policy`; a refusal drops
-  the target (never aborts); sticky `reviewed_commit`. New build_state fields go in
-  `_ENTRY_KEYS` (`primitives/build_state.py`), which `BuildState._serialize` writes. §primitives-layer.
+  the target (never aborts). The baseline is saved **on accept** by
+  `build_core._save_review_baseline` into `[reviewed]`, never at the record site (`3.5.0-B8`).
+  New build_state fields go in `_ENTRY_KEYS` (`primitives/build_state.py`), which
+  `BuildState._serialize` writes. §primitives-layer.
 - **Unified run-log**: `log.open_unified_log`/`close_unified_log`; verbs opt in via
   `Verb.unified_log_basename`. §Logging.
 - **Machine-readable output** (`--json`): `primitives/json_out.py` only — `reserved_stdout()` (entered by

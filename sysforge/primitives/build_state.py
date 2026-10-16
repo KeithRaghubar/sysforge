@@ -65,6 +65,12 @@ _FAILURES_KEY = "failures"
 # keyed by artifact filename (3.3.0-B2). Held apart like _FAILURES_KEY.
 _REVERTED_KEY = "reverted"
 
+# Reserved top-level key for the PKGBUILD review baseline: {pkgbase: commit},
+# the source clone HEAD the user last accepted (3.5.0-B8). Written by the
+# review gate at accept time, not at build time, so it lives apart from the
+# install records — a reviewed-but-never-built package must not get one.
+_REVIEWED_KEY = "reviewed"
+
 # Per-package record fields, in serialization order.
 _ENTRY_KEYS = (
     "pkgver",
@@ -185,6 +191,8 @@ class BuildState:
         self._failures = failures if isinstance(failures, dict) else {}
         reverted = raw.pop(_REVERTED_KEY, {})
         self._reverted = reverted if isinstance(reverted, dict) else {}
+        reviewed = raw.pop(_REVIEWED_KEY, {})
+        self._reviewed = reviewed if isinstance(reviewed, dict) else {}
         self._data = raw
         # Lost-update detection: what the file looked like when this
         # instance last read or wrote it, and each entry's built_at at load.
@@ -252,11 +260,10 @@ class BuildState:
         soname) that the ``toolchain_variant`` string alone would miss. Sticky
         like ``toolchain_variant``.
 
-        ``reviewed_commit`` is the source clone's HEAD at the time of a
-        successful build — the baseline for the PKGBUILD review gate
-        (``primitives/pkgbuild_review.py``): a later build whose clone HEAD
-        differs prompts for review of the intervening diff. None for local
-        (non-git) PKGBUILDs. Sticky like the other provenance fields.
+        ``reviewed_commit`` is the pre-3.5.0-B8 home of the PKGBUILD review
+        baseline, kept sticky so old state still reads through
+        :meth:`reviewed_commit`. The gate now saves the baseline on accept
+        via :meth:`set_reviewed`; no caller passes this any more.
 
         ``origin_pkgbase`` is the *pre-rename* pkgbase for packages built with
         the ``-sysforge`` suffix (e.g. ``"llvm"`` for an installed
@@ -532,6 +539,33 @@ class BuildState:
         """Return all recorded failures as {pkgbase: record}."""
         return dict(self._failures)
 
+    def set_reviewed(self, pkgbase: str, commit: str) -> None:
+        """Save ``commit`` as the accepted review baseline for ``pkgbase``.
+
+        Called by the review gate when a change is accepted (3.5.0-B8), so a
+        build that later fails never re-presents the accepted diff. Kept
+        through demotion: the review of the clone stays valid after a
+        switch back to the stock package.
+        """
+        self._reviewed[pkgbase] = commit
+
+    def reviewed_commit(self, pkgbase: str,
+                        pkgnames: list[str] | tuple[str, ...] = ()) -> str | None:
+        """The accepted review baseline for ``pkgbase``, or None.
+
+        Falls back to the per-entry ``reviewed_commit`` of the first of
+        ``pkgnames`` that carries one — the baseline as written before
+        3.5.0-B8, which still counts until the next accept replaces it.
+        """
+        commit = self._reviewed.get(pkgbase)
+        if commit:
+            return commit
+        for name in pkgnames:
+            legacy = (self._data.get(name) or {}).get("reviewed_commit")
+            if legacy:
+                return legacy
+        return None
+
     def sync_with_installed(self, installed: dict[str, str]) -> tuple[int, int]:
         """
         Reconcile state with `pacman -Q` output so the file is a superset of
@@ -617,6 +651,7 @@ class BuildState:
             return
         disk.pop(_FAILURES_KEY, None)
         disk.pop(_REVERTED_KEY, None)
+        disk.pop(_REVIEWED_KEY, None)
         lost = []
         for name, entry in sorted(disk.items()):
             disk_at = _built_at(entry)
@@ -677,6 +712,13 @@ class BuildState:
                         val = _toml_escape(entry[key])
                         lines.append(f'{key} = "{val}"')
                 lines.append("")
+        if self._reviewed:
+            lines.append("# PKGBUILD review baseline: the source HEAD last accepted, by pkgbase.")
+            lines.append(f"[{_REVIEWED_KEY}]")
+            for pkgbase, commit in sorted(self._reviewed.items()):
+                escaped = pkgbase.replace("\\", "\\\\").replace('"', '\\"')
+                lines.append(f'"{escaped}" = "{_toml_escape(commit)}"')
+            lines.append("")
         return "\n".join(lines)
 
 

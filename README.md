@@ -89,7 +89,7 @@ shows these). `sysforge build <pkg>`, `sysforge update <pkg>` or `sysforge packa
 takes it back.
 
 Before a changed source is built, `update` and `build` show you what changed since the last
-build you accepted and ask. With no terminal (a timer, cron, a pipe) that package is refused
+change you accepted and ask. With no terminal (a timer, cron, a pipe) that package is refused
 instead: the rest of the run still builds, the summary lists it and the run exits 1. Changes
 from Arch's own packaging repos are accepted without asking. For unattended runs, set
 `[build] review = "accept"` in `packages.toml` (accepted changes are listed in the summary)

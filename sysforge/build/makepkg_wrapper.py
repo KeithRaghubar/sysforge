@@ -1269,14 +1269,9 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
             if parsed is not None:
                 filename_versions[name] = parsed
 
-        # The clone HEAD of the build that just succeeded becomes the
-        # review baseline: the PKGBUILD review gate (pkgbuild_review.py)
-        # diffs future HEADs against it. Stamped here — the single
-        # record site — so dep builds and pipeline stages are covered
-        # without every caller threading the value. None (non-git dir)
-        # leaves any prior value sticky.
-        from sysforge.primitives.pkgbuild_review import head_commit as _review_head
-        _reviewed = _review_head(pkgbuild_path.parent)
+        # No review baseline here: the review gate saves it when a change is
+        # accepted (build_core._save_review_baseline, 3.5.0-B8), so neither a
+        # failed build nor a build with the gate off moves it.
         # Out-of-profile inputs (3.2.0-F18), through the same resolver flag
         # drift re-derives with, so a rebuild always clears the drift it
         # reports. The compiler is resolved as the PGO reuse branch does.
@@ -1315,7 +1310,6 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                 owner_stage=options.owner_stage,
                 toolchain_variant=_variant,
                 toolchain_fingerprint=_fingerprint,
-                reviewed_commit=_reviewed,
                 origin_pkgbase=origin_pkgbase,
                 build_inputs=_inputs,
                 build_seconds=build_elapsed,

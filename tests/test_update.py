@@ -3176,6 +3176,22 @@ def test_update_disables_build_core_smoke(update_scenario, monkeypatch):
     assert seen and all(v is False for v in seen)
 
 
+def test_plan_review_mark_reads_accepted_baseline(tmp_path):
+    """3.5.0-B8: the plan's needs-review mark reads the baseline saved on
+    accept (by pkgbase), falling back to a pre-B8 install-record value."""
+    from types import SimpleNamespace
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(tmp_path)
+    bs.record(pkgname="lib32-foo", pkgver="1", pkgrel="1", epoch="0",
+              pkgbase="foo", pkgbuild_dir=tmp_path, build_mode="source_built",
+              reviewed_commit="legacy")
+    run = SimpleNamespace(bs=bs)
+    r = SimpleNamespace(pkgbase="foo", pkgnames=["lib32-foo"])
+    assert sysforge.update._reviewed_for(run, r) == "legacy"
+    bs.set_reviewed("foo", "accepted")
+    assert sysforge.update._reviewed_for(run, r) == "accepted"
+
+
 def test_untrusted_change_refused_without_terminal_exits_1(
         update_scenario, monkeypatch, capsys):
     """3.0.0-F3: no terminal means no answer, and no answer is not consent.

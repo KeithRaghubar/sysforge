@@ -119,9 +119,13 @@ Use `--offline` for a quick local report. Use `--frozen` when "nothing new gets 
 
 ## Reviewing changed sources
 
-Before sysforge builds a package whose source changed since the last build you accepted, it
+Before sysforge builds a package whose source changed since the last change you accepted, it
 shows you the change (the whole source tree, not just the `PKGBUILD`) and asks: view the diff,
 accept, skip this package, or abort the run. `update` and `build` follow the same rules.
+
+Accepting is what counts: if the build then fails, the next run does not ask about the same
+change again, only about anything newer. A run with `--no-review` accepts nothing, so the next
+reviewed run shows everything that changed since your last accept.
 
 A run that could not ask is never treated as a yes. With no terminal to ask on (a systemd
 timer, cron, or output piped into `tee`), the changed package is **refused**: it is not built,

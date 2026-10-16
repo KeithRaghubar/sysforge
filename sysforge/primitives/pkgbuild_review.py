@@ -6,24 +6,25 @@
 pkgbuild_review.py — interactive review gate for changed PKGBUILD sources.
 
 Before a package is built, the gate compares the source clone's HEAD against
-the ``reviewed_commit`` recorded in build_state.toml (the clone HEAD at the
-last successful build) and, when they differ, shows what changed and asks for
-a decision. The diff covers the **full source tree** — not just the PKGBUILD —
+its review baseline in build_state.toml (the clone HEAD the user last
+accepted, ``BuildState.reviewed_commit``) and, when they differ, shows what
+changed and asks for a decision. The diff covers the **full source tree** — not just the PKGBUILD —
 so changes hiding in ``.install`` files, patches, or new sources are visible.
 
 Decision model (returned to the caller, which owns the build loop):
-    accept → build proceeds; the new HEAD is persisted as ``reviewed_commit``
-             (via BuildOptions → BuildState.record) once the build succeeds.
+    accept → build proceeds; the caller saves the new HEAD as the baseline
+             right away (``build_core._save_review_baseline``, 3.5.0-B8), so
+             a failed build never re-presents an accepted change.
     skip   → the package is dropped from this run's build list.
     abort  → the caller stops the run before anything is built or installed.
     clean  → HEAD matches the recorded reviewed_commit; nothing to review.
     no_git → the source dir is not a git checkout (local PKGBUILD); the gate
              does not apply.
 
-A package with no recorded ``reviewed_commit`` (first profiled build of the
-clone) is reviewed against git's empty tree — a full-content review. The same
-fallback applies when the recorded commit no longer exists in the clone
-(purge + re-clone rewrote history).
+A package with no review baseline (first review of the clone) is reviewed
+against git's empty tree — a full-content review. The same fallback applies
+when the saved commit no longer exists in the clone (purge + re-clone
+rewrote history).
 
 The comparison is commit-based (recorded commit → HEAD), not worktree-based:
 upstream changes arrive as commits via source sync, while uncommitted local
@@ -218,7 +219,7 @@ def review_target(
 
     if reviewed_commit and commit_exists(pkgbuild_dir, reviewed_commit):
         base = reviewed_commit
-        what = f"source changed since last accepted build ({_what(base, head)})"
+        what = f"source changed since last accepted review ({_what(base, head)})"
     else:
         if reviewed_commit:
             _log.warn(

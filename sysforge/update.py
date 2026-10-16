@@ -1454,6 +1454,11 @@ def _entry_for(run: UpdateRun, r) -> dict | None:
     return None
 
 
+def _reviewed_for(run: UpdateRun, r) -> str | None:
+    """The review baseline the gate will diff ``r`` against (3.5.0-B8)."""
+    return run.bs.reviewed_commit(r.pkgbase, r.pkgnames)
+
+
 def _build_run_plan(run: UpdateRun) -> update_plan.Plan:
     pol = run.review_policy
     review_marks: set[str] = set()
@@ -1461,7 +1466,7 @@ def _build_run_plan(run: UpdateRun) -> update_plan.Plan:
         for r in run.to_build:
             if pol.trusts(r.source) or r.pkgbuild_path is None:
                 continue
-            reviewed = (_entry_for(run, r) or {}).get("reviewed_commit")
+            reviewed = _reviewed_for(run, r)
             if change_summary(Path(r.pkgbuild_path).parent, reviewed):
                 review_marks.add(r.pkgbase)
     sandbox = build_sandbox.get_policy()
