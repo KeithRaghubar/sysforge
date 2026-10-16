@@ -27,6 +27,7 @@ from sysforge.pipeline.stages.toolchain import config, profdata, verify
 from sysforge.primitives import prompt
 from sysforge.primitives import pacman
 from sysforge.primitives import config as prim_config
+from sysforge.primitives.pkgbuild_review import resolve_review_policy
 from sysforge import log
 
 _log = log.get_logger("TOOLCHAIN")
@@ -317,6 +318,18 @@ def gate_soname_consumers(
     return impact.consumers
 
 
+def _packages_build_cfg(config) -> dict:
+    """packages.toml ``[build]``; empty (the safe defaults) when unreadable."""
+    import tomllib
+
+    from sysforge.primitives.paths import resolve_packages_path
+    try:
+        with resolve_packages_path(config).open("rb") as f:
+            return tomllib.load(f).get("build", {}) or {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
 def rebuild_soname_consumers(consumers: list[str], config, options, state) -> None:
     """Rebuild installed libLLVM consumers after a soname-bumping install.
 
@@ -358,6 +371,9 @@ def rebuild_soname_consumers(consumers: list[str], config, options, state) -> No
             f"rebuild. Rebuild them manually: {manual_cmd}"
         )
 
+    # Same review policy as update and build (3.0.0-F3): with no terminal an
+    # untrusted changed consumer is refused, and that fails the stage below.
+    review_policy = resolve_review_policy(None, _packages_build_cfg(config))
     outcome = build_core.build_and_install(
         targets,
         config=config,
@@ -366,9 +382,12 @@ def rebuild_soname_consumers(consumers: list[str], config, options, state) -> No
         active_variant=get_toolchain_variant(state),
         toolchain_fingerprint=get_toolchain_fingerprint(state),
         abi_check=True,
-        review="auto",
+        review=review_policy.mode,
+        review_trusted=review_policy.trusted,
     )
-    failed = list(outcome.failed_pkgs) + unresolved
+    failed = (list(outcome.failed_pkgs) + unresolved
+              + [f"{pb} (refused at review: {why})"
+                 for pb, why in outcome.review_refused.items()])
     if outcome.install_failed or outcome.aborted or failed:
         detail = ", ".join(failed) if failed else "the install step"
         raise RuntimeError(

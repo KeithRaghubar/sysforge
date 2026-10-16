@@ -35,7 +35,8 @@ def test_body_is_the_ordered_phase_list():
     assert [p.__name__ for p in update._PHASES] == [
         "_phase_init", "_phase_assemble", "_phase_llvm_preflight",
         "_phase_source_sync", "_phase_version_check", "_phase_summary",
-        "_phase_toolchain_drift", "_phase_flag_drift", "_phase_build",
+        "_phase_toolchain_drift", "_phase_flag_drift", "_phase_plan", "_phase_confirm",
+        "_phase_build",
         "_phase_install_and_report",
     ]
 
@@ -80,24 +81,112 @@ def test_toolchain_drift_phase_is_silent_without_a_toolchain_stage(tmp_path):
     assert run.drifted == []
 
 
-def test_flag_drift_phase_dry_run_gate_ends_the_run(tmp_path):
+def test_plan_phase_dry_run_gate_ends_the_run(tmp_path):
     run = _run(tmp_path, dry_run=True)
-    assert update._phase_flag_drift(run) == 0
+    assert update._phase_plan(run) == 0
 
 
-def test_flag_drift_phase_promotes_toolchain_drift_when_opted_in(tmp_path):
+def test_plan_phase_promotes_toolchain_drift_when_opted_in(tmp_path):
     run = _run(tmp_path)
     run._rebuild_tc_drift = True
     run.results = [_result("foo"), _result("bar")]
     run.drifted = [("foo", "stock_llvm", "different variant")]
-    assert update._phase_flag_drift(run) is None
+    assert update._phase_plan(run) is None
     foo, bar = run.results
     assert (foo.action, foo.force_rebuild) == ("NEEDS_REBUILD", True)
     assert bar.action == "UP_TO_DATE"
+    assert run.promoted == {"foo": "toolchain drifted"}
+    assert [r.pkgbase for r in run.to_build] == ["foo"]
+
+
+def test_dry_run_lists_flag_drift_promotions(tmp_path):
+    """3.5.0-B5: --dry-run used to return before promotions."""
+    run = _run(tmp_path, dry_run=True)
+    run._rebuild_fl_drift = True
+    run.results = [_result("foo")]
+    run.flag_drifted = [("foo", ["  CFLAGS: a → b"])]
+    assert update._phase_plan(run) == 0
+    assert run.results[0].action == "NEEDS_REBUILD"
+    assert run.promoted == {"foo": "flags drifted"}
 
 
 def test_build_phase_nothing_to_rebuild_ends_the_run(tmp_path, capsys):
     run = _run(tmp_path)
     run.results = [_result("foo")]
+    assert update._phase_plan(run) is None
     assert update._phase_build(run) == 0
     assert "Nothing to rebuild." in capsys.readouterr().out
+
+
+def test_failure_exit_code_counts_review_refusals():
+    assert update._failure_exit_code(failed_pkgs=[], review_refused={"x": "r"}) == 1
+    assert update._failure_exit_code(failed_pkgs=[]) == 0
+
+
+def _plan_run(tmp_path, monkeypatch, *, tty=True, **args):
+    run = _run(tmp_path, **args)
+    run.plan = update.update_plan.Plan(
+        posture="P", rows=(update.update_plan.PlanRow("rebuild", "foo", "1 → 2"),))
+    monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: tty)
+    return run
+
+
+def test_confirm_yes_continues(tmp_path, monkeypatch):
+    run = _plan_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    assert update._phase_confirm(run) is None
+
+
+def test_confirm_no_ends_with_nothing_changed(tmp_path, monkeypatch, capsys):
+    run = _plan_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    assert update._phase_confirm(run) == 0
+    assert "Nothing changed." in capsys.readouterr().out
+
+
+def test_confirm_eof_is_no(tmp_path, monkeypatch):
+    run = _plan_run(tmp_path, monkeypatch)
+    def _eof(*a):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", _eof)
+    assert update._phase_confirm(run) == 0
+
+
+def _never_prompt(monkeypatch):
+    monkeypatch.setattr("builtins.input",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("prompted")))
+
+
+def test_confirm_skipped_without_terminal(tmp_path, monkeypatch):
+    run = _plan_run(tmp_path, monkeypatch, tty=False)
+    _never_prompt(monkeypatch)
+    assert update._phase_confirm(run) is None
+
+
+def test_confirm_skipped_when_stdout_piped(tmp_path, monkeypatch):
+    run = _plan_run(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    _never_prompt(monkeypatch)
+    assert update._phase_confirm(run) is None
+
+
+def test_confirm_skipped_by_yes_and_config(tmp_path, monkeypatch):
+    _never_prompt(monkeypatch)
+    assert update._phase_confirm(_plan_run(tmp_path, monkeypatch, yes=True)) is None
+    run = _plan_run(tmp_path, monkeypatch)
+    run.build_cfg = {"confirm_plan": False}
+    assert update._phase_confirm(run) is None
+
+
+def test_confirm_skipped_for_an_empty_plan(tmp_path, monkeypatch):
+    run = _plan_run(tmp_path, monkeypatch)
+    run.plan = update.update_plan.Plan(posture="P", rows=())
+    _never_prompt(monkeypatch)
+    assert update._phase_confirm(run) is None
+
+
+def test_confirm_runs_before_the_build_phase():
+    names = [p.__name__ for p in update._PHASES]
+    assert names.index("_phase_confirm") == names.index("_phase_plan") + 1
+    assert names.index("_phase_confirm") + 1 == names.index("_phase_build")

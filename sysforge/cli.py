@@ -358,8 +358,9 @@ def _main_after_parse(args) -> None:
     # every egress seam sees the same policy no matter how deep it sits.
     from sysforge.primitives.config import load_sysforge_toml
     from sysforge.primitives.net_policy import resolve_net_policy, set_policy
-    _security_cfg = load_sysforge_toml().get("security", {})
-    set_policy(resolve_net_policy(args, _security_cfg))
+    _sysforge_cfg = load_sysforge_toml()
+    _security_cfg = _sysforge_cfg.get("security", {})
+    set_policy(resolve_net_policy(args, _security_cfg, _sysforge_cfg.get("aur", {})))
     # Build sandbox (3.1.0-F7): the other half of [security] — freeze_sources
     # gates code *ingress*, this gates blast *radius*. Installed here for the
     # same reason: one resolution, consulted at the invocation seam, so a build

@@ -66,7 +66,13 @@ from sysforge.primitives.already_built import resolve_already_built
 # ``sysforge.build_core.review_target`` to drive gate decisions.
 from sysforge.primitives.pkgbuild_review import (
     DECISION_ABORT,
+    DECISION_ACCEPT,
+    DECISION_REFUSED,
     DECISION_SKIP,
+    MODE_ACCEPT,
+    MODE_OFF,
+    MODE_PROMPT,
+    change_summary,
     review_deps,
     review_target,
 )
@@ -114,6 +120,11 @@ class BuildOutcome:
     # and whether the whole run was aborted there (nothing built/installed).
     review_skipped: list[str] = field(default_factory=list)
     aborted: bool = False
+    # 3.0.0-F3: pkgbase -> why it was refused at the review gate (an untrusted
+    # change with no terminal to review it, or a refused dependency), and the
+    # packages accepted unreviewed under [build] review = "accept".
+    review_refused: dict[str, str] = field(default_factory=dict)
+    review_accepted: list[str] = field(default_factory=list)
     # Wall-clock phase durations (dep prep / per-package builds / install) —
     # aliases the PhaseTimer's records list, so callers without their own
     # timer can still render a report from the outcome.
@@ -142,6 +153,8 @@ def merge_outcomes(first: BuildOutcome, second: BuildOutcome) -> BuildOutcome:
         not_installed={**first.not_installed, **second.not_installed},
         review_skipped=first.review_skipped + second.review_skipped,
         aborted=first.aborted or second.aborted,
+        review_refused={**first.review_refused, **second.review_refused},
+        review_accepted=first.review_accepted + second.review_accepted,
         phase_records=first.phase_records,
         installed_deps=first.installed_deps + second.installed_deps,
         layout_findings=first.layout_findings + second.layout_findings,
@@ -254,6 +267,21 @@ def install_missing_repo_deps(pkgbuild_paths, *, exclude=frozenset(),
         _log.warn("makedep pre-install failed: some builds may fail")
 
 
+def _requirer_closure(deps, seeds: set[str]) -> set[str]:
+    """``seeds`` plus every name that transitively requires one of them,
+    walking ``ResolvedDep.required_by`` upward to the targets at the top."""
+    by_name = {d.name: d for d in deps}
+    affected = set(seeds)
+    frontier = list(seeds)
+    while frontier:
+        dep = by_name.get(frontier.pop())
+        for parent in (getattr(dep, "required_by", None) or []) if dep else []:
+            if parent not in affected:
+                affected.add(parent)
+                frontier.append(parent)
+    return affected
+
+
 def prepare_deps(
     pkgbuild_paths: list[Path],
     config: dict,
@@ -265,14 +293,19 @@ def prepare_deps(
     ld: str | None = None,
     state_dir: Path | None = None,
     review: str = "off",
+    review_trusted: "frozenset[str]" = frozenset(),
     interactive: bool = False,
     installed_deps_out: list[str] | None = None,
+    refused_out: dict[str, str] | None = None,
+    accepted_out: list[str] | None = None,
 ) -> bool:
     """Pre-install missing repo makedeps, then resolve + build AUR/local deps.
 
     Returns ``True`` to proceed, ``False`` when the user aborted the run at the
     dependency review gate (the caller treats this like a target-gate abort:
-    clean return, nothing built or installed by the build loop).
+    clean return, nothing built or installed by the build loop). A refusal
+    (3.0.0-F3) drops the changed dependencies and reports every name that needs
+    them in ``refused_out``; the run continues.
 
     This is what frees the per-package makepkg invocation from having to sync
     deps itself (``-s`` is stripped below): every repo makedep is installed in
@@ -310,6 +343,12 @@ def prepare_deps(
     try:
         aur_deps = resolve_aur_deps_batch(pkgbuild_paths, config, fetch=True)
         aur_deps = [d for d in aur_deps if d.name not in building_names]
+        from sysforge.primitives.net_policy import get_policy
+        if not get_policy().aur_enabled:
+            for d in aur_deps:
+                if d.source == "unknown":
+                    _log.warn(f"{d.name} is not in the repos, and AUR lookups are "
+                              "off ([aur] enabled = false)")
         # Dependency review gate — batched, all-or-nothing (no per-dep skip:
         # dropping a dep breaks its dependent). Mirrors the target gate's
         # modes; reviewed_commit stamps already exist for dep builds because
@@ -317,7 +356,7 @@ def prepare_deps(
         buildable = [
             d for d in aur_deps
             if d.source == "aur" and getattr(d, "pkgbuild_path", None) is not None
-        ] if review in ("prompt", "auto") else []
+        ] if review in (MODE_PROMPT, MODE_ACCEPT) else []
         if buildable:
             if state_dir is None:
                 from sysforge.pipeline.state import resolve_state_dir
@@ -334,12 +373,23 @@ def prepare_deps(
                     (bs_deps.get(d.name) or {}).get("reviewed_commit"),
                 )
 
+            changed: list[str] = []
+            dep_trusted = "aur" in review_trusted
             decision = review_deps(
                 [_review_row(d) for d in buildable],
-                interactive=(review == "prompt"),
+                mode=review, trusted=dep_trusted, changed_out=changed,
             )
             if decision == DECISION_ABORT:
                 return False
+            if decision == DECISION_REFUSED:
+                affected = _requirer_closure(aur_deps, set(changed))
+                aur_deps = [d for d in aur_deps if d.name not in affected]
+                if refused_out is not None:
+                    reason = f"needs {', '.join(sorted(changed))}, whose source changed"
+                    refused_out.update({name: reason for name in affected})
+            elif (decision == DECISION_ACCEPT and review == MODE_ACCEPT
+                  and not dep_trusted and accepted_out is not None):
+                accepted_out.extend(changed)
         if aur_deps:
             built_dep_names = build_resolved_deps(
                 aur_deps,
@@ -924,6 +974,7 @@ def build_and_install(
     toolchain_fingerprint: str | None = None,
     pkgdest: Path | None = None,
     review: str = "prompt",
+    review_trusted: "frozenset[str]" = frozenset(),
     pgo_mode: str | None = None,
     timer: PhaseTimer | None = None,
     mesa_smoke: bool = True,
@@ -945,10 +996,15 @@ def build_and_install(
     ``"prompt"`` presents each target whose clone HEAD differs from its
     recorded ``reviewed_commit`` for review *before* dep prep and the build
     loop, so a skip never installs that package's makedeps and an abort
-    leaves nothing built or installed; ``"auto"`` runs the same comparison
-    but auto-accepts changes with a logged notice (the ``update`` default);
-    ``"off"`` skips the gate entirely (``--no-review`` /
-    ``[build] review = false``).
+    leaves nothing built or installed. With no terminal, ``"prompt"`` refuses
+    the change instead (3.0.0-F3): the target lands in
+    ``outcome.review_refused`` and the rest of the batch still builds; a
+    refused AUR dependency refuses every target that needs it. ``"accept"``
+    runs the same comparison but accepts changes without asking and lists
+    them in ``outcome.review_accepted``; ``"off"`` skips the gate entirely
+    (``--no-review`` / ``[build] review = false``). Targets whose ``source``
+    is in ``review_trusted`` (``"aur"`` covers AUR dependencies) are accepted
+    without asking in either active mode.
 
     ``pgo_mode`` (``"record"``/``"use"``/``None``) drives mesa instrumentation
     PGO (`build --pgo`). Threaded into every target's ``BuildOptions`` but a
@@ -960,6 +1016,10 @@ def build_and_install(
     install (3.2.0-F10); ``update`` passes ``False`` and runs it once after its
     system upgrade.
     """
+    # A stale caller with an unknown mode (the removed "auto") must fail
+    # loudly: anything else would silently run with the gate off.
+    if review not in (MODE_PROMPT, MODE_ACCEPT, MODE_OFF):
+        raise ValueError(f"build_and_install: unknown review mode {review!r}")
     # Opens the "building" tracker; refuse before any sync side effect rather
     # than when the nested tracker would open (3.3.0-F2).
     _ui_progress.require_no_tracker("build_and_install")
@@ -992,7 +1052,7 @@ def build_and_install(
     # later request dedups against the scheduler cache, and the gate sees the
     # post-fetch HEAD instead of reviewing a stale clone. Best-effort: real
     # sync failures still surface through the wrapper's own request.
-    review_active = review in ("prompt", "auto")
+    review_active = review in (MODE_PROMPT, MODE_ACCEPT)
     if review_active and sync_source:
         from sysforge.primitives.source_sync import SyncRequest, get_scheduler
         _ui_progress.phase("syncing sources")
@@ -1021,11 +1081,11 @@ def build_and_install(
                 entry = bs_review.get(pn)
                 if entry is not None:
                     break
+            reviewed = (entry or {}).get("reviewed_commit")
+            pkgbuild_dir = Path(t.pkgbuild_path).parent
+            trusted = (getattr(t, "source", None) or "aur") in review_trusted
             decision = review_target(
-                t.pkgbase,
-                Path(t.pkgbuild_path).parent,
-                (entry or {}).get("reviewed_commit"),
-                interactive=(review == "prompt"),
+                t.pkgbase, pkgbuild_dir, reviewed, mode=review, trusted=trusted,
             )
             if decision == DECISION_ABORT:
                 _log.ui(
@@ -1038,6 +1098,12 @@ def build_and_install(
                 _log.ui(f"[SYSFORGE] {t.pkgbase}: skipped at PKGBUILD review")
                 outcome.review_skipped.append(t.pkgbase)
                 continue
+            if decision == DECISION_REFUSED:
+                outcome.review_refused[t.pkgbase] = (
+                    change_summary(pkgbuild_dir, reviewed) or "unreviewed source change")
+                continue
+            if decision == DECISION_ACCEPT and review == MODE_ACCEPT and not trusted:
+                outcome.review_accepted.append(t.pkgbase)
             kept.append(t)  # accept | clean | no_git
         targets = kept
         if not targets:
@@ -1091,6 +1157,7 @@ def build_and_install(
     # nothing in the rest of the build prompts mid-output (3.4.0-F1).
     _keep_credentials_for_the_build()
     _ui_progress.phase("resolving dependencies")
+    dep_refused: dict[str, str] = {}
     with timer.phase("dep prep"):
         proceed = prepare_deps(
             pkgbuild_paths,
@@ -1102,8 +1169,11 @@ def build_and_install(
             ld=ld,
             state_dir=state_dir,
             review=review,
+            review_trusted=review_trusted,
             interactive=interactive,
             installed_deps_out=outcome.installed_deps,
+            refused_out=dep_refused,
+            accepted_out=outcome.review_accepted,
         )
     if not proceed:
         _log.ui(
@@ -1112,6 +1182,28 @@ def build_and_install(
         )
         outcome.aborted = True
         return outcome
+    if dep_refused:
+        # A refused dependency refuses every target that needs it (3.0.0-F3);
+        # the rest of the batch still builds.
+        still = []
+        for t in targets:
+            names = {t.pkgbase, *(getattr(t, "pkgnames", None) or [])}
+            hit = names & dep_refused.keys()
+            if hit:
+                outcome.review_refused[t.pkgbase] = dep_refused[sorted(hit)[0]]
+            else:
+                still.append(t)
+        targets = still
+        if not targets:
+            return outcome
+        kept_bases = {t.pkgbase for t in targets}
+        intra_deps = {
+            base: deps & kept_bases
+            for base, deps in intra_deps.items() if base in kept_bases
+        }
+        requested = {
+            pn for t in targets for pn in (getattr(t, "pkgnames", None) or [])
+        }
 
     # Cleanbuild policy (one home): -C by default, opt-out via no_cleanbuild,
     # and a forced -C -c under --pgo so a PGO pass never reuses stale objects.

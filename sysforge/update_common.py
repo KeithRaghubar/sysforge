@@ -13,6 +13,7 @@ to avoid a facade-import-order cycle. ``update.py`` re-exports them so existing
 
 from sysforge.primitives.source_sync import (
     STATUS_FAILED, STATUS_FROZEN, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
+    STATUS_SKIPPED_AUR_DISABLED,
 )
 
 
@@ -27,11 +28,13 @@ def _is_vcs(pkgbase: str) -> bool:
 # user-facing action each maps to in the update summary. Statuses absent
 # from this map (UP_TO_DATE, FETCHED, CLONED, DIVERGED, SKIPPED_OFFLINE,
 # SKIPPED_NO_TRACKING) are non-blocking — the build proceeds against the
-# local PKGBUILD.
+# local PKGBUILD. AUR_DISABLED (3.1.0-F3) blocks the build but is not a
+# failure: only PURGE_REFUSED and FROZEN reach failed_pkgs.
 _SYNC_STATUS_TO_ACTION = {
     STATUS_FAILED: "PULL_FAILED",
     STATUS_RATE_LIMITED: "RATE_LIMITED",
     STATUS_PURGE_REFUSED: "PURGE_REFUSED",
     STATUS_FROZEN: "FROZEN",
+    STATUS_SKIPPED_AUR_DISABLED: "AUR_DISABLED",
 }
 _SYNC_BLOCKING_STATUSES = frozenset(_SYNC_STATUS_TO_ACTION)

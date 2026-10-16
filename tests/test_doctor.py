@@ -1629,6 +1629,9 @@ def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, 
     assert len(captured) == 1
     assert captured[0].pkgnames == [target]
     assert captured[0].dry_run is False
+    # doctor owns the confirmation (or --no-confirm skipped it): update must
+    # not ask a second "Proceed?" (3.1.0-F4).
+    assert captured[0].yes is True
     err = capsys.readouterr().err
     assert "would rebuild 1 package(s)" in err
 

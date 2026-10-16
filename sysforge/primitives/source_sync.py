@@ -73,6 +73,7 @@ from sysforge.primitives.aur import (
     aur_info,
     git_fetch_and_compare,
     git_is_dirty,
+    is_aur_checkout,
     is_rate_limit_error,
 )
 from sysforge.primitives.build_prep import pkgctl_checkout, pkgctl_switch_version
@@ -83,6 +84,7 @@ from sysforge.primitives.git_ops import (
 )
 from sysforge.primitives.net_policy import (
     NetworkFrozen,
+    get_policy,
 )
 from sysforge.primitives.pacman import get_repo_candidate_version, get_srcdest
 from sysforge.primitives.rate_limit import RateLimiter
@@ -108,6 +110,10 @@ STATUS_PURGE_REFUSED = "purge_refused"
 # skip — the build must not proceed against a checkout we were refused
 # permission to refresh.
 STATUS_FROZEN        = "frozen"
+
+# 3.1.0-F3: [aur] enabled = false and this sync would contact the AUR. Not a
+# failure — the user chose it — so the package is left alone and reported.
+STATUS_SKIPPED_AUR_DISABLED = "skipped_aur_disabled"
 
 
 _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
@@ -243,7 +249,7 @@ class SourceSyncScheduler:
         Network errors are non-fatal: callers fall back to fetch-all, which
         is still bounded by the rate limiter and no worse than the old flow.
         """
-        if self._rpc_done or self.offline:
+        if self._rpc_done or self.offline or not get_policy().aur_enabled:
             return
         self._rpc_done = True
 
@@ -287,6 +293,12 @@ class SourceSyncScheduler:
                     error=f"local PKGBUILD missing: {pkgbuild_dir}",
                 )
             return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_LOCAL)
+
+        if (req.source or "aur") == "aur" and not get_policy().aur_enabled \
+                and is_aur_checkout(pkgbuild_dir):
+            # 3.1.0-F3: never contact the AUR. Not a failure: the user chose it.
+            return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_AUR_DISABLED,
+                              error="AUR disabled ([aur] enabled = false)")
 
         if self._aborted:
             return SyncResult(pkgbase=pkgbase, status=STATUS_RATE_LIMITED,

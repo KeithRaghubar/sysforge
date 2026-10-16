@@ -39,8 +39,17 @@ repo_mode = "build_from_source"  # "pacman" (default) | "build_from_source" — 
 #                       # Independent of repo_mode — no walk widening, no checkupdates
 #                       # probe; --sysupgrade / --no-sysupgrade override per run.
 # review = true         # PKGBUILD review gate: diff prompt before building changed
-#                       # sources (view/accept/skip/abort). false disables; --no-review
-#                       # disables per run. Non-interactive runs auto-accept + warn.
+#                       # sources (view/accept/skip/abort). With no terminal the
+#                       # package is refused (run exits 1, others still build).
+#                       # "accept" = accept unreviewed + list in summary (RISK: code
+#                       # nobody looked at is installed; a sandbox does not inspect
+#                       # what gets installed). false disables; --review /
+#                       # --no-review override per run.
+# review_trusted_sources = ["repo"]  # accepted without asking; valid: "repo",
+#                       # "aur", "git", "local"; [] reviews everything.
+# confirm_plan = true   # at a terminal, update shows its plan and asks "Proceed?
+#                       # [Y/n]" before changing anything; false or --yes skips it.
+#                       # Runs with no terminal never ask.
 #
 # Standing defaults for build-run flags. The matching CLI flags
 # (--abi-check / --cache-report / --persist-log) still win when passed.

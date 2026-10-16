@@ -87,12 +87,33 @@
 #   per run.
 #system_upgrade = false
 #
-# review — PKGBUILD review gate: before building a package whose source
-#   changed since the last accepted build, show the full source-tree diff
-#   and prompt (view/accept/skip/abort). false disables the gate;
-#   --no-review disables per run. Non-interactive runs auto-accept with a
-#   warning.
+# review: PKGBUILD review gate, run before building a package whose source
+#   changed since the last build you accepted.
+#     true     (default) at a terminal, show the change and ask
+#              (view/accept/skip/abort); with no terminal (a timer, cron, a
+#              pipe), refuse that package: it is reported in the summary and
+#              the run exits non-zero, while the other packages still build.
+#     "accept" never ask and never refuse: accept every change, log it and
+#              list it in the summary. RISK: changed AUR/git code is then
+#              built and installed with nobody having looked at it, which is
+#              how poisoned-package campaigns reach a machine. A build sandbox
+#              (sandbox_builds in sysforge.toml) limits what the build can read; it
+#              does not inspect what gets installed.
+#     false    no gate.
+#   --review / --no-review override per run.
 #review = true
+#
+# review_trusted_sources: source types the gate accepts without asking (logged
+#   at -v). Default ["repo"]: Arch's own packaging repos, maintained by the
+#   same people who publish the binary packages you already install. Valid:
+#   "repo", "aur", "git", "local". [] reviews everything.
+#review_trusted_sources = ["repo"]
+#
+# confirm_plan — at a terminal, update shows what it is about to rebuild,
+#   install and upgrade, and asks "Proceed? [Y/n]" before changing anything.
+#   false skips the question; --yes skips it per run. Runs with no terminal
+#   never ask (the review gate refuses unreviewed sources there instead).
+#confirm_plan = true
 #
 # Standing defaults for build-run flags. The matching CLI flags
 # (--abi-check / --cache-report / --persist-log) still win when passed.

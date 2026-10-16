@@ -956,3 +956,53 @@ def test_local_source_excluded_from_rpc_batch(tmp_path):
     ensure_rpc.assert_called_once()
     (called_args,) = ensure_rpc.call_args.args
     assert called_args == ["htop"]
+
+
+# ---------------------------------------------------------------------------
+# [aur] enabled = false (3.1.0-F3)
+# ---------------------------------------------------------------------------
+
+def _aur_off():
+    from sysforge.primitives import net_policy
+    net_policy.set_policy(net_policy.NetPolicy(
+        frozen=False, thawed=frozenset(), aur_enabled=False))
+
+
+def test_aur_disabled_skips_missing_aur_checkout_without_clone(tmp_path):
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_AUR_DISABLED
+    sched = _scheduler(tmp_path)
+    _aur_off()
+    try:
+        with patch("sysforge.primitives.source_sync.aur_clone",
+                   side_effect=AssertionError("aur_clone must not be called")):
+            result = sched.request(SyncRequest(
+                pkgbase="foo", pkgbuild_dir=tmp_path / "foo", source="aur"))
+    finally:
+        net_policy.reset_policy()
+    assert result.status == STATUS_SKIPPED_AUR_DISABLED
+    assert "[aur] enabled = false" in (result.error or "")
+
+
+def test_aur_disabled_still_syncs_non_aur_origin(tmp_path):
+    """C3: a checkout labelled "aur" whose origin is GitHub never contacts the
+    AUR, so the posture does not block it."""
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_AUR_DISABLED
+    pkg = _make_repo(tmp_path, "foo")
+    subprocess.run(["git", "init", "-q", str(pkg)], check=True)
+    subprocess.run(["git", "-C", str(pkg), "remote", "add", "origin",
+                    "https://github.com/x/foo.git"], check=True)
+    sched = _scheduler(tmp_path)
+    outcome = GitFetchOutcome(status="up_to_date", head_before="abc", head_after="abc")
+    _aur_off()
+    try:
+        with patch("sysforge.primitives.source_sync._head_commit", return_value="abc"), \
+             patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+                   return_value=outcome) as fetch:
+            result = sched.request(SyncRequest(
+                pkgbase="foo", pkgbuild_dir=pkg, source="aur"))
+    finally:
+        net_policy.reset_policy()
+    assert result.status != STATUS_SKIPPED_AUR_DISABLED
+    fetch.assert_called_once()

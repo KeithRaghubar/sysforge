@@ -53,6 +53,9 @@ Mechanism lives in the cited §DESIGN section.
   owner-preserving temp-in-dest-dir + rename; escalates via `run_privileged`). Never
   `write_text`/`sudo cp` over a user's or root's config. Creating files with a fixed mode
   (`artifacts.write_live`, `pacman_hooks`) is a different shape and stays out. §primitives-layer.
+- **Runtime TOML key writes**: `config.set_toml_key(path, section, key, value)` (bool/str only,
+  comment-preserving, via `atomic_write.replace_file`); `set_default_toolchain` and `setup` are its
+  callers. Never `write_text` a config or pull tomlkit in at runtime.
 - **makepkg path resolution**: `pacman.get_pkgdest()`/`get_builddir()`/`get_srcdest()`/
   `get_logdest()` — never read `os.environ["BUILDDIR"]` or assume `~/builds`. Write conf keys via
   `config.set_makepkg_conf_keys`. §primitives-layer.
@@ -65,8 +68,9 @@ Mechanism lives in the cited §DESIGN section.
   loop. File-conflict isolation (retry without pacman's named culprits) lives only in
   `install_built`; `batch_install_pkgs` just reports them via `conflicts_out` and never retries
   (`3.2.0-B33`). Tests monkeypatch `sysforge.build_core.X`. §CLI Verb.
-- **PKGBUILD review gate**: `build_and_install(review=…)` → `pkgbuild_review.review_target` (build
-  `prompt`, update `auto`); sticky `reviewed_commit`. New build_state fields go in
+- **PKGBUILD review gate**: `build_and_install(review=…, review_trusted=…)` →
+  `pkgbuild_review.review_target`; both verbs resolve via `resolve_review_policy`; a refusal drops
+  the target (never aborts); sticky `reviewed_commit`. New build_state fields go in
   `_ENTRY_KEYS` (`primitives/build_state.py`), which `BuildState._serialize` writes. §primitives-layer.
 - **Unified run-log**: `log.open_unified_log`/`close_unified_log`; verbs opt in via
   `Verb.unified_log_basename`. §Logging.
@@ -205,7 +209,9 @@ Mechanism lives in the cited §DESIGN section.
   `auto_repair` routes through it) — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
   on the **authoritative pkgbase**, threaded explicitly (never the checkout dir name — a rename
   breaks it). A new code-ingress seam gets its own `KIND_*`, never a reuse. `update.py`'s single
-  `_raise_if_frozen` is the one home for the non-zero exit. §Config Layer / §primitives-layer.
+  `_raise_if_frozen` is the one home for the non-zero exit. `[aur] enabled = false` is a `NetPolicy`
+  field (`KIND_AUR_CLONE`/`KIND_AUR_RPC`), enforced in `aur.py`'s four network functions plus the
+  scheduler's `is_aur_checkout` gate; never by checking a `source` label alone. §Config Layer / §primitives-layer.
 
 ## Toolchain & kernel deep invariants (rationale: DESIGN.md §07)
 

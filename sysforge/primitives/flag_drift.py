@@ -24,6 +24,7 @@ Public API:
                        system_assignments=None,
                        preserved_system_tokens=None,
                        sandbox_policy=None, state_dir=None) -> FlagDriftResult
+    current_sandboxed(entry, config, conflict_groups, policy) -> bool | None
 """
 from __future__ import annotations
 
@@ -143,6 +144,38 @@ def _inputs_diff(entry: dict, pkgmeta: dict, resolved: dict,
     return diff_flags(entry["build_inputs"] or "", current)
 
 
+def _sandboxed_for(entry: dict, resolved: dict, policy, build_mode=None) -> bool:
+    """Whether this build would run sandboxed now: the profile's override of
+    the global policy, except that kernel and toolchain-stage builds always run
+    on the host. One predicate for the drift sub-axis and the update plan."""
+    from sysforge.primitives.build_sandbox import for_profile
+    suppressed = (build_mode == "kernel"
+                  or entry.get("owner_stage") in ("kernel", "toolchain"))
+    return False if suppressed else for_profile(policy, resolved).enabled
+
+
+def current_sandboxed(entry: dict, config: dict, conflict_groups, policy) -> bool | None:
+    """:func:`_sandboxed_for` for a recorded package, resolving its profile
+    from the PKGBUILD on disk. None when the PKGBUILD is missing or unparsable."""
+    raw = entry.get("pkgbuild_dir")
+    if not raw:
+        return None
+    pkgbuild_path = Path(raw) / "PKGBUILD"
+    if not pkgbuild_path.exists():
+        return None
+    try:
+        pkgmeta = parse_pkgbuild(pkgbuild_path)
+    except Exception:  # noqa: BLE001 — unknown, not an error, for a plan mark
+        return None
+    matched = match_rules(pkgmeta, config.get("rules", []))
+    build_mode = get_build_mode(matched, config)
+    extracted = (extract_pkgbuild_profile(pkgmeta, pkgbuild_path)
+                 if build_mode_uses_extracted_profile(build_mode) else None)
+    resolved = resolve_profile(pkgmeta, matched, config, conflict_groups,
+                               extracted_profile=extracted)
+    return _sandboxed_for(entry, resolved, policy, build_mode)
+
+
 def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[str]:
     """``  sandboxed: <old> → <new>`` when the recorded sandbox state differs.
 
@@ -153,14 +186,10 @@ def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[
     """
     if policy is None or "sandboxed" not in entry:
         return []
-    from sysforge.primitives.build_sandbox import for_profile
-
-    # Mirror makepkg_wrapper's suppression predicate exactly: a kernel build
-    # (by build_mode or owner_stage) or a toolchain-stage build always runs on
-    # the host, so it is recorded sandboxed=False.
-    suppressed = (build_mode == "kernel"
-                  or entry.get("owner_stage") in ("kernel", "toolchain"))
-    current = False if suppressed else for_profile(policy, resolved).enabled
+    # Mirrors makepkg_wrapper's suppression predicate exactly (see
+    # _sandboxed_for): a kernel or toolchain-stage build always runs on the
+    # host, so it is recorded sandboxed=False.
+    current = _sandboxed_for(entry, resolved, policy, build_mode)
     stored = bool(entry["sandboxed"])
     if stored == current:
         return []

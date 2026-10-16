@@ -142,3 +142,27 @@ def test_rebuild_consumers_all_unresolved_raises(tmp_path, monkeypatch):
     opts = make_options(state_dir=tmp_path)
     with pytest.raises(RuntimeError, match="could be resolved for rebuild"):
         rebuild_soname_consumers(["mesa"], {}, opts, state)
+
+
+def test_rebuild_consumers_resolves_the_review_policy(tmp_path, monkeypatch):
+    """3.0.0-F3: the soname-consumer rebuild goes through the same review
+    policy as update and build, not a hardcoded mode."""
+    from sysforge import build_core
+    from sysforge.build_core import BuildOutcome
+    seen = {}
+    _patch_rebuild(monkeypatch, BuildOutcome(built_pkgs=["mesa"]))
+    monkeypatch.setattr(build_core, "build_and_install",
+                        lambda *a, **k: (seen.update(k), BuildOutcome(built_pkgs=["mesa"]))[1])
+    state = PipelineState(tmp_path / "state")
+    rebuild_soname_consumers(["mesa"], {}, make_options(state_dir=tmp_path), state)
+    assert seen["review"] == "prompt"
+    assert seen["review_trusted"] == frozenset({"repo"})
+
+
+def test_rebuild_consumers_refusal_is_not_reported_as_rebuilt(tmp_path, monkeypatch):
+    from sysforge.build_core import BuildOutcome
+    out = BuildOutcome(built_pkgs=[], review_refused={"mesa": "unreviewed source change"})
+    _patch_rebuild(monkeypatch, out)
+    state = PipelineState(tmp_path / "state")
+    with pytest.raises(RuntimeError, match="mesa"):
+        rebuild_soname_consumers(["mesa"], {}, make_options(state_dir=tmp_path), state)

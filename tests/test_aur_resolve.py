@@ -492,3 +492,16 @@ class TestResolveAllDeps:
         assert sources["aurpkg"] == "aur"
         assert sources["repopkg"] == "repo"
         assert sources["installedpkg"] == "installed"
+
+
+def test_shared_dep_records_every_requirer():
+    """A dep reached from a second target must name it too, or a refusal of
+    that dep (3.0.0-F3) misses the second target."""
+    from sysforge.primitives.aur_resolve import ResolvedDep, _resolve_deps
+    visited = {"libdep": ResolvedDep(name="libdep", source="aur", required_by=["a"])}
+    _resolve_deps(["libdep>=2"], None, False, visited, set(), [], depth=0,
+                  required_by="b")
+    assert visited["libdep"].required_by == ["a", "b"]
+    _resolve_deps(["libdep"], None, False, visited, set(), [], depth=0,
+                  required_by="b")
+    assert visited["libdep"].required_by == ["a", "b"]  # no duplicates

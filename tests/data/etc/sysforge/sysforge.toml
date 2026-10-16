@@ -32,6 +32,7 @@ clone_timeout = 60
 [aur]
 # Source-fetch throttling (politeness + rate-limit). Safe defaults; see
 # etc/sysforge/sysforge.toml for full docs.
+# enabled = true               # false = never contact the AUR (3.1.0-F3)
 # min_fetch_interval_ms = 500  # min delay between source fetches (ms)
 # rate_limit_abort_s = 120     # abort queue if 429/503 penalty exceeds this (s)
 

@@ -249,3 +249,21 @@ def test_variant_marker_lists_multiple_standins(monkeypatch):
     m = search_cmd.installed_markers({}, {"foo": [("foo-git", "2-1"), ("foo-sysforge", "1-1")]})
     out = search_cmd.mark_repo_variants("extra/foo 1-1\n", m)
     assert out.splitlines()[0] == "extra/foo 1-1 [installed as foo-git: 2-1, foo-sysforge]"
+
+
+def test_aur_disabled_omits_aur_section(monkeypatch, capsys):
+    from sysforge.primitives import net_policy
+    monkeypatch.setattr(search_cmd.pacman, "search_local", lambda t: "")
+    monkeypatch.setattr(search_cmd.pacman, "search_repo", lambda t: "extra/nano 7.2-1\n")
+    monkeypatch.setattr(search_cmd.aur, "aur_search",
+                        lambda t: (_ for _ in ()).throw(AssertionError("searched")))
+    net_policy.set_policy(net_policy.NetPolicy(
+        frozen=False, thawed=frozenset(), aur_enabled=False))
+    try:
+        search_cmd.SearchVerb().execute(SimpleNamespace(term="nano"),
+                                        PreCheckResult(ctx={}))
+    finally:
+        net_policy.reset_policy()
+    out = capsys.readouterr().err
+    assert "== AUR ==" not in out
+    assert "AUR results omitted ([aur] enabled = false)" in out

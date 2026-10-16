@@ -18,6 +18,7 @@ Public API:
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
     resolve_pkgbuild_src_dir(config, build_cfg=None) -> str | None
 """
+import json
 import pprint
 import tomllib
 from sysforge import log
@@ -360,8 +361,11 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
                     return dir_candidate.resolve()
 
     searched_str = "\n".join(f"    {s}" for s in searched)
+    from sysforge.primitives.net_policy import get_policy
+    aur_note = ("" if get_policy().aur_enabled
+                else " (AUR lookups are off: [aur] enabled = false)")
     raise FileNotFoundError(
-        f"PKGBUILD not found for {pkg!r}.\n"
+        f"PKGBUILD not found for {pkg!r}{aur_note}.\n"
         f"  Searched:\n{searched_str}\n"
         f"  Pass a full path, set [paths] pkgbuild_src_dir in profiles.toml,\n"
         f"  or cd into the package directory and run: sysforge build/resolve <name>"
@@ -825,53 +829,80 @@ def set_makepkg_conf_keys(path, mapping: dict[str, str], dest=None) -> str:
     return new_text
 
 
+# A TOML scalar or inline array, as written in a commented-out default. Only a
+# line that is *just* such an assignment is uncommented, so prose comments
+# that mention the key are never rewritten.
+_TOML_VALUE = r'(?:true|false|"(?:[^"\\]|\\.)*"|\'[^\']*\'|[-+]?[0-9][0-9_.eE+-]*|\[[^\]]*\])'
+
+
+def toml_literal(value) -> str:
+    """``bool`` → ``true``/``false``; ``str`` → a TOML basic string."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value)   # ASCII escapes are valid TOML basic-string escapes
+    raise TypeError(f"set_toml_key: unsupported value type {type(value).__name__}")
+
+
+def _rewrite_toml_key(text: str, section: str, key: str, value) -> str:
+    """Return ``text`` with ``[section] key = value``. Comment-preserving, no tomlkit.
+
+    In the first ``[section]`` table only: replace an active ``key = …``; else
+    uncomment a pure commented assignment; else insert after the header. With
+    no such table, append one. The table ends at the next ``[…]`` or ``[[…]]``.
+    """
+    new_line = f"{key} = {toml_literal(value)}"
+    lines = text.splitlines()
+    trailing_nl = "\n" if text.endswith("\n") else ""
+    header_re = _re.compile(rf"^\s*\[{_re.escape(section)}\]\s*(?:#.*)?$")
+    any_header_re = _re.compile(r"^\s*\[")
+    active_re = _re.compile(rf"^(\s*){_re.escape(key)}\s*=")
+    commented_re = _re.compile(
+        rf"^(\s*)#\s*{_re.escape(key)}\s*=\s*{_TOML_VALUE}\s*(?:#.*)?$")
+
+    start = next((i for i, line in enumerate(lines) if header_re.match(line)), None)
+    if start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines += [f"[{section}]", new_line]
+        return "\n".join(lines) + "\n"
+    end = next((i for i in range(start + 1, len(lines))
+                if any_header_re.match(lines[i])), len(lines))
+    for pattern in (active_re, commented_re):
+        for i in range(start + 1, end):
+            m = pattern.match(lines[i])
+            if m:
+                lines[i] = f"{m.group(1)}{new_line}"
+                return "\n".join(lines) + trailing_nl
+    lines.insert(start + 1, new_line)
+    return "\n".join(lines) + trailing_nl
+
+
+def set_toml_key(path, section: str, key: str, value) -> str:
+    """Set one key in a live config file: the one runtime TOML writer (3.1.0-F4).
+
+    Writes through :func:`atomic_write.replace_file`, which keeps the file's
+    mode and owner and escalates for root-owned ``/etc/sysforge``. Returns the
+    new text.
+    """
+    from sysforge.primitives import atomic_write
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    new_text = _rewrite_toml_key(text, section, key, value)
+    atomic_write.replace_file(path, new_text, tag="CONFIG")
+    _log.info(f"Set [{section}] {key} = {toml_literal(value)} in {path}")
+    return new_text
+
+
 def _rewrite_profiles_default_toolchain(text: str, compiler: str) -> str:
     """Return ``text`` with ``[defaults] toolchain`` set to ``compiler``.
 
-    Section-aware and comment-preserving (this is the runtime counterpart to the
-    dev-only tomlkit path in tools/sync_config.py — no tomlkit at runtime):
-
-      * An existing active or commented ``toolchain = ...`` inside the
-        ``[defaults]`` section is replaced/uncommented in place.
-      * If ``[defaults]`` exists without a ``toolchain`` key, the assignment is
-        inserted directly after the ``[defaults]`` header.
-      * If there is no ``[defaults]`` section, one is appended at end of file.
-
-    All other lines (comments, other keys, other sections) are preserved
-    verbatim. Only the *first* ``[defaults]`` table is touched.
+    Thin wrapper over :func:`_rewrite_toml_key`.
     """
-    lines = text.splitlines()
-    new_line = f'toolchain = "{compiler}"'
-    section_re = _re.compile(r"^\s*\[")
-    defaults_re = _re.compile(r"^\s*\[defaults\]\s*(?:#.*)?$")
-    key_re = _re.compile(r"^(\s*)#?\s*toolchain\s*=")
-
-    trailing_nl = "\n" if text.endswith("\n") else ""
-
-    defaults_idx = next(
-        (i for i, line in enumerate(lines) if defaults_re.match(line)), None
-    )
-
-    if defaults_idx is None:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.append("[defaults]")
-        lines.append(new_line)
-        return "\n".join(lines) + "\n"
-
-    # Scan the section body until the next table header.
-    for j in range(defaults_idx + 1, len(lines)):
-        if section_re.match(lines[j]):
-            break
-        m = key_re.match(lines[j])
-        if m:
-            lines[j] = f"{m.group(1)}{new_line}"
-            return "\n".join(lines) + trailing_nl
-    else:
-        j = len(lines)
-    # No toolchain key in [defaults] — insert right after the header.
-    lines.insert(defaults_idx + 1, new_line)
-    return "\n".join(lines) + trailing_nl
+    return _rewrite_toml_key(text, "defaults", "toolchain", compiler)
 
 
 def _active_profiles_path() -> Path:
@@ -895,16 +926,11 @@ def set_default_toolchain(compiler: str, path=None) -> str:
     on a successful register/build so the profile default tracks the toolchain
     it just registered. ``path`` defaults to :func:`_active_profiles_path`
     (the file the resolver reads); pass an explicit path in tests to avoid
-    mutating the committed fixture. Returns the rewritten text.
+    mutating the committed fixture. Returns the rewritten text (writes via
+    :func:`set_toml_key`, 3.5.0-B6).
     """
     path = Path(path) if path is not None else _active_profiles_path()
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        text = ""
-    new_text = _rewrite_profiles_default_toolchain(text, compiler)
-    path.write_text(new_text, encoding="utf-8")
-    _log.info(f"Set [defaults] toolchain = {compiler!r} in {path}")
+    new_text = set_toml_key(path, "defaults", "toolchain", compiler)
     return new_text
 
 

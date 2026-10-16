@@ -27,6 +27,7 @@ from sysforge.primitives.config import (
 )
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.prompt import is_interactive, prompt_choice
+from sysforge.primitives.pkgbuild_review import resolve_review_policy
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import load_config_with_overrides
 
@@ -100,6 +101,8 @@ def _print_build_summary(outcome) -> None:
     ]
     if outcome.review_skipped:
         parts.append(f"{len(outcome.review_skipped)} skipped at review")
+    if outcome.review_refused:
+        parts.append(f"{len(outcome.review_refused)} refused at review")
     if outcome.pgo_skipped_pkgs:
         parts.append(f"{len(outcome.pgo_skipped_pkgs)} pgo-skipped")
     suffix = log.red(" (install FAILED)") if outcome.install_failed else ""
@@ -113,6 +116,8 @@ def _print_build_summary(outcome) -> None:
         _log.ui(f"  {log.red('Failed:')}      {' '.join(outcome.failed_pkgs)}")
     if outcome.review_skipped:
         _log.ui(f"  {log.dim('Skipped:')}     {' '.join(outcome.review_skipped)} (PKGBUILD review)")
+    for pb, why in outcome.review_refused.items():
+        _log.ui(f"  {log.red('Refused:')}     {pb}: {why}")
     if outcome.pgo_skipped_pkgs:
         _log.ui(
             f"  {log.dim('PGO-skipped:')} {' '.join(outcome.pgo_skipped_pkgs)}"
@@ -130,23 +135,6 @@ def _print_layout_findings(outcome) -> None:
     _log.ui(f"  {log.red('Payload layout:')} installed, but never read by its consumer:")
     for line in outcome.layout_findings:
         _log.ui(f"    {line}")
-
-
-def _review_config_enabled(config) -> bool:
-    """packages.toml ``[build] review`` default for the review gate.
-
-    True unless the file exists and explicitly sets ``review = false`` —
-    a missing or unreadable packages.toml must not disable the gate.
-    """
-    import tomllib
-
-    from sysforge.primitives.paths import resolve_packages_path
-    try:
-        path = resolve_packages_path(config)
-        with path.open("rb") as f:
-            return tomllib.load(f).get("build", {}).get("review", True) is not False
-    except Exception:
-        return True
 
 
 def _load_repo_optin(config) -> tuple[dict, set[str]]:
@@ -279,7 +267,11 @@ class BuildVerb(Verb):
                  "and the local commits have no value to preserve.")
         p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
             help="Suppress the LLVM source pre-flight summary.")
-        p.add_argument("--no-review", action="store_true", dest="no_review",
+        review_group = p.add_mutually_exclusive_group()
+        review_group.add_argument("--review", action="store_true", dest="review",
+            help="Review changed sources of every type, including those trusted by "
+                 "[build] review_trusted_sources (by default Arch's own packaging repos).")
+        review_group.add_argument("--no-review", action="store_true", dest="no_review",
             help="Skip the PKGBUILD review gate (full source-tree diff prompt for "
                  "packages whose source changed since the last accepted build). "
                  "Also configurable via [build] review = false in packages.toml.")
@@ -328,6 +320,23 @@ class BuildVerb(Verb):
             )
         _log.info(f"Invocation: {' '.join(sys.argv)}")
         config = load_config_with_overrides(args)
+        # AUR posture (3.1.0-F3): refuse an AUR-tracked target up front rather
+        # than failing mid-sync. The checkout's origin decides (C3), not the
+        # recorded label alone: a checkout from elsewhere never contacts the AUR.
+        from sysforge.primitives.net_policy import get_policy
+        if not get_policy().aur_enabled:
+            from sysforge.pipeline.state import resolve_state_dir
+            from sysforge.primitives.aur import is_aur_checkout
+            from sysforge.primitives.build_state import BuildState
+            bs = BuildState(resolve_state_dir(getattr(args, "state_dir", None))[0])
+            for pkg in args.pkgbuilds:
+                name = _pkg_to_name(pkg)
+                entry = bs.get(name) or {}
+                if entry.get("source") == "aur" and is_aur_checkout(
+                        entry.get("pkgbuild_dir") or Path(pkg)):
+                    return PreCheckResult(
+                        blocker=f"{name} is an AUR package and [aur] enabled = false",
+                        exit_code=2)
         # Optimization gate (one home: profile.is_llvm_toolchain + LLVM_REQUIRED_HINT):
         # instrumentation PGO instruments with clang and merges with llvm-profdata,
         # so it has no gcc path. Block cleanly before any build work.
@@ -483,6 +492,10 @@ class BuildVerb(Verb):
         active_variant = get_toolchain_variant(_pstate)
         active_fingerprint = get_toolchain_fingerprint(_pstate)
 
+        # One resolver for both verbs (3.0.0-F3). --force skips the opt-in
+        # read, but the review settings still come from packages.toml.
+        review_policy = resolve_review_policy(
+            args, _load_repo_optin(config)[0] if force else build_cfg)
         outcome = build_core.build_and_install(
             targets,
             config=config,
@@ -502,21 +515,21 @@ class BuildVerb(Verb):
             active_variant=active_variant,
             toolchain_fingerprint=active_fingerprint,
             pgo_mode=getattr(args, "pgo_mode", None),
-            review=(
-                "prompt"
-                if not getattr(args, "no_review", False)
-                and _review_config_enabled(config)
-                else "off"
-            ),
+            review=review_policy.mode,
+            review_trusted=review_policy.trusted,
         )
         if len(targets) > 1 and not outcome.aborted:
             _print_build_summary(outcome)
         _print_layout_findings(outcome)
+        if len(targets) == 1:
+            for pb, why in outcome.review_refused.items():
+                _log.ui(f"[SYSFORGE] {pb}: refused at review: {why}; "
+                        "run at a terminal to review it")
         _report_timings(outcome, args)
         if outcome.aborted:
             # User aborted at the PKGBUILD review gate; build_core already
             # printed the abort line. Exit 2 mirrors the sentinel-refusal code.
             return ExecResult(exit_code=2)
-        if outcome.failed_pkgs or outcome.install_failed:
+        if outcome.failed_pkgs or outcome.install_failed or outcome.review_refused:
             return ExecResult(exit_code=1)
         return ExecResult()

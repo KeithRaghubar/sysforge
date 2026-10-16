@@ -50,6 +50,11 @@ clone_timeout = 60
 # applied by the source-sync scheduler. Both have safe defaults; uncomment to
 # tune for a slow or rate-limit-sensitive connection.
 #
+# enabled: false = never contact the AUR. No clones, no RPC lookups, no
+#   package-list download. Packages tracked with source = "aur" are reported as
+#   skipped (AUR disabled), not failed. Repo and local packages are unaffected.
+#enabled = true
+#
 # min_fetch_interval_ms — minimum delay between successive source fetches, in
 #   milliseconds. Spaces out RPC/clone/fetch traffic so a large update doesn't
 #   hammer the AUR. Default 500.

@@ -1960,3 +1960,72 @@ def test_recv_goes_to_a_throwaway_keyring_first(tmp_path, _key_policy):
         import_pgp_keys({"globals": {"pkgbase": "foo", "validpgpkeys": [_FPR]}}, pb)
     [recv] = [c for c in calls if "--recv-keys" in c]
     assert "--homedir" in recv
+
+
+@pytest.fixture
+def aur_off():
+    from sysforge.primitives import net_policy
+    net_policy.set_policy(net_policy.NetPolicy(frozen=False, thawed=frozenset(),
+                                               aur_enabled=False))
+    yield
+    net_policy.reset_policy()
+
+
+def test_aur_info_makes_no_request_when_disabled(aur_off, monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("network")))
+    from sysforge.primitives import aur
+    assert aur.aur_info(["foo"]) == {}
+    assert aur.aur_search("foo") == []
+    assert aur.fetch_aur_name_cache(force=True) is None
+
+
+def test_aur_clone_raises_when_disabled(aur_off, tmp_path):
+    from sysforge.primitives import aur
+    from sysforge.primitives.net_policy import AurDisabled
+    with pytest.raises(AurDisabled):
+        aur.aur_clone("foo", tmp_path / "foo")
+
+
+def test_is_aur_checkout(tmp_path):
+    import subprocess
+    from sysforge.primitives.aur import is_aur_checkout
+    assert is_aur_checkout(tmp_path / "missing") is True          # would clone
+    gh = tmp_path / "gh"
+    subprocess.run(["git", "init", "-q", str(gh)], check=True)
+    subprocess.run(["git", "-C", str(gh), "remote", "add", "origin",
+                    "https://github.com/x/foo.git"], check=True)
+    assert is_aur_checkout(gh) is False
+    aurd = tmp_path / "aurd"
+    subprocess.run(["git", "init", "-q", str(aurd)], check=True)
+    subprocess.run(["git", "-C", str(aurd), "remote", "add", "origin",
+                    "https://aur.archlinux.org/foo.git"], check=True)
+    assert is_aur_checkout(aurd) is True
+
+
+@pytest.mark.parametrize("url", [
+    "ssh://aur@aur.archlinux.org/foo.git",
+    "aur@aur.archlinux.org:foo.git",
+    "http://aur.archlinux.org/foo.git",
+    "https://aur.archlinux.org/foo.git",
+])
+def test_is_aur_checkout_recognises_every_aur_url_form(tmp_path, url):
+    """Maintainers clone over ssh; every form reaches the AUR, so under
+    [aur] enabled = false none of them may sync."""
+    import subprocess
+    from sysforge.primitives.aur import is_aur_checkout
+    d = tmp_path / "foo"
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin", url], check=True)
+    assert is_aur_checkout(d) is True
+
+
+def test_is_aur_checkout_rejects_lookalike_hosts(tmp_path):
+    import subprocess
+    from sysforge.primitives.aur import is_aur_checkout
+    d = tmp_path / "foo"
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
+                    "https://aur.archlinux.org.example.com/foo.git"], check=True)
+    assert is_aur_checkout(d) is False

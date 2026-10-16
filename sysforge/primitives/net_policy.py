@@ -21,10 +21,15 @@ gate that asymmetry is the whole point.
 ``get_policy()`` returns a permissive policy when unset, so library use and
 tests that never call ``set_policy`` are unaffected.
 
+The AUR posture (``[aur] enabled = false``, 3.1.0-F3) rides on the same
+object: it denies both AUR kinds (clone and RPC lookups) with
+:class:`AurDisabled`. Unlike the freeze it is not a per-run decision, so
+``--thaw`` and ``--no-frozen`` never lift it.
+
 Public API:
-    NetworkFrozen
-    NetPolicy(frozen, thawed).check(kind, pkgbase)
-    resolve_net_policy(args, cfg) -> NetPolicy
+    NetworkFrozen, AurDisabled
+    NetPolicy(frozen, thawed, aur_enabled).check(kind, pkgbase)
+    resolve_net_policy(args, cfg, aur_cfg) -> NetPolicy
     set_policy(policy) / get_policy() / reset_policy()
 """
 from __future__ import annotations
@@ -55,6 +60,15 @@ KIND_VCS_RESOLVE = "vcs_resolve"
 # is not code ingress but it decides which signer makepkg will accept, so the
 # freeze must cover it and a future policy may treat it separately.
 KIND_KEY_FETCH = "key_fetch"
+# AUR RPC lookups, search and the package-name list (3.1.0-F3). Not code
+# ingress, so the freeze never covered it; only the AUR posture denies it.
+KIND_AUR_RPC = "aur_rpc"
+_AUR_KINDS = frozenset({KIND_AUR_CLONE, KIND_AUR_RPC})
+
+
+class AurDisabled(NetworkFrozen):
+    """Raised when ``[aur] enabled = false`` denies an AUR egress. A subclass
+    of :class:`NetworkFrozen` so every existing freeze handler still catches it."""
 
 
 @dataclass(frozen=True)
@@ -63,6 +77,7 @@ class NetPolicy:
 
     frozen: bool
     thawed: frozenset[str]
+    aur_enabled: bool = True
 
     def check(self, kind: str, pkgbase: str | None) -> None:
         """Raise :class:`NetworkFrozen` if this egress is denied.
@@ -71,7 +86,14 @@ class NetPolicy:
         per-pkgbase, so an unnamed package can never match a lift, and denying
         keeps a seam that forgets to thread its pkgbase from becoming a silent
         bypass.
+
+        The AUR posture is checked first and is not liftable; AUR RPC lookups
+        are otherwise always permitted (the freeze is about code, not metadata).
         """
+        if kind in _AUR_KINDS and not self.aur_enabled:
+            raise AurDisabled(f"{pkgbase or 'AUR'}: AUR disabled ([aur] enabled = false)")
+        if kind == KIND_AUR_RPC:
+            return
         if not self.frozen:
             return
         if pkgbase is not None and pkgbase in self.thawed:
@@ -87,8 +109,10 @@ _PERMISSIVE = NetPolicy(frozen=False, thawed=frozenset())
 _policy: NetPolicy = _PERMISSIVE
 
 
-def resolve_net_policy(args, cfg: dict) -> NetPolicy:
-    """Resolve the run's policy from CLI flags and the ``[security]`` config.
+def resolve_net_policy(args, cfg: dict, aur_cfg: dict | None = None) -> NetPolicy:
+    """Resolve the run's policy from CLI flags and the ``[security]`` config,
+    plus the AUR posture from ``[aur] enabled`` (only a literal ``false``
+    disables it).
 
     Precedence: ``--no-frozen`` > ``--frozen`` > ``[security] freeze_sources``
     > ``False``. The middle two rows go through the shared
@@ -96,7 +120,8 @@ def resolve_net_policy(args, cfg: dict) -> NetPolicy:
     wrapper on top, since that seam has no "explicit false" concept.
 
     ``--thaw`` is a *lift*, never a switch — it narrows an already-active
-    freeze and does not enable one.
+    freeze and does not enable one. Neither ``--thaw`` nor ``--no-frozen``
+    lifts the AUR posture: it is configuration, not a per-run freeze.
     """
     frozen = resolve_flag_default(args, "frozen", cfg, "freeze_sources")
     if getattr(args, "no_frozen", False):
@@ -109,13 +134,16 @@ def resolve_net_policy(args, cfg: dict) -> NetPolicy:
             if name:
                 thawed.add(name)
 
-    return NetPolicy(frozen=frozen, thawed=frozenset(thawed))
+    aur_enabled = (aur_cfg or {}).get("enabled", True) is not False
+    return NetPolicy(frozen=frozen, thawed=frozenset(thawed), aur_enabled=aur_enabled)
 
 
 def set_policy(policy: NetPolicy) -> None:
     """Install the run's policy. Called once, at CLI entry."""
     global _policy
     _policy = policy
+    if not policy.aur_enabled:
+        _log.info("AUR disabled by config ([aur] enabled = false)")
     if policy.frozen:
         if policy.thawed:
             _log.warn(

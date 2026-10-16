@@ -65,7 +65,12 @@ from sysforge.primitives.build_prep import (
     pkgctl_checkout,
     pkgctl_switch_version,
 )
-from sysforge.primitives.net_policy import KIND_AUR_CLONE, get_policy
+from sysforge.primitives.net_policy import (
+    KIND_AUR_CLONE,
+    KIND_AUR_RPC,
+    AurDisabled,
+    get_policy,
+)
 from sysforge.primitives import run
 
 # One module, one tag. The RPC-query/clone narration previously logged under a
@@ -83,6 +88,7 @@ __all__ = [
     "pkgctl_switch_version",
     "import_pgp_keys",
     "aur_clone",
+    "is_aur_checkout",
     "AUR_RPC_URL",
     "AUR_GIT_BASE",
     "AUR_PACKAGES_URL",
@@ -112,6 +118,17 @@ AUR_CACHE_MAX_AGE = 86400   # 1 day in seconds
 _REQUEST_TIMEOUT = 10   # seconds
 
 
+def _aur_lookups_allowed() -> bool:
+    """False under ``[aur] enabled = false`` (3.1.0-F3); callers return their
+    empty result, which every caller already reads as "not found"."""
+    try:
+        get_policy().check(KIND_AUR_RPC, None)
+    except AurDisabled:
+        _log.debug("AUR lookup skipped: [aur] enabled = false")
+        return False
+    return True
+
+
 def aur_info(names: list[str]) -> dict[str, dict]:
     """
     Batch query AUR RPC v5 for the given package names.
@@ -121,6 +138,8 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     Silent on failure — callers treat an empty result as "not found".
     """
     if not names:
+        return {}
+    if not _aur_lookups_allowed():
         return {}
 
     # AUR RPC expects literal arg[] keys; urllib.parse.urlencode percent-encodes
@@ -151,6 +170,8 @@ def aur_search(term: str) -> list[dict]:
     """
     if not term:
         return []
+    if not _aur_lookups_allowed():
+        return []
     url = f"{AUR_SEARCH_URL}/{urllib.parse.quote(term)}?by=name-desc"
     try:
         with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR search endpoint, scheme not user-controlled
@@ -169,8 +190,11 @@ def fetch_aur_name_cache(force: bool = False) -> Path | None:
 
     Skips the download if the cache file is less than AUR_CACHE_MAX_AGE seconds old,
     unless force=True.  Returns the cache path on success, None on failure.
-    Network errors are logged as warnings and do not propagate.
+    Network errors are logged as warnings and do not propagate. Returns None
+    without a request when the AUR is disabled (3.1.0-F3).
     """
+    if not _aur_lookups_allowed():
+        return None
     cache = AUR_CACHE_PATH.expanduser()
 
     if not force and cache.exists():
@@ -216,6 +240,36 @@ def is_repo_package(name: str) -> bool:
     return result.returncode == 0
 
 
+def is_aur_checkout(pkgbuild_dir) -> bool:
+    """Whether syncing this directory would contact the AUR (3.1.0-F3, C3).
+
+    A ``source = "aur"`` label is only a default (``build`` labels any untracked
+    checkout that way), so the origin decides: no git checkout means a sync
+    would clone from the AUR; otherwise ``origin`` must point at it.
+    """
+    d = Path(pkgbuild_dir)
+    if not (d / ".git").exists():
+        return True
+    try:
+        proc = run.probe(["git", "-C", str(d), "remote", "get-url", "origin"])
+    except OSError:
+        return True
+    url = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    return not url or _url_host(url) == _AUR_HOST
+
+
+_AUR_HOST = urllib.parse.urlsplit(AUR_GIT_BASE).hostname
+
+
+def _url_host(url: str) -> str | None:
+    """Host of a git remote URL: ``scheme://[user@]host[:port]/path`` or the
+    scp-like ``[user@]host:path`` form AUR maintainers clone with."""
+    if "://" in url:
+        return urllib.parse.urlsplit(url).hostname
+    head = url.split(":", 1)[0] if ":" in url else ""
+    return head.rsplit("@", 1)[-1].lower() or None
+
+
 def aur_clone(
     name: str,
     dest: Path,
@@ -236,9 +290,10 @@ def aur_clone(
     ``depth`` passes ``--depth`` for a shallow clone; useful when the caller
     only needs the current PKGBUILD, not full history.
     """
-    # Source freeze (3.0.0-F2): refuse before any process is spawned. Raising
-    # here (rather than returning) is what lets the sync scheduler convert the
-    # denial into a per-package STATUS_FROZEN blocker.
+    # Source freeze (3.0.0-F2) and the AUR posture (3.1.0-F3, AurDisabled):
+    # refuse before any process is spawned. Raising here (rather than
+    # returning) is what lets the sync scheduler convert the denial into a
+    # per-package blocker.
     get_policy().check(KIND_AUR_CLONE, name)
     timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"

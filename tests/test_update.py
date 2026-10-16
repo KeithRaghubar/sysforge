@@ -3174,3 +3174,87 @@ def test_update_disables_build_core_smoke(update_scenario, monkeypatch):
         installed=installed, foreign=foreign,
     )
     assert seen and all(v is False for v in seen)
+
+
+def test_untrusted_change_refused_without_terminal_exits_1(
+        update_scenario, monkeypatch, capsys):
+    """3.0.0-F3: no terminal means no answer, and no answer is not consent.
+    The refused package is listed in the summary and the run exits 1."""
+    from sysforge.primitives.pkgbuild_review import DECISION_REFUSED
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.record("htop", "3.3.0", "1", reviewed_commit="old")
+    monkeypatch.setattr("sysforge.build_core.review_target",
+                        lambda *a, **k: DECISION_REFUSED)
+    monkeypatch.setattr("sysforge.build_core.change_summary",
+                        lambda d, rc: "unreviewed source change (o → n)")
+    builds = update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    combined = "".join(capsys.readouterr())
+    assert builds == []
+    assert "Refused at review:" in combined
+    assert "htop: unreviewed source change (o → n)" in combined
+    assert update_scenario.exit_code == 1
+
+
+def test_review_accept_config_reaches_build_core(update_scenario, monkeypatch):
+    """[build] review = "accept" resolves through resolve_review_policy into
+    build_and_install's review mode; the trusted list defaults to repo."""
+    from sysforge import build_core
+    seen = {}
+    real = build_core.build_and_install
+
+    def spy(*a, **k):
+        seen["review"], seen["trusted"] = k.get("review"), k.get("review_trusted")
+        return real(*a, **k)
+
+    monkeypatch.setattr(build_core, "build_and_install", spy)
+    update_scenario.set_build_key("review", "accept")
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.run(
+        _make_args(),
+        installed={"htop": "3.3.0-1"}, foreign={"htop": "3.3.0-1"},
+    )
+    assert seen == {"review": "accept", "trusted": frozenset({"repo"})}
+
+
+def test_aur_disabled_package_reported_not_failed(update_scenario, capsys):
+    """3.1.0-F3: an AUR-tracked package under [aur] enabled = false is left
+    alone and reported, never counted as a failure."""
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_AUR_DISABLED
+    update_scenario.add_pkg("foo", "pkgname=foo\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.add_pkg("neovim", "pkgname=neovim\npkgver=0.9.1\npkgrel=1\n")
+    update_scenario.record("foo", "0.8.0", "1", source="aur")
+    update_scenario.fake_sync({"foo": (STATUS_SKIPPED_AUR_DISABLED,
+                                       "AUR disabled ([aur] enabled = false)")})
+    net_policy.set_policy(net_policy.NetPolicy(
+        frozen=False, thawed=frozenset(), aur_enabled=False))
+    try:
+        builds = update_scenario.run(
+            _make_args(offline=False),
+            installed={"foo": "0.8.0-1", "neovim": "0.9.0-1"},
+            foreign={"foo": "0.8.0-1", "neovim": "0.9.0-1"},
+        )
+    finally:
+        net_policy.reset_policy()
+    combined = "".join(capsys.readouterr())
+    assert "AUR disabled" in combined
+    assert all("foo" not in str(b) for b in builds)
+    assert update_scenario.exit_code == 0
+
+
+def test_aur_name_cache_warm_only_when_tracking_aur(update_scenario, monkeypatch):
+    """C1: an AUR-free user's update makes no AUR name-list request."""
+    calls = []
+    monkeypatch.setattr("sysforge.update.fetch_aur_name_cache",
+                        lambda *a, **k: calls.append(1))
+    update_scenario.fake_sync()
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    args = dict(installed={"htop": "3.4.1-1"}, foreign={"htop": "3.4.1-1"})
+    update_scenario.run(_make_args(offline=False, dry_run=True), **args)
+    assert calls == []
+    update_scenario.record("htop", "3.4.1", "1", source="aur")
+    update_scenario.run(_make_args(offline=False, dry_run=True), **args)
+    assert calls == [1]

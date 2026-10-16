@@ -440,3 +440,37 @@ def test_build_skipped_at_the_repo_gate_keeps_the_opt_out(monkeypatch, tmp_path)
                             force=False, interactive=False, config=cfg)
     assert targets == []
     assert "htop" in OptOutList(tmp_path).load()
+
+
+def test_build_review_flags_are_exclusive():
+    import argparse
+    from sysforge.build_cmd import BuildVerb
+    p = argparse.ArgumentParser()
+    BuildVerb.add_parser(p.add_subparsers())
+    with pytest.raises(SystemExit):
+        p.parse_args(["build", "--review", "--no-review", "htop"])
+    ns = p.parse_args(["build", "--review", "htop"])
+    assert ns.review is True
+
+
+def test_pre_check_refuses_aur_package_when_aur_disabled(tmp_path, monkeypatch):
+    """3.1.0-F3: refuse up front rather than failing mid-sync. The recorded
+    checkout's origin decides (C3): a missing dir would be cloned from the AUR."""
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(tmp_path)
+    bs.record("foo", "1", "1", "0", "foo", tmp_path / "src" / "foo",
+              build_mode="source_built", source="aur")
+    bs.save()
+    monkeypatch.setattr(build_cmd, "load_config_with_overrides", lambda args: {})
+    args = _pgo_args(None)
+    args.pkgbuilds = ["foo"]
+    args.state_dir = str(tmp_path)
+    net_policy.set_policy(net_policy.NetPolicy(
+        frozen=False, thawed=frozenset(), aur_enabled=False))
+    try:
+        pre = BuildVerb().pre_check(args)
+    finally:
+        net_policy.reset_policy()
+    assert pre.exit_code == 2
+    assert "is an AUR package and [aur] enabled = false" in (pre.blocker or "")

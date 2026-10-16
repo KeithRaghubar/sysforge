@@ -192,7 +192,7 @@ _sysforge_build() {
     local flags="-m --makepkg --interactive --profile-conf --cc --cxx --ld \
         --no-pkg-log --log-dir --persist-log --cache-report --abi-check \
         --no-update --cleansrc --cleansrc-force --no-llvm-preflight \
-        --no-review --force --rebuild --pgo --state-dir"
+        --review --no-review --force --rebuild --pgo --state-dir"
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
     else
@@ -214,7 +214,7 @@ _sysforge_update() {
     _sysforge_flag_arg && return
     local flags="--packages --dry-run --json --devel --offline --install-only --interactive \
         --no-cleanbuild --cleansrc --cleansrc-force --no-llvm-preflight \
-        --review --no-review --sysupgrade --no-sysupgrade \
+        --review --no-review --yes --sysupgrade --no-sysupgrade \
         --no-sysupgrade-report \
         --no-toolchain-preflight --include-stage-owned \
         --versions --explain-drift --rebuild-on-toolchain-drift --rebuild-on-flag-drift --rebuild-on-drift \

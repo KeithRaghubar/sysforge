@@ -20,16 +20,37 @@ sysforge update already handles sysforge-managed packages correctly (it only
 rebuilds packages recorded in build_state.toml, using the same profiled flags).
 The risk is specifically from running pacman -Syu outside of sysforge.
 
+Preferences (3.1.0-F4)
+----------------------
+At a terminal, setup then asks four questions and saves only the answers that
+changed, through ``config.set_toml_key``: whether ``update`` confirms its plan
+(``[build] confirm_plan``), how changed AUR/git sources are reviewed
+(``[build] review``), whether to use the AUR (``[aur] enabled``) and, only when
+devtools and the chroot exist, whether to build in the sandbox
+(``[security] sandbox_builds``). Enter keeps the current answer. With no
+terminal the step is skipped; a failed write prints the line to add by hand.
+
 Public API
 ----------
     cmd_setup(args)
 """
+import argparse
 import re
+import shutil
 import sys
+import tomllib
 from pathlib import Path
 
+from sysforge.primitives import config as _config
 from sysforge.primitives import pacman_hooks
 from sysforge.primitives.fs_provision import FsProvisionError
+from sysforge.primitives.paths import SYSFORGE_TOML_PATH, resolve_packages_path
+from sysforge.primitives.pkgbuild_review import (
+    MODE_ACCEPT,
+    MODE_OFF,
+    MODE_PROMPT,
+    resolve_review_policy,
+)
 from sysforge.primitives.prompt import prompt_choice
 
 
@@ -187,6 +208,104 @@ def cmd_setup(args) -> None:
                 print(_MANUAL_INSTRUCTION.format(path=conf_path), file=sys.stderr)
 
     _setup_pacman_hooks()
+    _setup_preferences()
+
+
+# ---------------------------------------------------------------------------
+# Preferences (3.1.0-F4)
+# ---------------------------------------------------------------------------
+
+_ACCEPT_RISK = (
+    "  With review = \"accept\", changed AUR/git code is built and installed with\n"
+    "  nobody having looked at it; every accepted change is still listed in the\n"
+    "  update summary."
+)
+_ACCEPT_SANDBOX_NOTE = (
+    "  The build sandbox ([security] sandbox_builds) is then your remaining\n"
+    "  build-time protection, and it does not inspect what gets installed."
+)
+_REVIEW_VALUE = {MODE_PROMPT: True, MODE_ACCEPT: "accept", MODE_OFF: False}
+
+
+def _has_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _read_table(path, section: str) -> dict:
+    try:
+        with Path(path).open("rb") as f:
+            return tomllib.load(f).get(section, {}) or {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _yes_no(question: str, current: bool) -> bool:
+    hint = "[Y/n]" if current else "[y/N]"
+    answer = prompt_choice(f"  {question} {hint} ", ("y", "yes", "n", "no"),
+                           default="y" if current else "n")
+    return answer in ("y", "yes")
+
+
+def _setup_preferences() -> None:
+    """Ask the consent-posture questions and save changed answers (3.1.0-F4).
+
+    Enter keeps the current answer; only a changed answer is written, through
+    ``config.set_toml_key`` (the one runtime TOML writer).
+    """
+    if not _has_terminal():
+        print("[SYSFORGE] preferences: skipped (no terminal)")
+        return
+    from sysforge.primitives.build_sandbox import resolve_sandbox
+
+    packages_path = resolve_packages_path(_config.load_config() or {})
+    build_cfg = _read_table(packages_path, "build")
+    sysforge_cfg = _config.load_sysforge_toml()
+    aur_cfg = sysforge_cfg.get("aur", {}) or {}
+    sandbox = resolve_sandbox(sysforge_cfg.get("security", {}) or {})
+    writes: list[tuple] = []
+
+    print("\n  Preferences (Enter keeps the current answer):")
+    confirm_now = build_cfg.get("confirm_plan", True) is not False
+    confirm_new = _yes_no("Ask before each update changes anything?", confirm_now)
+    if confirm_new != confirm_now:
+        writes.append((packages_path, "build", "confirm_plan", confirm_new))
+
+    mode_now = resolve_review_policy(argparse.Namespace(), build_cfg).mode
+    letter = {MODE_PROMPT: "r", MODE_ACCEPT: "a", MODE_OFF: "o"}[mode_now]
+    answer = prompt_choice(
+        f"  Changed AUR/git sources: [r]eview / [a]ccept and record / [o]ff? [{letter}] ",
+        ("r", "a", "o"), default=letter)
+    mode_new = {"r": MODE_PROMPT, "a": MODE_ACCEPT, "o": MODE_OFF}[answer]
+    if mode_new == MODE_ACCEPT:
+        print(_ACCEPT_RISK)
+        if not sandbox.enabled:
+            print(_ACCEPT_SANDBOX_NOTE)
+    if mode_new != mode_now:
+        writes.append((packages_path, "build", "review", _REVIEW_VALUE[mode_new]))
+
+    aur_now = aur_cfg.get("enabled", True) is not False
+    aur_new = _yes_no("Use the AUR?", aur_now)
+    if aur_new != aur_now:
+        writes.append((SYSFORGE_TOML_PATH, "aur", "enabled", aur_new))
+
+    chroot = sandbox.chroot_dir
+    if shutil.which("makechrootpkg") and chroot is not None and (chroot / "root").is_dir():
+        sb_new = _yes_no("Build packages in a clean chroot?", sandbox.enabled)
+        if sb_new != sandbox.enabled:
+            writes.append((SYSFORGE_TOML_PATH, "security", "sandbox_builds", sb_new))
+    else:
+        print(f"  build sandbox available after: pacman -S devtools; "
+              f"mkarchroot {sandbox.chroot_dir}/root base-devel")
+
+    for path, section, key, value in writes:
+        literal = _config.toml_literal(value)
+        try:
+            _config.set_toml_key(path, section, key, value)
+        except Exception as e:  # noqa: BLE001 — any write failure gets the manual line
+            print(f"[SYSFORGE] could not write {path} ({e}); set it by hand:\n"
+                  f"  [{section}]\n  {key} = {literal}", file=sys.stderr)
+        else:
+            print(f"[SYSFORGE] set [{section}] {key} = {literal} in {path}")
 
 
 def _setup_pacman_hooks() -> None:
@@ -245,7 +364,8 @@ class SetupVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("setup",
             help="Configure system integration (pacman IgnoreGroup for sf-build; "
-                 "install/refresh sysforge's pacman hooks).")
+                 "sysforge's pacman hooks) and save update preferences (plan "
+                 "confirmation, PKGBUILD review, AUR, build sandbox).")
         p.add_argument("--pacman-conf", metavar="FILE", dest="pacman_conf",
             help="Path to pacman.conf (default: /etc/pacman.conf).")
         p.set_defaults(verb_cls=cls)

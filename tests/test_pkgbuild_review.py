@@ -6,10 +6,14 @@ dependency of sysforge's source handling, so it is available wherever the
 suite runs). TTY-dependent paths monkeypatch the isatty probes and input();
 the pager is stubbed in the view test so nothing spawns.
 """
+import io
 import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -18,10 +22,17 @@ from sysforge.primitives.pkgbuild_review import (
     DECISION_ACCEPT,
     DECISION_CLEAN,
     DECISION_NO_GIT,
+    DECISION_REFUSED,
     DECISION_SKIP,
+    MODE_ACCEPT,
+    MODE_OFF,
+    MODE_PROMPT,
+    ReviewPolicy,
+    change_summary,
     head_commit,
     commit_exists,
     review_deps,
+    resolve_review_policy,
     review_target,
 )
 
@@ -98,32 +109,112 @@ def test_clean_when_head_matches_reviewed(tmp_path):
     assert review_target("htop", d, head_commit(d)) == DECISION_CLEAN
 
 
-def test_non_tty_auto_accepts_change(tmp_path):
-    """Unattended runs must not hang on the prompt — auto-accept with a warn.
-    (pytest's stdin/stdout are not TTYs, so this is the natural path here.)"""
-    d = _repo(tmp_path)
-    old = head_commit(d)
-    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
-    assert review_target("htop", d, old) == DECISION_ACCEPT
-
-
-def test_interactive_false_auto_accepts_without_prompt(tmp_path, monkeypatch, capsys):
-    """interactive=False (`update`'s auto mode) auto-accepts a changed HEAD
-    with a logged notice and never reads input — even on a TTY."""
-    d = _repo(tmp_path)
-    old = head_commit(d)
-    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
-    # A TTY that would prompt in interactive mode must not be consulted.
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+def _no_prompt(monkeypatch):
     monkeypatch.setattr(
         "builtins.input",
         lambda *a: (_ for _ in ()).throw(AssertionError("prompted")),
     )
-    assert review_target("htop", d, old, interactive=False) == DECISION_ACCEPT
-    captured = capsys.readouterr()
-    assert "auto-accepted: htop" in captured.out + captured.err
-    assert "--review" in captured.out + captured.err
+
+
+def test_non_tty_prompt_mode_refuses_change(tmp_path, monkeypatch):
+    """No terminal is no answer, and no answer is not consent (3.0.0-F3)."""
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    _no_prompt(monkeypatch)
+    assert review_target("htop", d, old) == DECISION_REFUSED
+
+
+def test_stdout_piped_refuses_even_with_tty_stdin(tmp_path, monkeypatch):
+    """`sysforge update | tee log`: stdin is a TTY, stdout is not."""
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    _no_prompt(monkeypatch)
+    assert review_target("htop", d, old) == DECISION_REFUSED
+
+
+def test_accept_mode_accepts_without_prompt_even_on_tty(tmp_path, monkeypatch):
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    _no_prompt(monkeypatch)
+    assert review_target("htop", d, old, mode=MODE_ACCEPT) == DECISION_ACCEPT
+
+
+def test_trusted_source_accepts_off_tty(tmp_path, monkeypatch):
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    _no_prompt(monkeypatch)
+    assert review_target("htop", d, old, trusted=True) == DECISION_ACCEPT
+
+
+def test_change_summary(tmp_path):
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    assert change_summary(d, old) is None
+    new = _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    assert change_summary(d, old) == (
+        f"unreviewed source change ({old[:7]} → {new[:7]})")
+    assert change_summary(d, None) == f"unreviewed source (first review, HEAD {new[:7]})"
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert change_summary(plain, None) is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_review_policy
+# ---------------------------------------------------------------------------
+
+def _pargs(**kw):
+    return SimpleNamespace(**{"review": False, "no_review": False, **kw})
+
+
+@pytest.mark.parametrize("cfg, mode", [
+    ({}, MODE_PROMPT),
+    ({"review": True}, MODE_PROMPT),
+    ({"review": "accept"}, MODE_ACCEPT),
+    ({"review": "Accept"}, MODE_ACCEPT),
+    ({"review": False}, MODE_OFF),
+    ({"review": "yes"}, MODE_PROMPT),   # unknown: fail safe, never off
+    ({"review": 1}, MODE_PROMPT),
+])
+def test_policy_mode_from_config(cfg, mode):
+    assert resolve_review_policy(_pargs(), cfg).mode == mode
+
+
+def test_policy_flags_win_over_config():
+    cfg = {"review": "accept", "review_trusted_sources": ["repo", "git"]}
+    assert resolve_review_policy(_pargs(no_review=True), cfg).mode == MODE_OFF
+    pol = resolve_review_policy(_pargs(review=True), cfg)
+    assert (pol.mode, pol.trusted) == (MODE_PROMPT, frozenset())
+
+
+def test_policy_trusted_sources():
+    assert resolve_review_policy(_pargs(), None).trusted == frozenset({"repo"})
+    cfg = {"review_trusted_sources": ["git", "bogus", 3]}
+    assert resolve_review_policy(_pargs(), cfg).trusted == frozenset({"git"})
+    assert resolve_review_policy(_pargs(), {"review_trusted_sources": "repo"}).trusted \
+        == frozenset({"repo"})
+    assert resolve_review_policy(_pargs(), {"review_trusted_sources": []}).trusted \
+        == frozenset()
+
+
+def test_policy_trusts_defaults_unknown_source_to_aur():
+    pol = ReviewPolicy(trusted=frozenset({"repo"}))
+    assert pol.trusts("repo") and not pol.trusts(None) and not pol.trusts("aur")
+
+
+def test_policy_describe():
+    assert ReviewPolicy().describe() == "prompt (trusted: repo)"
+    assert ReviewPolicy(trusted=frozenset()).describe() == "prompt"
+    assert ReviewPolicy(mode=MODE_ACCEPT).describe() == "accept"
+    assert ReviewPolicy(mode=MODE_OFF).describe() == "off"
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +266,36 @@ def test_prompt_view_then_accept(tmp_path, monkeypatch, capsys):
     # The full-tree patch surfaces the new .install file, not just PKGBUILD.
     assert "evil.install" in out
     assert "post_install" in out
+
+
+def _capturing_pager(monkeypatch) -> list[str]:
+    """Stub ``maybe_pager`` and return what was written inside each pager."""
+    pages: list[str] = []
+
+    @contextmanager
+    def _pager(use_pager):
+        buf, old = io.StringIO(), sys.stdout
+        sys.stdout = buf
+        try:
+            yield
+        finally:
+            sys.stdout = old
+            pages.append(buf.getvalue())
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pkgbuild_review.maybe_pager", _pager)
+    return pages
+
+
+def test_view_page_opens_with_package_header(tmp_path, monkeypatch):
+    """3.5.0-B7: the paged patch names its package on the first line."""
+    d = _repo(tmp_path)
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=htop\npkgver=2.0\n")
+    pages = _capturing_pager(monkeypatch)
+    _tty(monkeypatch, ["v", "a"])
+    assert review_target("htop", d, old) == DECISION_ACCEPT
+    assert pages and pages[0].splitlines()[0].startswith("[REVIEW] htop: ")
 
 
 def _stub_pager(monkeypatch):
@@ -288,23 +409,31 @@ def test_review_deps_skips_non_git_dirs(tmp_path):
     assert review_deps([("local-dep", plain, None)]) == DECISION_CLEAN
 
 
-def test_review_deps_auto_accepts_when_not_interactive(tmp_path, capsys):
-    """update's auto mode: one batched notice naming the changed deps."""
+def test_review_deps_accept_mode(tmp_path):
     d = _repo(tmp_path, "libdep")
     old = head_commit(d)
     _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
-    assert review_deps([("libdep", d, old)], interactive=False) == DECISION_ACCEPT
-    out = capsys.readouterr()
-    assert "libdep" in out.out + out.err
-    assert "auto-accepted" in out.out + out.err
+    changed = []
+    assert review_deps([("libdep", d, old)], mode=MODE_ACCEPT,
+                       changed_out=changed) == DECISION_ACCEPT
+    assert changed == ["libdep"]
 
 
-def test_review_deps_non_tty_auto_accepts(tmp_path):
-    """pytest's stdin/stdout are not TTYs — the unattended path."""
+def test_review_deps_non_tty_refuses(tmp_path, monkeypatch):
     d = _repo(tmp_path, "libdep")
     old = head_commit(d)
     _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
-    assert review_deps([("libdep", d, old)]) == DECISION_ACCEPT
+    _no_prompt(monkeypatch)
+    changed = []
+    assert review_deps([("libdep", d, old)], changed_out=changed) == DECISION_REFUSED
+    assert changed == ["libdep"]
+
+
+def test_review_deps_trusted_accepts(tmp_path):
+    d = _repo(tmp_path, "libdep")
+    old = head_commit(d)
+    _commit(d, "PKGBUILD", "pkgname=libdep\npkgver=2.0\n")
+    assert review_deps([("libdep", d, old)], trusted=True) == DECISION_ACCEPT
 
 
 def test_review_deps_prompt_accept_all(tmp_path, monkeypatch, capsys):
@@ -345,6 +474,28 @@ def test_review_deps_prompt_view_then_accept(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "evil.install" in out
     assert "post_install" in out
+
+
+def test_review_deps_view_labels_each_dep(tmp_path, monkeypatch, capsys):
+    """3.5.0-B7: each paged patch opens with the dep's name and position."""
+    a = _repo(tmp_path, "depa")
+    olda = head_commit(a)
+    _commit(a, "PKGBUILD", "pkgname=depa\npkgver=2.0\n")
+    b = _repo(tmp_path, "depb")
+    oldb = head_commit(b)
+    _commit(b, "PKGBUILD", "pkgname=depb\npkgver=2.0\n")
+
+    @contextmanager
+    def _no_pager(use_pager):
+        yield
+
+    monkeypatch.setattr(
+        "sysforge.primitives.pkgbuild_review.maybe_pager", _no_pager)
+    _tty(monkeypatch, ["v", "a"])
+    assert review_deps([("depa", a, olda), ("depb", b, oldb)]) == DECISION_ACCEPT
+    out = capsys.readouterr().out
+    assert "[REVIEW] depa (1/2):" in out
+    assert "[REVIEW] depb (2/2):" in out
 
 
 def test_review_deps_first_build_uses_empty_tree(tmp_path, monkeypatch, capsys):

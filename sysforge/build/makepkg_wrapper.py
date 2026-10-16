@@ -134,6 +134,7 @@ from sysforge.primitives.source_sync import (
     STATUS_FROZEN,
     STATUS_PURGE_REFUSED,
     STATUS_RATE_LIMITED,
+    STATUS_SKIPPED_AUR_DISABLED,
     SyncRequest,
     get_scheduler,
 )
@@ -1373,7 +1374,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
             force_fetch=True,
         ))
         if result.status in (STATUS_FAILED, STATUS_RATE_LIMITED,
-                             STATUS_PURGE_REFUSED, STATUS_FROZEN):
+                             STATUS_PURGE_REFUSED, STATUS_FROZEN,
+                             STATUS_SKIPPED_AUR_DISABLED):
             _build_log.fatal(f"source sync failed for {pkgbuild_dir.name}: "
                            f"{result.error or result.status}")
         if result.status == STATUS_DIVERGED:

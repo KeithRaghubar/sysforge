@@ -30,24 +30,29 @@ upstream changes arrive as commits via source sync, while uncommitted local
 edits are user-authored (the STATUS_DIVERGED build-with-local-PKGBUILD case)
 and are deliberately not re-presented to their author.
 
-Auto-accept paths (no prompt, decision logged per package):
-  * non-interactive runs (stdin or stdout not a TTY) — an unattended
-    ``sysforge update`` must not hang on a prompt;
-  * callers passing ``interactive=False`` — ``sysforge update`` defaults to
-    this so routine batch updates stay unattended; ``--review`` opts back in.
-Callers disable the gate entirely via ``--no-review`` /
-``[build] review = false``.
+Gate modes (3.0.0-F3), resolved once per run by :func:`resolve_review_policy`:
+  * ``prompt`` (default): ask at a terminal; with no terminal (stdin or stdout
+    not a TTY) *refuse* the change. A run that could not ask is never treated
+    as consent: the refused package is dropped and the run continues.
+  * ``accept``: accept without asking, log it, and list it in the summary.
+  * ``off``: the gate does not run (``--no-review`` / ``[build] review = false``).
+Sources on the trusted list (``[build] review_trusted_sources``, default
+``["repo"]``) are accepted without asking in any active mode.
 
 Owns the ``[REVIEW]`` log tag.
 
 Public API:
     head_commit(pkgbuild_dir)            -> str | None
     commit_exists(pkgbuild_dir, sha)     -> bool
+    resolve_review_policy(args, build_cfg) -> ReviewPolicy
     review_target(pkgbase, pkgbuild_dir, reviewed_commit,
-                  interactive=True)      -> str (DECISION_*)
-    review_deps(deps, interactive=True)  -> str (accept | abort | clean)
+                  *, mode, trusted)      -> str (DECISION_*)
+    review_deps(deps, *, mode, trusted,
+                changed_out)             -> str (accept | abort | refused | clean)
+    change_summary(pkgbuild_dir, reviewed_commit) -> str | None
 """
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from sysforge import log
@@ -56,7 +61,7 @@ _log = log.get_logger("REVIEW")
 
 from sysforge.primitives.pager import maybe_pager  # noqa: E402
 from sysforge.primitives.prompt import prompt_key  # noqa: E402
-from sysforge.primitives import run
+from sysforge.primitives import render, run
 
 # git's well-known empty-tree object id: the diff base for a first review
 # (no reviewed_commit recorded), so a brand-new clone gets a full-content
@@ -68,6 +73,86 @@ DECISION_SKIP = "skip"
 DECISION_ABORT = "abort"
 DECISION_CLEAN = "clean"
 DECISION_NO_GIT = "no_git"
+DECISION_REFUSED = "refused"
+
+# Gate modes (3.0.0-F3). ``prompt`` asks at a terminal and *refuses* without
+# one: a run that could not ask is never treated as consent. ``accept`` is the
+# old unattended behaviour made a named choice: accept, log, list in the summary.
+MODE_PROMPT = "prompt"
+MODE_ACCEPT = "accept"
+MODE_OFF = "off"
+
+VALID_SOURCES = frozenset({"repo", "aur", "git", "local"})
+DEFAULT_TRUSTED = frozenset({"repo"})
+
+
+@dataclass(frozen=True)
+class ReviewPolicy:
+    """One run's review decision, resolved once by :func:`resolve_review_policy`."""
+
+    mode: str = MODE_PROMPT
+    trusted: frozenset[str] = DEFAULT_TRUSTED
+
+    @property
+    def active(self) -> bool:
+        return self.mode != MODE_OFF
+
+    def trusts(self, source: str | None) -> bool:
+        """An unknown source is treated as ``aur``, the same default the sync
+        scheduler uses, so it is never trusted by accident."""
+        return (source or "aur") in self.trusted
+
+    def describe(self) -> str:
+        if self.mode != MODE_PROMPT or not self.trusted:
+            return self.mode
+        return f"{self.mode} (trusted: {', '.join(sorted(self.trusted))})"
+
+
+def _coerce_mode(raw) -> str:
+    if raw is True or raw is None:
+        return MODE_PROMPT
+    if raw is False:
+        return MODE_OFF
+    if isinstance(raw, str) and raw.strip().lower() == MODE_ACCEPT:
+        return MODE_ACCEPT
+    _log.warn(f'[build] review = {raw!r} is not true, "accept" or false; '
+              "reviewing changed sources")
+    return MODE_PROMPT
+
+
+def _coerce_trusted(raw) -> frozenset[str]:
+    if raw is None:
+        return DEFAULT_TRUSTED
+    if not isinstance(raw, list):
+        _log.warn('[build] review_trusted_sources must be a list; using ["repo"]')
+        return DEFAULT_TRUSTED
+    out: set[str] = set()
+    for item in raw:
+        if isinstance(item, str) and item in VALID_SOURCES:
+            out.add(item)
+        else:
+            _log.warn(f"[build] review_trusted_sources: ignoring {item!r} "
+                      f"(valid: {', '.join(sorted(VALID_SOURCES))})")
+    return frozenset(out)
+
+
+def resolve_review_policy(args, build_cfg: dict | None) -> ReviewPolicy:
+    """The one resolver behind ``update`` and ``build``.
+
+    Precedence: ``--no-review`` (off) > ``--review`` (prompt, nothing trusted)
+    > ``[build] review`` (true | "accept" | false) in packages.toml.
+    """
+    cfg = build_cfg or {}
+    trusted = _coerce_trusted(cfg.get("review_trusted_sources"))
+    if getattr(args, "no_review", False):
+        return ReviewPolicy(MODE_OFF, trusted)
+    if getattr(args, "review", False):
+        return ReviewPolicy(MODE_PROMPT, frozenset())
+    return ReviewPolicy(_coerce_mode(cfg.get("review", True)), trusted)
+
+
+def _no_terminal() -> bool:
+    return not (sys.stdin.isatty() and sys.stdout.isatty())
 
 
 def _git(pkgbuild_dir: Path, *args: str) -> str | None:
@@ -115,12 +200,14 @@ def review_target(
     pkgbase: str,
     pkgbuild_dir: Path,
     reviewed_commit: str | None,
-    interactive: bool = True,
+    *,
+    mode: str = MODE_PROMPT,
+    trusted: bool = False,
 ) -> str:
     """Run the review gate for one package; return a DECISION_* constant.
 
-    ``interactive=False`` auto-accepts source changes with a logged notice
-    instead of prompting (the ``sysforge update`` default). Pure with
+    ``trusted`` (the source is on the trusted list) and ``mode="accept"``
+    accept without asking; ``prompt`` with no terminal refuses. Pure with
     respect to build state — the caller persists the accepted HEAD.
     """
     head = head_commit(pkgbuild_dir)
@@ -131,7 +218,7 @@ def review_target(
 
     if reviewed_commit and commit_exists(pkgbuild_dir, reviewed_commit):
         base = reviewed_commit
-        what = f"source changed since last accepted build ({_short(base)} → {_short(head)})"
+        what = f"source changed since last accepted build ({_what(base, head)})"
     else:
         if reviewed_commit:
             _log.warn(
@@ -142,18 +229,15 @@ def review_target(
         base = _EMPTY_TREE
         what = f"first review of this source (full content, HEAD {_short(head)})"
 
-    if not interactive:
-        _log.ui(
-            f"auto-accepted: {pkgbase}; {what}; "
-            "rerun with --review to inspect the diff"
-        )
+    if trusted:
+        _log.info(f"{pkgbase}: {what}; accepted (trusted source)")
         return DECISION_ACCEPT
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        _log.warn(
-            f"{pkgbase}: {what}; auto-accepting (non-interactive run); "
-            "run interactively or use `sysforge build` to review the diff"
-        )
+    if mode == MODE_ACCEPT:
+        _log.info(f"{pkgbase}: {what}; accepted without review")
         return DECISION_ACCEPT
+    if _no_terminal():
+        _log.warn(f"{pkgbase}: {what}; refused: no terminal to review it")
+        return DECISION_REFUSED
 
     stat = _git(pkgbuild_dir, "diff", _color_flag(), "--stat", base, head) or ""
     print(f"\n{_tag()} {pkgbase}: {what}")
@@ -176,7 +260,7 @@ def review_target(
                 _log.warn(f"{pkgbase}: git diff failed; cannot display patch")
                 continue
             with maybe_pager(True):
-                print(patch)
+                print(f"{_tag()} {pkgbase}: {what}\n{patch}")
         elif answer == "a":
             return DECISION_ACCEPT
         elif answer == "s":
@@ -202,9 +286,31 @@ def _changed_since_review(
     return _EMPTY_TREE, head
 
 
+def change_summary(pkgbuild_dir, reviewed_commit: str | None) -> str | None:
+    """One-line reason a source needs review, or None when it does not
+    (clean, or not a git checkout). Used for refusal reasons and the plan."""
+    pair = _changed_since_review(Path(pkgbuild_dir), reviewed_commit)
+    if pair is None:
+        return None
+    base, head = pair
+    if base == _EMPTY_TREE:
+        return f"unreviewed source (first review, HEAD {_short(head)})"
+    return f"unreviewed source change ({_short(base)} {render.arrow()} {_short(head)})"
+
+
+def _what(base: str, head: str) -> str:
+    """One dep's change, as the batched summary and its pager header show it."""
+    if base == _EMPTY_TREE:
+        return f"first review (full content, HEAD {_short(head)})"
+    return f"{_short(base)} {render.arrow()} {_short(head)}"
+
+
 def review_deps(
     deps: list[tuple[str, Path, str | None]],
-    interactive: bool = True,
+    *,
+    mode: str = MODE_PROMPT,
+    trusted: bool = False,
+    changed_out: list[str] | None = None,
 ) -> str:
     """Batched review gate for AUR dependency PKGBUILDs.
 
@@ -214,8 +320,10 @@ def review_deps(
     needs it, so the decision is all-or-nothing — DECISION_ACCEPT or
     DECISION_ABORT (DECISION_CLEAN when nothing changed).
 
-    Auto paths mirror :func:`review_target`: ``interactive=False`` auto-accepts
-    with one batched notice; a non-TTY run auto-accepts with a warning.
+    Non-prompt paths mirror :func:`review_target`: trusted or ``accept`` mode
+    accepts with one batched notice; ``prompt`` with no terminal returns
+    DECISION_REFUSED. ``changed_out`` collects the changed dep names so the
+    caller can drop exactly the targets that need them.
     """
     changed: list[tuple[str, Path, str, str]] = []
     for name, pkgbuild_dir, reviewed_commit in deps:
@@ -226,25 +334,24 @@ def review_deps(
         return DECISION_CLEAN
 
     names = ", ".join(c[0] for c in changed)
-    if not interactive:
-        _log.ui(
-            f"auto-accepted {len(changed)} dependency source change(s): "
-            f"{names}; rerun with --review to inspect the diffs"
-        )
+    if changed_out is not None:
+        changed_out.extend(c[0] for c in changed)
+    if trusted:
+        _log.info(f"{len(changed)} dependency source change(s) accepted "
+                  f"(trusted source): {names}")
         return DECISION_ACCEPT
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        _log.warn(
-            f"{len(changed)} dependency source change(s) auto-accepted "
-            f"(non-interactive run): {names}"
-        )
+    if mode == MODE_ACCEPT:
+        _log.info(f"{len(changed)} dependency source change(s) accepted "
+                  f"without review: {names}")
         return DECISION_ACCEPT
+    if _no_terminal():
+        _log.warn(f"{len(changed)} dependency source change(s) refused: "
+                  f"no terminal to review them: {names}")
+        return DECISION_REFUSED
 
     print(f"\n{_tag()} {len(changed)} dependency source change(s):")
     for name, pkgbuild_dir, base, head in changed:
-        what = (
-            f"{_short(base)} → {_short(head)}" if base != _EMPTY_TREE
-            else f"first review (full content, HEAD {_short(head)})"
-        )
+        what = _what(base, head)
         stat = _git(pkgbuild_dir, "diff", _color_flag(), "--shortstat", base, head) or ""
         print(f"  {name}: {what}{'  —' + stat.rstrip() if stat.strip() else ''}")
 
@@ -258,13 +365,16 @@ def review_deps(
             print()
             return DECISION_ABORT
         if answer == "v":
-            for name, pkgbuild_dir, base, head in changed:
+            # One pager per dep, each opening on a header naming the dep and
+            # its position, so consecutive patches can't run together.
+            for i, (name, pkgbuild_dir, base, head) in enumerate(changed, 1):
                 patch = _git(pkgbuild_dir, "diff", _color_flag(), base, head)
                 if patch is None:
                     _log.warn(f"{name}: git diff failed; cannot display patch")
                     continue
                 with maybe_pager(True):
-                    print(f"### {name}\n{patch}")
+                    print(f"{_tag()} {name} ({i}/{len(changed)}): "
+                          f"{_what(base, head)}\n{patch}")
         elif answer == "a":
             return DECISION_ACCEPT
         elif answer == "b":

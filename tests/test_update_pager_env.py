@@ -90,3 +90,39 @@ def test_unusual_pager_choice_still_overridden(monkeypatch):
     assert os.environ["GIT_PAGER"] == "cat"
     assert os.environ["SYSTEMD_PAGER"] == "cat"
     assert os.environ["LESS"] == "-RFX"
+
+
+def test_scrub_keeps_users_pager_for_sysforges_own_paging(monkeypatch):
+    """3.5.0-B7: the scrub is for subprocesses, not for sysforge's own pager.
+
+    The review gate's ``[v]iew diff`` pages through ``maybe_pager``, which
+    read the scrubbed ``PAGER=cat`` and dumped every diff inline. The user's
+    PAGER/LESS are remembered before the override and used by ``maybe_pager``,
+    while children still inherit ``cat``.
+    """
+    from sysforge.primitives import pager
+
+    _clear_pager_env(monkeypatch)
+    monkeypatch.setenv("PAGER", "less")
+    monkeypatch.setenv("LESS", "-R")
+
+    _suppress_pagers_in_env(interactive=False)
+
+    assert os.environ["PAGER"] == "cat"
+    assert pager._pager_candidates()[0] == ["less"]
+    env = pager._sanitized_pager_env()
+    assert env is not None and env["LESS"] == "-R"
+
+
+def test_scrub_with_no_user_pager_falls_back_to_less(monkeypatch):
+    """No exported PAGER: sysforge's own pager uses the built-in ``less -RF``,
+    never the scrub's ``cat``, and the scrub's ``LESS=-RFX`` is dropped."""
+    from sysforge.primitives import pager
+
+    _clear_pager_env(monkeypatch)
+
+    _suppress_pagers_in_env(interactive=False)
+
+    assert pager._pager_candidates()[0] == ["less", "-RF"]
+    env = pager._sanitized_pager_env()
+    assert env is not None and "LESS" not in env

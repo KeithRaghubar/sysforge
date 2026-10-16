@@ -8,7 +8,9 @@ import pytest
 
 from sysforge.primitives.net_policy import (
     KIND_AUR_CLONE,
+    KIND_AUR_RPC,
     KIND_VCS_RESOLVE,
+    AurDisabled,
     NetPolicy,
     NetworkFrozen,
     get_policy,
@@ -132,3 +134,25 @@ def test_set_and_reset_policy():
     assert get_policy().frozen is True
     reset_policy()
     assert get_policy().frozen is False
+
+
+def test_aur_disabled_denies_both_aur_kinds_and_ignores_thaw():
+    pol = NetPolicy(frozen=False, thawed=frozenset({"foo"}), aur_enabled=False)
+    for kind in (KIND_AUR_CLONE, KIND_AUR_RPC):
+        with pytest.raises(AurDisabled, match=r"\[aur\] enabled = false"):
+            pol.check(kind, "foo")
+    pol.check(KIND_VCS_RESOLVE, "foo")  # other kinds unaffected
+
+
+def test_freeze_never_covered_aur_lookups():
+    NetPolicy(frozen=True, thawed=frozenset()).check(KIND_AUR_RPC, None)
+
+
+def test_aur_disabled_is_a_network_frozen():
+    assert issubclass(AurDisabled, NetworkFrozen)
+
+
+def test_resolve_reads_aur_enabled():
+    assert resolve_net_policy(_args(), {}, {"enabled": False}).aur_enabled is False
+    assert resolve_net_policy(_args(), {}, None).aur_enabled is True
+    assert resolve_net_policy(_args(), {}, {"enabled": "no"}).aur_enabled is True

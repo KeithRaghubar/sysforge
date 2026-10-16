@@ -1589,6 +1589,9 @@ def _apply_rebuilds(
         cache_report=False,
         skip_sync_check=False,
         cc=None, cxx=None, ld=None,
+        # doctor already confirmed (or --no-confirm skipped it): update must
+        # not ask a second time (3.1.0-F4).
+        yes=True,
     )
     try:
         # 3.0.0-B4: cmd_update now reports a failed rebuild in its return

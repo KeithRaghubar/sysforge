@@ -335,3 +335,17 @@ def test_summary_omits_pgo_staleness_section_when_empty():
     lines = []
     _print_result_summary(ResultSummary(), emit=lines.append)
     assert "PGO profile staleness:" not in "\n".join(lines)
+
+
+def test_refused_and_accepted_sections(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    lines: list[str] = []
+    s = _empty(review_refused={"foo-git": "unreviewed source change (a → b)"},
+               review_accepted=["bar"])
+    _print_result_summary(s, emit=lines.append)
+    joined = "\n".join(lines)
+    assert "1 refused at review" in lines[0]
+    assert "Refused at review:" in joined
+    assert "foo-git: unreviewed source change (a → b)" in joined
+    assert "run `sysforge update` at a terminal to review them" in joined
+    assert "Accepted without review:" in joined and "bar" in joined

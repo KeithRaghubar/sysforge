@@ -390,28 +390,40 @@ def test_prepare_deps_review_accept_builds_deps(tmp_path):
     build_aur.assert_called_once()
     (entries,), kwargs = rd.call_args
     assert entries == [("libdep", tmp_path / "libdep", "dep123")]
-    assert kwargs == {"interactive": True}
+    assert kwargs["mode"] == "prompt" and kwargs["trusted"] is False
 
 
-def test_prepare_deps_review_auto_passes_interactive_false(tmp_path):
-    """update's auto mode consults the dep gate with interactive=False."""
+def test_prepare_deps_refusal_refuses_every_dependent(tmp_path):
+    """Two targets share a changed AUR dep; a third needs nothing changed.
+    The sharers are refused, the third's deps still build."""
     target = _make_target(tmp_path)
-    dep = SimpleNamespace(
-        name="libdep", source="aur",
-        pkgbuild_path=tmp_path / "libdep" / "PKGBUILD",
-    )
+    shared = SimpleNamespace(name="libdep", source="aur", required_by=["a", "b"],
+                             pkgbuild_path=tmp_path / "libdep" / "PKGBUILD")
+    inner = SimpleNamespace(name="libinner", source="aur", required_by=["libdep"],
+                            pkgbuild_path=tmp_path / "libinner" / "PKGBUILD")
+    other = SimpleNamespace(name="libother", source="aur", required_by=["c"],
+                            pkgbuild_path=tmp_path / "libother" / "PKGBUILD")
+
+    def _refuse(rows, *, mode, trusted=False, changed_out=None):
+        changed_out.append("libinner")
+        return build_core.DECISION_REFUSED
+
+    refused: dict[str, str] = {}
     with contextlib.ExitStack() as stack:
-        for p in _dep_gate_patches([dep]):
+        for p in _dep_gate_patches([inner, shared, other]):
             stack.enter_context(p)
-        stack.enter_context(
-            patch("sysforge.build.aur_deps.build_resolved_deps"))
-        rd = stack.enter_context(
-            patch("sysforge.build_core.review_deps", return_value="accept"))
-        build_core.prepare_deps(
-            [target.pkgbuild_path], {},
-            state_dir=tmp_path / "state", review="auto",
+        build_aur = stack.enter_context(
+            patch("sysforge.build.aur_deps.build_resolved_deps", return_value=[]))
+        stack.enter_context(patch("sysforge.build_core.review_deps", side_effect=_refuse))
+        proceed = build_core.prepare_deps(
+            [target.pkgbuild_path], {}, state_dir=tmp_path / "state",
+            review="prompt", refused_out=refused,
         )
-    assert rd.call_args.kwargs == {"interactive": False}
+    assert proceed is True
+    assert set(refused) == {"libinner", "libdep", "a", "b"}
+    assert refused["a"] == "needs libinner, whose source changed"
+    (built,), _ = build_aur.call_args
+    assert [d.name for d in built] == ["libother"]
 
 
 def test_prepare_deps_review_off_never_consults_gate(tmp_path):
@@ -498,7 +510,7 @@ def test_build_and_install_dep_review_abort_propagates(tmp_path):
             patch("sysforge.build_core.prepare_deps", return_value=False))
         outcome = build_core.build_and_install(
             [target], config={}, sync_source=False,
-            review="auto", state_dir=tmp_path / "state",
+            review="accept", state_dir=tmp_path / "state",
         )
     assert outcome.aborted
     assert outcome.built_pkgs == [] and outcome.built_pkg_files == []
@@ -1379,7 +1391,7 @@ from sysforge.primitives.build_state import BuildState  # noqa: E402
 
 
 def _run_gated(targets, *, decisions=None, review="prompt", state_dir=None,
-               run_capture=None):
+               run_capture=None, review_trusted=frozenset()):
     """Drive build_and_install with the gate decision function stubbed and
     the build/install externals from _patch_build_env neutralised."""
     calls = []
@@ -1387,9 +1399,9 @@ def _run_gated(targets, *, decisions=None, review="prompt", state_dir=None,
     def _fake_run(pkgbuild_path, options=None):
         calls.append(Path(pkgbuild_path))
 
-    def _decide(pkgbase, pkgbuild_dir, reviewed_commit, interactive=True):
+    def _decide(pkgbase, pkgbuild_dir, reviewed_commit, *, mode, trusted=False):
         if run_capture is not None:
-            run_capture.append((pkgbase, reviewed_commit, interactive))
+            run_capture.append((pkgbase, reviewed_commit, mode, trusted))
         return decisions[pkgbase]
 
     with contextlib.ExitStack() as stack:
@@ -1404,7 +1416,7 @@ def _run_gated(targets, *, decisions=None, review="prompt", state_dir=None,
                   side_effect=_decide if decisions is not None else None))
         outcome = build_core.build_and_install(
             targets, config={}, sync_source=False,
-            review=review, state_dir=state_dir,
+            review=review, state_dir=state_dir, review_trusted=review_trusted,
         )
     return outcome, calls, rt
 
@@ -1455,20 +1467,39 @@ def test_review_disabled_never_consults_gate(tmp_path):
     assert calls == [foo.pkgbuild_path]
 
 
-def test_review_auto_mode_passes_interactive_false(tmp_path):
-    """review="auto" (the `update` default) consults the gate with
-    interactive=False so changes auto-accept instead of prompting."""
+def test_review_accept_mode_lists_accepted(tmp_path):
     foo = _make_target(tmp_path, "foo")
     seen = []
     outcome, calls, _ = _run_gated(
-        [foo],
-        decisions={"foo": "accept"},
-        review="auto",
-        state_dir=tmp_path / "state",
-        run_capture=seen,
+        [foo], decisions={"foo": "accept"}, review="accept",
+        state_dir=tmp_path / "state", run_capture=seen,
     )
-    assert seen == [("foo", None, False)]
+    assert seen == [("foo", None, "accept", False)]
+    assert outcome.review_accepted == ["foo"]
     assert calls == [foo.pkgbuild_path]
+
+
+def test_review_refused_target_dropped_rest_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_core, "change_summary",
+                        lambda d, rc: "unreviewed source change (a → b)")
+    foo = _make_target(tmp_path, "foo")
+    bar = _make_target(tmp_path, "bar")
+    outcome, calls, _ = _run_gated(
+        [foo, bar], decisions={"foo": build_core.DECISION_REFUSED, "bar": "accept"},
+        state_dir=tmp_path / "state",
+    )
+    assert outcome.review_refused == {"foo": "unreviewed source change (a → b)"}
+    assert not outcome.aborted
+    assert calls == [bar.pkgbuild_path]
+
+
+def test_review_trusted_source_passes_trusted_true(tmp_path):
+    foo = _make_target(tmp_path, "foo")
+    foo.source = "repo"
+    seen = []
+    _run_gated([foo], decisions={"foo": "accept"}, state_dir=tmp_path / "state",
+               review_trusted=frozenset({"repo"}), run_capture=seen)
+    assert seen == [("foo", None, "prompt", True)]
 
 
 def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
@@ -1486,7 +1517,7 @@ def test_review_gate_passes_recorded_reviewed_commit(tmp_path):
         state_dir=state_dir,
         run_capture=seen,
     )
-    assert seen == [("foo", "abc123", True)]
+    assert seen == [("foo", "abc123", "prompt", False)]
 
 
 # ---------------------------------------------------------------------------
@@ -2015,8 +2046,15 @@ def test_build_and_install_passes_per_target_medians_in_build_order(tmp_path):
             stack.enter_context(p)
         stack.enter_context(patch.object(build_core._ui_progress, "tracker", spy_tracker))
         build_core.build_and_install(targets, config={}, sync_source=False,
-                                     review="auto", state_dir=state)
+                                     review="accept", state_dir=state)
     assert seen == {"total": 3, "prefix": "building", "expected": [1250, 30, None]}
+
+
+def test_merge_outcomes_merges_review_fields():
+    a = build_core.BuildOutcome(review_refused={"x": "r"}, review_accepted=["y"])
+    b = build_core.BuildOutcome(review_refused={"z": "r"}, review_accepted=["w"])
+    m = build_core.merge_outcomes(a, b)
+    assert m.review_refused == {"x": "r", "z": "r"} and m.review_accepted == ["y", "w"]
 
 
 def test_merge_outcomes_concatenates_in_pass_order_and_shares_phase_records():
@@ -2122,3 +2160,11 @@ def test_post_install_mesa_smoke_noop_without_files(monkeypatch):
     from sysforge.primitives import mesa_smoke
     monkeypatch.setattr(mesa_smoke, "post_install", lambda *a: pytest.fail("must not run"))
     build_core._post_install_mesa_smoke([], None)
+
+
+def test_build_and_install_rejects_an_unknown_review_mode(tmp_path):
+    """A stale caller passing the removed "auto" mode must fail loudly, not
+    silently run with the gate off."""
+    with pytest.raises(ValueError, match="review"):
+        build_core.build_and_install(
+            [_make_target(tmp_path)], config={}, sync_source=False, review="auto")

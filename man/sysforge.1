@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-14"
+.TH "sysforge" "1" "2026\-10\-15"
 .PP
 .PP
 .SH NAME
@@ -32,7 +32,11 @@ repo_mode = "build_from_source"), syncs sources through a rate\-limited schedule
 compares versions, reports toolchain\-variant and compiler\-flag drift, and
 rebuilds what changed.\& Before any changed source is built, the PKGBUILD
 review gate presents the full source\-tree diff since the last accepted
-build for approval (see \fB\-\-no\-review\fR).\& Builds run through a managed
+build for approval; with no terminal to ask, it refuses that package and
+the run exits non\-zero (see \fB\-\-review\fR, \fB\-\-no\-review\fR and [build] review).\&
+At a terminal it shows the plan and asks before changing anything (see
+\fB\-\-yes\fR and [build] confirm_plan).\&
+Builds run through a managed
 makepkg invocation with dependencies pre\-installed, per\-package logs, build
 failure diagnosis with deterministic auto\-repair for known failure modes,
 and a single bulk install at the end.\&
@@ -286,6 +290,11 @@ Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
 Suppress the LLVM source pre\-flight summary.\&
 .PP
 .RE
+\fB\-\-review\fR
+.RS 4
+Review changed sources of every type, including those trusted by [build] review_trusted_sources (by default Arch'\&s own packaging repos).\&
+.PP
+.RE
 \fB\-\-no\-review\fR
 .RS 4
 Skip the PKGBUILD review gate (full source\-tree diff prompt for packages whose source changed since the last accepted build).\& Also configurable via [build] review = false in packages.\&toml.\&
@@ -391,6 +400,11 @@ Directory for per\-package log files.\&
 Extra flags passed verbatim to makepkg.\& Usually optional: bare makepkg short flags are forwarded implicitly (sysforge update \-f works without \-m).\& \-m is only needed for makepkg long flags (e.\&g.\& \-\-skippgpcheck), flags that take a value (\-p, \-D), or flags sysforge claims for itself (\-h, \-V).\&
 .PP
 .RE
+\fB\-\-yes\fR
+.RS 4
+Do not ask before changing anything: confirm the plan (update asks at a terminal by default; [build] confirm_plan in packages.\&toml).\& Does not accept PKGBUILD review prompts.\&
+.PP
+.RE
 \fB\-\-interactive\fR
 .RS 4
 Pause on build failures to allow manual correction (default: log failure and continue), and let the trailing pacman \-Syu ask its confirmation prompts (default: \-\-noconfirm).\&
@@ -418,12 +432,12 @@ Suppress the LLVM source pre\-flight summary.\&
 .RE
 \fB\-\-review\fR
 .RS 4
-Prompt to review the full source\-tree diff for packages whose source changed since the last accepted build.\& By default update auto\-accepts changes with a logged notice so batch runs stay unattended; use `sysforge build` or this flag to inspect diffs.\&
+Review changed sources of every type, including trusted ones (by default Arch'\&s own packaging repos).\& Without this flag, update prompts at a terminal for untrusted changes and refuses them with no terminal.\&
 .PP
 .RE
 \fB\-\-no\-review\fR
 .RS 4
-Skip the PKGBUILD review gate entirely (no auto\-accept notices).\& Also configurable via [build] review = false in packages.\&toml.\&
+Skip the PKGBUILD review gate entirely.\& Also configurable via [build] review = false in packages.\&toml.\&
 .PP
 .RE
 \fB\-\-sysupgrade\fR
@@ -1088,7 +1102,7 @@ remove even though the live file changed outside sysforge (discards those live\-
 .PP
 \fBsysforge setup\fR [\fIOPTIONS\fR]
 .PP
-Configure system integration (pacman IgnoreGroup for sf\-build; install/refresh sysforge'\&s pacman hooks).\&
+Configure system integration (pacman IgnoreGroup for sf\-build; sysforge'\&s pacman hooks) and save update preferences (plan confirmation, PKGBUILD review, AUR, build sandbox).\&
 .PP
 \fB\-\-pacman\-conf\fR \fIFILE\fR
 .RS 4

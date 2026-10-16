@@ -92,6 +92,19 @@ def _isolate_filesystem_soname_cache(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_saved_user_pager(monkeypatch):
+    """
+    Forget any PAGER/LESS saved by ``update._suppress_pagers_in_env``.
+
+    ``pager.remember_user_pager`` keeps the user's values in a module global
+    (3.5.0-B7); a test that runs the scrub would otherwise leave them in place
+    for every later test's ``maybe_pager``.
+    """
+    from sysforge.primitives import pager
+    monkeypatch.setattr(pager, "_user_env", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_sudo_probe(monkeypatch):
     """
     Default the sudo credential probe to "cached" for every test.

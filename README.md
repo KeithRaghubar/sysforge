@@ -88,6 +88,18 @@ through a `packages.toml` entry or `repo_mode = "build_from_source"` (`sysforge 
 shows these). `sysforge build <pkg>`, `sysforge update <pkg>` or `sysforge packages add <pkg>`
 takes it back.
 
+Before a changed source is built, `update` and `build` show you what changed since the last
+build you accepted and ask. With no terminal (a timer, cron, a pipe) that package is refused
+instead: the rest of the run still builds, the summary lists it and the run exits 1. Changes
+from Arch's own packaging repos are accepted without asking. For unattended runs, set
+`[build] review = "accept"` in `packages.toml` (accepted changes are listed in the summary)
+or pass `--no-review`; the [freeze guide](docs/guides/freeze.md) explains the trade-off.
+
+At a terminal, `update` first prints its plan (what it will rebuild and why, what it will
+upgrade, and the protections in force) and asks `Proceed? [Y/n]`. `--yes`, or
+`confirm_plan = false` in `packages.toml`, skips the question. `sysforge setup` asks about
+these choices (confirmation, review, AUR, build sandbox) and saves the ones you change.
+
 ### Common commands
 
 **Build and maintain packages**
@@ -134,7 +146,7 @@ Fields may be added in a minor release; a renamed or removed field bumps `"schem
 
 ```bash
 sysforge config merge           # adopt shipped config-default drift (.sfnew)
-sysforge setup                  # wire up pacman integration (IgnoreGroup + hooks)
+sysforge setup                  # pacman integration (IgnoreGroup + hooks) + update preferences
 sysforge artifact list          # inventory your scripts, systemd units, pacman hooks
 sysforge artifact review        # offer newly-discovered ones for adoption
 sysforge artifact deploy NAME   # push a managed artifact to the live system
@@ -159,6 +171,10 @@ sysforge update --no-frozen           # lift an [security] freeze_sources = true
 official-repo (`pkgctl`) checkouts, source-sync fetches, and VCS version probes; existing
 checkouts still build. `--thaw` and
 `--no-frozen` are both run-scoped lifts only; nothing persists.
+
+To keep sysforge away from the AUR altogether, set `[aur] enabled = false` in `sysforge.toml`:
+no clones, lookups, search results or package-list downloads. AUR-tracked packages are
+reported as `AUR disabled` and left alone; repo and local packages work as before.
 
 **Sandboxing builds**
 
@@ -219,7 +235,8 @@ entry and one-time boots.
 Three more guides cover the flag-heavy surfaces:
 [docs/guides/drift.md](docs/guides/drift.md) explains what `update` rebuilds on its own and what
 it only reports after a profile or compiler change;
-[docs/guides/freeze.md](docs/guides/freeze.md) covers `--frozen`, `--thaw` and PGP key fetches;
+[docs/guides/freeze.md](docs/guides/freeze.md) covers `--frozen`, `--thaw`, reviewing changed
+sources and PGP key fetches;
 and [docs/guides/kernel.md](docs/guides/kernel.md) walks through `sysforge run kernel`, from the
 config review to the boot-safety checks.
 

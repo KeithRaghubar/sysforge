@@ -14,6 +14,7 @@ pager binary can be spawned.
 
 Public API:
     maybe_pager(use_pager) -> context manager
+    remember_user_pager() -> None
 """
 import os
 import shlex
@@ -23,6 +24,31 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sysforge.primitives.resource_guard import lift_for_child
+
+_PAGER_KEYS = ("PAGER", "LESS")
+
+# The user's own PAGER/LESS, saved before a batch run overrides them for its
+# subprocesses (``update._suppress_pagers_in_env``). ``None`` = nothing saved;
+# read the live environment.
+_user_env: dict[str, str | None] | None = None
+
+
+def remember_user_pager() -> None:
+    """Save the user's ``$PAGER``/``$LESS`` before a batch run scrubs them.
+
+    The scrub (``PAGER=cat``) keeps subprocesses from paging mid-run; it is
+    not a choice about sysforge's own interactive output. Without this the
+    review gate's ``[v]iew diff`` reads the scrubbed ``cat`` and dumps every
+    patch inline (3.5.0-B7).
+    """
+    global _user_env
+    _user_env = {k: os.environ.get(k) for k in _PAGER_KEYS}
+
+
+def _user_value(key: str) -> str | None:
+    if _user_env is not None:
+        return _user_env.get(key)
+    return os.environ.get(key)
 
 
 def _strip_altscreen_hostile(tokens: list[str]) -> list[str]:
@@ -78,7 +104,7 @@ def _pager_candidates() -> list[list[str]]:
     fits one screen.
     """
     candidates: list[list[str]] = []
-    pager_env = os.environ.get("PAGER")
+    pager_env = _user_value("PAGER")
     if pager_env:
         parts = shlex.split(pager_env)
         if parts:
@@ -96,8 +122,18 @@ def _sanitized_pager_env() -> dict[str, str] | None:
     ``None`` when ``$LESS`` is unset or already clean, so the common case still
     inherits the parent environment untouched (``Popen(env=None)``). See
     :func:`_sanitize_less_value` for why the env var — not just the argv — has
-    to be neutralized on the ``--interactive`` path.
+    to be neutralized on the ``--interactive`` path. After
+    :func:`remember_user_pager`, the pager gets the user's saved ``$LESS`` (or
+    none) instead of the batch scrub's.
     """
+    if _user_env is not None:
+        env = dict(os.environ)
+        saved = _user_env.get("LESS")
+        if saved is None:
+            env.pop("LESS", None)
+        else:
+            env["LESS"] = _sanitize_less_value(saved)
+        return env
     less = os.environ.get("LESS")
     if less is None:
         return None

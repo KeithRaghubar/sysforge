@@ -207,3 +207,24 @@ def test_nested_guard_keeps_the_real_stdout(capsys):
     cap = capsys.readouterr()
     _validate(_only_document(cap.out), _schema("state-list"))
     assert "startup log" in cap.err and "verb narration" in cap.err
+
+
+def test_update_dry_run_json_lists_flag_drift_promotion(
+        update_scenario, capsys, verbose, monkeypatch):
+    """3.5.0-B5: a dry run with --rebuild-on-flag-drift reports the package
+    the real run would rebuild, not UP_TO_DATE."""
+    from sysforge import update
+    from sysforge.primitives.flag_drift import STATUS_DRIFTED, FlagDriftResult
+    monkeypatch.setattr(log, "_DRY_RUN", True)
+    monkeypatch.setattr(update, "resolve_flag_drift",
+                        lambda *a, **k: FlagDriftResult(status=STATUS_DRIFTED,
+                                                        diffs=["  CFLAGS: a -> b"]))
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.record("htop", "3.4.1", "1")
+    update_scenario.run(_update_args(rebuild_on_flag_drift=True),
+                        installed={"htop": "3.4.1-1"},
+                        foreign={"htop": "3.4.1-1"}, via_runner=True)
+    assert update_scenario.exit_code == 0
+    doc = _only_document(capsys.readouterr().out)
+    (pkg,) = doc["packages"]
+    assert (pkg["pkgbase"], pkg["action"]) == ("htop", "NEEDS_REBUILD")

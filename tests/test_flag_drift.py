@@ -478,3 +478,18 @@ def test_kernel_build_mode_without_owner_stage_compares_against_host(tmp_path):
     e = _entry(_pkgbuild(tmp_path), sandboxed=False)
     r = _drift(e, config=cfg, sandbox_policy=_ON)
     assert not any("sandboxed" in line for line in r.diffs), r.diffs
+
+
+def test_current_sandboxed_follows_profile_override(tmp_path):
+    """3.1.0-F4: the plan's sandbox mark uses the same predicate as the
+    sandboxed drift sub-axis (profile override; stage-owned builds on host)."""
+    from sysforge.primitives.flag_drift import current_sandboxed
+    d = _pkgbuild(tmp_path)
+    entry = {"pkgbuild_dir": str(d)}
+    cfg = {"rules": [], "defaults": {"profile": "boxed"},
+           "profiles": {"boxed": {"CFLAGS": "-O2", "sandbox_builds": True}},
+           "conflict_groups": {}}
+    assert current_sandboxed(entry, cfg, {}, _OFF) is True
+    assert current_sandboxed({"pkgbuild_dir": str(tmp_path / "gone")}, cfg, {},
+                             _OFF) is None
+    assert current_sandboxed({**entry, "owner_stage": "kernel"}, cfg, {}, _ON) is False

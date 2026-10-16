@@ -45,6 +45,8 @@ _ACTION_FORMATS: dict[str, tuple[str, str, str]] = {
                           "{pkgbase}: --cleansrc refused (local work present, skipped){star}"),
     "FROZEN":            ("FROZEN",            "source freeze",
                           "{pkgbase}: source freeze denied fetch (use --thaw){star}"),
+    "AUR_DISABLED":      ("AUR_DISABLED",      "AUR disabled",
+                          "{pkgbase}: AUR disabled ([aur] enabled = false), not updated{star}"),
     "SKIPPED_NO_CHECKUPDATES": ("NO_CHECKUPDATES", "skipped (no checkupdates)",
                           "{pkgbase}: checkupdates unavailable, install pacman-contrib{star}"),
 }
@@ -67,6 +69,7 @@ _ACTION_COLORS: dict[str, str] = {
     "UP_TO_DATE":               "yellow",
     "DEVEL":                    "yellow",
     "FROZEN":                   "yellow",
+    "AUR_DISABLED":             "yellow",
     "DOWNGRADE":                "red",
     "DEVEL_EVAL_FAILED":        "red",
     "PULL_FAILED":              "red",
@@ -79,6 +82,7 @@ _ACTION_COLORS: dict[str, str] = {
 # Everything else only appears under -v / verbose mode.
 _ALWAYS_VERBOSE_ACTIONS = frozenset({
     "NEEDS_REBUILD", "NEEDS_PACMAN_UPGRADE", "DOWNGRADE", "FROZEN",
+    "AUR_DISABLED",
 })
 
 
@@ -219,6 +223,10 @@ class ResultSummary:
     layout_findings: list[str] = field(default_factory=list)
     # 3.2.0-F9: staleness lines for PGO-reusing rebuilds whose profile is stale.
     pgo_staleness_lines: list[str] = field(default_factory=list)
+    # 3.0.0-F3: pkgbase -> refusal reason, and the packages accepted unreviewed
+    # under [build] review = "accept".
+    review_refused: dict[str, str] = field(default_factory=dict)
+    review_accepted: list[str] = field(default_factory=list)
     # (pkgbase, installed_ver, upstream_ver, owner_stage)
     stage_owned_updates: list[tuple[str, str | None, str | None, str]] = field(
         default_factory=list
@@ -295,6 +303,8 @@ def _print_result_summary(
         + f"{len(summary.failed_pkgs)} failed, {summary.skipped} skipped"
         + (f", {len(summary.pgo_skipped_pkgs)} pgo-skipped"
            if summary.pgo_skipped_pkgs else "")
+        + (f", {len(summary.review_refused)} refused at review"
+           if summary.review_refused else "")
         + (f", {len(summary.pacman_upgrade_pkgs)} pacman-upgraded"
            if summary.pacman_upgrade_pkgs
            else (f", {len(summary.sysupgrade_changes)} system-upgraded"
@@ -324,6 +334,15 @@ def _print_result_summary(
         ])
         emit("    resolve the above, then `sysforge update --install-only` "
              "installs the built artifacts without rebuilding")
+
+    if summary.review_refused:
+        _section("Refused at review:", [
+            f"{pb}: {why}" for pb, why in summary.review_refused.items()])
+        emit("    run `sysforge update` at a terminal to review them "
+             "([build] review in packages.toml)")
+
+    if summary.review_accepted:
+        _section("Accepted without review:", list(summary.review_accepted))
 
     if summary.installed_deps:
         _section("Dependencies:", list(summary.installed_deps))

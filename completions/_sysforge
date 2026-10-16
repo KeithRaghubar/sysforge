@@ -89,7 +89,7 @@ _sysforge_commands() {
     'state:inspect build_state.toml, failures and profile stores'
     'bench:measure an optimized build against stock (report only)'
     'artifact:inventory user-authored scripts, units, and pacman hooks'
-    'setup:configure system integration (IgnoreGroup, pacman hooks)'
+    'setup:configure IgnoreGroup, hooks and preferences'
     'config:adopt .sfnew/.pacnew config companions (merge)'
     'packages:manage packages.toml override entries (list, add, remove)'
     'run:execute a pipeline stage'
@@ -170,7 +170,8 @@ _sysforge_build() {
     '--cleansrc[purge src dir and re-clone (refuses if dirty)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
-    '--no-review[skip the PKGBUILD review gate (source-change diff prompt)]' \
+    '(--review)--no-review[skip the PKGBUILD review gate]' \
+    '(--no-review)--review[review changed sources including trusted ones]' \
     '--force[build from source this run only; no packages.toml write]' \
     '--rebuild[force makepkg -f even if already built]' \
     '--pgo[instrumentation PGO, LLVM only]:mode:(record use)' \
@@ -200,12 +201,13 @@ _sysforge_update() {
     '--devel[rebuild VCS packages newer than installed]' \
     '--offline[no network: no source sync, clone or AUR RPC]' \
     '--install-only[install pre-built PKGDEST artifacts only]' \
+    '--yes[confirm the plan (not review prompts)]' \
     '--interactive[pause on build failures; let pacman -Syu prompt]' \
     '--no-cleanbuild[skip automatic --cleanbuild]' \
     '--cleansrc[purge src dirs and re-clone (rebuilds only)]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
     '--no-llvm-preflight[suppress the LLVM source pre-flight summary]' \
-    '(--no-review)--review[prompt to review source-change diffs]' \
+    '(--no-review)--review[review changed sources including trusted ones]' \
     '(--review)--no-review[skip the PKGBUILD review gate]' \
     '(--no-sysupgrade)--sysupgrade[finish the run with one pacman -Syu]' \
     '(--sysupgrade)--no-sysupgrade[skip the trailing pacman -Syu]' \

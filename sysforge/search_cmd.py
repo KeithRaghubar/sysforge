@@ -164,11 +164,14 @@ class SearchVerb(Verb):
         markers = installed_markers(
             pacman.get_installed_facts(), pacman.get_installed_substitutes(),
         )
+        from sysforge.primitives.net_policy import get_policy
+        aur_on = get_policy().aur_enabled
         sections = [
             ("Installed", pacman.search_local(term)),
             ("Repo", mark_repo_variants(pacman.search_repo(term), markers)),
-            ("AUR", render_aur(aur.aur_search(term), markers)),
         ]
+        if aur_on:
+            sections.append(("AUR", render_aur(aur.aur_search(term), markers)))
         first = True
         for header, body in sections:
             if body.strip():
@@ -177,4 +180,6 @@ class SearchVerb(Verb):
                 _log.ui(f"== {header} ==")
                 _log.ui(body.rstrip("\n"))
                 first = False
+        if not aur_on:
+            _log.ui("AUR results omitted ([aur] enabled = false)")
         return ExecResult(exit_code=0)

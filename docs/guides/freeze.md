@@ -1,7 +1,8 @@
-# Source Freeze and Network Policy with SysForge
+# Source Freeze, Review and Network Policy with SysForge
 
-How to stop sysforge from downloading new code, what the freeze covers and what it can't, and
-how PGP keys for signed sources are fetched. Use the freeze when you want a run to build only
+How to stop sysforge from downloading new code, what the freeze covers and what it can't, how
+changed sources are reviewed before they are built, and how PGP keys for signed sources are
+fetched. Use the freeze when you want a run to build only
 what is already on disk, for example while you review a batch of AUR changes, or on a schedule
 where nothing should change behind your back.
 
@@ -116,6 +117,80 @@ Use `--offline` for a quick local report. Use `--frozen` when "nothing new gets 
 
 ---
 
+## Reviewing changed sources
+
+Before sysforge builds a package whose source changed since the last build you accepted, it
+shows you the change (the whole source tree, not just the `PKGBUILD`) and asks: view the diff,
+accept, skip this package, or abort the run. `update` and `build` follow the same rules.
+
+A run that could not ask is never treated as a yes. With no terminal to ask on (a systemd
+timer, cron, or output piped into `tee`), the changed package is **refused**: it is not built,
+the rest of the run carries on, the summary lists it under "Refused at review", and the run
+exits 1. Run `sysforge update` at a terminal to look at it.
+
+Changes from Arch's own packaging repos are accepted without asking (logged at `-v`): the same
+people publish the binary packages you already install. Change the trusted list in
+`packages.toml`:
+
+```toml
+[build]
+review_trusted_sources = ["repo"]   # valid: "repo", "aur", "git", "local"; [] reviews everything
+```
+
+`--review` reviews everything for one run, trusted sources included.
+
+### Unattended runs
+
+If you run `update` from a timer, a changed AUR package is now refused instead of being
+built. To keep building unattended, choose one:
+
+- `[build] review = "accept"`: accept every change without asking. Each one is still listed
+  in the summary under "Accepted without review".
+- `--no-review` on the timer's command line, or `[build] review = false`: no gate at all.
+
+`sysforge setup` asks how to treat changed sources, whether to use the AUR and, once a
+chroot exists, whether to build in the sandbox, and saves the answers you change.
+
+Both options above mean code nobody looked at is built and installed. A build sandbox
+(`[security] sandbox_builds`) limits what a build can read while it runs, but it does not
+inspect what gets installed, and package install scripts run as root.
+
+---
+
+## Turning the AUR off
+
+If you only build repo packages and your own local PKGBUILDs, you can tell sysforge never to
+contact the AUR:
+
+```toml
+# sysforge.toml
+[aur]
+enabled = false
+```
+
+What stops:
+
+- cloning or fetching from the AUR;
+- AUR lookups: version checks, `fetch`/`build` resolving a name, dependency resolution;
+- `sysforge search`'s AUR section (it prints `AUR results omitted ([aur] enabled = false)`);
+- the AUR package-name list used by shell completion.
+
+A package you track from the AUR shows in the `update` summary as
+`<pkg>: AUR disabled ([aur] enabled = false), not updated`. It is left as it is and does not
+count as a failure. `sysforge build <pkg>` refuses it up front. A dependency that only the AUR
+has is named in a warning, and the build that needs it fails as it would for any missing
+dependency. A checkout whose `origin` is somewhere other than the AUR (a GitHub repo, say)
+still syncs, whatever its `source` label says.
+
+Unlike the freeze, this is a standing choice: `--thaw` and `--no-frozen` do not lift it.
+`--offline` is different again: it skips all network work for one `update`, including repo
+checkouts and version checks.
+
+Even with the AUR on, `update` only refreshes the package-name list when you track something
+from the AUR.
+
+---
+
 ## PGP keys
 
 Some PKGBUILDs list `validpgpkeys`: the signers makepkg will accept for the downloaded sources.
@@ -153,3 +228,7 @@ it unless the package is thawed.
 | let one package through | `sysforge --frozen --thaw <pkgbase> update` |
 | see what makepkg will still download | add `-v` to a frozen run |
 | import PGP keys without a prompt | `[security] auto_fetch_pgp_keys = true` |
+| review every changed source, trusted ones too | `sysforge update --review` |
+| build changed sources unattended (listed in the summary) | `[build] review = "accept"` |
+| skip review entirely | `--no-review` or `[build] review = false` |
+| never contact the AUR | `[aur] enabled = false` in `sysforge.toml` |

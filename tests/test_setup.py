@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from sysforge import setup_cmd
 from sysforge.primitives import pacman_hooks
 from sysforge.setup_cmd import _check_ignore_group, _patch_conf_text, cmd_setup
 
@@ -22,6 +23,12 @@ def _hooks_in_sync(monkeypatch):
     IgnoreGroup-focused tests never touch the real system via sudo. Hook-block
     tests override diff_status explicitly."""
     monkeypatch.setattr(pacman_hooks, "diff_status", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def _no_prefs(request, monkeypatch):
+    if "prefs_env" not in request.fixturenames:
+        monkeypatch.setattr(setup_cmd, "_setup_preferences", lambda: None)
 
 
 # ---------------------------------------------------------------------------
@@ -336,3 +343,93 @@ def test_setup_hooks_priv_failure_prints_manual(tmp_path, capsys, monkeypatch):
     with patch("builtins.input", return_value="y"):
         cmd_setup(_conf_already_configured(tmp_path))
     assert "sudo sysforge setup" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# preferences (3.1.0-F4)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def prefs_env(tmp_path, monkeypatch):
+    pk = tmp_path / "packages.toml"
+    pk.write_text("[build]\n#review = true\n#confirm_plan = true\n")
+    sf = tmp_path / "sysforge.toml"
+    sf.write_text("[aur]\n#enabled = true\n[security]\nsandbox_chroot_dir = "
+                  f'"{tmp_path / "chroot"}"\n')
+    import tomllib
+    from sysforge.primitives import config, paths
+    monkeypatch.setattr(config, "load_config", lambda *a, **k: {})
+    monkeypatch.setattr(paths, "resolve_packages_path", lambda cfg: pk)
+    monkeypatch.setattr(setup_cmd, "resolve_packages_path", lambda cfg: pk, raising=False)
+    monkeypatch.setattr(setup_cmd, "SYSFORGE_TOML_PATH", sf, raising=False)
+    monkeypatch.setattr(config, "load_sysforge_toml",
+                        lambda: tomllib.loads(sf.read_text()))
+    # Patched at the seam: pytest swaps sys.stdout between setup and call,
+    # so an isatty patch made here would not reach the test body.
+    monkeypatch.setattr(setup_cmd, "_has_terminal", lambda: True)
+    writes = []
+    monkeypatch.setattr(config, "set_toml_key",
+                        lambda path, s, k, v: writes.append((path.name, s, k, v)))
+    monkeypatch.setattr(setup_cmd.shutil, "which", lambda name: None)
+    return writes, tmp_path
+
+
+def _answers(monkeypatch, *answers):
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda *a: next(it))
+
+
+def test_preferences_enter_keeps_everything(prefs_env, monkeypatch):
+    writes, _ = prefs_env
+    _answers(monkeypatch, "", "", "")
+    setup_cmd._setup_preferences()
+    assert writes == []
+
+
+def test_preferences_writes_only_changes(prefs_env, monkeypatch, capsys):
+    writes, _ = prefs_env
+    _answers(monkeypatch, "n", "a", "n")
+    setup_cmd._setup_preferences()
+    assert writes == [
+        ("packages.toml", "build", "confirm_plan", False),
+        ("packages.toml", "build", "review", "accept"),
+        ("sysforge.toml", "aur", "enabled", False),
+    ]
+    out = capsys.readouterr().out
+    assert "nobody having looked at it" in out             # accept risk
+    assert "does not inspect what gets installed" in out  # sandbox off note
+    assert "pacman -S devtools" in out                    # sandbox not offered
+
+
+def test_preferences_offers_sandbox_when_ready(prefs_env, monkeypatch):
+    writes, tmp_path = prefs_env
+    (tmp_path / "chroot" / "root").mkdir(parents=True)
+    monkeypatch.setattr(setup_cmd.shutil, "which", lambda name: "/usr/bin/" + name)
+    _answers(monkeypatch, "", "", "", "y")
+    setup_cmd._setup_preferences()
+    assert writes == [("sysforge.toml", "security", "sandbox_builds", True)]
+
+
+def test_preferences_skipped_without_terminal(prefs_env, monkeypatch, capsys):
+    writes, _ = prefs_env
+    monkeypatch.setattr(setup_cmd, "_has_terminal", lambda: False)
+    setup_cmd._setup_preferences()
+    assert writes == []
+    assert "preferences: skipped (no terminal)" in capsys.readouterr().out
+
+
+def test_preferences_write_failure_prints_manual_edit(prefs_env, monkeypatch, capsys):
+    from sysforge.primitives import config
+    def _boom(*a):
+        raise PermissionError("denied")
+    monkeypatch.setattr(config, "set_toml_key", _boom)
+    _answers(monkeypatch, "n", "", "")
+    setup_cmd._setup_preferences()
+    err = capsys.readouterr().err
+    assert "confirm_plan = false" in err and "packages.toml" in err
+
+
+def test_has_terminal_needs_stdin_and_stdout(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    assert setup_cmd._has_terminal() is False

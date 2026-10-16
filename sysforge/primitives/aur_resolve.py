@@ -157,7 +157,13 @@ def _resolve_deps(
             )
             continue
         name = _strip_version(spec)
-        if name and name not in visited and name not in name_map:
+        if name and name in visited:
+            # A shared dep reached again from another requirer: record it, so
+            # walking required_by upward finds every target that needs it.
+            if required_by not in visited[name].required_by:
+                visited[name].required_by.append(required_by)
+            continue
+        if name and name not in name_map:
             name_map[name] = spec
 
     if not name_map:
