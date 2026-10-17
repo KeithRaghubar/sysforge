@@ -35,7 +35,7 @@ def happy(tmp_path, monkeypatch):
              "built_at": "2026-10-10T08:00:00Z"}
             if env["build_mode"] else None))
     monkeypatch.setattr(bench_core, "load_tcfg", lambda: None)
-    monkeypatch.setattr(sp, "resolve", lambda names: [
+    monkeypatch.setattr(sp, "resolve", lambda names, dbpath=None: [
         sp.StockPkg(n, env["stock"], "extra", f"{n}.pkg.tar.zst", "https://m", "x")
         for n in names])
     monkeypatch.setattr(sp, "obtain",
@@ -200,3 +200,101 @@ def test_phase_line_is_cleared_when_the_bench_fails(tmp_path, happy, monkeypatch
     assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 1
     assert seen[-1] is None
 
+
+
+# --- stale sync DB: private refresh (3.5.0-F1) -----------------------------
+
+
+def _stale_db(monkeypatch, env, *, sync_ok=True):
+    """System DB names 23.1.3-2, which every mirror has dropped; a fresh private
+    sync names 23.1.3-3. Returns the list of private_sync calls."""
+    synced = []
+
+    def resolve(names, dbpath=None):
+        ver = "23.1.3-3" if dbpath else "23.1.3-2"
+        return [sp.StockPkg(n, ver, "extra", f"{n}-{ver}.pkg.tar.zst", "https://m", "x")
+                for n in names]
+
+    def obtain(pkg, workdir, offline):
+        if pkg.version == "23.1.3-2":
+            raise sp.StockDownloadFailed(f"could not download {pkg.filename} (404)")
+        return Path(workdir) / pkg.filename
+
+    def private_sync(workdir):
+        synced.append(workdir)
+        if not sync_ok:
+            raise sp.StockUnavailable("error: failed to synchronize all databases")
+        return Path(workdir) / "db"
+
+    monkeypatch.setattr(sp, "resolve", resolve)
+    monkeypatch.setattr(sp, "obtain", obtain)
+    monkeypatch.setattr(sp, "private_sync", private_sync)
+    env["installed"] = env["stock"] = "23.1.3-3"
+    env["recorded"] = ("23.1.3", "3", "0")
+    return synced
+
+
+def test_stale_sync_db_refreshes_privately_and_benches_the_current_build(
+        tmp_path, happy, monkeypatch, capsys):
+    synced = _stale_db(monkeypatch, happy)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
+    assert len(synced) == 1
+    assert "stock     clang 23.1.3-3" in capsys.readouterr().err
+    assert bs.load(tmp_path, "toolchain").stock_version == "23.1.3-3"
+
+
+def test_failed_private_refresh_exits_1_and_points_at_pacman_syu(
+        tmp_path, happy, monkeypatch, capsys):
+    _stale_db(monkeypatch, happy, sync_ok=False)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 1
+    err = capsys.readouterr().err
+    assert "404" in err and "failed to synchronize" in err
+    assert "pacman -Syu" in err
+    assert bs.load(tmp_path, "toolchain") is None
+
+
+def test_offline_miss_never_refreshes_the_sync_db(tmp_path, happy, monkeypatch):
+    synced = []
+    monkeypatch.setattr(sp, "private_sync", lambda workdir: synced.append(workdir))
+
+    def offline_miss(pkg, workdir, offline):
+        raise sp.StockUnavailable("not in the pacman cache and --offline was given")
+
+    monkeypatch.setattr(sp, "obtain", offline_miss)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path, offline=True)) == 1
+    assert synced == []
+
+
+def test_fresh_sync_db_never_refreshes(tmp_path, happy, monkeypatch):
+    synced = []
+    monkeypatch.setattr(sp, "private_sync", lambda workdir: synced.append(workdir))
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
+    assert synced == []
+
+
+def test_stale_attempt_drops_its_downloads_before_refreshing(tmp_path, happy, monkeypatch):
+    """clang downloaded, llvm-libs 404'd: the stale clang archive must not sit
+    on the tmpfs next to the fresh one."""
+    left = []
+
+    def resolve(names, dbpath=None):
+        ver = "23.1.3-3" if dbpath else "23.1.3-2"
+        return [sp.StockPkg(n, ver, "extra", f"{n}-{ver}.pkg.tar.zst", "https://m", "x")
+                for n in names]
+
+    def obtain(pkg, workdir, offline):
+        if pkg.name == "llvm-libs" and pkg.version == "23.1.3-2":
+            raise sp.StockDownloadFailed("404")
+        path = Path(workdir) / pkg.filename
+        path.write_bytes(b"x")
+        return path
+
+    def private_sync(workdir):
+        left.extend(p.name for p in Path(workdir).glob("*.pkg.tar.zst"))
+        return Path(workdir) / "db"
+
+    monkeypatch.setattr(sp, "resolve", resolve)
+    monkeypatch.setattr(sp, "obtain", obtain)
+    monkeypatch.setattr(sp, "private_sync", private_sync)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
+    assert left == []

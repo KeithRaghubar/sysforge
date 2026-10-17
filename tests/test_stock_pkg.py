@@ -260,3 +260,93 @@ def test_extract_removes_a_downloaded_archive_and_keeps_a_cached_one(tmp_path, m
     sp.extract([cached, downloaded], tmp_path / "prefix", downloaded_in=work)
     assert not downloaded.exists()
     assert cached.exists()
+
+
+# --- private sync-DB refresh (3.5.0-F1) -----------------------------------
+
+
+def test_obtain_all_mirrors_failing_is_a_download_failure(tmp_path, monkeypatch):
+    """Its own type, so the bench can tell a stale sync DB from an offline miss."""
+    monkeypatch.setattr(sp.pacman, "get_pacman_cache_dirs", lambda: [])
+
+    def opener(url, timeout):
+        raise OSError("HTTP Error 404: Not Found")
+
+    with pytest.raises(sp.StockDownloadFailed):
+        sp.obtain(_pkg(), tmp_path, offline=False, opener=opener)
+
+
+def test_offline_miss_is_not_a_download_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp.pacman, "get_pacman_cache_dirs", lambda: [])
+    with pytest.raises(sp.StockUnavailable) as exc:
+        sp.obtain(_pkg(), tmp_path, offline=True)
+    assert not isinstance(exc.value, sp.StockDownloadFailed)
+
+
+def test_resolve_reads_the_given_dbpath(tmp_path, monkeypatch):
+    seen = []
+    out = "clang|23.1.3-3|extra|clang-23.1.3-3-x86_64.pkg.tar.zst|https://m/c|cc\n"
+
+    def probe(argv, **kw):
+        seen.append(argv)
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(sp.run, "probe", probe)
+    assert sp.resolve(["clang"], dbpath=tmp_path / "db")[0].version == "23.1.3-3"
+    argv = seen[0]
+    assert argv[argv.index("--dbpath") + 1] == str(tmp_path / "db")
+
+
+def test_resolve_without_dbpath_uses_the_system_db(monkeypatch):
+    seen = []
+    monkeypatch.setattr(sp.run, "probe", lambda argv, **kw: seen.append(argv) or
+                        SimpleNamespace(returncode=0, stderr="",
+                                        stdout="clang|1-1|extra|c|https://m/c|cc\n"))
+    sp.resolve(["clang"])
+    assert "--dbpath" not in seen[0]
+
+
+def test_private_sync_runs_unprivileged_into_its_own_dbpath(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sp, "_local_db", lambda: Path("/var/lib/pacman/local"))
+    monkeypatch.setattr(sp.run, "probe", lambda argv, **kw: seen.append(argv) or
+                        SimpleNamespace(returncode=0, stdout="", stderr=""))
+    db = sp.private_sync(tmp_path)
+    argv = seen[0]
+    assert argv[:2] == ["fakeroot", "--"]
+    assert "sudo" not in argv
+    assert argv[argv.index("pacman") + 1] == "-Sy"
+    assert argv[argv.index("--dbpath") + 1] == str(db)
+    # never the system log, and pacman's root-only download sandbox is off
+    assert argv[argv.index("--logfile") + 1] == "/dev/null"
+    assert "--disable-sandbox" in argv
+    assert db.parent == tmp_path
+    # -Sp needs a local DB to read; it is the system's, linked, never copied
+    assert (db / "local").is_symlink()
+    assert (db / "local").readlink() == Path("/var/lib/pacman/local")
+
+
+def test_private_sync_failure_raises_with_pacmans_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "_local_db", lambda: Path("/var/lib/pacman/local"))
+    monkeypatch.setattr(sp.run, "probe", _probe(
+        "", rc=1, stderr="error: failed to synchronize all databases"))
+    with pytest.raises(sp.StockUnavailable, match="failed to synchronize"):
+        sp.private_sync(tmp_path)
+
+
+def test_private_sync_without_fakeroot_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "_local_db", lambda: Path("/var/lib/pacman/local"))
+    monkeypatch.setattr(sp.run, "probe", _probe(
+        "", rc=127, stderr="fakeroot: command not found"))
+    with pytest.raises(sp.StockUnavailable, match="fakeroot"):
+        sp.private_sync(tmp_path)
+
+
+def test_local_db_follows_pacman_conf_dbpath(monkeypatch):
+    monkeypatch.setattr(sp.run, "probe", _probe("/srv/alpm/\n"))
+    assert sp._local_db() == Path("/srv/alpm/local")
+
+
+def test_local_db_defaults_when_pacman_conf_fails(monkeypatch):
+    monkeypatch.setattr(sp.run, "probe", _probe("", rc=1))
+    assert sp._local_db() == Path("/var/lib/pacman/local")

@@ -239,7 +239,12 @@ on your machine and on what you compile. It installs nothing and needs no sudo: 
 clang is unpacked into a temporary directory. If the stock package isn't in the pacman
 cache, or the cached copy fails its checksum, it is downloaded as your user from your
 configured mirrors (trying each in turn, as pacman does) and checked against the sync
-database's checksum before it is used. Only the compiler and the libraries it loads are
+database's checksum before it is used. If no mirror has that package any more, because
+your sync database is older than the repo and the package has since been rebuilt, the
+bench downloads a fresh copy of the sync database into its temporary directory (as your
+user, with `fakeroot`; your system's database is left alone) and compares against the
+build the repo carries now. If that fails too, it tells you to run `sudo pacman -Syu`.
+`--offline` never does this. Only the compiler and the libraries it loads are
 unpacked, about 260 MB in `$TMPDIR` for the length of the run, and a downloaded package
 (about 105 MB for both) is deleted once it is unpacked. On Arch `$TMPDIR` is usually `/tmp`,
 a RAM-backed tmpfs; set `TMPDIR` to a disk directory if that is too small. While it runs, the progress line names the step: fetching each stock

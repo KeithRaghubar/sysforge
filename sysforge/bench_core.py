@@ -180,6 +180,44 @@ def _report(workload, runs, stock_ver, inst_ver, s_stat, i_stat, relation, ratio
         _log.ui(f"stock/sysforge: {ratio:.2f}x")
 
 
+def _obtain_all(pkgs, tmp: Path, offline: bool) -> list[Path]:
+    """Every archive of *pkgs*; on failure, drop what this attempt downloaded."""
+    archives: list[Path] = []
+    try:
+        for p in pkgs:
+            _phase(f"fetching stock {p.name} {p.version}")
+            archives.append(stock_pkg.obtain(p, tmp, offline=offline))
+    except stock_pkg.StockUnavailable:
+        for a in archives:
+            if a.parent == tmp:
+                a.unlink(missing_ok=True)  # $TMPDIR is usually a tmpfs
+        raise
+    return archives
+
+
+def _fetch_stock(tmp: Path, offline: bool):
+    """``(pkgs, archives)`` for the stock build, past a stale sync DB (3.5.0-F1).
+
+    When no mirror serves what the system sync DB names, the DB is behind the
+    repo: retry once against a private fresh copy. ``--offline`` never gets
+    here, because an offline miss is not a download failure.
+    """
+    pkgs = stock_pkg.resolve(list(_STOCK_PKGS))
+    try:
+        return pkgs, _obtain_all(pkgs, tmp, offline)
+    except stock_pkg.StockDownloadFailed as exc:
+        _log.info(f"{exc}: the sync database looks stale; refreshing a private copy")
+        _phase("refreshing a private copy of the sync database")
+        try:
+            dbpath = stock_pkg.private_sync(tmp)
+        except stock_pkg.StockUnavailable as sync_exc:
+            raise stock_pkg.StockUnavailable(
+                f"{exc}; {sync_exc}. The sync database is probably stale: "
+                "run `pacman -Syu`, then bench again") from exc
+        pkgs = stock_pkg.resolve(list(_STOCK_PKGS), dbpath=dbpath)
+        return pkgs, _obtain_all(pkgs, tmp, offline)
+
+
 def _measure(tcfg, runs: int, offline: bool, fail: Callable[[str], None]):
     """Fetch and unpack stock clang, then time both compilers.
 
@@ -194,11 +232,7 @@ def _measure(tcfg, runs: int, offline: bool, fail: Callable[[str], None]):
             fail(f"bench toolchain: {exc}")
             return 1
         try:
-            pkgs = stock_pkg.resolve(list(_STOCK_PKGS))
-            archives = []
-            for p in pkgs:
-                _phase(f"fetching stock {p.name} {p.version}")
-                archives.append(stock_pkg.obtain(p, tmp, offline=offline))
+            pkgs, archives = _fetch_stock(tmp, offline)
             prefix = tmp / "stock"
             _phase("unpacking stock clang")
             stock_pkg.extract(archives, prefix, downloaded_in=tmp)

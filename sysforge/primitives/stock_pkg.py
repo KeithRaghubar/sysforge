@@ -9,10 +9,10 @@ stock_pkg.py — the stock repo build of a package, unprivileged (3.4.0-F6).
 same name, and it is a read-only verb: it must never escalate. So this does not
 use ``pacman -Sw`` (root-only, writes the system cache). It asks
 ``pacman -Sp --print-format`` for the location and the sync DB's own SHA256
-(``%h``; pacman verified the signed DB when it synced), uses a cached archive
-when one exists, otherwise downloads as the user into a temp dir, and checks
-the checksum before anything is extracted. ``build_sandbox.fetch_repo_packages``
-is the privileged sibling for builds that install into a container.
+(``%h``), uses a cached archive when one exists, otherwise downloads as the
+user into a temp dir, and checks the checksum before anything is extracted.
+``build_sandbox.fetch_repo_packages`` is the privileged sibling for builds that
+install into a container.
 
 It gets through where pacman would (3.4.0-B19): ``-Sp -dd`` so an unrelated
 dependency problem on the host can't block two archive lookups, the repo's
@@ -20,6 +20,16 @@ other ``Server`` mirrors when the first one fails, and a fresh download when a
 cached archive fails its checksum. Only what the compiler needs is unpacked,
 and a downloaded archive is deleted once it is (3.4.0-B21): ``$TMPDIR`` is
 usually a tmpfs, so the full ~440 MB ``usr/`` tree would sit in RAM.
+
+The checksum is only as trustworthy as the sync DB it came from. The stock
+repos ship unsigned databases (``SigLevel = DatabaseOptional``), so that is
+the mirror's TLS, the same trust a system ``pacman -Sy`` has.
+
+A stale sync DB names a build every mirror has already dropped, so each
+download 404s (``StockDownloadFailed``). ``private_sync`` refreshes a copy of
+the sync DBs under the caller's temp dir with ``fakeroot`` (3.5.0-F1), and
+``resolve(dbpath=...)`` reads it. The system DB is never touched: a bare
+``pacman -Sy`` needs root and would leave the host partially upgraded.
 """
 from __future__ import annotations
 
@@ -37,6 +47,7 @@ from sysforge.primitives.local_repo import REPO_NAME
 
 _FORMAT = "%n|%v|%r|%f|%l|%h"
 _TIMEOUT_S = 60
+_DEFAULT_DBPATH = Path("/var/lib/pacman")
 # What a stock clang needs to compile -O2 -c: the driver and its symlinks, the
 # two shared libraries it loads, and the resource dir (builtin headers).
 EXTRACT_MEMBERS = ("usr/bin/clang", "usr/bin/clang++", "usr/bin/clang-[0-9]*",
@@ -46,6 +57,10 @@ EXTRACT_MEMBERS = ("usr/bin/clang", "usr/bin/clang++", "usr/bin/clang-[0-9]*",
 
 class StockUnavailable(RuntimeError):
     """The stock build could not be obtained; the message says why."""
+
+
+class StockDownloadFailed(StockUnavailable):
+    """No mirror served a verified copy: most often a stale sync DB."""
 
 
 @dataclass(frozen=True)
@@ -58,14 +73,18 @@ class StockPkg:
     sha256: str
 
 
-def resolve(names: Sequence[str]) -> list[StockPkg]:
+def resolve(names: Sequence[str], *, dbpath: Path | None = None) -> list[StockPkg]:
     """The sync-DB build of each of *names*, in order. Raises ``StockUnavailable``.
 
     ``-dd`` skips dependency resolution: the bench needs the named archives
     only, and resolving against the installed system lets an unrelated conflict
     or versioned dependency fail the lookup. Only the requested names are kept.
+    *dbpath* reads a ``private_sync`` copy instead of the system sync DB.
     """
-    res = run.probe(["pacman", "-Sp", "-dd", "--print-format", _FORMAT, *names])
+    argv = ["pacman", "-Sp", "-dd", "--print-format", _FORMAT]
+    if dbpath is not None:
+        argv += ["--dbpath", str(dbpath)]
+    res = run.probe([*argv, *names])
     rows: dict[str, StockPkg] = {}
     for line in res.stdout.splitlines() if res.returncode == 0 else []:
         parts = line.strip().split("|")
@@ -137,7 +156,7 @@ def _download(pkg: StockPkg, dest: Path, opener) -> None:
             return
         errors.append(f"{url}: does not match the sync database checksum")
     dest.unlink(missing_ok=True)
-    raise StockUnavailable(f"could not download {pkg.filename} ({'; '.join(errors)})")
+    raise StockDownloadFailed(f"could not download {pkg.filename} ({'; '.join(errors)})")
 
 
 def obtain(pkg: StockPkg, workdir: Path, *, offline: bool,
@@ -161,6 +180,36 @@ def obtain(pkg: StockPkg, workdir: Path, *, offline: bool,
     path = Path(workdir) / pkg.filename
     _download(pkg, path, opener)
     return path
+
+
+def _local_db() -> Path:
+    """The system's local package DB (``<DBPath>/local``), per ``pacman-conf``."""
+    res = run.probe(["pacman-conf", "DBPath"])
+    dbpath = res.stdout.strip() if res.returncode == 0 else ""
+    return Path(dbpath or _DEFAULT_DBPATH) / "local"
+
+
+def private_sync(workdir: Path) -> Path:
+    """Sync fresh copies of the repo DBs into ``<workdir>/db``, unprivileged.
+
+    ``pacman -Sy`` refuses a non-root user, so it runs under ``fakeroot`` with
+    its own ``--dbpath`` and ``--logfile /dev/null``. ``--disable-sandbox``
+    because the download sandbox drops root to ``DownloadUser``, which fakeroot
+    only pretends to have; there is no privilege to shed. ``-Sp`` still needs a
+    local DB, so the system's is symlinked in; nothing here writes to it.
+    Returns the dbpath for ``resolve``. Raises ``StockUnavailable``.
+    """
+    db = Path(workdir) / "db"
+    db.mkdir(parents=True, exist_ok=True)
+    local = db / "local"
+    if not local.is_symlink():
+        local.symlink_to(_local_db())
+    res = run.probe(["fakeroot", "--", "pacman", "-Sy", "--dbpath", str(db),
+                     "--logfile", "/dev/null", "--disable-sandbox"])
+    if res.returncode != 0:
+        detail = (res.stderr or "").strip() or f"exit {res.returncode}"
+        raise StockUnavailable(f"could not refresh the sync database ({detail})")
+    return db
 
 
 def _matches(name: str, pattern: str) -> bool:
