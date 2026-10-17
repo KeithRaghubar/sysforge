@@ -37,8 +37,10 @@ def vercmp(ver_a: str, ver_b: str) -> int:
     verdict = -1 if n < 0 else (1 if n > 0 else 0)
     # Log the operands *with* the result. Logging them before the comparison
     # (as this did) leaves a log line that states a question and never answers
-    # it — useless when reading sysforge-update.log after the fact.
-    _log.info(f"vercmp {ver_a!r} {ver_b!r} -> {verdict}")
+    # it — useless when reading sysforge-update.log after the fact. Debug, not
+    # info: bare operands cannot say what was compared or what the answer
+    # means, so the caller narrates its decision instead (3.5.0-B11).
+    _log.debug(f"vercmp {ver_a!r} {ver_b!r} -> {verdict}")
     return verdict
 
 

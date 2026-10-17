@@ -145,3 +145,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B10` — `sysforge uninstall` tab-completes installed packages only.** Pressing Tab after `uninstall` offered every package sysforge knows about, including everything in the repos and the AUR, so most suggestions named packages that aren't installed and that `uninstall` can't remove. Both the zsh and bash completions now offer only installed packages, including sysforge's renamed `-sysforge` builds under the names they are installed as.
+
+---
+
+- **`3.5.0-B11` — the run log says which stage-owned package a version check was for.** At the end of `update`, sysforge checks whether the repos have a newer version of each package the toolchain or kernel stage owns, and with `-vv` (and always in `sysforge-update.log`) each check logged only `[VERSION] vercmp '23.1.3-2' '23.1.1-1' -> 1`, with no package name, no stage, and no plain answer. Each check now logs one line like `[UPDATE] toolchain-owned clang: repo 23.1.3-2 is newer than installed 23.1.1-1`, or `is not newer than` when there is nothing to do. The bare `vercmp` line is still in the log file but now appears only at `-vvv`, everywhere sysforge compares versions.

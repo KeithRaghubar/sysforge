@@ -612,7 +612,7 @@ def _detect_stage_owned_updates(
             # The walk's exclusion and the pin's lifecycle stay untouched —
             # syncing stage-owned sources from `update` is exactly the
             # double-processing the owner_stage skip exists to prevent.
-            hit = _stage_owned_repo_advisory(pkgbase, pkgnames, all_installed)
+            hit = _stage_owned_repo_advisory(pkgbase, pkgnames, all_installed, owner)
             if hit is not None:
                 installed_ver, candidate_ver = hit
                 advisories.append((pkgbase, installed_ver, candidate_ver, owner))
@@ -632,6 +632,7 @@ def _detect_stage_owned_updates(
 
 def _stage_owned_repo_advisory(
     pkgbase: str, pkgnames: list[str], all_installed: dict[str, str],
+    owner: str = "",
 ) -> tuple[str, str] | None:
     """Sync-DB candidate for a stage-owned ``source = "repo"`` pkgbase.
 
@@ -657,11 +658,19 @@ def _stage_owned_repo_advisory(
         if not candidate_ver:
             continue
         try:
-            if vercmp(candidate_ver, installed_ver) > 0:
-                return installed_ver, candidate_ver
+            newer = vercmp(candidate_ver, installed_ver) > 0
         except RuntimeError:
             continue
-        return None
+        # 3.5.0-B11: say which package, whose, and what the comparison meant;
+        # vercmp's own line carries only the operands.
+        subject = name if name == pkgbase else f"{name} ({pkgbase})"
+        whose = f"{owner}-owned" if owner else "stage-owned"
+        verdict = "newer than" if newer else "not newer than"
+        _log.info(
+            f"{whose} {subject}: repo {candidate_ver} is {verdict} "
+            f"installed {installed_ver}"
+        )
+        return (installed_ver, candidate_ver) if newer else None
     return None
 
 

@@ -715,6 +715,38 @@ def test_detect_stage_owned_repo_no_advisory_when_sync_db_not_newer(monkeypatch)
     assert out == []
 
 
+def _stage_owned_info_lines(monkeypatch, sync_ver, installed_ver):
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+    monkeypatch.setattr(pac, "get_pacman_sync_version", lambda n: sync_ver)
+    lines = []
+    with patch("sysforge.log.info", side_effect=lambda tag, msg: lines.append((tag, msg))):
+        up._detect_stage_owned_updates(
+            {"clang": {"owner_stage": "toolchain", "source": "repo"}},
+            all_installed={"clang": installed_ver},
+            sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+            skip_sync_check=False, offline=False,
+        )
+    return [msg for tag, msg in lines if tag == "[UPDATE]"]
+
+
+def test_stage_owned_repo_check_names_package_owner_and_verdict(monkeypatch):
+    """3.5.0-B11: the run log showed only `vercmp '23.1.3-2' '23.1.1-1' -> 1`,
+    with no hint of which package, which stage, or what the answer meant."""
+    lines = _stage_owned_info_lines(monkeypatch, "23.1.3-2", "23.1.1-1")
+    assert len(lines) == 1
+    msg = lines[0]
+    for part in ("clang", "toolchain", "23.1.3-2", "23.1.1-1", "newer"):
+        assert part in msg
+
+
+def test_stage_owned_repo_check_logs_up_to_date_verdict(monkeypatch):
+    lines = _stage_owned_info_lines(monkeypatch, "23.1.2-1", "23.1.2-1")
+    assert len(lines) == 1
+    assert "clang" in lines[0] and "toolchain" in lines[0]
+    assert "not newer" in lines[0]
+
+
 def test_detect_stage_owned_repo_unknown_to_sync_db_is_silent(monkeypatch):
     """Best-effort: a package the sync DB does not carry omits the advisory
     rather than raising — this path must never fail an update run."""

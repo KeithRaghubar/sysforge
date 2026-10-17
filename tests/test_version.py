@@ -118,16 +118,22 @@ def test_format_version_default_pkgrel():
 def test_vercmp_logs_operands_with_the_result():
     """Logging the operands *before* comparing left a line that asked a question
     and never answered it — useless when reading the run log after the fact."""
-    lines = []
+    lines, info = [], []
     with patch("subprocess.run", return_value=_mock_run("1\n")), \
-         patch("sysforge.log.info", side_effect=lambda tag, msg: lines.append((tag, msg))):
+         patch("sysforge.log.debug", side_effect=lambda tag, msg: lines.append((tag, msg))), \
+         patch("sysforge.log.info", side_effect=lambda tag, msg: info.append((tag, msg))):
         assert vercmp("3.4.1-1", "3.3.0-1") == 1
 
+    lines = [(tag, msg) for tag, msg in lines if tag == "[VERSION]"]
+
     assert lines == [("[VERSION]", "vercmp '3.4.1-1' '3.3.0-1' -> 1")]
+    # 3.5.0-B11: bare operands say nothing about *what* was compared, so they
+    # are mechanics (debug); the caller narrates the decision at info.
+    assert info == []
 
 
 def test_vercmp_log_line_carries_no_colour():
-    """Message bodies on info() bypass the colour gate and land verbatim in the
+    """Message bodies on debug() bypass the colour gate and land verbatim in the
     file log (docs/design/12-logging.md § Colour) — this one stays plain."""
     from sysforge import log
 
@@ -136,8 +142,8 @@ def test_vercmp_log_line_carries_no_colour():
     try:
         log.set_color_mode("always")
         with patch("subprocess.run", return_value=_mock_run("-1\n")), \
-             patch("sysforge.log.info",
-                   side_effect=lambda tag, msg: lines.append(msg)):
+             patch("sysforge.log.debug",
+                   side_effect=lambda tag, msg: lines.append(msg) if tag == "[VERSION]" else None):
             assert vercmp("1.0-1", "2.0-1") == -1
     finally:
         log.set_color_mode(saved)
