@@ -212,6 +212,18 @@ def select_failure_tail(lines: list, limit: int) -> list:
     return [*head, f"... {omitted} line(s) omitted ...", *tail]
 
 
+def _forwards_to_terminal(interactive: bool) -> bool:
+    """Whether the child's raw bytes will be forwarded to a terminal.
+
+    An interactive build always forwards; a batch build does unless -vvv
+    routes output to the log as lines instead. Either way only when sysforge's
+    own stdout is a tty, so `sysforge update | tee` stays free of \\r/ANSI.
+    """
+    if not sys.stdout.isatty():
+        return False
+    return interactive or log.get_verbosity() < 3
+
+
 def _sandbox_state_dir():
     """The state dir the local repo lives under (3.1.0-F10); a seam for tests."""
     from sysforge.primitives.paths import resolve_state_dir
@@ -402,7 +414,13 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # Only the profile-resolved injections are re-exported — never the
         # whole inherited environment, which is the user's shell, not a build
         # input, and has no business crossing into the container.
-        _chroot_text = build_sandbox.chroot_conf_text(conf_path, exports=extra_env)
+        # 3.5.0-B9: makechrootpkg's forced --log puts cargo's stderr on a FIFO,
+        # so its progress line is forced on, sized to the terminal it will be
+        # forwarded to. Never for a piped or -vvv run, which keeps \r out.
+        _progress_width = (shutil.get_terminal_size().columns
+                           if _forwards_to_terminal(interactive) else None)
+        _chroot_text = build_sandbox.chroot_conf_text(
+            conf_path, exports=extra_env, progress_width=_progress_width)
         # After every provisioning step, so it judges the chroot as the build
         # will see it (3.4.0-F2). Raises before the canonical swap below, so a
         # refusal has nothing to undo but the scratch dir.
@@ -622,7 +640,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # output, the display's ticker otherwise (3.3.0-F2).
         progress_hooks.hooks().heartbeat(detail)
 
-    forward_bytes = (not verbose_log) and sys.stdout.isatty()
+    forward_bytes = _forwards_to_terminal(interactive=False)
     # makepkg's child tools (cargo/ninja/cmake) do their own full-screen cursor
     # addressing. Size the child's pty one row shorter than the terminal (the
     # rows the progress bar reserves) so the child confines its redraws/scrolling

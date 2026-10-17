@@ -59,7 +59,7 @@ Public API:
     as_canonical_pkgbuild(pkgbuild_path) -> ctx  (yields ./PKGBUILD)
     build_argv(policy, flags, conf_dir_name, install_pkgs) -> list[str]
     dest_env_from_conf(conf_path) -> dict
-    chroot_conf_text(conf_path, exports) -> str
+    chroot_conf_text(conf_path, exports, progress_width) -> str
     audit_chroot_conf(conf_text, policy) -> None   (raises SandboxUnavailable)
     chroot_env(env) -> dict
     mem_cap_applies(policy) -> bool
@@ -151,6 +151,10 @@ _ENV_EXPORT_DENY = {
     # keys name host paths, which is the category above.
     "RUSTC_WRAPPER", "CCACHE_DIR", "SCCACHE_DIR",
 }
+
+# Cargo's progress-line keys (3.5.0-B9): see chroot_conf_text. A profile that
+# sets either one has made its own choice, so the sandbox adds neither.
+_CARGO_PROGRESS_KEYS = ("CARGO_TERM_PROGRESS_WHEN", "CARGO_TERM_PROGRESS_WIDTH")
 
 # BUILDENV options that name a binary rather than a policy. The sandbox chroot
 # is base-devel only, and makepkg treats a missing accelerator as a hard error
@@ -761,7 +765,8 @@ def _container_buildenv(conf_path: Path) -> str | None:
     return "BUILDENV=(" + " ".join(options) + ")"
 
 
-def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
+def chroot_conf_text(conf_path: Path, exports: dict | None = None,
+                     progress_width: int | None = None) -> str:
     """Derive the container-side ``makepkg.conf`` from the emitted host one.
 
     Appends, after the original body so they win by re-assignment:
@@ -774,7 +779,13 @@ def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
       profile's env-type keys). Those are deliberately absent from the conf on
       the host path because makepkg sources the conf *after* the invocation
       env is set; inside the container there is no invocation env to inherit,
-      so the conf is the only channel left.
+      so the conf is the only channel left;
+    * with ``progress_width``, cargo's progress line forced on at that width
+      (3.5.0-B9). makechrootpkg always passes ``--log``, which runs ``build()``
+      with stdout+stderr on makepkg's ``tee`` FIFO, so cargo never sees a
+      terminal and stays silent; ``always`` needs an explicit width once it
+      cannot measure one. A profile export of either key wins. The caller
+      passes a width only when the stream is forwarded to a terminal.
     """
     body = Path(conf_path).read_text()
     lines = [body.rstrip("\n"), "", "# --- sysforge build sandbox ---"]
@@ -787,6 +798,9 @@ def chroot_conf_text(conf_path: Path, exports: dict | None = None) -> str:
         if key in _ENV_EXPORT_DENY or not key.isidentifier():
             continue
         lines.append(f"export {key}={shlex.quote(str(value))}")
+    if progress_width and not any(k in (exports or {}) for k in _CARGO_PROGRESS_KEYS):
+        lines.append("export CARGO_TERM_PROGRESS_WHEN=always")
+        lines.append(f"export CARGO_TERM_PROGRESS_WIDTH={int(progress_width)}")
     return "\n".join(lines) + "\n"
 
 

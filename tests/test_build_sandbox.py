@@ -294,6 +294,37 @@ def test_chroot_conf_drops_host_specific_exports(tmp_path):
     assert "PKGDEST=/pkgdest" in text
 
 
+# --- cargo's progress line under makepkg --log (3.5.0-B9) -------------------
+#
+# makechrootpkg always passes --log, and makepkg then runs build() with its
+# stdout+stderr on a tee FIFO, so cargo never sees a terminal and draws no
+# `Building [==> ] N/M` line. The conf is the channel that reaches it.
+
+def test_chroot_conf_forces_cargo_progress_with_width(tmp_path):
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    text = bs.chroot_conf_text(conf, progress_width=118)
+    assert "export CARGO_TERM_PROGRESS_WHEN=always" in text
+    # Cargo refuses `always` without a width when its stderr is not a tty.
+    assert "export CARGO_TERM_PROGRESS_WIDTH=118" in text
+
+
+def test_chroot_conf_leaves_cargo_progress_alone_by_default(tmp_path):
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    assert "CARGO_TERM_PROGRESS" not in bs.chroot_conf_text(conf)
+
+
+def test_chroot_conf_profile_cargo_progress_wins(tmp_path):
+    conf = tmp_path / "makepkg.conf"
+    conf.write_text("")
+    text = bs.chroot_conf_text(
+        conf, exports={"CARGO_TERM_PROGRESS_WHEN": "never"}, progress_width=118)
+    assert "export CARGO_TERM_PROGRESS_WHEN=never" in text
+    assert "CARGO_TERM_PROGRESS_WHEN=always" not in text
+    assert "CARGO_TERM_PROGRESS_WIDTH" not in text
+
+
 # --- host-only build accelerators (3.2.0-B2) -------------------------------
 #
 # The clean chroot is base-devel only. A BUILDENV naming ccache/distcc, or a
@@ -429,6 +460,8 @@ def _invoke(pkgbuild, conf, profile, **kwargs):
         _canonical = Path(cwd) / "PKGBUILD"
         captured["during_pkgbuild"] = (
             _canonical.read_text() if _canonical.exists() else None)
+        confs = list(Path(cwd).glob(f"{bs.CHROOT_CONF_DIR_PREFIX}*/{bs.CHROOT_CONF_NAME}"))
+        captured["chroot_conf"] = confs[0].read_text() if confs else None
         return 0
 
     def fake_popen(cmd, **kw):
@@ -481,6 +514,27 @@ def test_seam_exports_dest_env_for_makechrootpkg(tmp_path):
     cap = _invoke(pb, conf, {})
     assert cap["env"]["PKGDEST"] == str(tmp_path / "packages")
     assert "MAKEPKG_CONF" not in cap["env"]
+
+
+def test_seam_forces_cargo_progress_when_forwarding_to_a_tty(tmp_path):
+    """3.5.0-B9: the bar is only worth drawing when its bytes reach a terminal."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    with patch("sysforge.primitives.makepkg_invoke.sys.stdout.isatty", return_value=True), \
+            patch("sysforge.primitives.makepkg_invoke.shutil.get_terminal_size",
+                  return_value=os.terminal_size((97, 30))):
+        cap = _invoke(pb, conf, {})
+    assert "export CARGO_TERM_PROGRESS_WHEN=always" in cap["chroot_conf"]
+    assert "export CARGO_TERM_PROGRESS_WIDTH=97" in cap["chroot_conf"]
+
+
+def test_seam_no_cargo_progress_when_output_is_piped(tmp_path):
+    """`sysforge update | tee` keeps the stream free of \\r redraws."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    with patch("sysforge.primitives.makepkg_invoke.sys.stdout.isatty", return_value=False):
+        cap = _invoke(pb, conf, {})
+    assert "CARGO_TERM_PROGRESS" not in cap["chroot_conf"]
 
 
 def test_seam_writes_then_removes_the_scratch_conf(tmp_path):
