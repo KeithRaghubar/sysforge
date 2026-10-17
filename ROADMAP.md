@@ -114,6 +114,7 @@ canonical ordering.
 | `3.5.0-B13` | toolchain PKGBUILD resolution prefers a stale per-package checkout over the pkgbase that now builds it | high | small | patch |
 | `3.5.0-B14` | LLVM target filtering breaks stock libLLVM consumers that initialize all targets | high | medium | patch |
 | `3.5.0-F2` | rebuild the PGO toolchain around upstream's single llvm pkgbase | high | large | minor |
+| `3.5.0-F3` | BOLT the PGO toolchain's shared libraries inside the build, with instrumentation profiles | med | large | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -147,6 +148,42 @@ canonical ordering.
   *Priority: high · Effort: large · Bump: minor* — high because the LLVM PGO toolchain cannot be
   rebuilt or updated at all until this lands; large because it reshapes the pass sequence and
   every package-set consumer; minor because the default package lists change shape.
+
+---
+
+- **`3.5.0-F3` — BOLT the PGO toolchain's shared libraries inside the build, with
+  instrumentation profiles.** The shipped Pass 5 (`toolchain/bolt.py`, `[bolt] enabled`, blocked
+  since it landed) cannot work as designed, and a 2026-10-17 spike against `extra/llvm-bolt`
+  23.1.3-3 found four reasons. (1) It rewrites `/usr/bin/clang-23`, a 117 KB driver; with
+  `LLVM_LINK_LLVM_DYLIB=ON` the code is in `libLLVM.so` (97 MB) and `libclang-cpp.so` (62 MB).
+  (2) It rewrites the *installed* binary, but makepkg strips it and BOLT refuses stripped input;
+  instrumentation also requires relocations ("instrumentation runtime libraries require
+  relocations"). So BOLT has to run on the unstripped, `--emit-relocs`-linked build-tree
+  libraries before packaging, i.e. inside the `llvm` build, which `3.5.0-F2` makes possible.
+  (3) It profiles with `perf record -j any,u`, and the tested Zen 3 hardware has no branch-stack
+  sampling ("PMU Hardware or event type doesn't support branch stack sampling"), so the
+  hardware-independent default has to be BOLT instrumentation (`llvm-bolt -instrument` → training
+  compile → `merge-fdata` → optimize), keeping `perf2bolt` as an opt-in where branch sampling
+  works. (4) Arch's packaged `libbolt_rt_instr.a` is unusable: it is built by GCC with Arch's
+  `-fno-plt`, which routes GCC's implicit `memset` calls through the GOT (25
+  `R_X86_64_GOTPCRELX memset`), and BOLT's JITLink rejects them for every input
+  ("unsupported edge kind RequestGOTAndTransformToPCRel32GOTLoadRelaxable"). Reproduced: the same
+  `instr.cpp` built by GCC without `-fno-plt`, or by clang either way, links. sysforge's in-tree
+  build must add `-fplt` to the runtime's flags (patch `BOLT_RT_FLAGS`) or the stage must pass a
+  runtime it built via `--runtime-instrumentation-lib`. With a working runtime, the spike ran a
+  full instrument → profile → optimize cycle on a PIC C++ shared library covering exceptions,
+  static init, `thread_local` and a forked child (per-PID `.fdata` + merge), with identical
+  output before and after; libLLVM itself was not tested (it needs an `--emit-relocs` build).
+  Also update `_BOLT_OPT_FLAGS`: LLVM 23 deprecates `-reorder-functions=hfsort+` (use `cdsort`)
+  and numeric `-icf=1` (use `-icf=all`). Retire the standalone `llvm-bolt` PKGBUILD path and
+  `standalone_build_viable`, which F2's in-tree build replaces. Training workload: reuse Pass 3's
+  corpus. Tests: pass plan places BOLT after Pass 4's link and before packaging; runtime flags
+  carry `-fplt`; the BOLT targets are the two shared libraries; perf mode is opt-in and gated on
+  a branch-sampling probe.
+  *Priority: med · Effort: large · Bump: minor* — med because a shipped, documented option has
+  never been able to run; large because it moves BOLT from a post-install pass into the build
+  and adds an instrumentation cycle; minor because it adds a profile mode and changes `[bolt]`
+  behaviour additively. Depends on `3.5.0-F2`.
 
 ### Bugs
 
