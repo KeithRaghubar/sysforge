@@ -309,6 +309,61 @@ def test_standalone_stage_skips_log_on_dry_run(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Standalone stage status (3.5.0-B12)
+# ---------------------------------------------------------------------------
+
+class ResultStage(OkStage):
+    """Stage that checkpoints a result mid-run, as the toolchain stage does."""
+    def run(self, config, state, options):
+        super().run(config, state, options)
+        state.set_stage_result(self.name, {"cc": "/usr/bin/clang", "variant": "stock_llvm"})
+        state.save()
+
+
+def test_standalone_success_records_done(tmp_path, monkeypatch):
+    """A standalone run persists `done`, so the next process sees it."""
+    _standalone(OkStage("toolchain"), tmp_path, monkeypatch)
+    assert PipelineState(tmp_path).stage_status("toolchain") == "done"
+
+
+def test_standalone_failure_records_failed(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit):
+        _standalone(FailStage("toolchain"), tmp_path, monkeypatch)
+    assert PipelineState(tmp_path).stage_status("toolchain") == "failed"
+
+
+def test_standalone_stage_result_survives_reload(tmp_path, monkeypatch):
+    """A result written mid-stage must persist: a status-less stage entry is
+    dropped by the serializer, so a later `run packages` saw no toolchain."""
+    _standalone(ResultStage("toolchain"), tmp_path, monkeypatch)
+    assert PipelineState(tmp_path).get_stage_result("toolchain")["variant"] == "stock_llvm"
+
+
+def test_standalone_first_run_notice_not_repeated(tmp_path, monkeypatch, capsys):
+    """The 3.1.0-F5 advisory fires on the first standalone run only."""
+    def notice_shown():
+        out, err = capsys.readouterr()
+        return "first toolchain run" in out + err
+
+    _standalone(OkStage("toolchain"), tmp_path, monkeypatch)
+    assert notice_shown()
+    _standalone(OkStage("toolchain"), tmp_path, monkeypatch)
+    assert not notice_shown()
+
+
+def test_standalone_stateless_stage_writes_no_status(tmp_path, monkeypatch):
+    stage = OkStage("reconfigure")
+    stage.stateless = True
+    _standalone(stage, tmp_path, monkeypatch)
+    assert not (tmp_path / "pipeline_state.toml").exists()
+
+
+def test_standalone_dry_run_writes_no_status(tmp_path, monkeypatch):
+    _standalone(OkStage("toolchain"), tmp_path, monkeypatch, dry_run=True)
+    assert not (tmp_path / "pipeline_state.toml").exists()
+
+
+# ---------------------------------------------------------------------------
 # Post-build change summary (2.6.1-F24)
 # ---------------------------------------------------------------------------
 

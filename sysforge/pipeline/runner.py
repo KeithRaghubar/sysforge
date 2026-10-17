@@ -192,6 +192,20 @@ def run_stage_standalone(stage, config, options):
             unified_log_active = False
             _log.warn(f"Cannot write unified log to {unified_log_path}: logging to terminal only")
 
+    # 3.5.0-B12: record status the way run_pipeline does. Without it the
+    # stage never reads as `done` (so the 3.1.0-F5 notice repeated forever),
+    # and a result the stage checkpoints mid-run sat in a status-less entry
+    # that PipelineState._serialize drops.
+    tracks_status = not stage.stateless and not options.dry_run
+
+    def _checkpoint():
+        try:
+            state.save()
+        except PermissionError:
+            _log.warn(
+                f"Cannot write state to {state_dir}: progress will not be checkpointed"
+            )
+
     _log.info(f"Invocation: {_INVOCATION}")
     success = False
     try:
@@ -203,18 +217,20 @@ def run_stage_standalone(stage, config, options):
             # `run toolchain` / `run kernel` actually build, before they build
             # it. Advisory only — never prompts, blocks, or raises.
             maybe_emit_stage_config_notice(stage.name, state)
+            if tracks_status:
+                state.mark_running(stage.name)
+                _checkpoint()
             progress.phase(stage.name)
             _run_stage_with_change_report(stage, config, state, options)
-            if not stage.stateless:
-                try:
-                    state.save()
-                except PermissionError:
-                    _log.warn(
-                        f"Cannot write state to {state_dir}: progress will not be checkpointed"
-                    )
+            if tracks_status:
+                state.mark_done(stage.name)
+                _checkpoint()
             _log.info(f"{stage.name}: complete")
         success = True
     except RuntimeError as e:
+        if tracks_status:
+            state.mark_failed(stage.name, str(e))
+            _checkpoint()
         _log.fatal(f"{stage.name}: FAILED; {e}")
     finally:
         if unified_log_active:
