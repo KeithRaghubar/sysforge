@@ -141,3 +141,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B9` — Rust builds in the build sandbox show cargo's progress line again.** With `sandbox_builds = true`, the `Building [=====>    ] 120/431: <crate>` line that cargo draws above sysforge's progress bar never appeared; only the `Compiling` lines did. The sandbox's build tool always logs the build to a file, which sends cargo's output through a pipe, and cargo only draws its progress line when it is writing to a terminal. The sandbox now tells cargo to draw it anyway, at your terminal's width, whenever sysforge is passing the build's output to a terminal. Piped runs (`sysforge update | tee log.txt`) and `-vvv` runs are unchanged, and a profile that sets `CARGO_TERM_PROGRESS_WHEN` or `CARGO_TERM_PROGRESS_WIDTH` keeps its own setting. The width is taken when the build starts, so the line does not reflow if you resize the window mid-build. Builds outside the sandbox are not affected.
+
+---
+
+- **`3.5.0-B10` — `sysforge uninstall` tab-completes installed packages only.** Pressing Tab after `uninstall` offered every package sysforge knows about, including everything in the repos and the AUR, so most suggestions named packages that aren't installed and that `uninstall` can't remove. Both the zsh and bash completions now offer only installed packages, including sysforge's renamed `-sysforge` builds under the names they are installed as.

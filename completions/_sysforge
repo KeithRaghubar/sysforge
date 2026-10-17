@@ -581,7 +581,7 @@ _sysforge_search() {
 _sysforge_uninstall() {
   _arguments \
     '--state-dir[override state directory]:dir:_directories' \
-    '*: :_sysforge_pkg_names'
+    '*:installed package:_sysforge_installed_pkg_names'
 }
 
 _sysforge_run() {

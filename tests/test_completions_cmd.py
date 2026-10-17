@@ -8,9 +8,12 @@ Each ``args.resource`` branch reads a source (config dirs, packages.toml, the
 build state, ``makepkg --help``, or the repo+AUR universe) and prints candidate
 names one per line for the ``_sysforge`` completion script. These assert the
 observable stdout the completion script consumes."""
+import re
 import subprocess
 import types
+from pathlib import Path
 
+import pytest
 
 from sysforge.completions_cmd import CompletionsVerb
 from sysforge.verbs import PreCheckResult
@@ -181,3 +184,24 @@ def test_completions_default_survives_pacman_failure(monkeypatch, tmp_path, caps
     _exec("default")
 
     assert _lines(capsys) == ["foo"]
+
+
+# --- which candidate set each verb completes from ---------------------------
+
+_SCRIPTS = Path(__file__).resolve().parent.parent / "completions"
+
+
+def _function_body(text: str, name: str) -> str:
+    """The body of shell function *name* (up to the closing brace at column 0)."""
+    m = re.search(rf"^{re.escape(name)}\(\) \{{\n(.*?)^\}}", text, re.M | re.S)
+    assert m, f"{name} not found"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("script", ["_sysforge", "sysforge.bash"])
+def test_uninstall_completes_installed_packages_only(script):
+    """3.5.0-B10: `uninstall` can only remove what pacman has installed, so it
+    must not offer the whole repo+AUR universe that `_sysforge_pkg_names` does."""
+    body = _function_body((_SCRIPTS / script).read_text(), "_sysforge_uninstall")
+    assert "_sysforge_installed_pkg_names" in body
+    assert "_sysforge_pkg_names" not in body.replace("_sysforge_installed_pkg_names", "")

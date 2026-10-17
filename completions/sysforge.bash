@@ -401,7 +401,7 @@ _sysforge_uninstall() {
     if [[ $cur == -* ]]; then
         COMPREPLY=( $(compgen -W "--state-dir" -- "$cur") )
     else
-        _sysforge_pkg_names
+        _sysforge_installed_pkg_names
     fi
 }
 
