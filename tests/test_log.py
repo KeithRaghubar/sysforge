@@ -192,10 +192,10 @@ def test_open_unified_log_creates_parent_dirs(tmp_path):
 
 def test_open_unified_log_writes_session_header(tmp_path):
     path = tmp_path / "sysforge.log"
-    log.open_unified_log(path)
+    log.open_unified_log(path, label="sysforge run toolchain")
     log.close_unified_log(success=False, persist=True)
     content = path.read_text()
-    assert "sysforge pipeline" in content
+    assert "# sysforge run toolchain:" in content  # 3.5.0-B36: the command, not "pipeline"
     assert "─" in content  # separator line
 
 

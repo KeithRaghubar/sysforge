@@ -658,3 +658,14 @@ def test_install_stage_opts_in_against_archinstall_mountpoint():
     s = InstallStage()
     assert s.reports_changes and s.change_before_empty
     assert s.change_root == str(TARGET_ROOT) == "/mnt"
+
+
+def test_standalone_log_names_its_command_and_failure_its_stage(tmp_path, monkeypatch):
+    """3.5.0-B36: `run toolchain`'s log opens with that command, not
+    'sysforge pipeline', and its failure line carries the stage's tag."""
+    with pytest.raises(SystemExit):
+        _standalone(FailStage("toolchain"), tmp_path, monkeypatch)
+    body = (tmp_path / "sysforge-run-toolchain.log").read_text()
+    assert "# sysforge run toolchain:" in body
+    assert "[PIPELINE]" not in body and "sysforge pipeline" not in body
+    assert "[TOOLCHAIN] toolchain: FAILED" in body

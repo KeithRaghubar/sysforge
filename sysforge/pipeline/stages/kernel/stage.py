@@ -339,20 +339,20 @@ class KernelStage(Stage):
         # -propeller), which never collides; without FDO it is the stock pkgname.
         source.check_pkgname_repo_collision(fdo_eff_pkgname, options)
 
-        # Compiler resolution: CLI > kernel.toml > pipeline state from toolchain.
+        # Compiler resolution: CLI > kernel.toml > the toolchain stage's result.
         compiler, cc, cxx = config.resolve_compiler(kernel_cfg, options, state)
         if getattr(options, "compiler", None):
             compiler_origin = "--compiler"
         elif kernel_cfg.compiler:
             compiler_origin = "kernel.toml"
         elif cc:
-            compiler_origin = "toolchain pipeline state"
+            compiler_origin = "the last `run toolchain`"
         else:
             compiler_origin = "profile default"
         if compiler:
             _log.info(f"Kernel compiler override: {compiler}  (cc={cc}  cxx={cxx})")
         elif cc:
-            _log.info(f"Toolchain override from pipeline: cc={cc} cxx={cxx or '-'}")
+            _log.info(f"Compiler from the last `run toolchain`: cc={cc} cxx={cxx or '-'}")
         else:
             _log.info("No kernel compiler override: profile defaults apply")
 
@@ -364,14 +364,14 @@ class KernelStage(Stage):
         if compiler is None and variant == "pgo_llvm":
             _log.warn(
                 "Active toolchain variant: pgo_llvm; kernel will inherit PGO "
-                "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
+                "clang from the last `run toolchain`. Set `compiler = \"llvm\"` "
                 "in kernel.toml (or pass --compiler=llvm) to make this explicit "
                 "and survive future toolchain-stage disable."
             )
         elif compiler is None and variant == "stock_llvm":
             _log.info(
                 "Active toolchain variant: stock_llvm; kernel will inherit "
-                "clang via pipeline-state fallback. Set `compiler = \"llvm\"` "
+                "clang from the last `run toolchain`. Set `compiler = \"llvm\"` "
                 "in kernel.toml to make this explicit."
             )
 

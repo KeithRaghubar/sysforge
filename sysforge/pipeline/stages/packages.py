@@ -328,7 +328,7 @@ class PackagesStage(Stage):
         toolchain = _toolchain_overrides(state)
         if toolchain:
             _log.info(
-                f"Toolchain override from pipeline: cc={toolchain.get('cc_override', '-')} "
+                f"Compiler from the last `run toolchain`: cc={toolchain.get('cc_override', '-')} "
                 f"cxx={toolchain.get('cxx_override', '-')}"
             )
 

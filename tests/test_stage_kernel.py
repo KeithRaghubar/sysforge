@@ -5510,3 +5510,19 @@ def test_resolution_summary_says_whether_hardening_is_on(tmp_path, on):
     logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
     ui = _ui_messages(logs)
     assert any(m.strip() == f"hardening:  {'on' if on else 'off'}" for m in ui), ui
+
+
+def test_inherited_compiler_is_named_as_the_last_toolchain_run(tmp_path):
+    """3.5.0-B36: a compiler taken from the toolchain stage's result is 'the
+    compiler the last run toolchain set up', not 'pipeline state'."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    p = make_kernel_toml(tmp_path, builds)
+    opts = make_options(state_dir=tmp_path / "state", dry_run=True)
+    logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
+    said = [str(c.args[1]) for m in (logs.ui, logs.info, logs.warn)
+            for c in m.call_args_list]
+    assert any("compiler:" in m and "last `run toolchain`" in m for m in said), said
+    assert not [m for m in said if "pipeline" in m.lower()]

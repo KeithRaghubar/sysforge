@@ -130,7 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     from sysforge import __version__
     parser = argparse.ArgumentParser(
         prog="sysforge",
-        description="Arch Linux build and maintenance suite with compiler-optimized builds.",
+        # Kept equal to pyproject.toml's description (tests/test_run_cmd.py).
+        description=("AUR helper that builds and tracks packages tuned to your CPU "
+                     "with PGO, BOLT and LTO"),
         formatter_class=_TieredHelpFormatter,
     )
     parser.add_argument(

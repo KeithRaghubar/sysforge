@@ -92,7 +92,11 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line.
+- **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
+
+---
+
+- **`3.5.0-DOC2` — the man page opens with what a running system uses.** Its name line now matches the package description, and its description of `sysforge run` leads with `run toolchain`, `run kernel` and `run packages`, then describes `run pipeline`, `run hardware` and `run reconfigure` as the fresh-install bootstrap.
 
 ---
 
@@ -267,3 +271,19 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B32` — the package's optional dependencies list only what you install for LLVM.** The PKGBUILD listed `clang`, `lld`, `llvm` and `compiler-rt` as separate optional dependencies, and the README named all four. Installing `clang` already brings in `llvm` and `compiler-rt`, and `run toolchain` installs the compilers it needs itself. Both also pointed at a `sysforge run toolchain --compiler=llvm` flag that doesn't exist. The list is now `clang` and `lld`, and the README says to set `compiler = "llvm"` in `toolchain.toml` instead.
+
+---
+
+- **`3.5.0-B33` — saying no at the `run toolchain` prompt no longer points you at the setup pipeline.** Declining `sysforge run toolchain`'s confirmation printed `Resume command: sysforge run pipeline --resume`, which starts the fresh-install bootstrap, though nothing had been built and there was nothing to resume. On its own, `run toolchain` now just says nothing was built or installed. Inside `sysforge run pipeline`, the resume hint is unchanged.
+
+---
+
+- **`3.5.0-B34` — `--cache-report` help describes the run it is on.** Every `sysforge run` subcommand shares `--cache-report`, and its help said the summary prints "after the pipeline completes", including under `run toolchain`, `run kernel` and `run packages`. It now says "after the run completes", and the zsh completion matches.
+
+---
+
+- **`3.5.0-B35` — help text names the commands it means instead of "pipeline".** sysforge's help still read as if setup were the main job. `sysforge --help` and the zsh completion now list `run` by what you run routinely: "Build the toolchain, kernel or packages, or run the fresh-install bootstrap". `run pipeline` says it is the fresh-install bootstrap. `run kernel --compiler` refers to "the compiler the last `run toolchain` set up" rather than "toolchain-stage pipeline state", and `update --include-stage-owned` to packages owned by `run kernel` or `run toolchain`. The man page's state-directory entry says "stage progress", and the top-level description matches the package description.
+
+---
+
+- **`3.5.0-B36` — run logs name the command that ran.** Every standalone run's log opened with `# sysforge pipeline`, even `sysforge-run-toolchain.log`, and logged its failure under `[PIPELINE]`. Each log now opens with its command (`# sysforge run toolchain: …`), and a standalone run logs its own lines under the stage's tag. The kernel and packages stages say they took the compiler "from the last `run toolchain`" instead of "from pipeline" or "pipeline state".

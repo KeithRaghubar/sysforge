@@ -298,10 +298,12 @@ def _format_line(level: str, tag: str, message: str) -> str:
 # File log management
 # ---------------------------------------------------------------------------
 
-def open_unified_log(path, purge: bool = False) -> None:
+def open_unified_log(path, purge: bool = False, *, label: str = "sysforge") -> None:
     """
     Open (or create) the unified log file.
     purge=True truncates the file before writing, regardless of prior content.
+    ``label`` heads the session (``# <label>: <time>``): the command that
+    opened it, e.g. ``sysforge run toolchain`` (3.5.0-B36).
     """
     global _unified_log_fh
     path = Path(path)
@@ -322,7 +324,7 @@ def open_unified_log(path, purge: bool = False) -> None:
     # we don't own the file (e.g. appending an existing root-owned log).
     with contextlib.suppress(OSError):
         path.chmod(0o664)
-    _write_to_files(_session_header("sysforge pipeline"), raw=True)
+    _write_to_files(_session_header(label), raw=True)
 
 
 def close_unified_log(success: bool = True, persist: bool = False) -> None:

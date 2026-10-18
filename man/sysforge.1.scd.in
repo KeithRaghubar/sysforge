@@ -6,7 +6,7 @@ sysforge(1)
 
 # NAME
 
-sysforge - build and maintenance suite and system bootstrapper for Arch Linux
+sysforge - AUR helper that builds and tracks packages tuned to your CPU
 
 # SYNOPSIS
 
@@ -37,11 +37,14 @@ makepkg invocation with dependencies pre-installed, per-package logs, build
 failure diagnosis with deterministic auto-repair for known failure modes,
 and a single bulk install at the end.
 
-*sysforge run* executes pipeline stages: the bootstrap stages that take a
-fresh Arch ISO environment to a configured system (install via archinstall,
-hardware detection, configure), and the repeatable stages (toolchain,
-kernel, packages, reconfigure) that build an optionally PGO-optimized LLVM
-toolchain and a custom kernel under boot-safety gates.
+*sysforge run* builds what a running system rebuilds by stage: *run
+toolchain* an optionally PGO- and BOLT-optimized LLVM toolchain, *run
+kernel* a custom kernel under boot-safety gates, and *run packages*
+everything in packages.toml. Its other stages are the fresh-install
+bootstrap: *run pipeline* takes an Arch ISO environment to a configured
+system (install via archinstall, hardware detection, configure) and goes on
+through the build stages; *run hardware* and *run reconfigure* repeat its
+hardware detection and pre-build checks on their own.
 
 *sysforge doctor* is the read-only health surface, split into two scopes.
 *doctor system* runs the system-state axes (hardware, toolchain, pacman db,
@@ -216,7 +219,7 @@ bench.toml (under the state directory)
 # ENVIRONMENT
 
 SYSFORGE_STATE_DIR
-	Override the state directory (pipeline state, build_state.toml,
+	Override the state directory (stage progress, build_state.toml,
 	logs, sentinels). Read by every command that touches build state:
 	*build*, *update*, *state*, *log*, *doctor*, and the *run* stages.
 

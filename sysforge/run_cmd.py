@@ -64,7 +64,7 @@ class RunPipelineVerb(_RunVerbBase):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("pipeline",
-            help="Run the full install pipeline (stages 1–7).")
+            help="Fresh-install bootstrap: every stage from install through kernel (1–7).")
         p.add_argument("--resume", action="store_true",
             help="Resume from the last checkpoint.")
         p.add_argument("--start-from", metavar="STAGE", dest="start_from",
@@ -91,7 +91,7 @@ class RunPipelineVerb(_RunVerbBase):
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
             help="Path to a profiles.toml to use instead of the default.")
         p.add_argument("--cache-report", action="store_true", dest="cache_report",
-            help="Print a structured cache summary after the pipeline completes.")
+            help="Print a structured cache summary after the run completes.")
         p.add_argument("--abi-check", action="store_true", dest="abi_check",
             help="Run a post-build ABI compatibility check on built shared libraries.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
@@ -417,10 +417,10 @@ class RunKernelVerb(_RunVerbBase):
                  "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
                  "interactive targets are patched to `make olddefconfig` for unattended runs.")
         p.add_argument("--compiler", choices=["gcc", "llvm"], dest="compiler",
-            help="Kernel-stage compiler override (gcc or llvm). Independent of the "
-                 "global toolchain stage, so you can keep gcc system-wide but build "
-                 "the kernel with LLVM (or vice versa). Resolution order: this flag > "
-                 "kernel.toml compiler > toolchain-stage pipeline state.")
+            help="Kernel compiler override (gcc or llvm). Independent of "
+                 "`run toolchain`, so you can keep gcc system-wide but build the "
+                 "kernel with LLVM (or vice versa). Resolution order: this flag > "
+                 "kernel.toml compiler > the compiler the last `run toolchain` set up.")
         p.add_argument(
             "--bootloader", choices=["systemd-boot", "grub", "none"], dest="bootloader",
             help="Override kernel.toml bootloader for this invocation "
@@ -535,8 +535,8 @@ class RunKernelVerb(_RunVerbBase):
 #: kernel (stage required).
 RUN_GROUP = VerbGroup(
     name="run",
-    help="Execute a pipeline stage "
-         "(pipeline, hardware, reconfigure, toolchain, packages, kernel).",
+    help="Build the toolchain, kernel or packages, or run the fresh-install "
+         "bootstrap (pipeline, hardware, reconfigure).",
     dest="run_stage",
     metavar="STAGE",
     members=(RunPipelineVerb, RunHardwareVerb, RunReconfigureVerb,

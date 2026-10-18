@@ -1,6 +1,6 @@
 # SysForge
 
-SysForge is an Arch Linux build and maintenance suite with compiler optimization as a first-class concern. It manages AUR and custom package builds using rule-based compiler flag profiles: every AUR package is built with `-march=native`, LTO, or whatever profile matches its PKGBUILD metadata. Pacman owns the package database; SysForge owns the build configuration layer above it.
+SysForge is an AUR helper that builds and tracks packages tuned to your CPU. Every package it builds, from the AUR or your own PKGBUILDs, gets `-march=native`, LTO, or whichever rule-based compiler-flag profile matches its PKGBUILD. It can go further with profile-guided optimization (PGO): per package, for the kernel (AutoFDO and Propeller), and for its own LLVM/Clang toolchain, which it can also rewrite with BOLT. It records what it built and with which flags, so `sysforge update` can tell when a package's source, flags or toolchain have moved on. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
 **Relationship to `makepkg` and `pacman`:**
 
@@ -24,7 +24,7 @@ you're trying to do. For the complete reference (every verb, subcommand and flag
 
 ## About
 
-SysForge started as a tool to streamline its author's own Arch Linux build and maintenance workflow on a daily-driver machine, and grew into a general-purpose suite. The codebase is developed essentially end-to-end with Claude Code, but it is deliberately structured to stay hand-editable: the modular design docs under `docs/design/` are the source of truth, every module has a documented owner and API, and the full test suite gates every change. Feedback and contributions are welcome; see [Contributing](#contributing).
+SysForge started as a tool to streamline its author's own Arch Linux build and maintenance workflow on a daily-driver machine, and grew into a general-purpose AUR helper. The codebase is developed essentially end-to-end with Claude Code, but it is deliberately structured to stay hand-editable: the modular design docs under `docs/design/` are the source of truth, every module has a documented owner and API, and the full test suite gates every change. Feedback and contributions are welcome; see [Contributing](#contributing).
 
 ---
 

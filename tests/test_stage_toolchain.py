@@ -1457,3 +1457,17 @@ def test_failed_pgo_install_points_at_install_only(tmp_path):
          pytest.raises(RuntimeError, match="pacman -U failed.*--install-only"):
         ToolchainStage().run(config, state, options)
     assert _sentinel_exists(tmp_path / "state")
+
+
+def test_declining_a_standalone_run_names_no_pipeline_resume(monkeypatch, capsys):
+    """3.5.0-B33: `run toolchain` alone is not inside the bootstrap, so a no
+    at its prompt must not send the user to `run pipeline --resume`; inside
+    `run pipeline` that hint is still the way back."""
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+    monkeypatch.setattr(pkgbuilds.prompt, "prompt_choice", lambda text, **kw: "n")
+    with pytest.raises(RuntimeError, match="nothing was built or installed"):
+        pkgbuilds.confirm_or_abort(None, standalone=True)
+    assert "run pipeline" not in "".join(capsys.readouterr())
+    with pytest.raises(RuntimeError, match="resume command"):
+        pkgbuilds.confirm_or_abort(None)
+    assert "sysforge run pipeline --resume" in "".join(capsys.readouterr())

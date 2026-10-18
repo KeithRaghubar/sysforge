@@ -113,6 +113,14 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.5.0-F6` | a toolchain progress bar that says where the stage is | high | medium | minor |
 | `3.5.0-F5` | timestamp every line of the unified run log | med | small | minor |
+| `3.5.0-DOC3` | concept page: profile-guided and post-link optimization (pilot) | med | medium | patch |
+| `3.5.0-DOC4` | concept page: shared libraries and ABI | med | medium | patch |
+| `3.5.0-DOC5` | concept page: how an Arch package is built | med | medium | patch |
+| `3.5.0-DOC6` | concept page: compiler optimization basics | med | medium | patch |
+| `3.5.0-DOC9` | concept page: measuring performance honestly | low | small | patch |
+| `3.5.0-DOC10` | glossary | low | small | patch |
+| `3.5.0-DOC7` | concept page: bootstrapping an optimized compiler | low | medium | patch |
+| `3.5.0-DOC8` | concept page: kernel builds and boot basics | low | medium | patch |
 <!-- END roadmap-table -->
 
 ### Features
@@ -152,5 +160,65 @@ canonical ordering.
   stage gives no sense of position.
 
 ### Bugs
+
+### Documentation
+
+The user docs explain tasks; these items add the general concepts behind them, so the docs
+teach how the techniques work beyond sysforge. Shared shape for every page under
+`docs/concepts/`: explain how it works and when it is (and isn't) worth doing, without
+sysforge vocabulary; cite upstream sources (Arch wiki, LLVM, GCC, kernel docs); quote no
+performance numbers measured on one machine (upstream figures, or how to measure); end with a
+short "In sysforge" section linking the guide. Guides link the concept pages instead of
+re-explaining them, and the README lists the section beside the guides.
+
+- **`3.5.0-DOC3` — concept page: profile-guided and post-link optimization (pilot).** Start
+  `docs/concepts/` with the topic people search for most. Instrumented PGO vs. sampled profiles
+  (AutoFDO), Propeller, BOLT; what each changes (inlining and block layout vs. function and
+  block order in the binary); why the training workload decides the result; profile staleness;
+  when none of them pay off. Move pgo.md's "The idea in one minute" and the method-choice
+  background here, leaving pgo.md the tasks. Sets the section's layout, the README link and the
+  conventions above for the pages after it.
+  *Priority: med · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC4` — concept page: shared libraries and ABI.** Sonames, symbol versioning, what
+  "ABI-compatible" means, why a library's soname bump forces its consumers to rebuild, and how
+  C++ standard-library symbols leak through another library's exports, using libLLVM's std::
+  re-exports as the worked case. drift.md and the toolchain guide's audit sections link it.
+  *Priority: med · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC5` — concept page: how an Arch package is built.** PKGBUILD and its arrays,
+  makepkg and `makepkg.conf`, pkgbase vs. split packages, BUILDDIR and PKGDEST, `.SRCINFO`,
+  `-git` packages and pkgver(), source signatures and checksums. The base most other pages
+  assume.
+  *Priority: med · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC6` — concept page: compiler optimization basics.** What `-O2`/`-O3` change,
+  `-march=native` and the portability it gives up, full vs. thin LTO, why the linker matters
+  (lld, `-fno-plt`), and what the hardening flags cost and buy. Profiles in the README and
+  `profiles.toml` comments link it.
+  *Priority: med · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC7` — concept page: bootstrapping an optimized compiler.** Why building a compiler
+  with itself takes stages, what instrumented, training and optimized passes each produce, why
+  the live toolchain must never be half-replaced, and how a PGO+BOLT build differs from a plain
+  stage-2 bootstrap. The toolchain section of pgo.md links it.
+  *Priority: low · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC8` — concept page: kernel builds and boot basics.** Kconfig and
+  `olddefconfig`, modules vs. built-in, initramfs, boot loaders and entries (systemd-boot
+  sort-key vs. filename order), and why a fallback kernel matters. kernel.md and
+  boot-entries.md link it.
+  *Priority: low · Effort: medium · Bump: patch*
+
+- **`3.5.0-DOC9` — concept page: measuring performance honestly.** Run-to-run noise, warm
+  vs. cold caches, repeated runs and spread, what a before/after comparison needs to hold
+  fixed, and `perf` basics. pgo.md's "Did it help?" and `bench toolchain` docs link it.
+  *Priority: low · Effort: small · Bump: patch*
+
+- **`3.5.0-DOC10` — glossary.** One page defining the terms the docs use (pkgbase, split
+  package, PKGDEST, soname, LTO, profdata, training workload, pass, sentinel, drift), each with
+  a link to the concept page or guide that covers it, so pages link a term instead of
+  re-explaining it. Grows with each concept page.
+  *Priority: low · Effort: small · Bump: patch*
 
 ### Open questions

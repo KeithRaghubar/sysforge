@@ -329,7 +329,9 @@ class ToolchainStage(Stage):
             import sys as _sys
 
             if _sys.stdin.isatty() and not options.dry_run:
-                pkgbuilds.confirm_or_abort(options.state_dir, mode=no_build)
+                pkgbuilds.confirm_or_abort(
+                    options.state_dir, mode=no_build,
+                    standalone=bool(getattr(options, "standalone", False)))
         except RuntimeError:
             raise
 

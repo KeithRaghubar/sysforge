@@ -126,3 +126,51 @@ def test_run_toolchain_install_only_refuses_build_flags_and_bolt_only(monkeypatc
         assert pre.blocker is not None and flag in pre.blocker, flag
         assert pre.exit_code == 2
     assert _pre_check_as(1000, ["toolchain", "--install-only"], monkeypatch).blocker is None
+
+
+def test_cache_report_help_does_not_say_pipeline_on_every_run_verb():
+    """3.5.0-B34: --cache-report is shared by every `run` subcommand; its help
+    must describe the run it is on, not the bootstrap pipeline."""
+    parser = _build_parser()
+    run = next(a for a in parser._subparsers._group_actions[0].choices["run"]._actions
+               if hasattr(a, "choices") and a.choices and "toolchain" in a.choices)
+    for verb in ("pipeline", "toolchain", "packages", "kernel"):
+        action = next(a for a in run.choices[verb]._actions if a.dest == "cache_report")
+        assert "pipeline" not in action.help, verb
+
+
+# --- 3.5.0-B35: help text outside the bootstrap says what it means -----------
+
+def _help_strings(parser, path="sysforge"):
+    import argparse
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            for ca in a._choices_actions:
+                yield f"{path} {ca.dest}", ca.help or ""
+            for name, sub in a.choices.items():
+                yield from _help_strings(sub, f"{path} {name}")
+        elif a.help:
+            yield f"{path} {'/'.join(a.option_strings) or a.dest}", str(a.help)
+
+
+def test_help_says_pipeline_only_for_the_bootstrap_command():
+    """'pipeline' names `run pipeline`; elsewhere it was shorthand for 'a build
+    stage' or 'what the last run toolchain recorded', which a steady-state
+    user cannot decode."""
+    import re
+    offenders = []
+    for where, text in _help_strings(_build_parser()):
+        if where.startswith("sysforge run pipeline"):
+            continue  # the bootstrap command describes itself
+        text = text.replace("(pipeline, hardware, reconfigure)", "")
+        if re.search(r"\bpipeline\b", text, re.IGNORECASE):
+            offenders.append(f"{where}: {text}")
+    assert offenders == []
+
+
+def test_top_level_description_is_the_package_description():
+    import tomllib
+    from pathlib import Path
+    project = tomllib.loads(
+        (Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]
+    assert _build_parser().description == project["description"]

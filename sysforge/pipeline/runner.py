@@ -174,6 +174,9 @@ def run_stage_standalone(stage, config, options):
     Raises SystemExit on failure.
     """
     options.standalone = True
+    # A standalone run's own lines carry the stage's tag, not [PIPELINE]: the
+    # run is `sysforge run <stage>`, outside any pipeline (3.5.0-B36).
+    _log = log.get_logger(stage.name.upper())
 
     state_dir, _ = resolve_state_dir(cli_override=options.state_dir)
     state = PipelineState(state_dir)
@@ -186,7 +189,8 @@ def run_stage_standalone(stage, config, options):
     if unified_log_active:
         unified_log_path = log_dir / f"sysforge-run-{stage.name}.log"
         try:
-            log.open_unified_log(unified_log_path, purge=options.purge_log)
+            log.open_unified_log(unified_log_path, purge=options.purge_log,
+                               label=f"sysforge run {stage.name}")
             _log.info(f"Unified log: {unified_log_path}")
         except PermissionError:
             unified_log_active = False
@@ -315,7 +319,8 @@ def run_pipeline(config, options, stages=None):
     if unified_log_active:
         log_dir = options.log_dir or state_dir
         unified_log_path = log_dir / "sysforge.log"
-        log.open_unified_log(unified_log_path, purge=options.purge_log)
+        log.open_unified_log(unified_log_path, purge=options.purge_log,
+                             label="sysforge run pipeline")
         _log.info(f"Unified log: {unified_log_path}")
 
     _log.info(f"Invocation: {_INVOCATION}")

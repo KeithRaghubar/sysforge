@@ -939,7 +939,7 @@ def _phase_init(run: UpdateRun) -> int | None:
     ) / "sysforge-update.log"
     if run.unified_log_active:
         try:
-            log.open_unified_log(run.unified_log_path, purge=True)
+            log.open_unified_log(run.unified_log_path, purge=True, label="sysforge update")
             _log.info(f"Unified log: {run.unified_log_path}")
         except OSError as e:
             run.unified_log_active = False
@@ -2079,9 +2079,9 @@ class UpdateVerb(Verb):
             help="Skip the toolchain pre-flight (rust/cmake/meson availability + "
                  "lib32 cross targets) that normally runs before the build loop.")
         p.add_argument("--include-stage-owned", action="store_true", dest="include_stage_owned",
-            help="Include packages owned by a pipeline stage (e.g. the kernel "
-                 "stage's `linux-sysforge`). Skipped by default; the owning stage "
-                 "(`sysforge run kernel`) is the canonical update path.")
+            help="Include packages owned by `run kernel` or `run toolchain` (e.g. "
+                 "the kernel's `linux-sysforge`). Skipped by default; the owning "
+                 "command (`sysforge run kernel`) is the canonical update path.")
         # --versions and --explain-drift are both list-and-exit reports; the
         # group makes argparse reject the combination instead of update.py
         # silently picking a winner at its early-exit seam.

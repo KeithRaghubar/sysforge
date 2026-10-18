@@ -488,14 +488,16 @@ def check_last_pgo_build(
     return pkgbuild, pkgbase, want_label
 
 
-def confirm_or_abort(state_dir, *, mode: str | None = None) -> None:
+def confirm_or_abort(state_dir, *, mode: str | None = None, standalone: bool = False) -> None:
     """Prompt user to confirm. On abort, print resume command and raise.
 
     EOF (non-interactive) defaults to "y" so unattended runs proceed without
     prompting — matches the long-standing behaviour of this stage.
     ``mode`` is the no-build flag in effect (``gates.no_build_mode``): each
     asks about what it does, which builds nothing but still installs
-    (3.5.0-F7, 3.5.0-F8).
+    (3.5.0-F7, 3.5.0-F8). ``standalone`` (``run toolchain`` on its own) drops
+    the ``run pipeline --resume`` hint, which would start the bootstrap; the
+    stage did nothing yet, so there is nothing to resume (3.5.0-B33).
     """
     question = {
         "--bolt-only": "Proceed with BOLT of the last llvm build tree and install? [y/N]: ",
@@ -509,6 +511,9 @@ def confirm_or_abort(state_dir, *, mode: str | None = None) -> None:
         tag="TOOLCHAIN",
     )
     if choice not in ("y", "yes"):
+        if standalone:
+            raise RuntimeError(
+                "[TOOLCHAIN] Aborted by user; nothing was built or installed.")
         dir_str = str(state_dir) if state_dir else "/var/lib/sysforge"
         print(
             f"\n  Resume command: sysforge run pipeline --resume --state-dir {dir_str}\n",

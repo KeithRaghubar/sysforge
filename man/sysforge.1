@@ -10,7 +10,7 @@
 .PP
 .SH NAME
 .PP
-sysforge \- build and maintenance suite and system bootstrapper for Arch Linux
+sysforge \- AUR helper that builds and tracks packages tuned to your CPU
 .PP
 .SH SYNOPSIS
 .PP
@@ -41,11 +41,14 @@ makepkg invocation with dependencies pre\-installed, per\-package logs, build
 failure diagnosis with deterministic auto\-repair for known failure modes,
 and a single bulk install at the end.\&
 .PP
-\fBsysforge run\fR executes pipeline stages: the bootstrap stages that take a
-fresh Arch ISO environment to a configured system (install via archinstall,
-hardware detection, configure), and the repeatable stages (toolchain,
-kernel, packages, reconfigure) that build an optionally PGO\-optimized LLVM
-toolchain and a custom kernel under boot\-safety gates.\&
+\fBsysforge run\fR builds what a running system rebuilds by stage: \fBrun
+toolchain\fR an optionally PGO\- and BOLT\-optimized LLVM toolchain, \fBrun
+kernel\fR a custom kernel under boot\-safety gates, and \fBrun packages\fR
+everything in packages.\&toml.\& Its other stages are the fresh\-install
+bootstrap: \fBrun pipeline\fR takes an Arch ISO environment to a configured
+system (install via archinstall, hardware detection, configure) and goes on
+through the build stages; \fBrun hardware\fR and \fBrun reconfigure\fR repeat its
+hardware detection and pre\-build checks on their own.\&
 .PP
 \fBsysforge doctor\fR is the read\-only health surface, split into two scopes.\&
 \fBdoctor system\fR runs the system\-state axes (hardware, toolchain, pacman db,
@@ -462,7 +465,7 @@ Skip the toolchain pre\-flight (rust/cmake/meson availability + lib32 cross targ
 .RE
 \fB\-\-include\-stage\-owned\fR
 .RS 4
-Include packages owned by a pipeline stage (e.\&g.\& the kernel stage'\&s `linux\-sysforge`).\& Skipped by default; the owning stage (`sysforge run kernel`) is the canonical update path.\&
+Include packages owned by `run kernel` or `run toolchain` (e.\&g.\& the kernel'\&s `linux\-sysforge`).\& Skipped by default; the owning command (`sysforge run kernel`) is the canonical update path.\&
 .PP
 .RE
 \fB\-\-versions\fR
@@ -1249,13 +1252,13 @@ Path to packages.\&toml.\&
 .PP
 \fBsysforge run\fR \fISUBCOMMAND\fR
 .PP
-Execute a pipeline stage (pipeline, hardware, reconfigure, toolchain, packages, kernel).\&
+Build the toolchain, kernel or packages, or run the fresh\-install bootstrap (pipeline, hardware, reconfigure).\&
 .PP
 .SS run pipeline
 .PP
 \fBsysforge run pipeline\fR [\fIOPTIONS\fR]
 .PP
-Run the full install pipeline (stages 1–7).\&
+Fresh\-install bootstrap: every stage from install through kernel (1–7).\&
 .PP
 \fB\-\-resume\fR
 .RS 4
@@ -1319,7 +1322,7 @@ Path to a profiles.\&toml to use instead of the default.\&
 .RE
 \fB\-\-cache\-report\fR
 .RS 4
-Print a structured cache summary after the pipeline completes.\&
+Print a structured cache summary after the run completes.\&
 .PP
 .RE
 \fB\-\-abi\-check\fR
@@ -1579,7 +1582,7 @@ Disable interactive kconfig (default is interactive: the PKGBUILD'\&s `make ncon
 .RE
 \fB\-\-compiler\fR \fICOMPILER\fR
 .RS 4
-Kernel\-stage compiler override (gcc or llvm).\& Independent of the global toolchain stage, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > toolchain\-stage pipeline state.\&
+Kernel compiler override (gcc or llvm).\& Independent of `run toolchain`, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > the compiler the last `run toolchain` set up.\&
 .PP
 .RE
 \fB\-\-bootloader\fR \fIBOOTLOADER\fR
@@ -1798,7 +1801,7 @@ Written by: \fBbench toolchain\fR.\& Read by: \fBstate profiles\fR (GAIN column)
 .PP
 SYSFORGE_STATE_DIR
 .RS 4
-Override the state directory (pipeline state, build_state.\&toml,
+Override the state directory (stage progress, build_state.\&toml,
 logs, sentinels).\& Read by every command that touches build state:
 \fBbuild\fR, \fBupdate\fR, \fBstate\fR, \fBlog\fR, \fBdoctor\fR, and the \fBrun\fR stages.\&
 .PP

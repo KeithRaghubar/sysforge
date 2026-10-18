@@ -727,8 +727,8 @@ class TestManpageScdocSkewEndToEnd:
         # _downgrade_to_1_11_4 has already unescaped the hyphens, so match the
         # bare form. Assert the edit lands — a no-op replace would make this
         # test vacuous.
-        drifted = text.replace("build and maintenance suite",
-                               "build and maintenance kit")
+        drifted = text.replace("builds and tracks packages",
+                               "builds and tracks parcels")
         assert drifted != text, "drift fixture matched nothing"
         page.write_text(drifted, encoding="utf-8")
 

@@ -158,7 +158,7 @@ def _consolidated_log(verb: Verb, args, _log):
     )
     log_path = log_dir / basename
     try:
-        log.open_unified_log(log_path, purge=True)
+        log.open_unified_log(log_path, purge=True, label=f"sysforge {verb.name}")
         _log.info(f"Consolidated log: {log_path}")
     except OSError as e:
         _log.warn(f"Cannot write consolidated log to {log_path}: {e}; terminal only")

@@ -92,7 +92,7 @@ _sysforge_commands() {
     'setup:configure IgnoreGroup, hooks and preferences'
     'config:adopt .sfnew/.pacnew config companions (merge)'
     'packages:manage packages.toml override entries (list, add, remove)'
-    'run:execute a pipeline stage'
+    'run:build toolchain, kernel or packages; or bootstrap'
     'revert-to-stock:restore a source-built package to the repo version'
     'uninstall:remove package(s); demote tracked ones from build state'
   )
@@ -608,7 +608,7 @@ _sysforge_run() {
 
 _sysforge_run_stages() {
   local stages=(
-    'pipeline:run the full install pipeline (stages 1-7)'
+    'pipeline:fresh-install bootstrap, every stage (1-7)'
     'hardware:re-run hardware detection and refresh hardware_profile.toml'
     'reconfigure:pre-build checkpoint'
     'toolchain:build and install the LLVM/GCC toolchain'
@@ -638,7 +638,7 @@ _sysforge_run_pipeline() {
     '--log-dir[directory for log files]:directory:_files -/' \
     '--purge-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
-    '--cache-report[print ccache/sccache summary after pipeline]' \
+    '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[post-build ABI check on built shared libraries]' \
     '--no-update[skip the source sync, build as checked out]'
 }
