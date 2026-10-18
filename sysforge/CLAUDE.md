@@ -147,6 +147,11 @@ Mechanism lives in the cited §DESIGN section.
   verb), `state_cmd` (GAIN, via `bench_core.current_fingerprint`) and the toolchain stage
   (`toolchain/measure.py::after_install`, `[bench] after_build`). Never import `bench_cmd` from
   another verb or the pipeline. `bench.toml` only via `primitives/bench_state.py`. §CLI Verb.
+- **Stage step progress** (`3.5.0-F6`): a long stage counts its own steps with `progress.steps`
+  (outside the tracker, one-tracker rule untouched), advanced by `progress.step(name)` — which
+  drops skipped planned steps and inserts unplanned ones, so never pre-tick to fix a count.
+  Step durations only via `primitives/stage_timings.py` (`stage.step_recorder`; nothing under
+  `--dry-run`). §`ui/progress.py`.
 - **Build-failure recovery**: `makepkg_invoke._run_recovery_menu`; persists a cc/ld swap via
   `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer). §makepkg-wrapper.
 - **Sandbox host-only set**: `build_sandbox.host_only_packages` (source-built ∪ `pacman -Qm`) feeds

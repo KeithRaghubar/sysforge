@@ -15,6 +15,7 @@ Covers:
     simultaneous unified + pkg log  — message written to both files
 """
 import contextlib
+import re
 import os
 import sys
 
@@ -360,6 +361,90 @@ def test_message_written_to_both_logs(tmp_path):
     log.close_pkg_log(success=False, persist=True)
     assert "bothsides" in upath.read_text()
     assert "bothsides" in ppath.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Per-line time stamp in file logs (3.5.0-F5)
+# ---------------------------------------------------------------------------
+
+_STAMPED = re.compile(r"^\d{2}:\d{2}:\d{2} \[SYSFORGE\]\[(\w+)\](\[\w+\]) (.*)$")
+
+
+def _body_lines(path):
+    return [ln for ln in path.read_text().splitlines() if not ln.startswith("#")]
+
+
+def test_file_lines_carry_time_stamp_in_both_logs(tmp_path):
+    upath = tmp_path / "sysforge.log"
+    ppath = tmp_path / "pkg" / "sysforge_pkg.log"
+    log.open_unified_log(upath)
+    log.open_pkg_log(ppath)
+    log.info("[GATE2]", "nm sweep start")
+    log.ui("[RUN]", "answer")
+    log.transcript("[PACMAN]", "hook out")
+    log.debug("[X]", "a\nb")
+    log.close_unified_log(success=False)
+    log.close_pkg_log(success=False)
+    for path in (upath, ppath):
+        lines = _body_lines(path)
+        assert len(lines) == 5
+        assert all(_STAMPED.match(ln) for ln in lines), lines
+
+
+def test_stamp_keeps_level_tag_shape_for_greps(tmp_path):
+    path = tmp_path / "sysforge.log"
+    log.open_unified_log(path)
+    log.warn("[TOOLCHAIN]", "gate 3 slow")
+    log.close_unified_log(success=False)
+    (line,) = _body_lines(path)
+    m = _STAMPED.match(line)
+    assert m.groups() == ("WARN", "[TOOLCHAIN]", "gate 3 slow")
+    # The tag search a user runs against the file still hits.
+    assert "[SYSFORGE][WARN][TOOLCHAIN] gate 3 slow" in line
+
+
+def test_terminal_output_has_no_time_stamp(tmp_path, capsys):
+    log.set_verbosity(3)
+    log.open_unified_log(tmp_path / "sysforge.log")
+    log.info("[X]", "hello")
+    log.ui("[X]", "answer")
+    log.close_unified_log(success=False)
+    err = capsys.readouterr().err
+    assert err.splitlines() == ["[SYSFORGE][INFO][X] hello", "answer"]
+
+
+def test_session_header_is_not_stamped(tmp_path):
+    path = tmp_path / "sysforge.log"
+    log.open_unified_log(path, label="sysforge run toolchain")
+    log.close_unified_log(success=False)
+    assert path.read_text().splitlines()[1].startswith("# sysforge run toolchain: ")
+
+
+def test_day_change_emits_date_marker(tmp_path, monkeypatch):
+    from datetime import datetime as real_dt
+
+    clock = [real_dt(2026, 10, 18, 23, 59, 58)]
+
+    class _Clock(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(log, "datetime", _Clock)
+    path = tmp_path / "sysforge.log"
+    log.open_unified_log(path)
+    log.info("[X]", "before")
+    clock[0] = real_dt(2026, 10, 19, 0, 0, 3)
+    log.info("[X]", "after")
+    log.info("[X]", "same day")
+    log.close_unified_log(success=False)
+    tail = path.read_text().splitlines()[3:]
+    assert tail == [
+        "23:59:58 [SYSFORGE][INFO][X] before",
+        "# date: 2026-10-19",
+        "00:00:03 [SYSFORGE][INFO][X] after",
+        "00:00:03 [SYSFORGE][INFO][X] same day",
+    ]
 
 
 # ---------------------------------------------------------------------------

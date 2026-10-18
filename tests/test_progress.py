@@ -755,8 +755,8 @@ def test_heartbeat_repaints_without_advancing_the_counter(tmp_path, monkeypatch)
     paints = [e for e in _trace_lines(trace) if e.startswith("paint")]
     assert "[1/1]" in paints[-1], paints[-1]
     assert "building · mesa-sysforge" in paints[-1]
-    # Truncated to the terminal width, so match the head of the detail.
-    assert "[220/900] Compiling" in paints[-1]
+    # A ninja status reads as its position (3.5.0-F6).
+    assert paints[-1].endswith("· ninja 24%'"), paints[-1]
 
 
 def test_heartbeat_itself_does_not_paint(monkeypatch):
@@ -1229,3 +1229,236 @@ def test_paused_seconds_accumulates_with_or_without_a_tracker(monkeypatch):
     with progress.tracker(1, "b"), progress.yield_terminal("prompt"):
         advance(15)
     assert progress.paused_seconds() - start == 55
+
+
+# --- Stage steps (3.5.0-F6) --------------------------------------------------
+
+_PLAN = ["preflight", "optimize", "audit"]
+
+
+def test_steps_line_carries_step_item_ninja_and_stage_clock(monkeypatch):
+    """The target frame: stage position, step, item, ninja percentage, then the
+    stage's elapsed and ETA (the rest of this step plus every later one)."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.steps("toolchain", _PLAN,
+                        expected={"preflight": 10, "optimize": 100, "audit": 20}):
+        progress.step("preflight")
+        advance(10)
+        progress.step("optimize")
+        with progress.tracker(1, "optimize") as tick:
+            tick("llvm")
+            progress.heartbeat("[7412/10023] Building CXX object lib/Foo.cpp.o")
+            advance(50)
+            assert _composed() == ("[SYSFORGE][PROGRESS] toolchain 2/3 · optimize · llvm"
+                                   " · ninja 73% · 1m00s · ~1m10s left")
+
+
+def test_steps_eta_withheld_while_a_remaining_step_has_no_history(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.steps("toolchain", _PLAN, expected={"preflight": 10, "optimize": 100}):
+        progress.step("preflight")
+        progress.step("optimize")
+        advance(30)
+        assert _composed() == "[SYSFORGE][PROGRESS] toolchain 2/3 · optimize · 30s"
+
+
+def test_steps_eta_from_history_on_the_first_item(monkeypatch):
+    """Unlike a tracker's in-run mean, recorded history gives an ETA at once."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    with progress.steps("toolchain", ["build"], expected={"build": 600}):
+        progress.step("build")
+        with progress.tracker(1, "build") as tick:
+            tick("llvm")
+            advance(6)
+            assert _composed().endswith("· llvm · 6s · ~9m54s left")
+
+
+def test_steps_show_a_counter_only_when_it_counts_more_than_one(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", ["audit"]):
+        progress.step("audit")
+        with progress.tracker(18, "audit") as tick:
+            for name in ["a", "b", "lldb"]:
+                tick(name)
+            assert _composed() == "[SYSFORGE][PROGRESS] toolchain 1/1 · audit · [3/18] lldb"
+            tick.note("BOLT")
+            assert _composed().endswith("· audit · [3/18] BOLT")
+
+
+def test_step_drops_planned_steps_the_run_skipped(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", ["preflight", "instrument", "train", "optimize", "audit"]):
+        progress.step("preflight")
+        progress.step("optimize")           # profdata reused: 1-3 never ran
+        assert progress._bar.steps.names == ["preflight", "optimize", "audit"]
+        assert _composed() == "[SYSFORGE][PROGRESS] toolchain 2/3 · optimize"
+
+
+def test_step_inserts_an_unplanned_step_next(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", ["audit", "install", "verify", "bench"]):
+        progress.step("verify")
+        progress.step("consumers")          # Gate 2 found consumers to rebuild
+        assert progress._bar.steps.names == ["verify", "consumers", "bench"]
+        progress.step("consumers")          # repeating the current step is a no-op
+        assert progress._bar.steps.index == 1
+
+
+def test_plan_steps_replaces_only_what_follows_the_current_step(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", ["preflight", "instrument", "bootstrap", "train"]):
+        progress.step("preflight")
+        progress.plan_steps(["instrument", "train", "optimize", "audit"])
+        assert progress._bar.steps.names == ["preflight", "instrument", "train",
+                                             "optimize", "audit"]
+
+
+def test_step_durations_reported_without_paused_time(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    done = []
+    with progress.steps("toolchain", _PLAN, on_done=lambda n, s: done.append((n, s))):
+        progress.step("preflight")
+        advance(5)
+        with progress.yield_terminal("prompt"):   # a confirm prompt is not work
+            advance(300)
+        advance(5)
+        progress.step("optimize")
+        advance(100)
+    assert done == [("preflight", 10.0), ("optimize", 100.0)]
+
+
+def test_a_failing_step_is_not_reported(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    advance = _fake_clock(monkeypatch)
+    done = []
+    with pytest.raises(RuntimeError), \
+         progress.steps("toolchain", _PLAN, on_done=lambda n, s: done.append(n)):
+        progress.step("preflight")
+        advance(5)
+        progress.step("optimize")
+        raise RuntimeError("build failed")
+    assert done == ["preflight"]
+    assert progress._bar.steps is None
+
+
+def test_a_failing_timing_callback_never_breaks_the_run(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+
+    def boom(_name, _secs):
+        raise OSError("read-only state dir")
+    with progress.steps("toolchain", _PLAN, on_done=boom):
+        progress.step("preflight")
+        progress.step("optimize")
+
+
+def test_steps_show_a_phase_but_not_the_stage_name_phase(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("toolchain")             # what the pipeline runner sets
+    with progress.steps("toolchain", ["audit", "install"]):
+        progress.step("audit")
+        assert _composed() == "[SYSFORGE][PROGRESS] toolchain 1/2 · audit"
+        progress.phase("ABI scan, 18 packages")
+        assert _composed().endswith("· audit · ABI scan, 18 packages")
+        progress.step("install")            # a step change clears the phase
+        assert _composed().endswith("toolchain 2/2 · install")
+    assert progress._bar.phase == "toolchain"   # restored for the runner
+
+
+def test_steps_inside_steps_raise_under_tests(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", _PLAN), pytest.raises(RuntimeError), \
+            progress.steps("kernel", ["build"]):
+        pass
+
+
+def test_step_without_open_steps_is_a_noop(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.step("optimize")
+    progress.plan_steps(["audit"])
+    assert _composed() is None
+
+
+def test_plain_mode_logs_one_line_per_step(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", _PLAN):
+        progress.step("preflight")
+        progress.step("optimize")
+    assert lines == ["[PROGRESS] toolchain 1/3 · preflight",
+                     "[PROGRESS] toolchain 2/3 · optimize"]
+
+
+# --- ninja heartbeat (3.5.0-F6) ----------------------------------------------
+
+def _detail_after(*heartbeats):
+    for hb in heartbeats:
+        progress.heartbeat(hb)
+    return progress._bar.detail
+
+
+def test_ninja_status_reads_as_a_percentage(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    assert _detail_after("[2128/10023] Building SPIRVGenPreLegalizeGICombiner.inc...") \
+        == "ninja 21%"
+
+
+def test_ninja_sub_build_restart_is_named_beside_the_main_build(monkeypatch):
+    """llvm's 23.1.3 build, as logged: the runtimes' own ninja (1900 steps)
+    starts partway through the main one (10023), which then resumes."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    assert _detail_after(
+        "[2128/10023] Building SPIRVGenPreLegalizeGICombiner.inc...",
+        "[1895/1900] Building CXX object libcxx/src/CMakeFiles/cxx_static.dir/x.cpp.o",
+    ) == "ninja 21% · libcxx 99%"
+    assert _detail_after("[7939/10023] Building CXX object tools/lld/x.cpp.o") == "ninja 79%"
+    # A sub-build whose path names nothing usable stays generic.
+    assert _detail_after("[444/445] Generating nvptx64-nvidia-cuda/libclc.bc") \
+        == "ninja 79% · sub-build 99%"
+
+
+def test_a_new_item_forgets_the_last_items_ninja_builds(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    with progress.tracker(2, "build") as tick:
+        tick("llvm")
+        _detail_after("[9000/10023] x")
+        tick("spirv-llvm-translator")
+        assert _detail_after("[10/400] y") == "ninja 2%"
+
+
+def test_non_ninja_heartbeat_passes_through(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    assert _detail_after("no output for ~30s") == "no output for ~30s"
+    assert _detail_after(" 77 159.3M  77 123.4M") == " 77 159.3M  77 123.4M"
+
+
+def test_plain_mode_steps_never_log_heartbeat_detail(monkeypatch):
+    _fake_plain_stderr(monkeypatch)
+    lines = _plain_lines(monkeypatch)
+    progress.init()
+    with progress.steps("toolchain", ["preflight", "optimize"]):
+        progress.step("preflight")
+        progress.heartbeat("[10/100] x")
+        progress.plan_steps(["optimize", "audit"])   # repaints without an event
+    assert all("ninja" not in ln for ln in lines), lines

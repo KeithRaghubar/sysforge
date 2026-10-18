@@ -45,7 +45,15 @@ Public API:
                               tick.resume()    drop the note
                             One tracker at a time: a tracker opened inside
                             another is a no-op (RuntimeError under tests).
-    heartbeat(detail)       live detail appended to the line; does not paint
+    steps(prefix, names, expected=None, on_done=None)
+                            context manager: a stage's own steps (3.5.0-F6). While
+                            open the line reads '<prefix> i/n · <step> · <item>'
+                            and its time pair is the stage's elapsed and ETA.
+    step(name)              advance the open steps to *name* (planned steps it
+                            passes are dropped; an unplanned one is inserted)
+    plan_steps(names)       replace the steps planned after the current one
+    heartbeat(detail)       live detail appended to the line; does not paint.
+                            A ninja '[x/y] …' status shows as 'ninja 74%'
     yield_terminal(kind)    hand the terminal to a "prompt" (blank the row,
                             keep the region) or a "child" (release it); the
                             tracker clock pauses for the duration
@@ -57,13 +65,14 @@ Public API:
 import atexit
 import contextlib
 import os
+import re
 import shutil
 import signal
 import sys
 import threading
 import time
-from dataclasses import dataclass
-from typing import Iterator, Optional, Protocol
+from dataclasses import dataclass, field
+from typing import Callable, Iterator, Optional, Protocol
 
 from sysforge import log
 from sysforge.primitives import progress_hooks as _progress_hooks
@@ -122,10 +131,24 @@ class _Tracker:
 
 
 @dataclass
+class _Steps:
+    """A stage's own steps (3.5.0-F6), outside and above the tracker."""
+    prefix: str
+    names: list[str]
+    started: float                     # bar-active-clock time at entry
+    index: int = -1                    # current step; -1 before the first
+    step_started: float = 0.0          # bar-active-clock time the step began
+    expected: dict[str, int] = field(default_factory=dict)  # step → seconds
+    on_done: Optional[Callable[[str, float], None]] = None
+
+
+@dataclass
 class _Bar:
     mode: Optional[str] = None         # "tty" | "plain" | None (uninitialised)
     phase: Optional[str] = None        # single slot: phase(x) replaces, phase(None) clears
     tracker: Optional[_Tracker] = None  # at most one
+    steps: Optional[_Steps] = None     # at most one; outermost layer of the line
+    ninja: dict[int, int] = field(default_factory=dict)  # ninja total → done, this item
     detail: Optional[str] = None       # heartbeat detail; cleared by tick/note/resume/phase
     yielded: Optional[str] = None      # None | "prompt" | "child"
     yield_depth: int = 0
@@ -269,9 +292,74 @@ def _time_suffix(t: _Tracker, now: float) -> str:
     return out
 
 
+def _bar_active(bar: _Bar, now: float) -> float:
+    """*now* on the bar-wide active clock: wall time minus all time paused."""
+    paused = bar.paused_total
+    if bar.paused_since is not None:
+        paused += now - bar.paused_since
+    return now - paused
+
+
+def _steps_eta(s: _Steps, active: float) -> Optional[float]:
+    """Seconds left in the stage: the rest of the current step at its expected
+    length, plus each later step's. ``None`` when any of them has no history:
+    a partial sum would read as an estimate of the whole and understate it."""
+    remaining = 0.0
+    for i in range(max(s.index, 0), len(s.names)):
+        exp = s.expected.get(s.names[i])
+        if exp is None:
+            return None
+        if i == s.index:
+            exp = max(0.0, exp - (active - s.step_started))
+        remaining += exp
+    return remaining
+
+
+def _steps_suffix(s: _Steps, now: float) -> str:
+    """' · <stage elapsed>[ · ~<stage eta> left]', or '' below the floor."""
+    active = _bar_active(_bar, now)
+    elapsed = active - s.started
+    if elapsed < _ELAPSED_FLOOR_S:
+        return ""
+    out = f" · {_fmt_span(elapsed)}"
+    eta = _steps_eta(s, active)
+    if eta is not None and eta > 0:
+        out += f" · ~{_fmt_span(eta)} left"
+    return out
+
+
+def _compose_steps(bar: _Bar, s: _Steps, now: float) -> str:
+    """'<prefix> i/n · <step>[ · <item>][ · <detail>]<time>' (3.5.0-F6).
+
+    The tracker's own prefix and clock give way to the step and the stage's
+    clock; its counter shows only when it counts more than one item, since a
+    pass of one PKGBUILD reading '[1/1]' for an hour says nothing.
+    """
+    parts = [f"{s.prefix} {s.index + 1}/{len(s.names)} · {s.names[s.index]}"]
+    t = bar.tracker
+    if t is not None and t.total > 0:
+        item = t.note if t.note is not None else (t.label if t.index else None)
+        if item:
+            parts.append(f"[{t.index}/{t.total}] {item}" if t.total > 1 else item)
+    elif bar.phase is not None and bar.phase != s.prefix:
+        parts.append(bar.phase)
+    if bar.detail and bar.mode != "plain":  # plain mode never shows the heartbeat
+        parts.append(bar.detail)
+    try:
+        suffix = _steps_suffix(s, now)
+    except Exception:  # a decoration must never break the bar
+        suffix = ""
+    return " · ".join(parts) + suffix
+
+
 def _compose(bar: _Bar, now: float) -> Optional[str]:
     """The only line constructor: what the bar says right now, or None."""
     t = bar.tracker
+    s = bar.steps
+    if s is not None and 0 <= s.index < len(s.names):
+        text = _compose_steps(bar, s, now)
+        prefix = _PLAIN_PREFIX if bar.mode == "plain" else _TTY_PREFIX
+        return prefix + text
     if t is not None and t.total > 0:
         if t.note is not None:
             body = t.note
@@ -735,7 +823,39 @@ def heartbeat(detail: str) -> None:
     """
     with _lock:
         _ensure_init()
-        _bar.detail = detail or None
+        _bar.detail = _heartbeat_text(detail) if detail else None
+
+
+# ninja's status line: '[7412/10023] Building CXX object lib/…/Foo.cpp.o'.
+_NINJA_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
+# A sub-build's name, from the first path segment of what it is building.
+_SUBBUILD_RE = re.compile(r"(?:^|\s)([a-z][a-z0-9_+-]{1,15})/")
+
+
+def _heartbeat_text(detail: str) -> str:
+    """The bar's text for a heartbeat *detail* (3.5.0-F6).
+
+    A ninja status becomes a percentage: the path it carried is cut by the
+    terminal width anyway, and only its position said anything. One package
+    build can run several ninja builds (llvm's runtimes, libclc), each counting
+    from 1 again, so the largest total seen this item is taken as the main
+    build and any other is named beside it — '[1895/1900]' for the runtimes no
+    longer reads as nearly done. Anything else passes through unchanged.
+    Caller holds ``_lock``.
+    """
+    m = _NINJA_RE.match(detail.strip())
+    if m is None:
+        return detail
+    done, total, rest = int(m.group(1)), int(m.group(2)), m.group(3)
+    if total <= 0:
+        return detail
+    _bar.ninja[total] = done
+    main = max(_bar.ninja)
+    text = f"ninja {_bar.ninja[main] * 100 // main}%"
+    if total != main:
+        name = _SUBBUILD_RE.search(rest)
+        text += f" · {name.group(1) if name else 'sub-build'} {done * 100 // total}%"
+    return text
 
 
 def require_no_tracker(owner: str) -> None:
@@ -771,6 +891,7 @@ class _TrackerTick:
             t.note = None
             t.last_tick = _active(t, _monotonic())
             _bar.detail = None
+            _bar.ninja.clear()  # a new item's builds count afresh
             _changed()
 
     def note(self, text: str) -> None:
@@ -823,6 +944,7 @@ def tracker(total: int, prefix: str,
                 t.paused_since = now   # opened while yielded: starts paused
             _bar.tracker = t
             _bar.detail = None
+            _bar.ninja.clear()
             if total > 0:
                 _changed()
     if outer is not None:
@@ -840,11 +962,124 @@ def tracker(total: int, prefix: str,
             if _bar.tracker is t:
                 _bar.tracker = None
                 _bar.detail = None
+                _bar.ninja.clear()
                 if _bar.mode == "plain":
                     # Whatever shows now (the phase) was already logged.
                     _bar.drawn = _compose(_bar, _monotonic())
                 else:
                     _draw()
+
+
+# ---------------------------------------------------------------------------
+# A stage's own steps (3.5.0-F6)
+# ---------------------------------------------------------------------------
+# A long stage is a fixed sequence of steps (the toolchain's preflight,
+# instrument, train, optimize, audit, install, …), each holding whatever
+# trackers and phases it opens. Counting PKGBUILD dirs instead said '[1/1]' for
+# an hour. The steps sit outside the tracker, so the one-tracker rule is
+# untouched, and they carry the stage's clock: elapsed since the stage began,
+# and an ETA summed from each remaining step's recorded duration.
+
+def _finish_step(s: _Steps, now: float) -> None:
+    """Report the current step's active duration to ``on_done``. Never raises."""
+    if s.on_done is None or not 0 <= s.index < len(s.names):
+        return
+    try:
+        s.on_done(s.names[s.index], _bar_active(_bar, now) - s.step_started)
+    except Exception as e:  # noqa: BLE001 — timing must never break the run
+        _log.debug(f"step timing not recorded: {e!r}")
+
+
+@contextlib.contextmanager
+def steps(prefix: str, names: list[str], *,
+          expected: Optional[dict[str, int]] = None,
+          on_done: Optional[Callable[[str, float], None]] = None) -> Iterator[None]:
+    """Count a stage's own *names* in order; advance with :func:`step`.
+
+    ``expected`` maps a step name to its usual length in seconds (the stage's
+    recorded history); ``on_done(name, seconds)`` hears each step that
+    completes, with time paused at a prompt left out. A step completes when the
+    next one begins, or when the body returns; a step the body raises out of
+    is not reported, since a failure's duration predicts nothing. Opening
+    steps inside open steps is a no-op, like a nested tracker.
+    """
+    with _lock:
+        _ensure_init()
+        if _bar.steps is not None:
+            msg = f"steps '{prefix}' opened inside '{_bar.steps.prefix}'"
+            if _strict_nesting:
+                raise RuntimeError(msg)
+            _log.debug(msg)
+            outer = True
+        else:
+            outer = False
+            now = _bar_active(_bar, _monotonic())
+            s = _Steps(prefix=prefix, names=list(names), started=now,
+                       step_started=now, expected=dict(expected or {}),
+                       on_done=on_done)
+            _bar.steps = s
+            saved_phase = _bar.phase
+    if outer:
+        yield
+        return
+    ok = False
+    try:
+        yield
+        ok = True
+    finally:
+        with _lock:
+            if _bar.steps is s:
+                if ok:
+                    _finish_step(s, _monotonic())
+                _bar.steps = None
+                _bar.phase = saved_phase
+                _bar.detail = None
+                if _bar.mode == "plain":
+                    _bar.drawn = _compose(_bar, _monotonic())
+                else:
+                    _draw()
+
+
+def step(name: str) -> None:
+    """Begin step *name* of the open steps; a no-op when none are open.
+
+    The plan is a prediction, and the run corrects it: planned steps between
+    the current one and *name* did not run, so they are dropped (the count
+    stays honest instead of jumping), and a *name* not planned at all is
+    inserted next. The phase is cleared, as a tracker's tick clears detail.
+    """
+    with _lock:
+        s = _bar.steps
+        if s is None:
+            return
+        now = _monotonic()
+        if 0 <= s.index < len(s.names) and s.names[s.index] == name:
+            return
+        _finish_step(s, now)
+        ahead = s.names[s.index + 1:]
+        ahead = ahead[ahead.index(name):] if name in ahead else [name, *ahead]
+        s.names = s.names[:s.index + 1] + ahead
+        s.index += 1
+        s.step_started = _bar_active(_bar, now)
+        _bar.phase = None
+        _bar.detail = None
+        _bar.ninja.clear()
+        _changed()
+
+
+def plan_steps(names: list[str]) -> None:
+    """Replace the steps planned after the current one with *names*.
+
+    For a plan that firms up mid-stage (which passes run is known only once
+    the PKGBUILDs resolve). A no-op when no steps are open.
+    """
+    with _lock:
+        s = _bar.steps
+        if s is None:
+            return
+        s.names = s.names[:s.index + 1] + [n for n in names
+                                           if n not in s.names[:s.index + 1]]
+        _changed()
 
 
 # ---------------------------------------------------------------------------

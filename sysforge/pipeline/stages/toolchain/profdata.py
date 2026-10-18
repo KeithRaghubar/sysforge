@@ -85,7 +85,7 @@ def extract_built_to_staging(
             f"[PGO] PKGDEST={pkgdest}: searching there for Pass 3 packages",
         )
 
-    _log.ui(f"─── Pass 3: staging extraction → {staging} ────────")
+    _log.ui(f"─── staging extraction → {staging} ────────")
     for name, pkgbuild_path in pkgbuild_map.items():
         build_dir = pkgbuild_path.parent
         # PKGDEST takes precedence; fall back to PKGBUILD directory.

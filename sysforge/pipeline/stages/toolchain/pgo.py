@@ -134,8 +134,9 @@ def build_llvm_single(
     could leave a half-installed suite if one package failed mid-batch).
     """
     all_pkgs = {**pkgbuild_map, **non_pgo_map, **lib32_map}
+    progress.step("build")
     passes.build_pass(
-        "LLVM build (single pass, no PGO)",
+        f"build · {passes.pkgbases(all_pkgs)} (single pass, no PGO)",
         all_pkgs,
         options,
         install=False,
@@ -215,7 +216,8 @@ def bolt_only(
 
     profdata_path = pgo_store / "clang.profdata"
     profile_use = f"-fprofile-use={profdata_path}" if profdata_path.is_file() else None
-    _log.ui("─── BOLT only · llvm (last Pass-4a build tree, nothing rebuilt) "
+    progress.step("bolt")
+    _log.ui("─── bolt · llvm (last Pass-4a build tree, nothing rebuilt) "
             "──────────────────────────────────────────")
 
     def _repackage() -> None:
@@ -486,8 +488,9 @@ def build_llvm_pgo_inner(
             # compiler="llvm"; the gcc path returns early before any PGO pass).
             # makepkg runs WITHOUT --install; outputs are extracted into stage1
             # by profdata.pgo_stage_instrumented so the live root is never touched.
+            progress.step("instrument")
             passes.build_pass(
-                "PGO 1/4 · instrument llvm / llvm-libs",
+                f"instrument · {passes.pkgbases(pgo_map)} (-fprofile-generate)",
                 pgo_map,
                 options,
                 cc="/usr/bin/clang",
@@ -561,8 +564,10 @@ def build_llvm_pgo_inner(
                     "to resolve __llvm_profile_* in stage1's instrumented .a archives "
                     f"({residual_linker_flags})",
                 )
+            if non_pgo_map:
+                progress.step("bootstrap")
             passes.build_pass(
-                "PGO 2/4 · bootstrap clang/lld/... against stage1",
+                f"bootstrap · {passes.pkgbases(non_pgo_map)} against stage1",
                 non_pgo_map,
                 options,
                 cc="/usr/bin/clang",
@@ -590,6 +595,7 @@ def build_llvm_pgo_inner(
             # default_%m.profraw. Without this, N parallel make -j clang
             # invocations corrupt each other's profraw via concurrent writes,
             # causing SIGBUS crashes in llvm-profdata.
+            progress.step("train")
             train_env = {
                 "LLVM_PROFILE_FILE": f"{pgo_store}/default_%m_%p.profraw",
                 # Prevent ccache/sccache from serving cached objects during the
@@ -646,10 +652,10 @@ def build_llvm_pgo_inner(
                 # corpus builds continue the count instead of restarting it
                 # (3.3.0-B12); the sub-pass names stay as headers.
                 with progress.tracker(
-                        passes.pass_size(pass2_map, corpus_map),
-                        "PGO 3/4 · train") as tick3:
+                        passes.pass_size(pass2_map, corpus_map), "train") as tick3:
                     passes.build_pass(
-                        "PGO 3/4 · train (profraw generation, no system install)",
+                        f"train · {passes.pkgbases(pass2_map)} "
+                        "(profraw generation, nothing installed)",
                         pass2_map,
                         options,
                         cc=pass2_cc,
@@ -692,7 +698,8 @@ def build_llvm_pgo_inner(
                     if corpus_map:
                         try:
                             passes.build_pass(
-                                f"PGO 3/4 · corpus enrich ({', '.join(corpus_map)})",
+                                f"train · corpus {passes.pkgbases(corpus_map)} "
+                                "(profile enrichment, nothing installed)",
                                 corpus_map,
                                 options,
                                 cc=pass2_cc,
@@ -762,6 +769,7 @@ def build_llvm_pgo_inner(
         # Pass 4 (or sole pass when reusing profdata) — PGO-optimized build.
         # Use staged clang from Pass 3 if available; otherwise fall back to
         # system clang (which, after a prior successful run, is already PGO-optimized).
+        progress.step("optimize")
         using_staged_cc = (
             not skip_profgen
             and not options.dry_run
@@ -780,7 +788,7 @@ def build_llvm_pgo_inner(
             pass3_cc, pass3_cxx = staged_cc, staged_cxx
 
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
-        opt = "reusing profdata" if skip_profgen else "PGO 4/4"
+        opt = "reusing profdata" if skip_profgen else "-fprofile-use"
         profile_use = f"-fprofile-use={profdata_path}"
 
         # Input-fingerprint reuse setup (Pass 4 only). The cache lives *outside*
@@ -857,15 +865,14 @@ def build_llvm_pgo_inner(
         # operator reads the pass as one unit, so its item counter runs
         # 1..N across the sub-passes instead of restarting per call
         # (3.3.0-B12). Staging between sub-passes happens inside it.
-        pass4_label = ("PGO optimize (reusing profdata)" if skip_profgen
-                       else "PGO 4/4 · optimize")
+        pass4_label = "optimize"
         # Where 4a actually built (the profile's BUILDDIR wins over the system
         # makepkg.conf's), so BOLT finds the tree it rewrites (3.5.0-B22).
         roots_4a: dict[Path, Path] = {}
         with progress.tracker(
                 passes.pass_size(pgo_map, non_pgo_map, lib32_map), pass4_label) as tick4:
             pgo_fps = passes.build_pass(
-                f"PGO optimize · llvm/llvm-libs ({opt})",
+                f"optimize · {passes.pkgbases(pgo_map)} ({opt})",
                 pgo_map,
                 options,
                 cc=pass3_cc,
@@ -895,10 +902,12 @@ def build_llvm_pgo_inner(
                         profile_use=profile_use, linker_flags=_bolt_ldflag,
                         pgo_env=build_pgo_env,
                     )
+                tick4.note("BOLT")
                 bolt.optimize_in_build(
                     pgo_map, tcfg, options, repackage=_repackage_4a,
                     build_root=roots_4a.get(Path(pgo_map["clang"]).parent)
                     if "clang" in pgo_map else None)
+                tick4.resume()
 
             # 4b's fingerprints feed 4c's Merkle chain; default empty so 4c is safe
             # when non_pgo_map is empty but lib32_map is not.
@@ -930,7 +939,8 @@ def build_llvm_pgo_inner(
                     "CMAKE_PREFIX_PATH": f"{staging3}/usr",
                 }
                 nonpgo_fps = passes.build_pass(
-                    f"PGO optimize · clang/lld/... against shipped libLLVM ({opt})",
+                    f"optimize · {passes.pkgbases(non_pgo_map)} against the shipped "
+                    f"libLLVM ({opt})",
                     non_pgo_map,
                     options,
                     cc=pass3_cc,
@@ -965,7 +975,8 @@ def build_llvm_pgo_inner(
                     "CMAKE_PREFIX_PATH": f"{staging3}/usr",
                 }
                 passes.build_pass(
-                    f"PGO optimize · lib32 against shipped libLLVM ({opt})",
+                    f"optimize · {passes.pkgbases(lib32_map)} against the shipped "
+                    f"libLLVM ({opt})",
                     lib32_map,
                     options,
                     cc=pass3_cc,

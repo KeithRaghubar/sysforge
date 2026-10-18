@@ -114,6 +114,15 @@ def build_pkg(
         return None
 
 
+def pkgbases(pkgbuild_map: dict[str, Path]) -> str:
+    """The PKGBUILD dirs a pass builds, by name, for its header (3.5.0-F6).
+
+    Since upstream merged clang, lld and the rest into the ``llvm`` pkgbase, a
+    fixed list of package names went stale; the map says what is built now.
+    """
+    return ", ".join(sorted({p.parent.name for p in pkgbuild_map.values()})) or "nothing"
+
+
 def pass_size(*pkgbuild_maps: dict[str, Path]) -> int:
     """Build count of one logical pass: unique PKGBUILD dirs across its sub-maps.
 

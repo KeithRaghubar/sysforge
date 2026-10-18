@@ -2,6 +2,8 @@
 
 All log output goes to stderr. Format: `[SYSFORGE][LEVEL][TAG] message`
 
+**File lines are time-stamped** (`3.5.0-F5`): every line written to the unified and per-package logs reads `HH:MM:SS [SYSFORGE][LEVEL][TAG] message`, so a finished log can say how long each step took. The stamp is added in `log._write_to_files`, the one path every level takes into the files, and only there: terminal output never carries it, and the `[SYSFORGE][LEVEL][TAG]` shape after it is unchanged, so a grep for a tag still matches. Raw lines (the `# <label>: <date time>` session header, `# invocation:`, the `write_pkg_log` makepkg tee) are not stamped. The header names the date, so the stamp keeps only the time; when the date has changed since the last stamped line, a `# date: YYYY-MM-DD` line is written first, so a run that passes midnight still reads in order.
+
 Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
 - Default: `[ERROR]` only (plus `ui()` primary output, which is verbosity-immune)
 - `-v`: adds `[WARN]`

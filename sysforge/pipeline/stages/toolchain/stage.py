@@ -36,6 +36,8 @@ from sysforge.pipeline.stages.toolchain import (
 
 from sysforge.primitives import pacman
 from sysforge.primitives import config as prim_config
+from sysforge.primitives import stage_timings
+from sysforge.ui import progress
 from sysforge import log
 
 _log = log.get_logger("TOOLCHAIN")
@@ -93,14 +95,12 @@ class ToolchainStage(Stage):
 
         compiler = tcfg.compiler
         pgo_enabled = tcfg.pgo_enabled
-        staging1, staging, staging3 = tcfg.staging1, tcfg.staging, tcfg.staging3
         # resolve_pgo_store owns its own precedence and takes the whole table.
         pgo_store = resolve_pgo_store(tcfg.raw)
 
         # --bolt-only / --install-only act on what a PGO LLVM run left; refuse
         # any other configuration before a register-only path returns quietly.
         no_build = gates.no_build_mode(options)
-        bolt_only = no_build == "--bolt-only"
         if no_build and not (compiler == "llvm" and pgo_enabled and not tcfg.skip_build):
             raise RuntimeError(
                 f"[TOOLCHAIN] {no_build} needs the PGO LLVM toolchain "
@@ -202,6 +202,26 @@ class ToolchainStage(Stage):
                 )
             identity.propagate_default_toolchain(compiler, options)
             return
+
+        # From source. The stage counts its own steps on the bar (3.5.0-F6):
+        # a predicted plan, refined once the PKGBUILDs resolve and corrected
+        # by each step() as the run goes, with an ETA from recorded durations.
+        from sysforge.pipeline.state import resolve_state_dir
+
+        timings_dir = resolve_state_dir(options.state_dir)[0]
+        with progress.steps("toolchain", planned_steps(tcfg, options, no_build),
+                            expected=stage_timings.expected(timings_dir, "toolchain"),
+                            on_done=step_recorder(timings_dir, options)):
+            progress.step("preflight")
+            self._build_from_source(sysforge_config, state, options, tcfg, no_build)
+
+    def _build_from_source(self, sysforge_config, state, options, tcfg, no_build):
+        """Resolve, gate, build, audit, install and verify the LLVM suite."""
+        compiler = tcfg.compiler
+        pgo_enabled = tcfg.pgo_enabled
+        staging1, staging, staging3 = tcfg.staging1, tcfg.staging, tcfg.staging3
+        pgo_store = resolve_pgo_store(tcfg.raw)
+        bolt_only = no_build == "--bolt-only"
 
         pgo_pkgs, non_pgo_pkgs, lib32_pkgs = (
             list(tcfg.pgo_pkgs), list(tcfg.non_pgo_pkgs), list(tcfg.lib32_pkgs)
@@ -323,6 +343,10 @@ class ToolchainStage(Stage):
         soname_consumers = gates.gate_soname_consumers(
             pkgbuild_map, all_names, options, tcfg,
         )
+        progress.plan_steps(planned_steps(
+            tcfg, options, no_build, bootstrap=bool(non_pgo_map),
+            reuse_profdata=_predict_profdata_reuse(pgo_store, pgo_map, options),
+            consumers=bool(soname_consumers))[1:])
 
         # Prompt for confirmation (interactive only)
         try:
@@ -396,6 +420,7 @@ class ToolchainStage(Stage):
             # and no sentinel, keeping the live toolchain intact. A healable
             # std:: re-export drift returns the libLLVM consumers to rebuild
             # after Gate 3 (same machinery as a soname bump).
+            progress.step("audit")
             abi_consumers = gates.gate2_audit(
                 built_map, all_names, options, tcfg, dry_run=options.dry_run,
             )
@@ -405,6 +430,7 @@ class ToolchainStage(Stage):
             # a recovery that replaces the live toolchain (3.5.0-B30).
             # A PGO build is kept for --install-only (3.5.0-F8); a single-pass
             # build has no such recovery, so it reruns.
+            progress.step("install")
             retry = ("sysforge run toolchain --install-only" if pgo_enabled
                      else "sysforge run toolchain")
             if not options.dry_run and not sudo_session.authenticate():
@@ -429,6 +455,7 @@ class ToolchainStage(Stage):
                     _log.ui("[dry-run] would install built toolchain and verify")
                 else:
                     label = "PGO optimize" if pgo_enabled else "LLVM build (single pass, no PGO)"
+                    progress.phase(f"installing {len(install_set)} packages")
                     try:
                         profdata.pgo_install(
                             label, built_map, options.dry_run, members=install_set,
@@ -465,10 +492,13 @@ class ToolchainStage(Stage):
                 expected_targets = resolve_or_detect_llvm_targets(
                     config.TOOLCHAIN_PATH, hw_profile,
                 )
+                progress.step("verify")
                 if not options.dry_run:
+                    progress.phase("LLVM suite checks")
                     issues = list(
                         verify.verify_llvm_install(expected_targets=expected_targets)
                     )
+                    progress.phase("installed libLLVM consumers")
                     # Consumer sufficiency vs the NOW-INSTALLED libLLVM (graphics
                     # globs + every installed libLLVM consumer, 3.5.0-B14). An
                     # *unhealable* dropped backend an installed consumer imports
@@ -505,6 +535,7 @@ class ToolchainStage(Stage):
                         if evidence_path is not None:
                             _log.warn(f"Diagnostic evidence written to: {evidence_path}")
                         _log.warn("Attempting automatic rollback to the prior-good toolchain…")
+                        progress.phase("rolling back to the prior toolchain")
                         if gates.rollback_to_snapshot(snapshot):
                             # Live /usr restored — the system is whole, so clear
                             # the sentinel and raise (nothing to recover at next run).
@@ -537,6 +568,7 @@ class ToolchainStage(Stage):
         # toolchain bump; it surfaces as an actionable error instead.
         rebuild_consumers = sorted(set(soname_consumers) | set(abi_consumers))
         if rebuild_consumers and not options.dry_run:
+            progress.step("consumers")
             gates.rebuild_soname_consumers(rebuild_consumers, sysforge_config, options, state)
 
         # Write compiler paths + variant to pipeline state for downstream
@@ -568,4 +600,52 @@ class ToolchainStage(Stage):
         # the bench, or run it under [bench] after_build (3.4.0-F11). Outside
         # the sentinel and never raising, so a bench that cannot run leaves the
         # install untouched.
+        if tcfg.bench_after_build and not options.dry_run:
+            progress.step("bench")
         measure.after_install(tcfg, options)
+
+
+def step_recorder(timings_dir: Path, options):
+    """``on_done`` for the stage's steps: record each into stage_timings, or
+    ``None`` under ``--dry-run``, whose seconds-long steps would teach the ETA
+    that an hour-long build takes a moment."""
+    if options.dry_run:
+        return None
+    return lambda step, secs: stage_timings.record(timings_dir, "toolchain", step, secs)
+
+
+def planned_steps(tcfg, options, no_build: str | None, *, bootstrap: bool = True,
+                  reuse_profdata: bool = False, consumers: bool = False) -> list[str]:
+    """The steps a from-source run is expected to take, in order (3.5.0-F6).
+
+    A prediction for the bar's count and ETA: ``progress.step`` drops a planned
+    step the run skips and inserts one it did not foresee, so a wrong guess
+    costs a moment of a wrong total, never a wrong step name.
+    """
+    if no_build == "--install-only":
+        build: list[str] = []
+    elif no_build == "--bolt-only":
+        build = ["bolt"]
+    elif not tcfg.pgo_enabled:
+        build = ["build"]
+    elif reuse_profdata:
+        build = ["optimize"]
+    else:
+        build = ["instrument", *(["bootstrap"] if bootstrap else []), "train", "optimize"]
+    tail = ["audit", "install", "verify"]
+    if consumers:
+        tail.append("consumers")
+    if tcfg.bench_after_build and not options.dry_run:
+        tail.append("bench")
+    return ["preflight", *build, *tail]
+
+
+def _predict_profdata_reuse(pgo_store: Path, pgo_map: dict, options) -> bool:
+    """Whether Pass 4 will reuse the stored profile (the default answer to
+    ``build_llvm_pgo_inner``'s reuse prompt). Read-only; never raises."""
+    if getattr(options, "rebuild_profdata", False) or options.dry_run:
+        return False
+    try:
+        return profdata.check_existing_profdata(pgo_store, pgo_map)[0] == "ready"
+    except Exception:  # noqa: BLE001 — a plan is only a prediction
+        return False

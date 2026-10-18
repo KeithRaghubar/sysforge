@@ -739,7 +739,7 @@ def test_split_pass4_counts_once_across_sub_passes(tmp_path, monkeypatch):
         build_llvm_pgo_inner(pgo_map, non_pgo_map, lib32_map,
                              tmp_path / "s1", tmp_path / "s2", tmp_path / "s3",
                              pgo_store, options)
-    assert opened == [("PGO optimize (reusing profdata)", 4,
+    assert opened == [("optimize", 4,
                        ["llvm", "clang", "lld", "lib32-llvm"])]
 
 
@@ -748,10 +748,10 @@ def test_full_pgo_run_one_tracker_per_logical_pass(tmp_path, monkeypatch):
     across sub-passes) is a single tracker rather than one per call."""
     opened = _record_trackers(monkeypatch)
     _run_pgo(tmp_path, ["llvm", "llvm-libs"], ["clang", "lld"], ["lib32-llvm"])
-    pass4 = [o for o in opened if o[0].startswith("PGO 4/4")]
+    pass4 = [o for o in opened if o[0] == "optimize"]
     assert len(pass4) == 1 and pass4[0][1] == 5  # llvm + llvm-libs dirs, clang, lld, lib32
-    train = [o for o in opened if o[0].startswith("PGO 3/4")]
-    assert [p for p, *_ in train] == ["PGO 3/4 · train"]
+    train = [o for o in opened if o[0].startswith("train")]
+    assert [p for p, *_ in train] == ["train"]
     for prefix, total, labels in opened:
         assert len(labels) == total, (prefix, total, labels)
 
@@ -940,3 +940,83 @@ def test_install_only_refuses_a_pkgbuild_with_no_built_package(tmp_path):
                side_effect=lambda m: [] if "spirv-llvm-translator" in m else [tmp_path / "x"]), \
          pytest.raises(RuntimeError, match="spirv-llvm-translator"):
         pgo.install_only({"llvm": llvm}, {"spirv-llvm-translator": spirv}, {}, options)
+
+
+# --- The stage's own steps on the bar (3.5.0-F6) ----------------------------
+
+def _record_steps(monkeypatch):
+    """Wrap progress.step: [(step, plan after it)] in the order run."""
+    from sysforge.ui import progress
+    seen = []
+    real = progress.step
+
+    def spy(name):
+        real(name)
+        steps = progress._bar.steps
+        seen.append((name, list(steps.names) if steps else None))
+    monkeypatch.setattr(progress, "step", spy)
+    return seen
+
+
+def test_full_pgo_run_counts_its_steps_and_records_their_durations(tmp_path, monkeypatch):
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives import stage_timings
+    seen = _record_steps(monkeypatch)
+    _run_pgo(tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    full = ["preflight", "instrument", "bootstrap", "train", "optimize",
+            "audit", "install", "verify"]
+    assert [n for n, _ in seen] == full
+    # The plan the bar showed matched the run from the first step on.
+    assert all(plan == full for _, plan in seen)
+    recorded = stage_timings.expected(resolve_state_dir(None)[0], "toolchain")
+    assert set(recorded) == set(full)
+
+
+def test_profdata_reuse_run_counts_only_the_steps_it_takes(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.toolchain import pgo, profdata
+    seen = _record_steps(monkeypatch)
+    monkeypatch.setattr(pgo, "pgo_confirm", lambda *a, **k: None)
+    def ready(pgo_store, pgo_map):
+        pgo_store.mkdir(parents=True, exist_ok=True)
+        (pgo_store / "clang.profdata").write_bytes(b"fake")
+        return ("ready", str(pgo_store / "clang.profdata"))
+    monkeypatch.setattr(profdata, "check_existing_profdata", ready)
+    _run_pgo(tmp_path, ["llvm"], ["spirv-llvm-translator"])
+    reuse = ["preflight", "optimize", "audit", "install", "verify"]
+    assert [n for n, _ in seen] == reuse
+    assert seen[-1][1] == reuse
+
+
+def test_dry_run_records_no_step_durations(tmp_path):
+    from sysforge.pipeline.stages.toolchain.stage import step_recorder
+    from sysforge.primitives import stage_timings
+    assert step_recorder(tmp_path, make_options(dry_run=True)) is None
+    step_recorder(tmp_path, make_options(dry_run=False))("audit", 42)
+    assert stage_timings.expected(tmp_path, "toolchain") == {"audit": 42}
+
+
+@pytest.mark.parametrize("no_build, pgo, kw, expected", [
+    (None, True, {}, ["preflight", "instrument", "bootstrap", "train", "optimize",
+                      "audit", "install", "verify"]),
+    (None, True, {"bootstrap": False}, ["preflight", "instrument", "train", "optimize",
+                                        "audit", "install", "verify"]),
+    (None, True, {"reuse_profdata": True}, ["preflight", "optimize", "audit", "install",
+                                            "verify"]),
+    (None, False, {"consumers": True}, ["preflight", "build", "audit", "install", "verify",
+                                        "consumers"]),
+    ("--bolt-only", True, {}, ["preflight", "bolt", "audit", "install", "verify"]),
+    ("--install-only", True, {}, ["preflight", "audit", "install", "verify"]),
+])
+def test_planned_steps_per_path(no_build, pgo, kw, expected):
+    from sysforge.pipeline.stages.toolchain.stage import planned_steps
+    from tests.toolchain_helpers import toolchain_cfg
+    tcfg = toolchain_cfg(compiler="llvm", pgo=pgo)
+    assert planned_steps(tcfg, make_options(dry_run=False), no_build, **kw) == expected
+
+
+def test_planned_steps_end_with_bench_only_when_it_runs():
+    from sysforge.pipeline.stages.toolchain.stage import planned_steps
+    from tests.toolchain_helpers import toolchain_cfg
+    tcfg = toolchain_cfg(compiler="llvm", pgo=False, bench={"after_build": True})
+    assert planned_steps(tcfg, make_options(dry_run=False), None)[-1] == "bench"
+    assert planned_steps(tcfg, make_options(dry_run=True), None)[-1] == "verify"

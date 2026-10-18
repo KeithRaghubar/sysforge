@@ -22,6 +22,10 @@ File logging (always full verbosity, all levels):
                     Same lifecycle as the unified log.
 
 Format: [SYSFORGE][LEVEL][TAG] message
+File lines carry a wall-clock prefix: HH:MM:SS [SYSFORGE][LEVEL][TAG] message
+(3.5.0-F5). The terminal copy never does. A ``# date: YYYY-MM-DD`` line marks
+each day change after the session header, so a run past midnight still reads
+unambiguously.
 
 Colour: when the output stream is a TTY and ``NO_COLOR`` is unset, the LEVEL
 token is coloured by severity (red for ERROR, yellow for WARN, dim for DEBUG)
@@ -59,6 +63,7 @@ _COLOR_MODE = "auto"  # one of {"auto", "always", "never"}; see use_color()
 _UNICODE_MODE = "auto"  # one of {"auto", "always", "never"}; see use_unicode()
 _unified_log_fh = None
 _pkg_log_fh = None
+_last_stamp_date: str | None = None  # date of the last stamped/headed file line
 
 # ---------------------------------------------------------------------------
 # ANSI colour support — the single colour authority for all sysforge output.
@@ -88,8 +93,27 @@ _SEP = "# " + "─" * 60 + "\n"
 
 
 def _session_header(label: str) -> str:
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"{_SEP}# {label}: {ts}\n{_SEP}"
+    global _last_stamp_date
+    now = datetime.now()
+    _last_stamp_date = now.strftime("%Y-%m-%d")
+    return f"{_SEP}# {label}: {now:%Y-%m-%d %H:%M:%S}\n{_SEP}"
+
+
+def _stamp(line: str) -> str:
+    """Prefix a file line with ``HH:MM:SS `` (3.5.0-F5).
+
+    The session header names the date, so the stamp keeps only the time; when
+    the date has moved on since the last stamped line a ``# date:`` marker is
+    emitted first, keeping durations across midnight readable.
+    """
+    global _last_stamp_date
+    now = datetime.now()
+    day = now.strftime("%Y-%m-%d")
+    marker = ""
+    if _last_stamp_date is not None and day != _last_stamp_date:
+        marker = f"# date: {day}\n"
+    _last_stamp_date = day
+    return f"{marker}{now:%H:%M:%S} {line}"
 
 
 def set_verbosity(level: int) -> None:
@@ -382,7 +406,12 @@ def write_pkg_log(line: str) -> None:
 
 
 def _write_to_files(line: str, raw: bool = False) -> None:
-    """Write a line to all open file handles. raw=True skips formatting."""
+    """Write a line to all open file handles. raw=True skips formatting,
+    including the time stamp (session headers carry their own date+time)."""
+    if _unified_log_fh is None and _pkg_log_fh is None:
+        return
+    if not raw:
+        line = _stamp(line)
     for fh in (_unified_log_fh, _pkg_log_fh):
         if fh is not None:
             with contextlib.suppress(Exception):

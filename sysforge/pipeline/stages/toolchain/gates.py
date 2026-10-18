@@ -30,6 +30,7 @@ from sysforge.primitives import config as prim_config
 from sysforge.primitives import aur
 from sysforge.primitives.pkgbuild_review import resolve_review_policy
 from sysforge import log
+from sysforge.ui import progress
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -484,6 +485,7 @@ def gate2_audit(
         # install step will surface a missing-package error of its own.
         return []
     _log.info(f"Gate 2: auditing {len(pkgs)} built package(s) for ABI hazards")
+    progress.phase(f"ABI scan, {len(pkgs)} packages")
     findings = toolchain_safety.scan_abi_hazards(pkgs)
     if findings:
         joined = "\n".join(f"  - {f.message}" for f in findings)
@@ -496,12 +498,14 @@ def gate2_audit(
         )
 
     # Advisory: stock std:: exports the build still lacks (3.5.0-F4).
+    progress.phase("std:: export parity")
     _report_std_export_parity(pkgs)
 
     # Consumer symbol sufficiency vs the freshly-built libLLVM: the graphics
     # globs plus every installed libLLVM consumer (3.5.0-B14).
     # Pre-install, outside the sentinel — an abort here leaves the live graphics
     # stack untouched, vs. a post-reboot black screen.
+    progress.phase("installed libLLVM consumers")
     consumer_findings = toolchain_safety.check_system_consumer_symbols(pkgs)
     if not consumer_findings:
         return []

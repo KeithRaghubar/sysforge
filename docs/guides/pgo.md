@@ -204,6 +204,15 @@ Unlike package PGO, **the training workload is automatic**: SysForge builds an
 instrumented clang and uses it to compile LLVM itself (pass 3), then rebuilds the final
 toolchain from that profile (pass 4). You don't have to do anything in between.
 
+The progress line at the bottom of the terminal says where the run is, for example
+`toolchain 5/8 · optimize · llvm · ninja 74% · 1h34m · ~40m left`: the step out of the
+steps this run takes (preflight, instrument, bootstrap, train, optimize, then the pre-install
+audit, install and verification), the package being built, how far its build has got, the
+time since the stage started and an estimate of what is left. The estimate comes from how
+long each step took on your earlier runs, so it appears from the second run on. Every line of
+the run log (`sysforge log`) also starts with the time it was written, so a finished run
+shows how long each step took.
+
 Best practices:
 
 - **Broaden the training.** LLVM's own C++ build under-represents C and graphics code. Add

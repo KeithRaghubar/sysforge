@@ -54,6 +54,7 @@ sysforge/
 │       ├── bench_workload.py          # bench-owned compile TUs + [bench] corpus resolution + fingerprint
 │       ├── bench_harness.py           # interleaved compile timing, median/spread, version relation, ratio
 │       ├── bench_state.py             # <state_dir>/bench.toml: last bench result per target (sole reader/writer)
+│       ├── stage_timings.py           # <state_dir>/stage_timings.toml: step-duration rings per stage (sole reader/writer)
 │       ├── stock_pkg.py               # unprivileged stock repo build: pacman -Sp, cache/download, sync-DB checksum, bsdtar
 │       ├── makepkg_env.py             # subprocess env resolution + effective build dir (owns [ENV] tag)
 │       ├── makepkg_conf.py            # temp makepkg.conf emission ctx-mgr (owns [CONF])
