@@ -50,7 +50,18 @@ build time) uses `source_built` | `pacman` | `kernel` plus the optimization mode
 (`pgo_mesa`/`pgo`/`autofdo_kernel`/`propeller_kernel`/`bolt_llvm`). The two layers
 share one value space: `source_built` means "a plain from-source build" in both —
 the profile layer extracts the PKGBUILD's embedded profile, build_state stamps it
-as the rebuild-on-update marker.
+as the rebuild-on-update marker. `bolt_llvm` is the exception among the
+optimization modes: it is never passed to makepkg (so it earns no `-sysforge`
+rename) but stamped by `toolchain/bolt._record_bolted` after the BOLT repackage,
+on the members whose package holds a rewritten library (`clang` for
+`libclang-cpp`, `llvm-libs` for `libLLVM`), found by listing the packages
+(`bsdtar`). It is the same build as `source_built` plus a post-link pass under
+the stock name, so `build_state.is_source_build_mode` is true for both and is the
+one predicate for "plain source build" (flag drift's `drift_candidate`,
+`update_split`, `reconcile_external_installs` demotion, `revert-to-stock`'s
+`reinstall` classification). A later Pass-4a repackage without BOLT re-records
+`source_built`, so the stamp always describes the packages last built
+(`3.5.0-B31`).
 
 The profile layer normalizes its own legacy token **on read only** (never written
 into new data): `patched_pkgbuild → source_built` (`profile.normalize_build_mode`,

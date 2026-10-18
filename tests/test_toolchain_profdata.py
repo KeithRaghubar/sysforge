@@ -1071,3 +1071,48 @@ def test_pgo_install_with_members_installs_only_those(tmp_path, monkeypatch):
                         lambda argv, **kw: calls.append(argv) or MagicMock(returncode=0))
     profdata.pgo_install("test", {"llvm": tmp_path / "PKGBUILD"}, False, members={"llvm"})
     assert str(llvm) in calls[0] and str(wasi) not in calls[0]
+
+
+def test_gate2_reports_std_export_parity_gap_at_verbose_only(quiet_at_default, monkeypatch):
+    """3.5.0-F4: advisory narration, silent at default verbosity, a WARN at -vv."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import toolchain_safety as _ts
+
+    gap = tuple(f"_ZNSt3fooILi{i}EE3barEv" for i in range(7))
+    monkeypatch.setattr(_ts, "check_std_export_parity",
+                        lambda pkgs: _ts.StdParity(gap, "against stock llvm-libs-x"))
+    _err0, err2 = quiet_at_default(lambda: gates._report_std_export_parity([]))
+    assert "[WARN]" in err2
+    assert "7 libstdc++ export(s)" in err2 and "(+2 more)" in err2
+    assert gap[0] in err2 and gap[6] not in err2
+
+
+def test_gate2_parity_skip_is_info(quiet_at_default, monkeypatch):
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import toolchain_safety as _ts
+
+    monkeypatch.setattr(_ts, "check_std_export_parity",
+                        lambda pkgs: _ts.StdParity(None, "no signed stock llvm-libs-1-1"))
+    _err0, err2 = quiet_at_default(lambda: gates._report_std_export_parity([]))
+    assert "[INFO]" in err2 and "not checked" in err2 and "[WARN]" not in err2
+
+
+def test_gate2_audit_runs_parity_and_never_raises_on_it(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.toolchain import gate2_audit
+    from sysforge.primitives import toolchain_safety as _ts
+
+    pkg_dir = tmp_path / "llvm-libs"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-libs-22.1.6-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.profdata.collect_pgo_packages",
+        lambda m: [fake_pkg],
+    )
+    seen = []
+    monkeypatch.setattr(_ts, "check_std_export_parity",
+                        lambda pkgs: seen.append(pkgs) or _ts.StdParity(("_ZNSt1x",), "d"))
+    assert gate2_audit(
+        {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
+    ) == []
+    assert seen == [[fake_pkg]]

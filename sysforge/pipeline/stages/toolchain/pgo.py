@@ -31,7 +31,7 @@ from sysforge.primitives import makepkg_pgo
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_lock import build_lock
 
-from sysforge.pipeline.stages.toolchain import bolt, constants, passes, profdata, reuse
+from sysforge.pipeline.stages.toolchain import bolt, constants, passes, pkgbuilds, profdata, reuse
 
 from sysforge.primitives import prompt
 from sysforge.primitives.makepkg_invoke import BuildAborted
@@ -155,6 +155,124 @@ def pgo_lock_path(staging1: Path) -> Path:
     store alone (3.3.0-B8).
     """
     return makepkg_pgo.pgo_lock_path(staging1)
+
+
+def _repackage_llvm(
+    pgo_map: dict[str, Path], options, *, cc: str, cxx: str,
+    profile_use: str | None, linker_flags: str | None, pgo_env: dict,
+) -> None:
+    """Rerun only ``package()`` for the llvm PKGBUILD, with Pass 4a's settings.
+
+    ``--repackage`` skips makepkg's ``CLEANBUILD`` and every build step, so the
+    tree BOLT just rewrote is what gets packaged; source sync is off, since a
+    re-pinned tree would not be that one.
+    """
+    repack_options = copy.copy(options)
+    repack_options.no_update = True
+    passes.build_pkg(
+        "llvm", pgo_map["clang"], repack_options,
+        cc=cc, cxx=cxx,
+        extra_flags=["--repackage", "--force"],
+        compiler_flags_extra=profile_use,
+        linker_flags_extra=linker_flags,
+        pgo_build=True,
+        pgo_env=pgo_env,
+        toolchain_variant="pgo_llvm",
+        owner_stage="toolchain",
+    )
+
+
+def bolt_only(
+    pgo_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+    pgo_store: Path,
+    options,
+    *,
+    tcfg,
+) -> tuple[dict[str, Path], str, str, str, str]:
+    """``run toolchain --bolt-only``: BOLT the last Pass-4a tree, build nothing.
+
+    Checks the tree is the last Pass-4a build (``bolt.check_bolt_only_tree``),
+    BOLTs it with ``[bolt] enabled`` forced on (the flag is the request; the
+    other ``[bolt]`` keys apply), and repackages llvm with 4a's settings. Every
+    other package of the suite is installed as the last run built it, so the
+    return matches :func:`build_llvm_pgo_inner`'s and the caller's Gate 2,
+    install and Gate 3 run unchanged. Strict: a BOLT that cannot run raises,
+    since installing the packages unchanged would achieve nothing (3.5.0-F7).
+    """
+    import dataclasses
+
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives import bolt as _bolt
+    from sysforge.primitives.build_state import BuildState
+
+    forced = dataclasses.replace(tcfg, bolt=dataclasses.replace(tcfg.bolt, enabled=True))
+    state_dir, _ = resolve_state_dir(options.state_dir)
+    pkgbase = Path(pgo_map["clang"]).parent.name if "clang" in pgo_map else "llvm"
+    entry = BuildState(state_dir).get(pkgbase)
+    root = bolt.check_bolt_only_tree(pgo_map, entry, libllvm=forced.bolt.libllvm)
+
+    profdata_path = pgo_store / "clang.profdata"
+    profile_use = f"-fprofile-use={profdata_path}" if profdata_path.is_file() else None
+    _log.ui("─── BOLT only · llvm (last Pass-4a build tree, nothing rebuilt) "
+            "──────────────────────────────────────────")
+
+    def _repackage() -> None:
+        _repackage_llvm(
+            pgo_map, options, cc="/usr/bin/clang", cxx="/usr/bin/clang++",
+            profile_use=profile_use, linker_flags=_bolt.emit_relocs_ldflag(),
+            pgo_env={"LLVM_PROFILE_FILE": ""},
+        )
+
+    # BOLT takes minutes and the caller's install sudo follows it: authorize
+    # now, while the operator is at the confirmation, and keep it warm across
+    # the BOLT, as the full build does (3.5.0-B30).
+    if not options.dry_run:
+        sudo_session.authenticate()
+    with sudo_session.keepalive(tag="BOLT", enabled=not options.dry_run):
+        bolt.optimize_in_build(
+            pgo_map, forced, options, repackage=_repackage, build_root=root, strict=True)
+    return ({**pgo_map, **non_pgo_map, **lib32_map},
+            "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm")
+
+
+def install_only(
+    pgo_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+    options,
+) -> tuple[dict[str, Path], str, str, str, str]:
+    """``run toolchain --install-only``: install what the last run built.
+
+    The recovery for a run that built (and BOLTed) the suite but did not
+    install it, e.g. an install sudo prompt nobody answered. Checks llvm's
+    record is this PKGBUILD's PGO build (``pkgbuilds.check_last_pgo_build``)
+    and that every PKGBUILD of the suite has its built packages at that
+    version in PKGDEST, then returns what :func:`build_llvm_pgo_inner` would,
+    so the caller's Gate 2, install and Gate 3 run unchanged (3.5.0-F8).
+    """
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.build_state import BuildState
+
+    suite = {**pgo_map, **non_pgo_map, **lib32_map}
+    state_dir, _ = resolve_state_dir(options.state_dir)
+    pkgbase = Path(pgo_map["clang"]).parent.name if "clang" in pgo_map else "llvm"
+    _pkgbuild, pkgbase, want_label = pkgbuilds.check_last_pgo_build(
+        pgo_map, BuildState(state_dir).get(pkgbase), flag="--install-only", tag="TOOLCHAIN")
+    by_dir: dict[Path, str] = {}
+    for name, path in suite.items():
+        by_dir.setdefault(Path(path).parent, name)
+    missing = sorted(d.name for d, name in by_dir.items()
+                     if not profdata.collect_pgo_packages({name: d / "PKGBUILD"}))
+    if missing:
+        raise RuntimeError(
+            f"[TOOLCHAIN] --install-only: no built package in PKGDEST for "
+            f"{', '.join(missing)} at the PKGBUILD's version; run "
+            "`sysforge run toolchain` to build it")
+    _log.ui(f"─── Install only · {pkgbase} {want_label} (last build, nothing rebuilt) "
+            "──────────────────────────────────────────")
+    return suite, "/usr/bin/clang", "/usr/bin/clang++", "lld", "pgo_llvm"
 
 
 def build_llvm_pgo_inner(
@@ -741,6 +859,9 @@ def build_llvm_pgo_inner(
         # (3.3.0-B12). Staging between sub-passes happens inside it.
         pass4_label = ("PGO optimize (reusing profdata)" if skip_profgen
                        else "PGO 4/4 · optimize")
+        # Where 4a actually built (the profile's BUILDDIR wins over the system
+        # makepkg.conf's), so BOLT finds the tree it rewrites (3.5.0-B22).
+        roots_4a: dict[Path, Path] = {}
         with progress.tracker(
                 passes.pass_size(pgo_map, non_pgo_map, lib32_map), pass4_label) as tick4:
             pgo_fps = passes.build_pass(
@@ -759,28 +880,25 @@ def build_llvm_pgo_inner(
                 owner_stage="toolchain",
                 reuse_ctx=_mk_reuse_ctx("build-pgo", []),
                 tick=tick4,
+                build_roots=roots_4a,
             )
 
             # BOLT the 4a build tree, then repackage it, before anything is
             # staged or installed from those packages. The repackage reruns
             # only package() with 4a's own settings; no source sync, since a
             # re-pinned tree would not be the one that was just BOLTed.
-            if bolt_on:
+            # bolt_on implies tcfg is set; restated so the checker sees it too.
+            if bolt_on and tcfg is not None:
                 def _repackage_4a() -> None:
-                    repack_options = copy.copy(options)
-                    repack_options.no_update = True
-                    passes.build_pkg(
-                        "llvm", pgo_map["clang"], repack_options,
-                        cc=pass3_cc, cxx=pass3_cxx,
-                        extra_flags=["--repackage", "--force"],
-                        compiler_flags_extra=profile_use,
-                        linker_flags_extra=_bolt_ldflag,
-                        pgo_build=True,
+                    _repackage_llvm(
+                        pgo_map, options, cc=pass3_cc, cxx=pass3_cxx,
+                        profile_use=profile_use, linker_flags=_bolt_ldflag,
                         pgo_env=build_pgo_env,
-                        toolchain_variant="pgo_llvm",
-                        owner_stage="toolchain",
                     )
-                bolt.optimize_in_build(pgo_map, tcfg, options, repackage=_repackage_4a)
+                bolt.optimize_in_build(
+                    pgo_map, tcfg, options, repackage=_repackage_4a,
+                    build_root=roots_4a.get(Path(pgo_map["clang"]).parent)
+                    if "clang" in pgo_map else None)
 
             # 4b's fingerprints feed 4c's Merkle chain; default empty so 4c is safe
             # when non_pgo_map is empty but lib32_map is not.

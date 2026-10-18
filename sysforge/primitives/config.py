@@ -758,9 +758,11 @@ def _parse_one_makepkg_conf(path: Path) -> dict:
         return {}
 
     result = parse_makepkg_conf_text(text)
-    _log.info(f"Parsed {len(result)} keys from {path}")
-    _log.debug("System makepkg.conf key=value pairs:\n" +
-               "\n".join(f"  {k}={v}" for k, v in result.items()))
+    # Every helper re-reads the system config; narrate it once per content.
+    if log.first_or_changed(f"makepkg.conf:{path}", tuple(result.items())):
+        _log.info(f"Parsed {len(result)} keys from {path}")
+        _log.debug("System makepkg.conf key=value pairs:\n" +
+                   "\n".join(f"  {k}={v}" for k, v in result.items()))
     return result
 
 

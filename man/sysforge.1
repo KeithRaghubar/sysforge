@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-17"
+.TH "sysforge" "1" "2026\-10\-18"
 .PP
 .PP
 .SH NAME
@@ -1430,6 +1430,16 @@ Force a full 4\-pass PGO build even if compatible profdata already exists.\&
 \fB\-\-reuse\-built\fR
 .RS 4
 Skip rebuilding a Pass\-3 PGO package whose inputs are unchanged (PKGBUILD, source commit, profdata, flags, compiler, dep versions) and whose built artifact is still on disk.\& Lets a rerun after a late\-package failure reuse the already\-optimized llvm/llvm\-libs instead of rebuilding them.\& Opt\-in; overrides toolchain.\&toml reuse_unchanged.\& Any input change or missing artifact rebuilds.\&
+.PP
+.RE
+\fB\-\-bolt\-only\fR
+.RS 4
+Build nothing: BOLT the llvm build tree the last run left, repackage llvm, then audit, install and verify as usual.\& Refuses unless that tree is the last Pass\-4a build of the PKGBUILD'\&s version.\& Runs even with [bolt] enabled = false; the other [bolt] keys apply.\& Implies \-\-no\-update.\&
+.PP
+.RE
+\fB\-\-install\-only\fR
+.RS 4
+Build nothing: install the packages the last run built (e.\&g.\& after an install step failed or its sudo prompt timed out), with the usual audit, snapshot and verify.\& Refuses unless the last llvm build is the PGO build of the PKGBUILD'\&s version and every package is in PKGDEST.\& Implies \-\-no\-update.\&
 .PP
 .RE
 \fB\-\-auto\-pgo\fR

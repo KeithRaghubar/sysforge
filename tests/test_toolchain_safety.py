@@ -997,3 +997,200 @@ def test_diff_consumers_ignores_imports_another_needed_lib_exports(tmp_path, mon
     assert len(findings) == 1
     assert "AMDGPU" in findings[0].message
     assert "clang_createIndex" not in findings[0].message
+
+
+# ---------------------------------------------------------------------------
+#  3.5.0-B20: the gate skips packages the same transaction replaces
+# ---------------------------------------------------------------------------
+
+def _two_consumers(tmp_path, monkeypatch):
+    """An installed lldb and doxygen, both missing a libLLVM target symbol."""
+    usr_lib = tmp_path / "usr/lib"
+    files = {"lldb": [_mk(usr_lib, "liblldb.so.23.1")],
+             "doxygen": [_mk(usr_lib, "doxygen")]}
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(ts, "libllvm_consumer_files", lambda *, exclude: {
+        k: v for k, v in files.items() if k not in exclude})
+    _gate_seams(monkeypatch,
+                undefined={("LLVMInitializeWebAssemblyTarget", "LLVM_23.1")},
+                exported={("LLVMInitializeX86Target", "LLVM_23.1")})
+    return usr_lib
+
+
+def test_pre_install_gate_skips_pkgnames_the_batch_ships(tmp_path, monkeypatch):
+    _two_consumers(tmp_path, monkeypatch)
+    built = {tmp_path / "llvm-libs.pkg.tar.zst": "llvm-libs",
+             tmp_path / "lldb.pkg.tar.zst": "lldb"}
+    monkeypatch.setattr("sysforge.primitives.pacman.read_pkgname_from_file",
+                        lambda p: built[p])
+    extracted = tmp_path / "extract/usr/lib/libLLVM.so.23.1"
+
+    def fake_extract(pkg, members, dest):
+        extracted.parent.mkdir(parents=True, exist_ok=True)
+        extracted.write_bytes(b"\x7fELF")
+        return [extracted]
+
+    monkeypatch.setattr(_AC + "_list_sos_in_pkg", lambda pkg: (
+        ["usr/lib/libLLVM.so.23.1"] if pkg.name.startswith("llvm-libs") else []))
+    monkeypatch.setattr(_AC + "_extract_sos", fake_extract)
+    findings = ts.check_system_consumer_symbols(list(built))
+    assert [f.message.split()[0] for f in findings] == ["doxygen"]
+
+
+def test_post_install_gate_skips_excluded_pkgnames(tmp_path, monkeypatch):
+    usr_lib = _two_consumers(tmp_path, monkeypatch)
+    _mk(usr_lib, "libLLVM.so.23.1")
+    findings = ts.check_installed_consumer_symbols(exclude={"lldb"})
+    assert [f.message.split()[0] for f in findings] == ["doxygen"]
+
+
+def test_post_install_gate_excludes_nothing_by_default(tmp_path, monkeypatch):
+    usr_lib = _two_consumers(tmp_path, monkeypatch)
+    _mk(usr_lib, "libLLVM.so.23.1")
+    names = sorted(f.message.split()[0] for f in ts.check_installed_consumer_symbols())
+    assert names == ["doxygen", "liblldb.so.23.1"]
+
+
+def test_shipped_pkgnames_skips_unreadable_archives(tmp_path, monkeypatch):
+    names = {tmp_path / "a.pkg.tar.zst": "lldb", tmp_path / "b.pkg.tar.zst": None}
+    monkeypatch.setattr("sysforge.primitives.pacman.read_pkgname_from_file",
+                        lambda p: names[p])
+    assert ts.shipped_pkgnames(list(names)) == {"lldb"}
+
+
+# ---------------------------------------------------------------------------
+#  3.5.0-F4: std:: export parity against stock libLLVM
+# ---------------------------------------------------------------------------
+
+_V = "LLVM_23.1"
+_STR_REPLACE = "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE10_M_replaceEmmPKcm"
+_LLVM_TYPED = "_ZNSt6vectorIN4llvm5ValueESaIS2_EE7reserveEm"
+_ANON_TYPED = "_ZNSt6vectorIN12_GLOBAL__N_13FooESaIS1_EE7reserveEm"
+_LLVM_PREFIX_NAME = "_ZNSt6vectorI14llvmFooBarBazQSaIS0_EE7reserveEm"
+_TEMP_BUF = "_ZNSt17_Temporary_bufferIPSt4pairIiiES1_EC1ES2_l"
+# What the system libstdc++ exports, for tests that are not about that filter.
+_ALL = {_STR_REPLACE, _LLVM_TYPED, _ANON_TYPED, _LLVM_PREFIX_NAME,
+        "_ZSt4swapIiEvRT_S1_", "_ZN4llvm5Value4dumpEv"}
+
+
+def test_parity_gap_reports_missing_pure_std():
+    stock = {(_STR_REPLACE, _V), ("_ZSt4swapIiEvRT_S1_", _V)}
+    assert ts.std_export_parity_gap(set(), stock, libstdcxx=_ALL) == sorted(
+        [_STR_REPLACE, "_ZSt4swapIiEvRT_S1_"])
+
+
+def test_parity_gap_drops_what_libstdcxx_does_not_export():
+    """3.5.0-B23: an implicit instantiation (every consumer emits its own) is
+    not a hazard; only the extern-template set libstdc++ exports is."""
+    stock = {(_STR_REPLACE, _V), (_TEMP_BUF, _V)}
+    assert ts.std_export_parity_gap(set(), stock, libstdcxx={_STR_REPLACE}) == [_STR_REPLACE]
+
+
+def test_parity_gap_ignores_llvm_and_anonymous_types():
+    stock = {(_LLVM_TYPED, _V), (_ANON_TYPED, _V)}
+    assert ts.std_export_parity_gap(set(), stock, libstdcxx=_ALL) == []
+
+
+def test_parity_gap_keeps_an_identifier_that_merely_starts_with_llvm():
+    """`14llvmFooBarBazQ` is a 14-character name, not the llvm namespace."""
+    gap = ts.std_export_parity_gap(set(), {(_LLVM_PREFIX_NAME, _V)}, libstdcxx=_ALL)
+    assert gap == [_LLVM_PREFIX_NAME]
+
+
+def test_parity_gap_ignores_present_non_std_and_non_llvm_versions():
+    stock = {(_STR_REPLACE, _V), ("_ZN4llvm5Value4dumpEv", _V), (_STR_REPLACE, "GLIBCXX_3.4.21")}
+    assert ts.std_export_parity_gap({(_STR_REPLACE, _V)}, stock, libstdcxx=_ALL) == []
+
+
+def test_parity_gap_counts_a_non_default_export_as_present():
+    """The thunks export sym@LLVM_23.1 (one @); nm parsing yields the same pair."""
+    from sysforge.primitives.abi_check import _parse_nm_exports
+    built = _parse_nm_exports(f"0000000000001180 T {_STR_REPLACE}@{_V}\n")
+    assert ts.std_export_parity_gap(built, {(_STR_REPLACE, _V)}, libstdcxx=_ALL) == []
+
+
+def _parity_seams(monkeypatch, tmp_path, *, stock_pkg, exports):
+    built_pkg = tmp_path / "llvm-libs-23.1.3-3-x86_64.pkg.tar.zst"
+    libs = {"built": tmp_path / "built/libLLVM.so.23.1",
+            "stock": tmp_path / "stock/libLLVM.so.23.1"}
+
+    def fake_extract(pkg_files, dest):
+        return (pkg_files[0], libs[dest.name])
+
+    monkeypatch.setattr(ts, "_extract_system_libllvm", fake_extract)
+    monkeypatch.setattr("sysforge.primitives.pacman.read_pkgname_from_file",
+                        lambda p: "llvm-libs")
+    asked = {}
+
+    def fake_cached(name, version):
+        asked["key"] = (name, version)
+        return stock_pkg
+
+    monkeypatch.setattr("sysforge.primitives.pacman.cached_repo_pkg_file", fake_cached)
+    monkeypatch.setattr(ts, "_LIBSTDCXX", tmp_path / "sys/libstdc++.so.6")
+    exports = {"sys": {(s, "GLIBCXX_3.4.21") for s in _ALL}, **exports}
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: exports[Path(path).parent.name])
+    return built_pkg, asked
+
+
+def test_check_std_export_parity_reports_gap(tmp_path, monkeypatch):
+    stock_pkg = tmp_path / "cache/llvm-libs-23.1.3-3-x86_64.pkg.tar.zst"
+    built_pkg, asked = _parity_seams(monkeypatch, tmp_path, stock_pkg=stock_pkg, exports={
+        "built": {("_ZN4llvm5Value4dumpEv", _V)},
+        "stock": {("_ZN4llvm5Value4dumpEv", _V), (_STR_REPLACE, _V)},
+    })
+    result = ts.check_std_export_parity([built_pkg])
+    assert asked["key"] == ("llvm-libs", "23.1.3-3")
+    assert result.gap == (_STR_REPLACE,)
+    assert stock_pkg.name in result.detail
+
+
+def test_check_std_export_parity_skips_without_stock(tmp_path, monkeypatch):
+    built_pkg, _ = _parity_seams(monkeypatch, tmp_path, stock_pkg=None, exports={})
+    result = ts.check_std_export_parity([built_pkg])
+    assert result.gap is None
+    assert "llvm-libs-23.1.3-3" in result.detail
+
+
+def test_check_std_export_parity_unreadable_exports_skip(tmp_path, monkeypatch):
+    """An nm failure reads as an empty export set; that is a skip, not a gap of everything."""
+    built_pkg, _ = _parity_seams(
+        monkeypatch, tmp_path, stock_pkg=tmp_path / "s.pkg.tar.zst",
+        exports={"built": set(), "stock": {(_STR_REPLACE, _V)}})
+    assert ts.check_std_export_parity([built_pkg]).gap is None
+
+
+def test_check_std_export_parity_filters_by_system_libstdcxx(tmp_path, monkeypatch):
+    """3.5.0-B23: a gap symbol the system libstdc++ does not export is dropped."""
+    built_pkg, _ = _parity_seams(
+        monkeypatch, tmp_path, stock_pkg=tmp_path / "s.pkg.tar.zst", exports={
+            "built": {("_ZN4llvm5Value4dumpEv", _V)},
+            "stock": {("_ZN4llvm5Value4dumpEv", _V), (_STR_REPLACE, _V), (_TEMP_BUF, _V)},
+        })
+    assert ts.check_std_export_parity([built_pkg]).gap == (_STR_REPLACE,)
+
+
+def test_check_std_export_parity_unreadable_libstdcxx_skips(tmp_path, monkeypatch):
+    built_pkg, _ = _parity_seams(
+        monkeypatch, tmp_path, stock_pkg=tmp_path / "s.pkg.tar.zst", exports={
+            "sys": set(),
+            "built": {("_ZN4llvm5Value4dumpEv", _V)},
+            "stock": {("_ZN4llvm5Value4dumpEv", _V), (_STR_REPLACE, _V)},
+        })
+    result = ts.check_std_export_parity([built_pkg])
+    assert result.gap is None and "libstdc++" in result.detail
+
+
+def test_check_std_export_parity_failure_is_a_skip(tmp_path, monkeypatch):
+    def boom(pkg_files, dest):
+        raise OSError("bsdtar exploded")
+
+    monkeypatch.setattr(ts, "_extract_system_libllvm", boom)
+    result = ts.check_std_export_parity([tmp_path / "llvm-libs-1-1-x86_64.pkg.tar.zst"])
+    assert result.gap is None and "bsdtar exploded" in result.detail
+
+
+def test_check_std_export_parity_no_libllvm_is_a_skip(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "_extract_system_libllvm", lambda pkg_files, dest: None)
+    assert ts.check_std_export_parity([tmp_path / "foo.pkg.tar.zst"]).gap is None

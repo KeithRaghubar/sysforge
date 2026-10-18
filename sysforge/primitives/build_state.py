@@ -18,6 +18,10 @@ by the `build_mode` field:
                   it is normalized to "source_built" on load — see __init__.)
   - "pacman"    — installed via pacman; pkgver/pkgrel/epoch parsed from
                   `pacman -Q` output; pkgbuild_dir and flags_string absent.
+  - "bolt_llvm" — a "source_built" LLVM toolchain package whose libraries
+                  BOLT rewrote before packaging (3.5.0-B31); stamped after the
+                  BOLT repackage on the members carrying a rewritten library.
+                  Stock package name, so is_source_build_mode() is true for it.
   - "pgo_llvm_toolchain" — LLVM toolchain packages with profdata reuse;
                   makepkg_wrapper injects -fprofile-use when compatible
                   clang.profdata is available, otherwise prompts.
@@ -100,6 +104,19 @@ _ENTRY_KEYS = (
 # predicate (update's rebuild scope) is unaffected.
 BUILD_MODE_SOURCE = "source_built"
 BUILD_MODE_PACMAN = "pacman"
+# A source build whose libraries BOLT then rewrote before packaging, stamped on
+# the toolchain members that carry them (3.5.0-B31). Same token as
+# ``primitives.bolt.BUILD_MODE``. It keeps the stock package name and the
+# source build's flags, so everything that asks "is this a plain source build?"
+# must answer yes for it: route that question through is_source_build_mode.
+BUILD_MODE_BOLT = "bolt_llvm"
+_SOURCE_BUILD_MODES = frozenset({BUILD_MODE_SOURCE, BUILD_MODE_BOLT})
+
+
+def is_source_build_mode(build_mode: str | None) -> bool:
+    """True for a from-source build under its stock name (``source_built``,
+    or ``bolt_llvm``: the same build with a post-link BOLT pass)."""
+    return build_mode in _SOURCE_BUILD_MODES
 
 # Bounds for the stored failure ``error`` blob — keep the tail (the real
 # compiler/makepkg error is at the bottom), capped so build_state.toml stays
@@ -493,7 +510,7 @@ class BuildState:
                 }
         for name in sorted(targets):
             entry = self._data[name]
-            if entry.get("build_mode") != BUILD_MODE_SOURCE:
+            if not is_source_build_mode(entry.get("build_mode")):
                 continue
             if entry.get("owner_stage"):
                 continue
@@ -598,6 +615,20 @@ class BuildState:
             }
 
         return (len(added_names), len(removed_names))
+
+    def set_build_mode(self, pkgname: str, build_mode: str) -> bool:
+        """Restamp an existing entry's ``build_mode``; ``False`` if there is none.
+
+        For a step that changes what a recorded build *is* after makepkg wrote
+        its record, e.g. BOLT rewriting a packaged library (3.5.0-B31). Never
+        creates an entry: a mode on a package nothing recorded would describe
+        nothing. The caller saves.
+        """
+        entry = self._data.get(pkgname)
+        if entry is None:
+            return False
+        entry["build_mode"] = build_mode
+        return True
 
     def get(self, pkgname: str) -> dict | None:
         """Return build record for pkgname, or None if not recorded."""
@@ -720,6 +751,24 @@ class BuildState:
                 lines.append(f'"{escaped}" = "{_toml_escape(commit)}"')
             lines.append("")
         return "\n".join(lines)
+
+
+def recorded_builddir(entry: dict | None) -> Path | None:
+    """The ``BUILDDIR`` a recorded build used, from its ``flags_string``.
+
+    ``flags_string`` keeps the effective makepkg.conf keys the build ran with,
+    the profile's ``BUILDDIR`` among them, so a later step can find the build
+    tree without re-resolving the profile (3.5.0-F7). ``None`` when the entry
+    carries none (makepkg then built in the PKGBUILD dir, or the system
+    ``makepkg.conf`` decided).
+    """
+    for line in str((entry or {}).get("flags_string", "")).splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "BUILDDIR":
+            value = value.strip().strip("\"'")
+            if value:
+                return Path(os.path.expandvars(value)).expanduser()
+    return None
 
 
 def _built_at(entry) -> str:

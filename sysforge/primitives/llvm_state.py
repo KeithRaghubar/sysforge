@@ -357,11 +357,14 @@ def collect_llvm_state(
                 split_parent.setdefault(member, base)
 
     for name in in_scope:
-        pkgbuild_path = _resolve_local_only(name, config)
+        # A member an in-scope base lists in its pkgname array is a split
+        # package, so the renderer collapses its dead columns. That holds even
+        # when an old checkout of its own still exists (upstream folded clang,
+        # lld, … into the llvm pkgbase): that tree is stale, not its source,
+        # and showing it gave a row with a downgrade arrow (3.5.0-B28).
+        split_of = split_parent.get(name)
+        pkgbuild_path = None if split_of else _resolve_local_only(name, config)
         pkgbuild_dir = pkgbuild_path.parent if pkgbuild_path else None
-        # A member with no source tree of its own but covered by a sibling base
-        # is a split package — flag it so the renderer collapses its dead columns.
-        split_of = split_parent.get(name) if pkgbuild_dir is None else None
 
         origin, remote_url = _classify_origin(pkgbuild_dir)
 

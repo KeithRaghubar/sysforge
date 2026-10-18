@@ -145,8 +145,10 @@ def maybe_emit_stage_config_notice(stage_name: str, state) -> str | None:
     "First run" means never *completed*, not never *attempted*: a failed first
     attempt re-advises, because the config is exactly as unread as it was
     before — and a stage that failed is the one a user is most likely to retry
-    without having looked. ``PipelineState.stage_status`` already returns
-    ``"pending"`` for a stage it has never seen, so this needs no new state.
+    without having looked. A stage that completed once is past its first run
+    even when its latest attempt failed: ``PipelineState.stage_ever_done``
+    reads the ``first_done_at`` stamp ``mark_done`` keeps, since ``status``
+    holds only the latest attempt (3.5.0-B25).
 
     Emitted at ``ui()`` rather than ``warn()``: this is a pre-flight block
     before a stage that changes the system, the same class as the plan tables
@@ -164,7 +166,7 @@ def maybe_emit_stage_config_notice(stage_name: str, state) -> str | None:
         entry = _STAGE_CONFIG_ADVICE.get(stage_name)
         if entry is None:
             return None
-        if state.stage_status(stage_name) == "done":
+        if state.stage_ever_done(stage_name):
             return None
 
         _filename, settings = entry

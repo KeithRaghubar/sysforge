@@ -96,7 +96,9 @@ def _parse_ccache_tab(text: str) -> dict:
         "preprocessed_hits": _int("preprocessed_cache_hit"),
         "misses": _int("cache_miss"),
         "files": _int("files_in_cache"),
-        "size_bytes": _int("cache_size_bytes"),
+        # ccache 4.x prints KiB; older tab output carried bytes (3.5.0-B26).
+        "size_bytes": (_int("cache_size_kibibyte") * 1024
+                       if "cache_size_kibibyte" in kv else _int("cache_size_bytes")),
     }
 
 
@@ -194,13 +196,15 @@ def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None)
         hits = sc_delta["hits"]
         misses = sc_delta["misses"]
         total = hits + misses
+        # An idle sccache server prints no size; omit it rather than log `cache=`.
+        size = sc_delta["size_str"]
         if total > 0:
             pct = 100 * hits // total
             _log.info(f"{pkgname}: sccache hits={hits} misses={misses} "
-                      f"({pct}% hit rate) cache={sc_delta['size_str']}")
+                      f"({pct}% hit rate){f' cache={size}' if size else ''}")
         else:
-            _log.info(f"{pkgname}: sccache; no compilations recorded "
-                      f"(cache={sc_delta['size_str']})")
+            _log.info(f"{pkgname}: sccache; no compilations recorded"
+                      f"{f' (cache={size})' if size else ''}")
 
 
 # ---------------------------------------------------------------------------
@@ -495,10 +499,8 @@ def emit_session_report() -> None:
             total_sc_misses += misses
             total = hits + misses
             pct = f"{100 * hits // total}%" if total > 0 else "n/a"
-            _log.ui(
-                f"  {pkgname}: sccache {hits}/{hits + misses} hits "
-                f"({pct}) cache={sc['size_str']}"
-            )
+            size = f" cache={sc['size_str']}" if sc["size_str"] else ""
+            _log.ui(f"  {pkgname}: sccache {hits}/{hits + misses} hits ({pct}){size}")
 
     _log.ui(divider)
 

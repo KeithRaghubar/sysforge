@@ -163,6 +163,16 @@ def _fmt_row(row: ChangeRow, *, name_width: int, show_size: bool) -> str:
     return f"{line}   {sizes}  ({sign}{fmt_bytes(abs(delta))})"
 
 
+def _is_rebuild(row: ChangeRow) -> bool:
+    """Present before and after at the same version: a rebuild whose installed
+    size moved, not an update (3.5.0-B28)."""
+    return bool(row.old and row.new and row.old.version == row.new.version)
+
+
+def _is_update(row: ChangeRow) -> bool:
+    return bool(row.old and row.new) and not _is_rebuild(row)
+
+
 def _header(stage: str, rows: list[ChangeRow], outcome: ChangeOutcome, reason: str | None) -> str:
     """The one-line ``[SYSFORGE] <Stage> stage ...`` summary, keyed by outcome."""
     label = stage.capitalize()
@@ -177,12 +187,14 @@ def _header(stage: str, rows: list[ChangeRow], outcome: ChangeOutcome, reason: s
             f"{em_dash()} system unchanged."
         )
 
-    updated = sum(1 for r in rows if r.old and r.new)
+    updated = sum(1 for r in rows if _is_update(r))
+    rebuilt = sum(1 for r in rows if _is_rebuild(r))
     added = sum(1 for r in rows if r.old is None)
     removed = sum(1 for r in rows if r.new is None)
     counts = ", ".join(
         part for part, n in (
             (f"{updated} updated", updated),
+            (f"{rebuilt} rebuilt", rebuilt),
             (f"{added} added", added),
             (f"{removed} removed", removed),
         ) if n
@@ -226,7 +238,8 @@ def render(
             for r in rows
         )
         groups = (
-            ("Updated:", [r for r in rows if r.old and r.new]),
+            ("Updated:", [r for r in rows if _is_update(r)]),
+            ("Rebuilt (same version):", [r for r in rows if _is_rebuild(r)]),
             ("Added:", [r for r in rows if r.old is None]),
             ("Removed:", [r for r in rows if r.new is None]),
         )

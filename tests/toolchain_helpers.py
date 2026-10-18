@@ -86,7 +86,12 @@ def _toolchain_gates_clean(monkeypatch, tmp_path):
     monkeypatch.setattr(
         _ts, "check_system_consumer_symbols", lambda pkgs: [], raising=True)
     monkeypatch.setattr(
-        _ts, "check_installed_consumer_symbols", lambda: [], raising=True)
+        _ts, "check_installed_consumer_symbols", lambda **kw: [], raising=True)
+    # 3.5.0-F4: the advisory parity check extracts real archives; tests use
+    # touch()ed ones. Tests of the report re-patch it.
+    monkeypatch.setattr(
+        _ts, "check_std_export_parity",
+        lambda pkgs: _ts.StdParity(None, "stubbed"), raising=True)
     # On a successful llvm build the stage propagates profiles.toml [defaults]
     # toolchain via set_default_toolchain — which writes SYSFORGE_CONFIG_DIR,
     # pointed by conftest at the git-tracked fixture. Neutralise it so toolchain

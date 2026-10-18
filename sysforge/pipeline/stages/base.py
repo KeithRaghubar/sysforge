@@ -69,6 +69,10 @@ class RunOptions:
     auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
     # toolchain: consult the Pass-3 build cache to skip unchanged rebuilds
     reuse_built: bool = False
+    # toolchain: BOLT the last Pass-4a tree and install, building nothing (3.5.0-F7)
+    bolt_only: bool = False
+    # toolchain: install the last run's built packages, building nothing (3.5.0-F8)
+    install_only: bool = False
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
     # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)

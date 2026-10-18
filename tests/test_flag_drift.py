@@ -493,3 +493,11 @@ def test_current_sandboxed_follows_profile_override(tmp_path):
     assert current_sandboxed({"pkgbuild_dir": str(tmp_path / "gone")}, cfg, {},
                              _OFF) is None
     assert current_sandboxed({**entry, "owner_stage": "kernel"}, cfg, {}, _ON) is False
+
+
+def test_a_bolted_entry_is_judged_like_a_source_build():
+    """3.5.0-B31: stamping bolt_llvm must not take a toolchain member out of
+    flag drift; its flags are a source build's."""
+    from sysforge.primitives.flag_drift import drift_candidate
+    assert drift_candidate({"build_mode": "bolt_llvm"})
+    assert drift_candidate({"build_mode": "source_built"})

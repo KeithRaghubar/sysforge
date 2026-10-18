@@ -42,7 +42,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -397,14 +397,28 @@ def _consumer_built_after_libllvm(consumer: Path, libllvm: Path) -> bool:
     return built is not None and installed is not None and built > installed
 
 
-def _consumer_candidates() -> list[tuple[Path, str | None, bool]]:
+def shipped_pkgnames(pkg_files: list[Path]) -> set[str]:
+    """The pkgnames a built batch ships, read from each archive's ``.PKGINFO``.
+
+    One ``llvm`` build ships lldb, libclc and llvm-lit beside the lockstep suite
+    (3.5.0-F2), so the consumer gate excludes these names too (3.5.0-B20). An
+    unreadable archive contributes nothing: its installed copy stays checked.
+    """
+    from sysforge.primitives import pacman
+
+    return {n for p in pkg_files if (n := pacman.read_pkgname_from_file(p))}
+
+
+def _consumer_candidates(
+    exclude: Collection[str] = (),
+) -> list[tuple[Path, str | None, bool]]:
     """Every file the consumer gate diffs: ``(path, pkgname or None, graphics)``.
 
     The curated graphics globs first (brick-class: a miss black-screens the
     desktop), then each installed libLLVM consumer's ELF files from
-    :func:`libllvm_consumer_files` (3.5.0-B14), minus the lockstep suite that is
-    replaced in the same transaction. A file both lists name is checked once,
-    as graphics.
+    :func:`libllvm_consumer_files` (3.5.0-B14), minus the lockstep suite and
+    ``exclude``: the packages replaced in the same transaction (3.5.0-B20). A
+    file both lists name is checked once, as graphics.
     """
     out: list[tuple[Path, str | None, bool]] = []
     seen: set[Path] = set()
@@ -413,7 +427,8 @@ def _consumer_candidates() -> list[tuple[Path, str | None, bool]]:
             if consumer.is_file() and not consumer.is_symlink():
                 out.append((consumer, None, True))
                 seen.add(consumer)
-    for pkg, files in libllvm_consumer_files(exclude=set(LLVM_LOCKSTEP_SUITE)).items():
+    skip = set(LLVM_LOCKSTEP_SUITE) | set(exclude)
+    for pkg, files in libllvm_consumer_files(exclude=skip).items():
         for path in files:
             if path not in seen:
                 out.append((path, pkg, False))
@@ -422,7 +437,7 @@ def _consumer_candidates() -> list[tuple[Path, str | None, bool]]:
 
 
 def _diff_consumers_against_libllvm(
-    libllvm_path: Path, *, source_label: str,
+    libllvm_path: Path, *, source_label: str, exclude: Collection[str] = (),
 ) -> list[ToolchainFinding]:
     """Flag installed graphics consumers whose ``LLVM_*``-versioned imports the
     given libLLVM does not export. Shared core of the pre-install (vs the built
@@ -456,7 +471,7 @@ def _diff_consumers_against_libllvm(
         return []
 
     findings: list[ToolchainFinding] = []
-    for consumer, pkg, graphics in _consumer_candidates():
+    for consumer, pkg, graphics in _consumer_candidates(exclude):
         needed = needed_sonames(consumer)
         if new_soname not in needed:
             continue  # doesn't link this libLLVM soname
@@ -556,6 +571,20 @@ def _diff_consumers_against_libllvm(
     return findings
 
 
+def _extract_system_libllvm(pkg_files: list[Path], dest: Path) -> tuple[Path, Path] | None:
+    """Extract the first system ``usr/lib/libLLVM.so.*`` (lib32 excluded) found in
+    ``pkg_files`` into ``dest``; return ``(archive, extracted library)`` or None."""
+    from sysforge.primitives.abi_check import _extract_sos, _list_sos_in_pkg
+
+    for pkg in pkg_files:
+        for member in _list_sos_in_pkg(pkg):
+            if member.startswith("usr/lib/") and Path(member).name.startswith("libLLVM.so."):
+                extracted = _extract_sos(pkg, [member], dest / pkg.name)
+                if extracted:
+                    return pkg, extracted[0]
+    return None
+
+
 def check_system_consumer_symbols(
     built_pkg_files: list[Path],
 ) -> list[ToolchainFinding]:
@@ -563,39 +592,29 @@ def check_system_consumer_symbols(
     already-installed graphics consumer by dropping target-init symbols.
 
     Extracts the system ``libLLVM.so.*`` (the ``usr/lib`` ELF — lib32 excluded)
-    from ``built_pkg_files`` and diffs it against installed consumers. Returns
-    [] when the batch ships no system libLLVM (nothing replacing the live lib).
+    from ``built_pkg_files`` and diffs it against installed consumers, minus
+    every pkgname the batch ships (3.5.0-B20): those are replaced by the same
+    install. Returns [] when the batch ships no system libLLVM (nothing
+    replacing the live lib).
     """
-    from sysforge.primitives.abi_check import _extract_sos, _list_sos_in_pkg
-
     with tempfile.TemporaryDirectory(prefix="sysforge-consumer-") as tmpdir:
-        tmp = Path(tmpdir)
-        libllvm_path: Path | None = None
-        for pkg in built_pkg_files:
-            members = [
-                m for m in _list_sos_in_pkg(pkg)
-                if m.startswith("usr/lib/")
-                and Path(m).name.startswith("libLLVM.so.")
-            ]
-            for member in members:
-                extracted = _extract_sos(pkg, [member], tmp / pkg.name)
-                if extracted:
-                    libllvm_path = extracted[0]
-                    break
-            if libllvm_path is not None:
-                break
-        if libllvm_path is None:
+        found = _extract_system_libllvm(built_pkg_files, Path(tmpdir))
+        if found is None:
             return []
         return _diff_consumers_against_libllvm(
-            libllvm_path, source_label="freshly-built",
+            found[1], source_label="freshly-built",
+            exclude=shipped_pkgnames(built_pkg_files),
         )
 
 
-def check_installed_consumer_symbols() -> list[ToolchainFinding]:
+def check_installed_consumer_symbols(
+    *, exclude: Collection[str] = (),
+) -> list[ToolchainFinding]:
     """Post-install gate: the system libLLVM is now in place — verify installed
     graphics consumers still resolve against it. Run inside the toolchain
-    sentinel so a brick triggers the snapshot auto-restore. Returns [] when no
-    versioned ``/usr/lib/libLLVM.so.*`` ELF is present.
+    sentinel so a brick triggers the snapshot auto-restore. ``exclude`` names
+    the packages the stage just installed alongside libLLVM (3.5.0-B20).
+    Returns [] when no versioned ``/usr/lib/libLLVM.so.*`` ELF is present.
     """
     libllvm = next(
         (
@@ -606,7 +625,95 @@ def check_installed_consumer_symbols() -> list[ToolchainFinding]:
     )
     if libllvm is None:
         return []
-    return _diff_consumers_against_libllvm(libllvm, source_label="installed")
+    return _diff_consumers_against_libllvm(
+        libllvm, source_label="installed", exclude=exclude,
+    )
+
+
+# ---------------------------------------------------------------------------
+# std:: export parity vs stock libLLVM (advisory, 3.5.0-F4)
+# ---------------------------------------------------------------------------
+
+# Mangled std-namespace names: free functions (_ZSt), members (_ZNSt, _ZNKSt).
+_STD_MANGLED = re.compile(r"^_Z(?:St|NSt|NKSt)")
+# An instantiation over an LLVM-internal type: the llvm namespace (source-name
+# `4llvm`, not the tail of a longer length prefix such as `14llvmFoo`) or an
+# anonymous namespace. No external consumer can name one, so none is reported.
+_LLVM_INTERNAL = re.compile(r"(?<![0-9])4llvm|_GLOBAL__N")
+# The system libstdc++, whose own exports bound which gap symbols matter.
+_LIBSTDCXX = _USR_LIB / "libstdc++.so.6"
+
+
+def std_export_parity_gap(
+    built: set[tuple[str, str]], stock: set[tuple[str, str]], *, libstdcxx: set[str],
+) -> list[str]:
+    """Pure-``std`` symbols stock libLLVM exports at an ``LLVM_*`` version that
+    the built one does not, sorted. Both sets come from ``abi_check``, which
+    counts a non-default ``sym@VER`` export (the parity thunks) as exported.
+
+    Only names in ``libstdcxx`` (what the system libstdc++ exports) count: those
+    are the extern-template members a consumer imports rather than emits, the
+    hazard parity guards. Any other std instantiation stock exports only because
+    GCC built it; every consumer TU that uses one emits its own (3.5.0-B23)."""
+    return sorted({
+        sym for (sym, ver) in stock
+        if ver.startswith("LLVM_") and (sym, ver) not in built
+        and sym in libstdcxx
+        and _STD_MANGLED.match(sym) and not _LLVM_INTERNAL.search(sym)
+    })
+
+
+@dataclass(frozen=True)
+class StdParity:
+    """Outcome of :func:`check_std_export_parity`: ``gap`` None means skipped."""
+
+    gap: tuple[str, ...] | None
+    detail: str
+
+
+def check_std_export_parity(built_pkg_files: list[Path]) -> StdParity:
+    """Compare the built libLLVM's ``std::`` exports against stock at the same version.
+
+    Stock is the signed ``llvm-libs`` archive in the pacman cache at the built
+    archive's own version (:func:`pacman.cached_repo_pkg_file`), never a
+    download. Advisory and fail-open: any failure, or an unreadable export set,
+    is a skip with the reason in ``detail``.
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.abi_check import _exported_versioned
+    from sysforge.primitives.makepkg_artifacts import _parse_built_pkg_filename
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="sysforge-parity-") as tmpdir:
+            tmp = Path(tmpdir)
+            built = _extract_system_libllvm(built_pkg_files, tmp / "built")
+            if built is None:
+                return StdParity(None, "the build ships no system libLLVM")
+            archive, built_lib = built
+            name = pacman.read_pkgname_from_file(archive)
+            parsed = _parse_built_pkg_filename(name, archive.name) if name else None
+            if name is None or parsed is None:
+                return StdParity(None, f"cannot read the version of {archive.name}")
+            epoch, ver, rel = parsed
+            version = f"{ver}-{rel}" if epoch == "0" else f"{epoch}:{ver}-{rel}"
+            stock_pkg = pacman.cached_repo_pkg_file(name, version)
+            if stock_pkg is None:
+                return StdParity(None, f"no signed stock {name}-{version} in the pacman cache")
+            stock = _extract_system_libllvm([stock_pkg], tmp / "stock")
+            if stock is None:
+                return StdParity(None, f"{stock_pkg.name} has no system libLLVM")
+            cache: dict[str, set[tuple[str, str]]] = {}
+            built_exports = _exported_versioned(str(built_lib), cache)
+            stock_exports = _exported_versioned(str(stock[1]), cache)
+            if not built_exports or not stock_exports:
+                return StdParity(None, "could not read a libLLVM export set")
+            libstdcxx = {sym for sym, _ver in _exported_versioned(str(_LIBSTDCXX), cache)}
+            if not libstdcxx:
+                return StdParity(None, f"could not read the exports of {_LIBSTDCXX}")
+            gap = std_export_parity_gap(built_exports, stock_exports, libstdcxx=libstdcxx)
+            return StdParity(tuple(gap), f"against stock {stock_pkg.name}")
+    except Exception as exc:  # noqa: BLE001 — advisory, never blocks the stage
+        return StdParity(None, f"comparison failed: {exc}")
 
 
 # ---------------------------------------------------------------------------

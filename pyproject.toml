@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sysforge"
 version = "3.5.0"
-description = "Arch Linux build and maintenance suite for system setup and package management with compiler-optimized builds"
+description = "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"

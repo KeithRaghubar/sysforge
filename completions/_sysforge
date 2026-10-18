@@ -661,8 +661,10 @@ _sysforge_run_toolchain() {
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[post-build ABI check on built shared libraries]' \
     '--state-dir[override state directory]:directory:_files -/' \
-    '--rebuild-profdata[force a full 3-pass PGO build]' \
+    '--rebuild-profdata[force a full 4-pass PGO build]' \
     '--reuse-built[reuse unchanged Pass-3 packages; opt-in]' \
+    '--bolt-only[BOLT the last build tree and install; no build]' \
+    '--install-only[install the last built toolchain; no build]' \
     '--auto-pgo[bypass PGO confirmation prompts]' \
     '--allow-dirty-llvm[bypass the dirty-tree pre-flight refusal]' \
     '--allow-version-skew[override the Gate-1 pkgver-skew abort]' \

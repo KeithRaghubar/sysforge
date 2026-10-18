@@ -61,6 +61,19 @@ _BOOTSTRAP_PKG_FOR: dict[str, str] = {
 }
 
 
+def no_build_mode(options) -> str | None:
+    """The flag of the no-build mode *options* asks for, else ``None``.
+
+    ``--bolt-only`` (3.5.0-F7) BOLTs and repackages what the last run built;
+    ``--install-only`` (3.5.0-F8) installs it as is. Neither builds, so the
+    plan, Gate 1's space check and the confirmation describe them, not a build.
+    """
+    if getattr(options, "bolt_only", False):
+        return "--bolt-only"
+    if getattr(options, "install_only", False):
+        return "--install-only"
+    return None
+
 def install_bootstrap_compilers(findings, options, tcfg: "config.ToolchainConfig"):
     """Install any missing Pass-1 bootstrap compiler, then re-probe.
 
@@ -163,8 +176,12 @@ def gate1_preflight(
     for finding in findings:
         _abort_or_warn(finding)
 
-    # Brick: build filesystems must have headroom.
-    if not skip_space:
+    # Brick: build filesystems must have headroom. --bolt-only and
+    # --install-only build nothing (a repackage needs a fraction of
+    # min_build_free_gb), so they are exempt.
+    if mode := no_build_mode(options):
+        _log.info(f"{mode}: nothing is built; skipping the build-space headroom check")
+    elif not skip_space:
         space = toolchain_safety.check_build_space(
             [staging1, staging, pgo_store, *(p.parent for p in pkgbuild_map.values())],
             min_free_gb,
@@ -410,6 +427,27 @@ def rebuild_soname_consumers(consumers: list[str], config, options, state) -> No
     )
 
 
+def _report_std_export_parity(pkgs: list) -> None:
+    """Advisory (3.5.0-F4): name the stock ``std::`` exports the built libLLVM
+    still lacks. Never blocks: the consumer check right after it refuses or
+    heals any symbol an installed consumer actually imports."""
+    parity = toolchain_safety.check_std_export_parity(pkgs)
+    if parity.gap is None:
+        _log.info(f"Gate 2: std:: export parity not checked: {parity.detail}")
+        return
+    if not parity.gap:
+        _log.info(f"Gate 2: std:: export parity complete ({parity.detail})")
+        return
+    shown = ", ".join(parity.gap[:5])
+    more = "" if len(parity.gap) <= 5 else f" (+{len(parity.gap) - 5} more)"
+    _log.warn(
+        f"Gate 2: the built libLLVM lacks {len(parity.gap)} libstdc++ export(s) "
+        f"stock libLLVM has ({parity.detail}): {shown}{more}. A consumer linked "
+        "against stock libLLVM that imports one is caught by the consumer check; "
+        "sysforge/primitives/llvm_std_exports.py lists the exports it restores."
+    )
+
+
 def gate2_audit(
     built_map: dict[str, Path], all_names: list[str], options,
     tcfg: "config.ToolchainConfig",
@@ -456,6 +494,9 @@ def gate2_audit(
             f"runtime). Nothing was installed.\n{joined}\n"
             "Restart with: sysforge run toolchain --rebuild-profdata"
         )
+
+    # Advisory: stock std:: exports the build still lacks (3.5.0-F4).
+    _report_std_export_parity(pkgs)
 
     # Consumer symbol sufficiency vs the freshly-built libLLVM: the graphics
     # globs plus every installed libLLVM consumer (3.5.0-B14).
@@ -645,11 +686,20 @@ def log_toolchain_resolution_summary(
         f"require_multilib={'on' if tcfg.require_multilib else 'off'}"
         + (f" overrides={','.join(overrides)}" if overrides else "")
     )
-    _log.ui("Toolchain build plan:")
+    # --bolt-only / --install-only build nothing: no staging, no passes.
+    mode = no_build_mode(options)
+    if mode == "--bolt-only":
+        _log.ui("Toolchain plan (--bolt-only: BOLT the last llvm build tree, "
+                "repackage, install; nothing is built):")
+    elif mode == "--install-only":
+        _log.ui("Toolchain plan (--install-only: install the last built "
+                "toolchain; nothing is built):")
+    else:
+        _log.ui("Toolchain build plan:")
     _log.ui(f"  compiler:   {compiler}  pgo={pgo}  variant={variant}")
     _log.ui(f"  packages:   {n_total} total "
             f"({len(pgo_pkgs)} pgo / {len(non_pgo_pkgs)} non-pgo / {len(lib32_pkgs)} lib32)")
-    if pgo:
+    if pgo and not mode:
         _log.ui(f"  staging1:   {staging1}")
         _log.ui(f"  staging2:   {staging}")
         _log.ui(f"  staging3:   {staging3}")

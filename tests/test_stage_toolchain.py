@@ -139,6 +139,28 @@ def test_toolchain_stage_llvm_pgo_dry_run(tmp_path):
     assert result["ld"] == "lld"
     assert result["variant"] == "pgo_llvm"
 
+def test_toolchain_stage_header_states_only_what_is_known(tmp_path, capsys):
+    """3.5.0-B28: before PKGBUILD resolution folds split packages, the
+    pgo/non-pgo split is unknown (the build plan prints the real one), and PGO
+    reads on/off rather than a Python bool."""
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text(
+        f'enabled = true\ncompiler = "llvm"\npgo = true\npgo_staging = "{tmp_path / "s"}"\n'
+    )
+    pkgbuild_dir = tmp_path / "builds"
+    for name in DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32:
+        make_pkgbuild(pkgbuild_dir, name)
+    config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
+        ToolchainStage().run(config, PipelineState(tmp_path / "state"),
+                             make_options(dry_run=True))
+    out, err = capsys.readouterr()
+    header = next(ln for ln in (out + err).splitlines() if "Compiler:" in ln)
+    total = len(DEFAULT_LLVM_PGO + DEFAULT_LLVM_NON_PGO + DEFAULT_LLVM_LIB32)
+    assert "PGO: on" in header and "True" not in header
+    assert header.rstrip().endswith(f"Packages: {total}")
+
+
 def test_toolchain_stage_llvm_pgo_dry_run_keeps_staging3(tmp_path):
     """3.3.0-B9: Pass 4 cleared staging3 before re-extracting even on a dry run.
     A real `run toolchain` in Pass 4b compiles clang against that prefix, so a
@@ -1014,7 +1036,7 @@ def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
         "libgallium-26.so: dropped LLVM target(s): AMDGPU", "rebuild",
         is_brick=True,
     )]
-    monkeypatch.setattr(_ts, "check_installed_consumer_symbols", lambda: brick)
+    monkeypatch.setattr(_ts, "check_installed_consumer_symbols", lambda **kw: brick)
 
     restored = {}
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
@@ -1031,6 +1053,36 @@ def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
 
     assert restored.get("files")  # rollback ran because the consumer arm bricked
     assert not _sentinel_exists(tmp_path / "state")
+
+def test_gate3_consumer_check_excludes_what_the_batch_ships(tmp_path, monkeypatch):
+    """3.5.0-B20: the post-install consumer gate skips every pkgname the built
+    batch ships (lldb, libclc, ... from the llvm pkgbase): the stage just
+    replaced those, so the installed copies are not stale consumers."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    from sysforge.primitives import toolchain_safety as _ts
+    built = [tmp_path / "llvm-libs.pkg.tar.zst", tmp_path / "lldb.pkg.tar.zst"]
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.profdata.collect_pgo_packages",
+        lambda m: built,
+    )
+    monkeypatch.setattr(_ts, "shipped_pkgnames",
+                        lambda files: {"llvm-libs", "lldb"} if files == built else set())
+    seen = {}
+    monkeypatch.setattr(_ts, "check_installed_consumer_symbols",
+                        lambda **kw: seen.update(exclude=kw.get("exclude")) or [])
+    monkeypatch.setattr(_ts, "check_system_consumer_symbols", lambda pkgs: [])
+    monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [])
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
+               return_value=[]), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)
+
+    assert seen["exclude"] == {"llvm-libs", "lldb"}
 
 def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
     """Gate-3 fails AND rollback fails → sentinel left in place for next-run recovery."""
@@ -1210,3 +1262,198 @@ def test_install_and_snapshot_cover_installed_pkgbase_members(tmp_path, monkeypa
         ToolchainStage().run(config, state, options)
     assert installs and installs[0]["members"] == {"llvm", "clang", "lldb"}
     assert "lldb" in snap_names and "wasi-libc++" not in snap_names
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F7: --bolt-only routes around the build
+# ---------------------------------------------------------------------------
+
+def test_bolt_only_calls_bolt_only_and_never_the_build(tmp_path):
+    toml_path, pkgbuild_dir, _s, pgo_store, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    options.bolt_only = True
+    seen = {}
+
+    def fake_bolt_only(pgo_map, non_pgo_map, lib32_map, store, opts, *, tcfg):
+        seen["maps"] = (set(pgo_map), set(non_pgo_map), store)
+        raise RuntimeError("stop after bolt")
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.build_llvm_pgo_inner",
+               side_effect=AssertionError("built")), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.bolt_only", side_effect=fake_bolt_only), \
+         pytest.raises(RuntimeError, match="stop after bolt"):
+        ToolchainStage().run(config, state, options)
+    assert seen["maps"] == ({"llvm", "llvm-libs"}, {"spirv-llvm-translator"}, pgo_store)
+
+
+def test_bolt_only_refuses_a_non_pgo_toolchain(tmp_path):
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    options.bolt_only = True
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.build_llvm_single",
+               side_effect=AssertionError("built")), \
+         pytest.raises(RuntimeError, match="--bolt-only needs"):
+        ToolchainStage().run(config, state, options)
+
+
+def test_bolt_only_confirmation_does_not_promise_a_build(monkeypatch):
+    """3.5.0-F7: --bolt-only builds nothing, so its confirmation must not ask
+    to 'proceed with toolchain build'; it still installs, so it still asks."""
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+    asked = []
+    monkeypatch.setattr(pkgbuilds.prompt, "prompt_choice",
+                        lambda text, **kw: asked.append(text) or "y")
+    pkgbuilds.confirm_or_abort(None, mode="--bolt-only")
+    pkgbuilds.confirm_or_abort(None)
+    assert "toolchain build" not in asked[0]
+    assert "BOLT" in asked[0] and "install" in asked[0]
+    assert asked[1] == "Proceed with toolchain build? [y/N]: "
+
+
+def test_bolt_only_plan_names_the_mode_and_omits_the_build_staging(tmp_path, capsys):
+    from sysforge.pipeline.stages.toolchain import gates
+    from tests.toolchain_helpers import toolchain_cfg
+    opts = make_options(dry_run=False)
+    opts.bolt_only = True
+    gates.log_toolchain_resolution_summary(
+        compiler="llvm", pgo=True, variant="pgo_llvm", pgo_pkgs=["llvm"],
+        non_pgo_pkgs=[], lib32_pkgs=[], staging1=tmp_path / "s1", staging=tmp_path / "s2",
+        staging3=tmp_path / "s3", pgo_store=tmp_path / "store", tcfg=toolchain_cfg(),
+        options=opts, snapshot={})
+    out, err = capsys.readouterr()
+    text = out + err
+    assert "--bolt-only" in text and "nothing is built" in text
+    assert "Toolchain build plan" not in text and "staging1" not in text
+
+
+def test_bolt_only_skips_the_build_space_gate(tmp_path, monkeypatch):
+    """3.5.0-F7: --bolt-only builds nothing, so Gate 1's build-space headroom
+    (sized for a multi-hour build) does not apply; the other checks still do."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import toolchain_safety as _ts
+    from tests.toolchain_helpers import toolchain_cfg
+    monkeypatch.setattr(_ts, "check_build_space",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("space checked")))
+    monkeypatch.setattr(gates, "install_bootstrap_compilers", lambda *a, **k: [])
+    skews = []
+    monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda v: skews.append(v))
+    opts = make_options(dry_run=False)
+    opts.bolt_only = True
+    gates.gate1_preflight([], tmp_path / "s1", tmp_path / "s2", tmp_path / "store",
+                          {}, opts, toolchain_cfg(), snapshot={})
+    assert skews  # the lockstep check still ran
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B30: sudo is authorized before the install sentinel goes down
+# ---------------------------------------------------------------------------
+
+def test_unauthorized_sudo_installs_nothing_and_leaves_no_sentinel(tmp_path, monkeypatch):
+    """An unanswered sudo prompt means nothing ran: no install attempt, no
+    sentinel (whose recovery would replace the live toolchain), and a pointer
+    to installing what was built without rebuilding it."""
+    from sysforge.primitives import sudo_session
+    toml_path, _d, _s, _p, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: False)
+    options.state_dir = tmp_path / "state"
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "config.TOOLCHAIN_PATH", toml_path), \
+         patch(T + "pkgbuilds.sync_pkgbuild_dirs"), \
+         patch(T + "pgo.build_llvm_pgo_inner",
+               side_effect=lambda p, n, l32, *a, **k: ({**p, **n, **l32}, "/usr/bin/clang",
+                                                     "/usr/bin/clang++", "lld", "pgo_llvm")), \
+         patch(T + "gates.gate2_audit", return_value=[]), \
+         patch(T + "profdata.pgo_install", side_effect=AssertionError("installed")), \
+         patch("sys.stdin.isatty", return_value=False), \
+         pytest.raises(RuntimeError, match="nothing was installed.*--install-only"):
+        ToolchainStage().run(config, state, options)
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F8: --install-only routes around the build
+# ---------------------------------------------------------------------------
+
+def test_install_only_calls_install_only_and_never_the_build(tmp_path):
+    toml_path, _d, _s, _p, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    options.install_only = True
+    seen = {}
+
+    def fake_install_only(pgo_map, non_pgo_map, lib32_map, opts):
+        seen["maps"] = (set(pgo_map), set(non_pgo_map))
+        raise RuntimeError("stop after check")
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "config.TOOLCHAIN_PATH", toml_path), \
+         patch(T + "pkgbuilds.sync_pkgbuild_dirs"), \
+         patch(T + "pgo.build_llvm_pgo_inner", side_effect=AssertionError("built")), \
+         patch(T + "pgo.install_only", side_effect=fake_install_only), \
+         pytest.raises(RuntimeError, match="stop after check"):
+        ToolchainStage().run(config, state, options)
+    assert seen["maps"] == ({"llvm", "llvm-libs"}, {"spirv-llvm-translator"})
+
+
+def test_install_only_refuses_a_non_pgo_toolchain(tmp_path):
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    options.install_only = True
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.build_llvm_single",
+               side_effect=AssertionError("built")), \
+         pytest.raises(RuntimeError, match="--install-only needs"):
+        ToolchainStage().run(config, state, options)
+
+
+def test_install_only_confirmation_asks_to_install_not_build(monkeypatch):
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+    asked = []
+    monkeypatch.setattr(pkgbuilds.prompt, "prompt_choice",
+                        lambda text, **kw: asked.append(text) or "y")
+    pkgbuilds.confirm_or_abort(None, mode="--install-only")
+    assert asked == ["Proceed with installing the last built toolchain? [y/N]: "]
+
+
+def test_install_only_plan_names_the_mode_and_skips_the_space_gate(
+        tmp_path, monkeypatch, capsys):
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import toolchain_safety as _ts
+    from tests.toolchain_helpers import toolchain_cfg
+    opts = make_options(dry_run=False)
+    opts.install_only = True
+    gates.log_toolchain_resolution_summary(
+        compiler="llvm", pgo=True, variant="pgo_llvm", pgo_pkgs=["llvm"],
+        non_pgo_pkgs=[], lib32_pkgs=[], staging1=tmp_path / "s1", staging=tmp_path / "s2",
+        staging3=tmp_path / "s3", pgo_store=tmp_path / "store", tcfg=toolchain_cfg(),
+        options=opts, snapshot={})
+    out, err = capsys.readouterr()
+    assert "--install-only" in out + err and "staging1" not in out + err
+    monkeypatch.setattr(_ts, "check_build_space",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("space checked")))
+    monkeypatch.setattr(gates, "install_bootstrap_compilers", lambda *a, **k: [])
+    monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda v: None)
+    gates.gate1_preflight([], tmp_path / "s1", tmp_path / "s2", tmp_path / "store",
+                          {}, opts, toolchain_cfg(), snapshot={})
+
+
+def test_failed_pgo_install_points_at_install_only(tmp_path):
+    """3.5.0-F8: a pacman -U failure after a PGO build names the recovery that
+    skips the rebuild; the sentinel stays (pacman may have half-applied)."""
+    toml_path, _d, _s, _p, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    options.state_dir = tmp_path / "state"
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "config.TOOLCHAIN_PATH", toml_path), \
+         patch(T + "pkgbuilds.sync_pkgbuild_dirs"), \
+         patch(T + "pgo.build_llvm_pgo_inner",
+               side_effect=lambda p, n, l32, *a, **k: ({**p, **n, **l32}, "/usr/bin/clang",
+                                                     "/usr/bin/clang++", "lld", "pgo_llvm")), \
+         patch(T + "gates.gate2_audit", return_value=[]), \
+         patch(T + "profdata.pgo_install",
+               side_effect=RuntimeError("[TOOLCHAIN] pacman -U failed (exit 1)")), \
+         patch("sys.stdin.isatty", return_value=False), \
+         pytest.raises(RuntimeError, match="pacman -U failed.*--install-only"):
+        ToolchainStage().run(config, state, options)
+    assert _sentinel_exists(tmp_path / "state")

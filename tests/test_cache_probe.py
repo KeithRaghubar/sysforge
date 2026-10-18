@@ -64,6 +64,12 @@ def test_parse_ccache_tab_full():
     assert r["size_bytes"] == 536870912
 
 
+def test_parse_ccache_tab_kibibyte_size():
+    """3.5.0-B26: ccache 4.x prints the size in KiB, not bytes."""
+    r = _parse_ccache_tab("files_in_cache\t75118\ncache_size_kibibyte\t5237672\n")
+    assert r["size_bytes"] == 5237672 * 1024
+
+
 def test_parse_ccache_tab_missing_keys():
     r = _parse_ccache_tab("cache_dir\t/tmp\n")
     assert r["direct_hits"] == 0
@@ -338,6 +344,15 @@ def test_emit_build_stats_no_compilations(capsys):
 
     captured = capsys.readouterr()
     assert "no compilations recorded" in captured.err
+
+
+def test_emit_build_stats_omits_an_unknown_sccache_size(capsys):
+    """3.5.0-B26: an idle sccache server prints no size; say nothing, not `cache=`."""
+    sc = {"hits": 0, "misses": 0, "size_str": ""}
+    with patch("sysforge.log._VERBOSITY", 2):
+        emit_build_stats("pkg", None, sc)
+    err = capsys.readouterr().err
+    assert "sccache" in err and "cache=" not in err
 
 
 def test_emit_build_stats_none_skipped(capsys):

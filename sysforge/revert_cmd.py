@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
 from sysforge.primitives import install_reconcile, journal, pacman, profile, prompt
-from sysforge.primitives.build_state import BuildState
+from sysforge.primitives.build_state import BuildState, is_source_build_mode
 from sysforge.primitives.opt_out import VIA_REVERT
 from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.verbs.shared import (
@@ -119,7 +119,9 @@ def plan_revert(bs: BuildState, targets: list, installed: set | None = None) -> 
         if mode is None or mode == "pacman":
             plans.append(RevertPlan(target, "skip", None, None,
                                     "already a stock repo package"))
-        elif profile.is_optimized_build_mode(mode):
+        elif profile.is_optimized_build_mode(mode) and not is_source_build_mode(mode):
+            # bolt_llvm is "optimized" but keeps the stock name (3.5.0-B31), so
+            # it reverts like the plain source build it is, below.
             stock = entry.get("origin_pkgbase") or target_name
             if profile.rename_mode_for_build_mode(mode) == "conflict":
                 # Each renamed member declares provides/conflicts for its own

@@ -275,10 +275,10 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # Apply CLI toolchain overrides on top of profile values
     if cc_override is not None:
         profile_overrides["CC"] = cc_override
-        _conf_log.info(f"CC overridden via --cc: {cc_override}")
+        _conf_log.info(f"CC overridden: {cc_override}")
     if cxx_override is not None:
         profile_overrides["CXX"] = cxx_override
-        _conf_log.info(f"CXX overridden via --cxx: {cxx_override}")
+        _conf_log.info(f"CXX overridden: {cxx_override}")
     if ld_override is not None:
         if kernel_build:
             _conf_log.info(f"--ld={ld_override!r} ignored for kernel build (use LLVM=1 for lld)")

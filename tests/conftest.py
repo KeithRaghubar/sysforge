@@ -92,6 +92,16 @@ def _isolate_filesystem_soname_cache(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_narrated():
+    """Forget ``log.first_or_changed``'s once-per-run memory (3.5.0-B27), so a
+    test asserting a narration line is not silenced by an earlier test."""
+    from sysforge import log
+    log._reset_narrated()
+    yield
+    log._reset_narrated()
+
+
+@pytest.fixture(autouse=True)
 def _reset_saved_user_pager(monkeypatch):
     """
     Forget any PAGER/LESS saved by ``update._suppress_pagers_in_env``.

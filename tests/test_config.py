@@ -405,6 +405,21 @@ class TestParseOneMakepkgConf:
         assert result["CFLAGS"] == '"-O2 -pipe"'
         assert result["MAKEFLAGS"] == '"-j8"'
 
+    def test_narrates_a_file_once_until_it_changes(self, tmp_path, monkeypatch, capsys):
+        """3.5.0-B27: one run parses /etc/makepkg.conf a dozen times; the key
+        dump is logged once, and again only if the content changed."""
+        from sysforge import log
+        monkeypatch.setattr(log, "_VERBOSITY", 3)
+        conf = tmp_path / "makepkg.conf"
+        conf.write_text('CFLAGS="-O2"\n')
+        _parse_one_makepkg_conf(conf)
+        _parse_one_makepkg_conf(conf)
+        conf.write_text('CFLAGS="-O3"\n')
+        assert _parse_one_makepkg_conf(conf)["CFLAGS"] == '"-O3"'
+        err = capsys.readouterr().err
+        assert err.count("Parsed 1 keys") == 2
+        assert err.count("CFLAGS=") == 2
+
     def test_missing_file(self, tmp_path):
         result = _parse_one_makepkg_conf(tmp_path / "nonexistent")
         assert result == {}

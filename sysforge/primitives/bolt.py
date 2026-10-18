@@ -127,21 +127,27 @@ def emit_relocs_ldflag() -> str:
 # The build tree and what is in it
 # ---------------------------------------------------------------------------
 
-def build_tree_for(pkgbuild_path: Path) -> Path | None:
+def build_tree_for(pkgbuild_path: Path, *, build_root: Path | None = None) -> Path | None:
     """The CMake build directory the last ``makepkg`` of ``pkgbuild_path`` left.
 
     ``<BUILDDIR>/<pkgbase>/src/llvm-project-*/build`` (makepkg builds in the
     PKGBUILD's own directory when ``BUILDDIR`` is unset). ``--cleanbuild`` clears
     ``src`` *before* a build, so after Pass 4a the tree is that pass's. None when
     no tree with a ``build.ninja`` exists.
+
+    ``build_root`` is the ``$BUILDDIR/<pkgbase>`` the build reported using
+    (``makepkg_env.build_root``: the profile's ``BUILDDIR`` first) and is tried
+    before the system ``makepkg.conf``'s, which a profile overrides (3.5.0-B22).
     """
     from sysforge.primitives import pacman
 
     builddir = pacman.get_builddir()
-    base = builddir / pkgbuild_path.parent.name if builddir else pkgbuild_path.parent
-    for tree in sorted((base / "src").glob("llvm-project-*/build")):
-        if (tree / "build.ninja").is_file():
-            return tree
+    bases = [] if build_root is None else [Path(build_root)]
+    bases.append(builddir / pkgbuild_path.parent.name if builddir else pkgbuild_path.parent)
+    for base in bases:
+        for tree in sorted((base / "src").glob("llvm-project-*/build")):
+            if (tree / "build.ninja").is_file():
+                return tree
     return None
 
 
@@ -166,6 +172,16 @@ def has_relocations(lib: Path) -> bool:
     """True when ``lib`` was linked with ``--emit-relocs`` (a ``.rela.text``)."""
     result = run.probe(["readelf", "-SW", str(lib)], stdin=subprocess.DEVNULL)
     return result.returncode == 0 and ".rela.text" in result.stdout
+
+
+def is_bolted(lib: Path) -> bool:
+    """True when ``lib`` is llvm-bolt output (it adds a ``.note.bolt_info``).
+
+    A rewritten library must never be rewritten again: re-running BOLT on its
+    own output is unsupported (3.5.0-F7).
+    """
+    result = run.probe(["readelf", "-SW", str(lib)], stdin=subprocess.DEVNULL)
+    return result.returncode == 0 and ".note.bolt_info" in result.stdout
 
 
 def runtime_linkable(runtime: Path) -> bool:

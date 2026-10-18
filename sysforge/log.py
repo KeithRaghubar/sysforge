@@ -448,6 +448,29 @@ def get_logger(tag: str) -> Logger:
     return Logger(tag)
 
 
+# Facts narrated once per process (3.5.0-B27): key -> value last narrated.
+_narrated: dict[str, object] = {}
+
+
+def first_or_changed(key: str, value: object = None) -> bool:
+    """True the first time ``key`` is seen this process, or when ``value``
+    differs from the value it was last seen with.
+
+    For narration a run repeats many times over (a config file parsed by every
+    helper, the state-dir resolution): guard the log call with this so the run
+    log carries the fact once, and again only when it changes.
+    """
+    if key in _narrated and _narrated[key] == value:
+        return False
+    _narrated[key] = value
+    return True
+
+
+def _reset_narrated() -> None:
+    """Forget what was narrated (test isolation)."""
+    _narrated.clear()
+
+
 def newline() -> None:
     """Emit a blank line to the output stream. Use before async log messages to
     avoid mid-line appends."""

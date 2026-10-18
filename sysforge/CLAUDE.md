@@ -248,6 +248,11 @@ Mechanism lives in the cited §DESIGN section.
   `BuildAborted` (user abort) re-raises. PGO path only.
 - **libLLVM soname-bump → consumer rebuild**: `assess_libllvm_soname_impact` / `_gate_soname_consumers`
   (after Gate 3, outside sentinel). No parallel reverse-dep scanner.
+- **libLLVM `std::` export parity** (`3.5.0-F4`): the table is `primitives/llvm_std_exports.py`
+  (`STD_EXPORTS`; add a row, never a second injector), pasted by
+  `pkgbuild_patcher.patch_llvm_std_exports`. Thunks are **non-default** `sym@LLVM_<mm>` jumping to a
+  `.symver`-pinned `@GLIBCXX_*`: a default export makes the suite bind `@LLVM_*` (`scan_abi_hazards`
+  aborts), an unpinned jump loops under lld. Rendered text stays brace-free (`prepare()` span).
 - **System libLLVM must keep `AMDGPU`** (mesa's `libgallium` links it unconditionally — dropping it
   bricks the desktop). Enforced at resolution (`llvm_targets._ensure_system_consumer_targets`) +
   symbol gate (`toolchain_safety.check_system_consumer_symbols`). Opt-out `[llvm] targets = []`.

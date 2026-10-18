@@ -160,9 +160,15 @@ inherits stdio, so with no cached timestamp it would prompt from a background
 thread, interleaving with build output. Authenticating first also puts the one
 unavoidable prompt at stage entry, while the operator is still present.
 
-The kernel stage additionally probes *before* entering `sentinel_scope`. By the
-sentinel contract any exception inside the scope leaves the record in place, so
-an auth failure raised inside it would demand a recovery `mkinitcpio` for a
-mutation that never began. The classification stays narrow: only a pre-install
+The kernel and toolchain stages additionally probe *before* entering
+`sentinel_scope`. By the sentinel contract any exception inside the scope leaves
+the record in place, so an auth failure raised inside it would demand a recovery
+(`mkinitcpio`, or a stock `pacman -S` of the LLVM suite that replaces a working
+PGO toolchain) for a mutation that never began. The toolchain's refusal names
+`run toolchain --install-only` (PGO) so the built packages install without a
+rebuild (`3.5.0-B30`). `--bolt-only` builds nothing, so it never enters the
+`PGO` keepalive; `pgo.bolt_only` authenticates before the BOLT and holds its own
+(tag `BOLT`) across it, keeping the install's prompt from landing on an
+unattended terminal minutes later. The classification stays narrow: only a pre-install
 auth failure is a clean abort; a `pacman -U` that actually ran and failed still
 leaves the sentinel behind, which is the case it exists for.

@@ -216,6 +216,48 @@ def test_artifacts_without_manifest_falls_back_to_pkgname_scope(tmp_path, monkey
     assert got == {mine}
 
 
+def test_fallback_scope_keeps_only_the_pkgbuild_version(tmp_path, monkeypatch):
+    """3.5.0-B21: without a manifest, an older build of the same pkgnames left
+    in PKGDEST is not this build's output: keep only the PKGBUILD's own
+    ``epoch:pkgver-pkgrel``."""
+    from sysforge.build import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "mesa"
+    pkgbuild_dir.mkdir()
+    (pkgbuild_dir / "PKGBUILD").write_text(
+        "pkgbase=mesa\npkgname=(mesa vulkan-gfxstream)\n"
+        "epoch=1\npkgver=26.2.5\npkgrel=1\n")
+    pkgdest = tmp_path / "pkgs"
+    ours = {
+        _touch_pkg(pkgdest, "mesa-1:26.2.5-1-x86_64.pkg.tar.zst"),
+        _touch_pkg(pkgdest, "vulkan-gfxstream-1:26.2.5-1-x86_64.pkg.tar.zst"),
+    }
+    _touch_pkg(pkgdest, "mesa-1:26.2.4-1-x86_64.pkg.tar.zst")
+    _touch_pkg(pkgdest, "vulkan-gfxstream-1:26.2.4-1-x86_64.pkg.tar.zst")
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+
+    assert set(makepkg_wrapper._artifacts_for_pkgbuild(pkgbuild_dir)) == ours
+
+
+def test_fallback_scope_keeps_every_version_when_none_matches(tmp_path, monkeypatch):
+    """A VCS PKGBUILD's static pkgver need not match its artifacts (pkgver()
+    rewrote a copy, not this file): keep the pkgname-scoped set rather than
+    find nothing to install."""
+    from sysforge.build import makepkg_wrapper
+
+    pkgbuild_dir = tmp_path / "foo-git"
+    pkgbuild_dir.mkdir()
+    (pkgbuild_dir / "PKGBUILD").write_text("pkgname=foo-git\npkgver=1.0\npkgrel=1\n")
+    pkgdest = tmp_path / "pkgs"
+    both = {
+        _touch_pkg(pkgdest, "foo-git-1.0.r5.gabc-1-x86_64.pkg.tar.zst"),
+        _touch_pkg(pkgdest, "foo-git-1.0.r4.gdef-1-x86_64.pkg.tar.zst"),
+    }
+    monkeypatch.setattr("sysforge.primitives.pacman.get_pkgdest", lambda: pkgdest)
+
+    assert set(makepkg_wrapper._artifacts_for_pkgbuild(pkgbuild_dir)) == both
+
+
 def test_post_build_abi_check_scoped_to_this_build(tmp_path, monkeypatch):
     """3.2.0-B29: the post-build ABI report sees only this build's artifacts.
     A shared PKGDEST holds every historical build of every package; handing

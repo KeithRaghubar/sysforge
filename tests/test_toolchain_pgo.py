@@ -781,14 +781,17 @@ def test_bolt_runs_on_the_4a_tree_before_staging_and_repackages(tmp_path):
     profdata.write_bytes(b"fake")
     options = make_options(dry_run=False, rebuild_profdata=False,
                            state_dir=tmp_path / "state")
-    events, repacks = [], []
+    events, repacks, roots = [], [], []
 
     def fake_build_pass(label, pkgbuild_map, options, **kw):
         events.append(("build", set(pkgbuild_map), kw.get("linker_flags_extra")))
+        if kw.get("build_roots") is not None:
+            kw["build_roots"][llvm.parent] = builds / "root-llvm"
         return {}
 
-    def fake_optimize(pgo_map, tcfg, options, *, repackage):
+    def fake_optimize(pgo_map, tcfg, options, *, repackage, build_root=None):
         events.append(("bolt", set(pgo_map)))
+        roots.append(build_root)
         repackage()
         return True
 
@@ -819,4 +822,121 @@ def test_bolt_runs_on_the_4a_tree_before_staging_and_repackages(tmp_path):
     assert kinds.index("bolt") < kinds.index("stage")
     assert events[0][2] == "-Wl,--emit-relocs"  # 4a keeps relocations
     assert repacks == [("llvm", llvm, True, ["--repackage", "--force"])]
+    assert roots == [builds / "root-llvm"]  # 3.5.0-B22: 4a's own build root
     assert getattr(options, "no_update", False) is False
+
+
+def test_bolt_only_builds_nothing_and_bolts_strictly(tmp_path, monkeypatch):
+    """3.5.0-F7: --bolt-only checks the tree, then BOLTs it in strict mode with
+    BOLT forced on (the flag is the request), repackages llvm only, builds
+    nothing, and returns the whole suite for Gate 2 + install."""
+    from sysforge.pipeline.stages.toolchain import pgo
+    from tests.toolchain_helpers import toolchain_cfg
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    spirv = make_pkgbuild(builds, "spirv-llvm-translator")
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    (pgo_store / "clang.profdata").write_bytes(b"x")
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    seen, repacks = {}, []
+
+    def fake_check(pgo_map, entry, *, libllvm):
+        seen["checked"] = set(pgo_map)
+        return builds / "root"
+
+    def fake_optimize(pgo_map, tcfg, options, *, repackage, build_root=None, strict=False):
+        seen.update(enabled=tcfg.bolt.enabled, root=build_root, strict=strict)
+        repackage()
+        return True
+
+    def fake_build_pkg(name, path, opts, **kw):
+        repacks.append((name, path, kw.get("extra_flags"), kw.get("compiler_flags_extra")))
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "bolt.check_bolt_only_tree", side_effect=fake_check), \
+         patch(T + "bolt.optimize_in_build", side_effect=fake_optimize), \
+         patch(T + "passes.build_pkg", side_effect=fake_build_pkg), \
+         patch(T + "passes.build_pass", side_effect=AssertionError("built")):
+        built, cc, cxx, ld, variant = pgo.bolt_only(
+            {"llvm": llvm, "clang": llvm}, {"spirv-llvm-translator": spirv}, {},
+            pgo_store, options, tcfg=toolchain_cfg(bolt={"enabled": False}))
+
+    assert seen == {"checked": {"llvm", "clang"}, "enabled": True,
+                    "root": builds / "root", "strict": True}
+    assert repacks == [("llvm", llvm, ["--repackage", "--force"],
+                        f"-fprofile-use={pgo_store / 'clang.profdata'}")]
+    assert set(built) == {"llvm", "clang", "spirv-llvm-translator"}
+    assert (cc, variant) == ("/usr/bin/clang", "pgo_llvm")
+
+
+def test_bolt_only_holds_sudo_from_before_the_bolt(tmp_path, monkeypatch):
+    """3.5.0-B30: BOLT takes minutes and the install's sudo follows it, so
+    --bolt-only authenticates up front and keeps credentials warm across the
+    BOLT, as the full build does, rather than prompting an unattended terminal."""
+    from sysforge.pipeline.stages.toolchain import pgo
+    from sysforge.primitives import sudo_session
+    from tests.toolchain_helpers import toolchain_cfg
+    import contextlib
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    events = []
+
+    @contextlib.contextmanager
+    def fake_keepalive(*, tag, enabled=True):
+        events.append(("keepalive-on", enabled))
+        yield
+        events.append(("keepalive-off", enabled))
+
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: events.append("auth") or True)
+    monkeypatch.setattr(sudo_session, "keepalive", fake_keepalive)
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "bolt.check_bolt_only_tree", return_value=None), \
+         patch(T + "bolt.optimize_in_build",
+               side_effect=lambda *a, **k: events.append("bolt") or True):
+        pgo.bolt_only({"llvm": llvm, "clang": llvm}, {}, {}, tmp_path / "store",
+                      options, tcfg=toolchain_cfg())
+    assert events == ["auth", ("keepalive-on", True), "bolt", ("keepalive-off", True)]
+
+
+def test_install_only_builds_nothing_and_returns_the_suite(tmp_path, monkeypatch):
+    """3.5.0-F8: --install-only checks the last build record, finds each
+    PKGBUILD's built packages, builds nothing and returns the whole suite."""
+    from sysforge.pipeline.stages.toolchain import pgo
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    spirv = make_pkgbuild(builds, "spirv-llvm-translator")
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    seen = {}
+    T = "sysforge.pipeline.stages.toolchain."
+
+    def fake_check(pgo_map, entry, *, flag, tag):
+        seen["flag"] = flag
+        return llvm, "llvm", "23.1.3-3"
+
+    with patch(T + "pkgbuilds.check_last_pgo_build", side_effect=fake_check), \
+         patch(T + "profdata.collect_pgo_packages",
+               side_effect=lambda m: [tmp_path / f"{next(iter(m))}.pkg.tar"]), \
+         patch(T + "passes.build_pkg", side_effect=AssertionError("built")), \
+         patch(T + "passes.build_pass", side_effect=AssertionError("built")):
+        built, cc, cxx, ld, variant = pgo.install_only(
+            {"llvm": llvm, "clang": llvm}, {"spirv-llvm-translator": spirv}, {}, options)
+    assert seen["flag"] == "--install-only"
+    assert set(built) == {"llvm", "clang", "spirv-llvm-translator"}
+    assert (cc, ld, variant) == ("/usr/bin/clang", "lld", "pgo_llvm")
+
+
+def test_install_only_refuses_a_pkgbuild_with_no_built_package(tmp_path):
+    from sysforge.pipeline.stages.toolchain import pgo
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    spirv = make_pkgbuild(builds, "spirv-llvm-translator")
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "pkgbuilds.check_last_pgo_build",
+               return_value=(llvm, "llvm", "23.1.3-3")), \
+         patch(T + "profdata.collect_pgo_packages",
+               side_effect=lambda m: [] if "spirv-llvm-translator" in m else [tmp_path / "x"]), \
+         pytest.raises(RuntimeError, match="spirv-llvm-translator"):
+        pgo.install_only({"llvm": llvm}, {"spirv-llvm-translator": spirv}, {}, options)

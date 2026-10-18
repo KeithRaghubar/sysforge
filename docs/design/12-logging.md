@@ -21,6 +21,8 @@ Verbosity controlled by `-v`/`-vv`/`-vvv` on the CLI:
 
 Decision test for each site: *is this the answer, or narration about producing the answer?* The answer → `ui()`; narration → `info()` (or `debug()` for full dumps). `ui()` is verbosity-immune and reserved for primary output only — it is **not** a "make this always show up" escape hatch. File logs are unaffected: every level is always written to file regardless of stderr gating, so a demotion never loses forensic detail.
 
+**Repeated facts are narrated once.** A fact many helpers re-derive in one run (the system `makepkg.conf` and its key dump, the state-dir resolution, the LLVM targets kept for installed consumers) guards its log call with `log.first_or_changed(key, value)`: true the first time `key` is seen in the process, or when `value` differs from the last narrated one, so the run log carries the fact once and again only when it changes. It is the one home for that memory; `tests/conftest.py` resets it per test.
+
 **Configurable default verbosity.** The stderr level when no flag is passed is resolved once at CLI entry by `cli._resolve_verbosity(args)` (mirroring `_resolve_color_mode`), which calls the single `log.set_verbosity` seam — no resolution logic leaks into `log.py`. Precedence (highest first):
 
 1. Global `--quiet` → level 0 (wins over everything; distinct `quiet_global` dest so it never clobbers `doctor`'s local `--quiet/-q`, and it is not hoisted ahead of the `doctor` subcommand).

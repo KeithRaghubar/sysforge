@@ -21,6 +21,7 @@ from dataclasses import field
 from pathlib import Path
 
 from sysforge.primitives import build_fingerprint
+from sysforge.primitives import llvm_std_exports
 
 from sysforge.pipeline.stages.toolchain import verify
 
@@ -158,5 +159,8 @@ def pkg_fingerprint(
         "profdata_sha": ctx.profdata_sha,
         "makedep_versions": _dep_versions_from_globals(globals_, ctx.exclude_deps),
         "staged_dep_fps": sorted(ctx.staged_dep_fps),
+        # The std:: export parity block (3.5.0-F4) reaches only the patched
+        # PKGBUILD, so pkgbuild_sha never sees an STD_EXPORTS edit.
+        "std_exports": build_fingerprint.hash_obj(llvm_std_exports.render_prepare_block()),
     }
     return pkgbase, build_fingerprint.compute_fingerprint(components)

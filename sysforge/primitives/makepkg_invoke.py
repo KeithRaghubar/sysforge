@@ -230,6 +230,34 @@ def _sandbox_state_dir():
     return resolve_state_dir(None)[0]
 
 
+def _merge_extra_env(env: dict, extra_env: dict) -> None:
+    """Apply ``extra_env`` over ``env``, warning only for a value that changes.
+
+    A profile value equal to the inherited shell one overrides nothing, so it
+    is not worth a warning (3.5.0-B28).
+    """
+    for k, v in sorted(extra_env.items()):
+        if k in env and env[k] != v:
+            _makepkg_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
+    env.update(extra_env)
+
+
+def _append_flags(flags: list[str], extra: list[str]) -> list[str]:
+    """``flags`` + ``extra``, dropping a bare flag ``flags`` already carries.
+
+    The profile's ``makepkg_flags`` and a caller's ``extra_flags`` can both
+    name ``--cleanbuild`` (3.5.0-B28). A flag followed by a value (``--config
+    X``) is kept, since a repeat with another value is not a duplicate.
+    """
+    out = list(flags)
+    for i, tok in enumerate(extra):
+        takes_value = i + 1 < len(extra) and not extra[i + 1].startswith("-")
+        if tok.startswith("-") and not takes_value and tok in out:
+            continue
+        out.append(tok)
+    return out
+
+
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
@@ -289,10 +317,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         env["LESS"] = "-RFX"
 
     if extra_env:
-        for k, v in sorted(extra_env.items()):
-            if k in env:
-                _makepkg_log.warn(f"Overriding shell {k}={env[k]!r} with profile value {v!r}")
-        env.update(extra_env)
+        _merge_extra_env(env, extra_env)
 
     # Pin the configured build python ahead of any interpreter version-manager
     # shim (pyenv/asdf/conda) on the inherited PATH, so a bare ``python`` in a
@@ -309,7 +334,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         flags = [f for f in flags if f != "--noconfirm"]
         _makepkg_log.info("--interactive: stripped --noconfirm from profile flags")
     if extra_flags:
-        flags += extra_flags
+        flags = _append_flags(flags, extra_flags)
         _makepkg_log.info(f"Appending CLI flags: {extra_flags}")
     if strip_flags:
         before = flags[:]

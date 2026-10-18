@@ -53,7 +53,10 @@ from sysforge.primitives import run
 # v3: makedep_versions now excludes the toolchain build-set members (llvm,
 # llvm-libs, clang, …) — those are staged, not consumed from /usr, so their
 # installed version is no longer a fingerprint input (2.5.1-B2).
-_SCHEMA = 3
+# v4: the llvm PKGBUILD gains the libLLVM std:: export parity block (3.5.0-F4).
+# The fingerprint hashes the upstream PKGBUILD, which never shows it, so without
+# the bump --reuse-built would reuse a libLLVM built without the thunks.
+_SCHEMA = 4
 
 # Chunk size for streaming file hashes (profdata can be hundreds of MiB).
 _HASH_CHUNK = 1024 * 1024

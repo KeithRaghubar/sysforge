@@ -446,14 +446,63 @@ def show_version_changes(pkgbuild_map: dict[str, Path]) -> None:
     _log.ui("─────────────────────────────────────────────────────")
 
 
-def confirm_or_abort(state_dir) -> None:
+def check_last_pgo_build(
+    pgo_map: dict, entry: dict | None, *, flag: str, tag: str,
+) -> tuple[Path, str, str]:
+    """Refuse a no-build mode unless the last llvm build is this PKGBUILD's PGO build.
+
+    Shared by ``--bolt-only`` (3.5.0-F7) and ``--install-only`` (3.5.0-F8), which
+    both act on what the last run left instead of building. ``entry`` is llvm's
+    ``build_state`` record; it must say llvm was last built as ``pgo_llvm`` at
+    the PKGBUILD's own version, so what is left is not from another version or
+    a stock build. Returns ``(pkgbuild, pkgbase, "<pkgver>-<pkgrel>")``; raises
+    ``RuntimeError`` naming *flag* and the first mismatch.
+    """
+    from sysforge.build import makepkg_wrapper
+
+    pkgbuild = pgo_map.get("clang")
+    if pkgbuild is None:
+        raise RuntimeError(
+            f"[{tag}] {flag} needs clang from the PGO PKGBUILD (upstream's "
+            "single llvm package)")
+    pkgbuild = Path(pkgbuild)
+    globals_ = pkgbuild_meta.parse_pkgbuild(pkgbuild).get("globals", {})
+    pkgbase = str(globals_.get("pkgbase") or pkgbuild.parent.name)
+    if entry is None:
+        raise RuntimeError(
+            f"[{tag}] {flag}: no record of a {pkgbase} build; run "
+            "`sysforge run toolchain` first")
+    if entry.get("toolchain_variant") != "pgo_llvm":
+        raise RuntimeError(
+            f"[{tag}] {flag}: {pkgbase} was last built as "
+            f"{entry.get('toolchain_variant') or 'unknown'}, not pgo_llvm; run "
+            "`sysforge run toolchain` with [pgo] enabled first")
+    want = makepkg_wrapper._pkgbuild_version(globals_)
+    want_label = f"{want[1]}-{want[2]}" if want else "unversioned"
+    have = (str(entry.get("epoch") or "0"), str(entry.get("pkgver", "")),
+            str(entry.get("pkgrel", "")))
+    if want != have:
+        raise RuntimeError(
+            f"[{tag}] {flag}: the last {pkgbase} build is {have[1]}-{have[2]} but "
+            f"the PKGBUILD is {want_label}; run `sysforge run toolchain` to build it")
+    return pkgbuild, pkgbase, want_label
+
+
+def confirm_or_abort(state_dir, *, mode: str | None = None) -> None:
     """Prompt user to confirm. On abort, print resume command and raise.
 
     EOF (non-interactive) defaults to "y" so unattended runs proceed without
     prompting — matches the long-standing behaviour of this stage.
+    ``mode`` is the no-build flag in effect (``gates.no_build_mode``): each
+    asks about what it does, which builds nothing but still installs
+    (3.5.0-F7, 3.5.0-F8).
     """
+    question = {
+        "--bolt-only": "Proceed with BOLT of the last llvm build tree and install? [y/N]: ",
+        "--install-only": "Proceed with installing the last built toolchain? [y/N]: ",
+    }.get(mode or "", "Proceed with toolchain build? [y/N]: ")
     choice = prompt.prompt_choice(
-        "Proceed with toolchain build? [y/N]: ",
+        question,
         choices=("y", "yes", "n"),
         default="n",
         eof_default="y",

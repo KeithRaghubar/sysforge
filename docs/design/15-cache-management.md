@@ -32,7 +32,7 @@ sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0`
 
 `--cache-report` on both `build` and `pipeline` subcommands prints a structured per-package and totals summary to stderr at end of run, regardless of verbosity. This is the only user-visible output that ignores verbosity gating. The report is emitted through `log.ui` (not raw `print`), so it is captured by the unified run-log and its divider passes the Unicode gate like every other renderer.
 
-Cache probe uses `ccache --print-stats --format=tab` (ccache ≥ 4.0, standard on Arch) and `sccache --show-stats`. Both are skipped if the binary is absent.
+Cache probe uses `ccache --print-stats --format=tab` (ccache ≥ 4.0, standard on Arch; the size key is `cache_size_kibibyte`, with `cache_size_bytes` read when present) and `sccache --show-stats` (an idle server prints no `Cache size`, so the size is then omitted). Both are skipped if the binary is absent.
 
 ### Toolchain fingerprint tracking
 

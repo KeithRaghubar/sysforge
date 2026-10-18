@@ -1217,3 +1217,42 @@ def test_sandboxed_round_trips_as_a_real_bool(tmp_path, value):
     text = (tmp_path / "build_state.toml").read_text()
     assert f"sandboxed = {'true' if value else 'false'}" in text
     assert BuildState(tmp_path).get("htop")["sandboxed"] is value
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F7: the BUILDDIR a recorded build used
+# ---------------------------------------------------------------------------
+
+def test_recorded_builddir_reads_flags_string(monkeypatch, tmp_path):
+    from sysforge.primitives.build_state import recorded_builddir
+    monkeypatch.setenv("HOME", str(tmp_path))
+    entry = {"flags_string": "AR=llvm-ar\nBUILDDIR=$HOME/builds\nCC=clang"}
+    assert recorded_builddir(entry) == tmp_path / "builds"
+
+
+def test_recorded_builddir_unquotes_and_handles_absence():
+    from sysforge.primitives.build_state import recorded_builddir
+    assert recorded_builddir({"flags_string": 'BUILDDIR="/srv/b"'}) == Path("/srv/b")
+    assert recorded_builddir({"flags_string": "CC=clang"}) is None
+    assert recorded_builddir(None) is None
+
+
+# --- 3.5.0-B31: bolt_llvm is a source build with a post-link pass ------------
+
+def test_bolt_llvm_counts_as_a_source_build():
+    from sysforge.primitives import bolt, build_state
+    assert build_state.is_source_build_mode("source_built")
+    assert build_state.is_source_build_mode(bolt.BUILD_MODE)
+    assert not build_state.is_source_build_mode("pacman")
+    assert not build_state.is_source_build_mode("pgo_mesa")
+    assert not build_state.is_source_build_mode(None)
+
+
+def test_set_build_mode_restamps_an_existing_entry_only(tmp_path):
+    bs = BuildState(tmp_path)
+    _record(bs, pkgname="clang", build_mode="source_built")
+    assert bs.set_build_mode("clang", "bolt_llvm") is True
+    assert bs.set_build_mode("absent", "bolt_llvm") is False
+    bs.save()
+    assert BuildState(tmp_path).get("clang")["build_mode"] == "bolt_llvm"
+    assert BuildState(tmp_path).get("absent") is None

@@ -171,3 +171,29 @@ def test_replace_keep_mtime_keeps_ninja_from_relinking(tmp_path):
     assert dest.read_bytes() == b"bolted"
     assert dest.stat().st_mtime == 1_000_000
 
+
+
+def test_build_tree_for_prefers_the_root_the_build_used(tmp_path, monkeypatch):
+    """3.5.0-B22: a profile BUILDDIR differs from the system makepkg.conf's;
+    the root the build actually used wins."""
+    from sysforge.primitives import pacman
+    build = _tree(tmp_path / "builds")
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path / "tmp-makepkg")
+    assert bolt.build_tree_for(
+        tmp_path / "src/llvm/PKGBUILD", build_root=tmp_path / "builds/llvm") == build
+
+
+def test_build_tree_for_falls_back_when_the_used_root_has_no_tree(tmp_path, monkeypatch):
+    from sysforge.primitives import pacman
+    build = _tree(tmp_path / "builds")
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path / "builds")
+    assert bolt.build_tree_for(
+        tmp_path / "src/llvm/PKGBUILD", build_root=tmp_path / "elsewhere/llvm") == build
+
+
+def test_is_bolted_reads_the_bolt_info_note(monkeypatch):
+    """3.5.0-F7: llvm-bolt marks its output with .note.bolt_info."""
+    _probe(monkeypatch, "  [34] .note.bolt_info NOTE 0000 ...\n")
+    assert bolt.is_bolted(Path("/x/libclang-cpp.so.23.1"))
+    _probe(monkeypatch, "  [12] .rela.text RELA 0000 ...\n")
+    assert not bolt.is_bolted(Path("/x/libclang-cpp.so.23.1"))

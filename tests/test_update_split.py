@@ -194,3 +194,17 @@ def test_annotate_skips_pacman_entries_and_missing_dirs(tmp_path):
     )
     assert a.replaced_members == {} and a.via == []
     assert b.replaced_members == {} and b.via == []
+
+
+def test_annotate_treats_a_bolted_entry_as_source_built(tmp_path):
+    """3.5.0-B31: bolt_llvm is a source build plus a post-link pass."""
+    _write(tmp_path, _ADWAITA)
+    r = _result("adwaita-icon-theme-git", ["adwaita-cursors-git"], action="DEVEL")
+    annotate_split_members(
+        [r],
+        {"adwaita-icon-theme-git": {"build_mode": "bolt_llvm",
+                                    "pkgbuild_dir": str(tmp_path)}},
+        {"adwaita-cursors-git": "51-1", "adwaita-icon-theme": "50.0-1"},
+        in_repo=_in_repo,
+    )
+    assert r.via == ["adwaita-cursors-git"]

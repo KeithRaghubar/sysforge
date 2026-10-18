@@ -220,6 +220,18 @@ class RunToolchainVerb(_RunVerbBase):
                  "late-package failure reuse the already-optimized llvm/llvm-libs "
                  "instead of rebuilding them. Opt-in; overrides toolchain.toml "
                  "reuse_unchanged. Any input change or missing artifact rebuilds.")
+        p.add_argument("--bolt-only", action="store_true", dest="bolt_only",
+            help="Build nothing: BOLT the llvm build tree the last run left, "
+                 "repackage llvm, then audit, install and verify as usual. "
+                 "Refuses unless that tree is the last Pass-4a build of the "
+                 "PKGBUILD's version. Runs even with [bolt] enabled = false; the "
+                 "other [bolt] keys apply. Implies --no-update.")
+        p.add_argument("--install-only", action="store_true", dest="install_only",
+            help="Build nothing: install the packages the last run built (e.g. "
+                 "after an install step failed or its sudo prompt timed out), "
+                 "with the usual audit, snapshot and verify. Refuses unless the "
+                 "last llvm build is the PGO build of the PKGBUILD's version and "
+                 "every package is in PKGDEST. Implies --no-update.")
         p.add_argument("--auto-pgo", action="store_true", dest="auto_pgo",
             help="Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store "
                  "purge, 4-pass start, suspicious profdata size). Required for non-interactive "
@@ -265,6 +277,35 @@ class RunToolchainVerb(_RunVerbBase):
         p.set_defaults(verb_cls=cls)
         return p
 
+    # Flags that ask for a build, which --bolt-only (3.5.0-F7) and
+    # --install-only (3.5.0-F8) do not run.
+    _NO_BUILD_CONFLICTS = (
+        ("rebuild_profdata", "--rebuild-profdata"),
+        ("reuse_built", "--reuse-built"),
+        ("cleansrc", "--cleansrc"),
+        ("cleansrc_force", "--cleansrc-force"),
+    )
+
+    def pre_check(self, args) -> PreCheckResult:
+        pre = super().pre_check(args)
+        if pre.blocker is not None:
+            return pre
+        for dest, mode, extra in (
+            ("bolt_only", "--bolt-only", ()),
+            ("install_only", "--install-only", (("bolt_only", "--bolt-only"),)),
+        ):
+            if not getattr(args, dest, False):
+                continue
+            clash = [flag for d, flag in (*self._NO_BUILD_CONFLICTS, *extra)
+                     if getattr(args, d, False)]
+            if clash:
+                return PreCheckResult(
+                    blocker=(f"{mode} builds nothing, so it cannot be combined "
+                             f"with {', '.join(clash)}"),
+                    exit_code=2,
+                )
+        return pre
+
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
         from sysforge.pipeline.runner import run_stage_standalone
         from sysforge.pipeline.stages.base import RunOptions
@@ -272,7 +313,10 @@ class RunToolchainVerb(_RunVerbBase):
         config = load_config() or {}
         options = RunOptions(
             dry_run=args.dry_run,
-            no_update=args.no_update,
+            # --bolt-only / --install-only: a sync could re-pin the PKGBUILD off
+            # the version the last run built.
+            no_update=(args.no_update or getattr(args, "bolt_only", False)
+                       or getattr(args, "install_only", False)),
             cleansrc=getattr(args, "cleansrc", False),
             cleansrc_force=getattr(args, "cleansrc_force", False),
             cache_report=args.cache_report,
@@ -287,6 +331,8 @@ class RunToolchainVerb(_RunVerbBase):
             skip_build_space_check=getattr(args, "skip_build_space_check", False),
             rebuild_soname_consumers=getattr(args, "rebuild_soname_consumers", None),
             reuse_built=getattr(args, "reuse_built", False),
+            bolt_only=getattr(args, "bolt_only", False),
+            install_only=getattr(args, "install_only", False),
         )
         run_stage_standalone(ToolchainStage(), config, options)
         return ExecResult()

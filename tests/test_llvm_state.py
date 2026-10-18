@@ -397,6 +397,25 @@ def test_collect_state_marks_split_member(src_root, config):
     assert by_base["llvm-libs"].pkgbuild_dir is None
 
 
+def test_collect_state_stale_own_checkout_is_still_a_split_member(src_root, config):
+    """3.5.0-B28: after upstream folded clang into the llvm pkgbase, an old
+    ~/src/clang checkout must not get its own row (with a downgrade arrow to
+    its frozen version): llvm's pkgname lists clang, so clang is a split."""
+    pkg = src_root / "llvm"
+    _init_repo(pkg, remote_url="https://aur.archlinux.org/llvm.git")
+    (pkg / "PKGBUILD").write_text(
+        "pkgname=('llvm' 'clang')\npkgver=23.1.3\npkgrel=3\narch=('x86_64')\n"
+    )
+    stale = src_root / "clang"
+    _init_repo(stale, remote_url="https://aur.archlinux.org/clang.git")
+    (stale / "PKGBUILD").write_text("pkgname=clang\npkgver=23.1.1\npkgrel=1\narch=('x86_64')\n")
+    report = collect_llvm_state(["llvm", "clang"], config)
+    by_base = {s.pkgbase: s for s in report.states}
+    assert by_base["clang"].split_of == "llvm"
+    assert by_base["clang"].pkgbuild_dir is None
+    assert by_base["clang"].pkgbuild_ver is None
+
+
 def test_collect_state_skips_non_llvm():
     report = collect_llvm_state(["mesa-git", "linux-firmware"], config={})
     assert report.states == ()

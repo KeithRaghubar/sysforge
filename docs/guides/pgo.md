@@ -533,6 +533,45 @@ step fails, you get a warning and the toolchain installs without BOLT. It rewrit
 uses LLVM loads, so it is off by default. It needs the LLVM packages as the repos build
 them now (one `llvm` package), and it does not need `perf`.
 
+To try BOLT again without rebuilding LLVM (after changing `training_workload`, say, or
+when a run skipped it), run:
+
+```sh
+sysforge run toolchain --bolt-only
+```
+
+It rewrites the build that the last `run toolchain` left in your build directory,
+repackages llvm, and installs through the same checks as a full run, in minutes rather
+than an hour. It works even if `[bolt] enabled` is off. It refuses when that build isn't
+the finished optimized build of the version you have checked out (for example after an
+interrupted run); run `sysforge run toolchain` first. SysForge keeps the original
+libraries next to the build, so running `--bolt-only` again always starts from them. If
+BOLT can't run, nothing is installed.
+
+To see which installed packages are BOLTed, look for `bolt_llvm` in the build-mode
+column of `sysforge state list` (it marks the packages that carry a rewritten library,
+`clang` by default). To check a library directly, look for the section BOLT adds:
+
+```sh
+readelf -SW /usr/lib/libclang-cpp.so.23.1 | grep bolt_info
+```
+
+### Installing a finished build
+
+If a run finishes building but doesn't install (the install step failed, or nobody
+answered its sudo prompt), install what it built without building it again:
+
+```sh
+sysforge run toolchain --install-only
+```
+
+It installs the packages the last run left, BOLTed ones included, through the same
+checks, snapshot and verification as a full run. It refuses when the last build isn't
+the optimized build of the version you have checked out, or a package is missing; run
+`sysforge run toolchain` then. A full or `--bolt-only` run asks for your sudo password
+before its long work starts, and stops without changing anything if sudo isn't granted at
+install time, saying to run `--install-only`.
+
 ---
 
 ## Inspecting and cleaning up profiles

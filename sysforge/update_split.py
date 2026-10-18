@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives.build_state import BUILD_MODE_SOURCE
+from sysforge.primitives.build_state import is_source_build_mode
 from sysforge.primitives.pkgbuild_meta import member_relations, parse_pkgbuild
 from sysforge.update_common import _VCS_SUFFIXES
 from sysforge.update_result import _UpdateResult
@@ -117,7 +117,7 @@ def annotate_split_members(
     """
     for r in results:
         entry = pkgbase_entry.get(r.pkgbase) or {}
-        if entry.get("build_mode") != BUILD_MODE_SOURCE:
+        if not is_source_build_mode(entry.get("build_mode")):
             continue
         pkgbuild_dir = entry.get("pkgbuild_dir")
         if not pkgbuild_dir:

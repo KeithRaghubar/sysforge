@@ -378,3 +378,28 @@ def test_pass_size_counts_unique_dirs_across_maps(tmp_path):
     a = {"llvm": make_pkgbuild(tmp_path, "llvm"), "llvm-libs": make_pkgbuild(tmp_path, "llvm")}
     b = {"clang": make_pkgbuild(tmp_path, "clang")}
     assert pass_size(a, b, {}) == 2
+
+
+def test_pkg_fingerprint_changes_with_the_std_export_table(tmp_path, monkeypatch):
+    """3.5.0-F4: the parity block reaches only the patched PKGBUILD, so pkgbuild_sha
+    never sees a table edit; the fingerprint must change on its own."""
+    from sysforge.primitives import llvm_std_exports
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    ctx = _reuse_ctx(tmp_path, pass_id="build-pgo")
+    _, before = pkg_fingerprint(ctx, "llvm", pkgbuild, None, None, None, None, [])
+    monkeypatch.setattr(llvm_std_exports, "STD_EXPORTS", llvm_std_exports.STD_EXPORTS[:-1])
+    _, after = pkg_fingerprint(ctx, "llvm", pkgbuild, None, None, None, None, [])
+    assert before != after
+
+
+def test_build_pass_collects_each_dirs_build_root(tmp_path):
+    """3.5.0-B22: the root makepkg_run reports (profile BUILDDIR first) is kept
+    per PKGBUILD dir, once per split pkgbase, so BOLT can find the tree."""
+    pb = make_pkgbuild(tmp_path / "src", "llvm")
+    options = make_options(dry_run=False, makepkg_flags=[], state_dir=tmp_path / "state")
+    roots: dict = {}
+    with patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run",
+               return_value=tmp_path / "builds/llvm"):
+        build_pass("4a", {"llvm": pb, "clang": pb}, options, staged_deps=True,
+                   build_roots=roots)
+    assert roots == {pb.parent: tmp_path / "builds/llvm"}

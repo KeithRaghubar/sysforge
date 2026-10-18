@@ -869,3 +869,15 @@ def test_ui_colour_reaches_the_terminal_but_not_the_file_log(tmp_path, monkeypat
     assert "\x1b[" in capsys.readouterr().err
     text = path.read_text()
     assert "Built: foo" in text and "\x1b" not in text
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B27: first_or_changed — narrate a repeated fact once per run
+# ---------------------------------------------------------------------------
+
+def test_first_or_changed_is_true_once_then_on_change():
+    from sysforge import log
+    assert log.first_or_changed("k", 1)
+    assert not log.first_or_changed("k", 1)
+    assert log.first_or_changed("k", 2)
+    assert log.first_or_changed("other", 1)

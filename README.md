@@ -11,7 +11,7 @@ SysForge is an Arch Linux build and maintenance suite with compiler optimization
   `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion).
   It deliberately does not cover all of pacman; pacman remains the package-database authority.
 
-The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, `lld`, `llvm`, `compiler-rt`) and set `toolchain = "llvm"` in `[defaults]` or a profile, or use `sysforge run toolchain --compiler=llvm`.
+The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, which pulls in `llvm` and `compiler-rt`, and `lld`) and set `toolchain = "llvm"` in `[defaults]` or a profile. To build sysforge's own optimized LLVM, set `compiler = "llvm"` in `toolchain.toml` and run `sysforge run toolchain`, which installs the compilers it needs to start.
 
 **Commands.** The everyday set is in [Quick start](#quick-start) below, grouped by what
 you're trying to do. For the complete reference (every verb, subcommand and flag), use

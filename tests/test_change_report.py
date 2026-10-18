@@ -194,3 +194,18 @@ def test_render_none_applied_degrades_the_em_dash_under_the_ascii_gate():
 
     assert "—" not in out
     assert "system unchanged" in out.lower()
+
+
+def test_same_version_rebuild_is_reported_as_rebuilt(capsys):
+    """3.5.0-B28: a rebuild at the same version is not an update."""
+    from sysforge.primitives.change_report import ChangeOutcome, ChangeRow, PkgFacts, render
+    rows = [
+        ChangeRow("llvm-libs", PkgFacts("23.1.3-3", 100), PkgFacts("23.1.3-3", 110)),
+        ChangeRow("mesa", PkgFacts("1:26.2.4-1", 10), PkgFacts("1:26.2.5-1", 10)),
+    ]
+    render(rows, stage="toolchain", outcome=ChangeOutcome.COMPLETE)
+    out = capsys.readouterr().out
+    assert "1 updated, 1 rebuilt" in out
+    updated, rebuilt = out.split("Updated:")[1].split("Rebuilt (same version):")
+    assert "mesa" in updated and "llvm-libs" not in updated
+    assert "llvm-libs" in rebuilt

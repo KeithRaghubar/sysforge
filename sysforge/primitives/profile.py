@@ -917,8 +917,12 @@ def get_build_mode(matched_rules, config) -> str | None:
 #                        | build_state  | toolchain — earns -sysforge.
 #   "pgo_mesa" / "pgo" / | build_state  | the remaining optimization modes, all
 #   "autofdo_kernel" /   | (stamped)    | stamped at build time and members of
-#   "propeller_kernel" / |              | _OPTIMIZED_BUILD_MODES → -sysforge.
-#   "bolt_llvm"          |              |
+#   "propeller_kernel"   |              | _OPTIMIZED_BUILD_MODES → -sysforge.
+#   "bolt_llvm"          | build_state  | a BOLTed LLVM toolchain member, stamped
+#                        | (restamped)  | after the BOLT repackage, never passed to
+#                        |              | makepkg: keeps its stock name, and
+#                        |              | build_state.is_source_build_mode() is
+#                        |              | true for it (3.5.0-B31).
 #
 # This module normalizes the legacy profile token "patched_pkgbuild"→
 # "source_built" on read, never on write of new data (normalize_build_mode,

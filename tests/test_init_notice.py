@@ -95,6 +95,20 @@ def test_stage_config_notice_readvises_after_a_failed_first_attempt(tmp_path):
     assert maybe_emit_stage_config_notice("kernel", ps) == "advised"
 
 
+def test_stage_config_notice_silent_after_a_later_failure(tmp_path, capsys):
+    """3.5.0-B25: a stage that completed once is not on its first run, even
+    when its latest attempt failed or is running again."""
+    ps = PipelineState(tmp_path)
+    ps.mark_done("toolchain")
+    ps.mark_failed("toolchain", "consumers did not fully succeed")
+    ps.save()
+    reloaded = PipelineState(tmp_path)
+    assert maybe_emit_stage_config_notice("toolchain", reloaded) is None
+    reloaded.mark_running("toolchain")
+    assert maybe_emit_stage_config_notice("toolchain", reloaded) is None
+    assert "".join(capsys.readouterr()) == ""
+
+
 def test_stage_config_notice_readvises_while_running(tmp_path):
     ps = PipelineState(tmp_path)
     ps.mark_running("toolchain")

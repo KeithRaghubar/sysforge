@@ -116,17 +116,21 @@ def resolve_state_dir(cli_override=None, *, provision: bool = True):
     if env_val:
         sources.append(f"SYSFORGE_STATE_DIR={env_val}")
 
-    if sources:
+    # Every stage helper resolves this; narrate it once per run (3.5.0-B27).
+    narrate = log.first_or_changed("state-dir", (cli_override, env_val))
+    if sources and narrate:
         _log.info(f"State dir source(s) found: {', '.join(sources)}")
 
     if cli_override:
         chosen = Path(cli_override)
-        _log.info(f"Using state dir (--state-dir takes priority): {chosen}")
+        if narrate:
+            _log.info(f"Using state dir (--state-dir takes priority): {chosen}")
         return chosen, "--state-dir"
 
     if env_val:
         chosen = Path(env_val)
-        _log.info(f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
+        if narrate:
+            _log.info(f"Using state dir (SYSFORGE_STATE_DIR): {chosen}")
         return chosen, "SYSFORGE_STATE_DIR"
 
     if not provision:

@@ -93,3 +93,36 @@ def test_run_reconfigure_enables_unified_log(monkeypatch):
     args = _build_parser().parse_args(["run", "reconfigure"])
     args.verb_cls().execute(args, pre=None)
     assert captured["options"].no_unified_log is False
+
+
+# --- 3.5.0-F7: --bolt-only ----------------------------------------------------
+
+def test_run_toolchain_bolt_only_forwards_and_implies_no_update(monkeypatch):
+    opts = _run_toolchain(["--bolt-only"], monkeypatch)
+    assert opts.bolt_only is True and opts.no_update is True
+    assert _run_toolchain([], monkeypatch).bolt_only is False
+
+
+def test_run_toolchain_bolt_only_refuses_build_flags(monkeypatch):
+    for flag in ("--rebuild-profdata", "--reuse-built", "--cleansrc", "--cleansrc-force"):
+        pre = _pre_check_as(1000, ["toolchain", "--bolt-only", flag], monkeypatch)
+        assert pre.blocker is not None and flag in pre.blocker, flag
+        assert pre.exit_code == 2
+    assert _pre_check_as(1000, ["toolchain", "--bolt-only"], monkeypatch).blocker is None
+
+
+# --- 3.5.0-F8: --install-only -------------------------------------------------
+
+def test_run_toolchain_install_only_forwards_and_implies_no_update(monkeypatch):
+    opts = _run_toolchain(["--install-only"], monkeypatch)
+    assert opts.install_only is True and opts.no_update is True
+    assert _run_toolchain([], monkeypatch).install_only is False
+
+
+def test_run_toolchain_install_only_refuses_build_flags_and_bolt_only(monkeypatch):
+    for flag in ("--rebuild-profdata", "--reuse-built", "--cleansrc", "--cleansrc-force",
+                 "--bolt-only"):
+        pre = _pre_check_as(1000, ["toolchain", "--install-only", flag], monkeypatch)
+        assert pre.blocker is not None and flag in pre.blocker, flag
+        assert pre.exit_code == 2
+    assert _pre_check_as(1000, ["toolchain", "--install-only"], monkeypatch).blocker is None

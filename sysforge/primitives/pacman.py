@@ -47,6 +47,7 @@ Public API:
     get_package_depends(pkgname)    → list[str]
     get_pkgbase(pkgname)            → str | None
 """
+import glob
 import os
 import re
 import subprocess
@@ -359,6 +360,27 @@ def cached_pkg_files_for(names) -> dict[str, Path | None]:
                 break
         result[name] = found
     return result
+
+
+def cached_repo_pkg_file(name: str, version: str) -> Path | None:
+    """The cached *repo* archive of ``name`` at ``version`` (``[epoch:]pkgver-pkgrel``).
+
+    Unlike :func:`cached_pkg_files_for`, keyed on the version asked for, not the
+    installed one, and only an archive with a detached ``.sig`` beside it
+    counts: repo downloads carry one and a locally built package never does, so
+    a sysforge build that reached the cache is never taken for stock
+    (3.5.0-F4). Exact ``<name>-<version>-`` prefix, as there. Never downloads.
+    """
+    prefix = f"{name}-{version}-"
+    for cache_dir in get_pacman_cache_dirs():
+        if not cache_dir.is_dir():
+            continue
+        for cand in sorted(cache_dir.glob(f"{glob.escape(prefix)}*.pkg.tar*")):
+            if cand.name.endswith(".sig") or not cand.name.startswith(prefix):
+                continue
+            if cand.with_name(cand.name + ".sig").is_file():
+                return cand
+    return None
 
 
 # ---------------------------------------------------------------------------

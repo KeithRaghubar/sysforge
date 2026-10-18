@@ -134,7 +134,7 @@ class PipelineState:
                 continue  # progress-only entry not yet formally assigned a status
             lines.append(f"[stages.{stage_name}]")
             lines.append(f'status = "{stage_data["status"]}"')
-            for key in ("started_at", "completed_at"):
+            for key in ("started_at", "completed_at", "first_done_at"):
                 if key in stage_data:
                     lines.append(f'{key} = "{stage_data[key]}"')
             if "error" in stage_data:
@@ -192,10 +192,21 @@ class PipelineState:
         return self._data.get("stages", {}).get(name, {}).get("status", "pending")
 
     def mark_running(self, name):
+        self._clear_error(name)
         self._set_stage(name, status="running", started_at=self._now())
 
     def mark_done(self, name):
-        self._set_stage(name, status="done", completed_at=self._now())
+        self._clear_error(name)
+        now = self._now()
+        self._set_stage(name, status="done", completed_at=now)
+        # Kept across later failures: `status` holds only the latest attempt
+        # (3.5.0-B25).
+        self._data["stages"][name].setdefault("first_done_at", now)
+
+    def stage_ever_done(self, name):
+        """True once ``name`` has completed on this install, whatever its latest status."""
+        stage = self._data.get("stages", {}).get(name, {})
+        return stage.get("status") == "done" or "first_done_at" in stage
 
     def mark_failed(self, name, error=""):
         self._set_stage(name, status="failed", completed_at=self._now(), error=error)
@@ -203,6 +214,12 @@ class PipelineState:
     def mark_skipped_to(self, name):
         """Mark a stage as skipped-to (bypassed by --start-from)."""
         self._set_stage(name, status="skipped_to")
+
+    def _clear_error(self, name):
+        """Drop an earlier attempt's ``error``: the stage dict is updated in
+        place, so a rerun would otherwise keep it beside its new status
+        (3.5.0-B24)."""
+        self._data.get("stages", {}).get(name, {}).pop("error", None)
 
     def _set_stage(self, name, **kwargs):
         stages = self._data.setdefault("stages", {})

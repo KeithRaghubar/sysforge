@@ -156,13 +156,17 @@ def _ensure_installed_consumer_targets(targets: list[str]) -> list[str]:
     added = {t: pkgs for t, pkgs in required.items() if t not in targets}
     if not added:
         return targets
-    named = "; ".join(f"{t} ({', '.join(pkgs)})" for t, pkgs in added.items())
-    _log.warn(
-        f"keeping {len(added)} LLVM target(s) installed packages need: {named}. "
-        "They import these backends' init symbols and would fail to load "
-        "against a libLLVM without them. Set [llvm] targets = [] to build all "
-        "targets, or remove those packages to filter further."
-    )
+    # Short form, once per run (3.5.0-B27): the consumers usually import every
+    # backend, so naming them per target repeated the same list ~17 times, and
+    # the resolution runs several times a stage.
+    consumers = sorted({p for pkgs in added.values() for p in pkgs})
+    if log.first_or_changed("llvm-consumer-targets", (tuple(added), tuple(consumers))):
+        _log.warn(
+            f"keeping {len(added)} LLVM target(s) installed packages need "
+            f"({', '.join(added)}; needed by {', '.join(consumers)}): they import "
+            "these backends' init symbols. Set [llvm] targets = [] to build all "
+            "targets, or remove those packages to filter further."
+        )
     return [*targets, *added]
 
 

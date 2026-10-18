@@ -11,6 +11,7 @@ import pytest
 from sysforge.primitives import pacman
 from sysforge.primitives.pacman import (
     cached_pkg_files_for,
+    cached_repo_pkg_file,
     collect_builddeps,
     collect_makedeps,
     detect_orphan_artifacts,
@@ -831,6 +832,44 @@ class TestDetectOrphanArtifacts:
 # ---------------------------------------------------------------------------
 
 class TestPacmanCache:
+    def _cache(self, tmp_path, monkeypatch, files: dict[str, bool]):
+        """files: archive name → whether a detached .sig sits beside it."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        for name, signed in files.items():
+            (cache / name).touch()
+            if signed:
+                (cache / f"{name}.sig").touch()
+        monkeypatch.setattr("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                            lambda: [tmp_path / "absent", cache])
+        return cache
+
+    def test_cached_repo_pkg_file_finds_signed_exact_version(self, tmp_path, monkeypatch):
+        cache = self._cache(tmp_path, monkeypatch, {
+            "llvm-libs-23.1.3-3-x86_64.pkg.tar.zst": True,
+            "llvm-libs-23.1.3-2-x86_64.pkg.tar.zst": True,
+        })
+        assert cached_repo_pkg_file("llvm-libs", "23.1.3-3") == \
+            cache / "llvm-libs-23.1.3-3-x86_64.pkg.tar.zst"
+
+    def test_cached_repo_pkg_file_ignores_unsigned(self, tmp_path, monkeypatch):
+        """A local build of the same version that reached the cache is not stock."""
+        self._cache(tmp_path, monkeypatch, {"llvm-libs-23.1.3-3-x86_64.pkg.tar.zst": False})
+        assert cached_repo_pkg_file("llvm-libs", "23.1.3-3") is None
+
+    def test_cached_repo_pkg_file_prefix_collision(self, tmp_path, monkeypatch):
+        self._cache(tmp_path, monkeypatch, {"llvm-libs-23.1.3-3-x86_64.pkg.tar.zst": True})
+        assert cached_repo_pkg_file("llvm", "23.1.3-3") is None
+
+    def test_cached_repo_pkg_file_epoch(self, tmp_path, monkeypatch):
+        cache = self._cache(tmp_path, monkeypatch, {"mesa-1:26.2.5-1-x86_64.pkg.tar.zst": True})
+        assert cached_repo_pkg_file("mesa", "1:26.2.5-1") == \
+            cache / "mesa-1:26.2.5-1-x86_64.pkg.tar.zst"
+
+    def test_cached_repo_pkg_file_absent(self, tmp_path, monkeypatch):
+        self._cache(tmp_path, monkeypatch, {})
+        assert cached_repo_pkg_file("llvm-libs", "23.1.3-3") is None
+
     def test_cache_dirs_default_when_no_conf(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sysforge.primitives.pacman._PACMAN_CONF",
                             tmp_path / "absent.conf")

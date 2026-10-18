@@ -49,6 +49,10 @@ TRAINING_UNITS = 400
 # means the instrumented libraries are not working: do not trust the profile.
 _MIN_TRAINING_SHARE = 0.5
 
+# Inside the build tree's lib/: the un-BOLTed libraries, kept so a rerun on the
+# same tree starts from them (3.5.0-F7). Not matched by bolt_targets' glob.
+PREBOLT_DIR = ".sysforge-prebolt"
+
 
 def _store(tcfg: "config.ToolchainConfig") -> Path:
     return _bolt.resolve_store(tcfg.raw)
@@ -155,16 +159,100 @@ def _keep_profiles(tcfg: "config.ToolchainConfig", td: Path, targets: list[Path]
         _log.warn(f"[BOLT] could not keep the profiles in {store}: {e}")
 
 
+def check_bolt_only_tree(pgo_map: dict, entry: dict | None, *, libllvm: bool) -> Path | None:
+    """Refuse ``--bolt-only`` unless the tree is the last Pass-4a build (3.5.0-F7).
+
+    ``entry`` is llvm's ``build_state`` record. Returns the ``$BUILDDIR/<pkgbase>``
+    the tree sits under (from the recorded ``BUILDDIR``; ``None`` falls back to
+    the system one), for :func:`optimize_in_build`. Raises ``RuntimeError``
+    naming the first mismatch:
+
+    * the record must say llvm was last built as ``pgo_llvm`` at the PKGBUILD's
+      own version, so the tree is not from another version or a stock build;
+    * ``libclang-cpp`` must carry relocations: only Pass 4 links with
+      ``--emit-relocs``, so a tree an aborted run left in Passes 1-3 has none;
+    * llvm's built packages for that version must be in PKGDEST and no older
+      than the tree's ``libclang-cpp``, i.e. packaged from this tree.
+    """
+    from sysforge.build import makepkg_wrapper
+    from sysforge.pipeline.stages.toolchain import pkgbuilds
+    from sysforge.primitives import build_state
+
+    pkgbuild, pkgbase, want_label = pkgbuilds.check_last_pgo_build(
+        pgo_map, entry, flag="--bolt-only", tag="BOLT")
+    # check_last_pgo_build refused a missing record; `or {}` is for the checker.
+    recorded = build_state.recorded_builddir(entry or {})
+    root = recorded / pkgbase if recorded else None
+    build = _bolt.build_tree_for(pkgbuild, build_root=root)
+    if build is None:
+        raise RuntimeError(f"[BOLT] --bolt-only: no llvm build tree found for {pkgbuild}")
+    targets = _bolt.bolt_targets(build, libllvm=libllvm)
+    if not targets:
+        raise RuntimeError(f"[BOLT] --bolt-only: no libclang-cpp in {build / 'lib'}")
+    lib = targets[0]
+    if not _bolt.has_relocations(lib):
+        raise RuntimeError(
+            f"[BOLT] --bolt-only: {lib} has no relocations, so {build} is not a "
+            "Pass-4a tree (an interrupted full run leaves an earlier pass's); "
+            "run `sysforge run toolchain` to rebuild it")
+    artifacts = makepkg_wrapper._artifacts_for_pkgbuild(pkgbuild.parent)
+    if not artifacts:
+        raise RuntimeError(
+            f"[BOLT] --bolt-only: no built llvm package for {want_label} in "
+            "PKGDEST to repackage and install")
+    lib_mtime = lib.stat().st_mtime
+    stale = [a.name for a in artifacts if Path(a).stat().st_mtime < lib_mtime]
+    if stale:
+        raise RuntimeError(
+            f"[BOLT] --bolt-only: {', '.join(stale)} is older than {lib.name}, so "
+            f"the tree was rebuilt after packaging; run `sysforge run toolchain`")
+    return root
+
+
+def _restore_originals(targets: list[Path]) -> None:
+    """Put back each library's saved un-BOLTed original, mtime included."""
+    for lib in targets:
+        saved = lib.parent / PREBOLT_DIR / lib.name
+        if saved.is_file():
+            shutil.copy2(saved, lib)
+
+
+def _save_originals(targets: list[Path]) -> Path:
+    """Keep each un-BOLTed library beside the tree before it is replaced."""
+    keep = targets[0].parent / PREBOLT_DIR
+    keep.mkdir(exist_ok=True)
+    for lib in targets:
+        if not (keep / lib.name).exists():
+            shutil.copy2(lib, keep / lib.name)
+    return keep
+
+
 def optimize_in_build(
     pgo_map: dict, tcfg: "config.ToolchainConfig", options, *,
-    repackage: Callable[[], None],
+    repackage: Callable[[], None], build_root: Path | None = None,
+    strict: bool = False,
 ) -> bool:
     """BOLT the Pass-4a build tree and repackage; True when the packages changed.
 
     No-op unless ``[bolt] enabled`` (and not a dry run). ``repackage`` reruns
     makepkg's ``package()`` for the llvm PKGBUILD (``--repackage``) with the
-    same settings 4a used; the caller owns those.
+    same settings 4a used; the caller owns those. ``build_root`` is the
+    ``$BUILDDIR/<pkgbase>`` Pass 4a reported building in (3.5.0-B22).
+
+    The un-BOLTed libraries are kept in ``lib/PREBOLT_DIR`` and restored before
+    every cycle, so a rerun on the same tree starts from them; a library that
+    is BOLT output with no kept original is refused. A Pass-4a rebuild clears
+    ``src``, so a kept original never outlives its tree (3.5.0-F7).
+
+    ``strict`` (``--bolt-only``, which has nothing to install without BOLT)
+    turns every skip into a ``RuntimeError`` instead of a warning.
     """
+    def skip(reason: str) -> bool:
+        if strict:
+            raise RuntimeError(f"[BOLT] {reason}; nothing was installed.")
+        _log.warn(f"[BOLT] skipped: {reason}. The PGO toolchain installs un-BOLTed.")
+        return False
+
     bcfg = tcfg.bolt
     if not bcfg.enabled:
         return False
@@ -174,19 +262,21 @@ def optimize_in_build(
         return False
     pkgbuild = pgo_map.get("clang")
     if pkgbuild is None:
-        _log.warn(
-            "[BOLT] skipped: clang is not built by the PGO PKGBUILD, so its "
-            "libraries are not in the Pass-4a build tree (BOLT needs upstream's "
-            "single llvm package). The PGO toolchain is unaffected.")
-        return False
-    build = _bolt.build_tree_for(Path(pkgbuild))
+        return skip(
+            "clang is not built by the PGO PKGBUILD, so its libraries are not "
+            "in the Pass-4a build tree (BOLT needs upstream's single llvm package)")
+    build = _bolt.build_tree_for(Path(pkgbuild), build_root=build_root)
     if build is None:
-        _log.warn(f"[BOLT] skipped: no llvm build tree found for {pkgbuild}")
-        return False
+        return skip(f"no llvm build tree found for {pkgbuild}")
     targets = _bolt.bolt_targets(build, libllvm=bcfg.libllvm)
     if not targets:
-        _log.warn(f"[BOLT] skipped: no libclang-cpp in {build / 'lib'}")
-        return False
+        return skip(f"no libclang-cpp in {build / 'lib'}")
+    _restore_originals(targets)
+    for lib in targets:
+        if _bolt.is_bolted(lib):
+            return skip(
+                f"{lib.name} is already BOLT output and its original was not kept; "
+                "rebuild llvm (`sysforge run toolchain`) for an un-BOLTed tree")
 
     names = ", ".join(t.name for t in targets)
     _log.ui(f"[BOLT] optimizing {names} in {build}")
@@ -195,25 +285,66 @@ def optimize_in_build(
         try:
             rewritten = _cycle(build, targets, bcfg.training_workload, td)
         except _bolt.BoltError as e:
-            _log.warn(f"[BOLT] skipped: {e}. The PGO toolchain installs un-BOLTed.")
-            return False
+            return skip(str(e))
 
-        backup = td / "orig"
-        backup.mkdir()
-        for lib in targets:
-            shutil.copy2(lib, backup / lib.name)
+        keep = _save_originals(targets)
         for lib, new in rewritten.items():
             _bolt.replace_keep_mtime(new, lib)
         try:
             repackage()
         except Exception as e:
             for lib in targets:
-                _bolt.replace_keep_mtime(backup / lib.name, lib)
+                _bolt.replace_keep_mtime(keep / lib.name, lib)
             raise RuntimeError(
                 f"[BOLT] repackaging llvm after BOLT failed ({e}); the Pass-4a "
                 "packages may be partly rewritten, so nothing was installed. "
                 "Rerun with [bolt] enabled = false to install the PGO toolchain "
                 "without BOLT.") from e
         _keep_profiles(tcfg, td, targets)
-    _log.ui(f"[BOLT] {names} rewritten and repackaged (build_mode {_bolt.BUILD_MODE})")
+    stamped = _record_bolted(Path(pkgbuild), targets, options)
+    _log.ui(f"[BOLT] {names} rewritten and repackaged"
+            + (f"; recorded build_mode {_bolt.BUILD_MODE} for {', '.join(stamped)}"
+               if stamped else ""))
     return True
+
+
+def _package_contents(artifact: Path) -> tuple[str | None, list[str]]:
+    """A built package's ``pkgname`` (from ``.PKGINFO``) and its file list."""
+    info = run.probe(["bsdtar", "-xOqf", str(artifact), ".PKGINFO"])
+    name = next((line.split("=", 1)[1].strip() for line in info.stdout.splitlines()
+                 if line.startswith("pkgname")), None) if info.returncode == 0 else None
+    listing = run.probe(["bsdtar", "-tf", str(artifact)])
+    return name, listing.stdout.splitlines() if listing.returncode == 0 else []
+
+
+def _record_bolted(pkgbuild: Path, targets: list[Path], options) -> list[str]:
+    """Stamp ``build_mode = bolt_llvm`` on the packages carrying a rewritten library.
+
+    The repackage's makepkg record wrote every member as ``source_built``; only
+    the members whose package holds one of *targets* (``clang`` for
+    ``libclang-cpp``, ``llvm-libs`` for ``libLLVM``) are BOLT output, so only
+    they are restamped, found from the packages themselves rather than an
+    assumed layout (3.5.0-B31). Best-effort: the packages are already right, so
+    a failure to record warns and the run goes on. Returns the names stamped.
+    """
+    from sysforge.build import makepkg_wrapper
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.build_state import BuildState
+
+    libs = {t.name for t in targets}
+    try:
+        members = []
+        for art in makepkg_wrapper._artifacts_for_pkgbuild(pkgbuild.parent):
+            name, files = _package_contents(Path(art))
+            if name and any(Path(f).name in libs for f in files):
+                members.append(name)
+        if not members:
+            return []
+        state_dir, _ = resolve_state_dir(options.state_dir)
+        bs = BuildState(state_dir)
+        stamped = sorted(m for m in set(members) if bs.set_build_mode(m, _bolt.BUILD_MODE))
+        bs.save()
+        return stamped
+    except Exception as e:  # noqa: BLE001 — the record is advisory; never fail the install
+        _log.warn(f"[BOLT] could not record build_mode {_bolt.BUILD_MODE}: {e}")
+        return []

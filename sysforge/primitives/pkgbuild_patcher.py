@@ -26,6 +26,7 @@ from sysforge.primitives.hardware_tables import (
     MESA_MANDATORY_GALLIUM,
     MESA_MANDATORY_VULKAN,
 )
+from sysforge.primitives import llvm_std_exports
 from sysforge.primitives.profile import CONF_KEY_MAP
 
 
@@ -1821,6 +1822,32 @@ def patch_llvm_dir(patched_path, llvm_dir: str) -> bool:
     new_text = text[:line_end] + insertion + text[line_end:]
     patched_path.write_text(new_text)
     _log.info(f"Injected {replacement} after cmake invocation")
+    return True
+
+
+def patch_llvm_std_exports(patched_path) -> bool:
+    """Append the libLLVM ``std::`` export parity block to ``prepare()`` (3.5.0-F4).
+
+    The block writes :data:`llvm_std_exports.TU_FILENAME` into every
+    ``$srcdir/llvm-project*/llvm/tools/llvm-shlib`` and appends the self-gating
+    CMake hook there; see :mod:`llvm_std_exports` for why the thunks are safe.
+    Idempotent (sentinel). A PKGBUILD without ``prepare()`` is left alone: the
+    parity is an improvement, never a reason to fail a build. Returns True when
+    the file changed.
+    """
+    patched_path = Path(patched_path)
+    text = patched_path.read_text()
+    if llvm_std_exports.SENTINEL in text:
+        return False
+    span = _find_func_body_span(text, "prepare")
+    if span is None:
+        _log.info("libLLVM std:: export parity not added: the PKGBUILD has no prepare()")
+        return False
+    head = text[:span[1]]
+    if not head.endswith("\n"):
+        head += "\n"
+    patched_path.write_text(head + llvm_std_exports.render_prepare_block() + text[span[1]:])
+    _log.info("Added libLLVM std:: export parity thunks to prepare()")
     return True
 
 

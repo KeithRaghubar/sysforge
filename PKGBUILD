@@ -3,7 +3,7 @@
 pkgname=sysforge
 pkgver=3.5.0
 pkgrel=1
-pkgdesc="Arch Linux build and maintenance suite for system setup and package management with compiler-optimized builds"
+pkgdesc="AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO"
 arch=('any')
 url="https://github.com/KeithRaghubar/sysforge"
 license=('MIT')
@@ -26,10 +26,8 @@ optdepends=(
     'zsh: zsh shell support'
     'glow: in-shell markdown rendering for docs'
     'zsh-completions: additional zsh completions'
-    'clang: required for the LLVM build profile and sysforge run toolchain --compiler=llvm'
-    'lld: required for the optimized build profile (-fuse-ld=lld)'
-    'llvm: required for sysforge run toolchain --compiler=llvm (PGO bootstrap)'
-    'compiler-rt: required for sysforge run toolchain --compiler=llvm'
+    'clang: build packages and kernels with the LLVM profiles (pulls in llvm and compiler-rt)'
+    'lld: link with -fuse-ld=lld (the LLVM and optimized profiles)'
     'mesa-utils: post-install mesa smoke check (eglinfo)'
     'vulkan-tools: post-install mesa smoke check (vulkaninfo)'
 )

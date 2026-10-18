@@ -299,3 +299,12 @@ def test_execute_conflict_split_one_transaction_and_forgets_all(tmp_path, monkey
     forget.assert_called_once_with(
         tmp_path, ["mesa-docs-sysforge", "mesa-sysforge", "vulkan-radeon-sysforge"],
         opt_out="revert")
+
+
+def test_plan_bolted_llvm_member_reinstalls_its_stock_name(tmp_path):
+    """3.5.0-B31: a BOLTed toolchain member keeps its stock name (no -sysforge
+    rename), so reverting it is the plain reinstall, not a renamed replace."""
+    bs = _bs(tmp_path, {"clang": {"build_mode": "bolt_llvm", "pkgbase": "llvm"}})
+    (plan,) = revert_cmd.plan_revert(bs, ["clang"])
+    assert plan.action == "reinstall"
+    assert plan.pkgname == "clang"

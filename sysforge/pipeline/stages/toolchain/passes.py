@@ -51,8 +51,11 @@ def build_pkg(
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
     pgo_reuse: bool = True,
-) -> None:
+) -> Path | None:
     """Build one package via makepkg_wrapper.run().
+
+    Returns the ``$BUILDDIR/<pkgbase>`` the build used (``None`` in dry-run,
+    when the existing artifact was reused, or when no ``BUILDDIR`` is set).
 
     ``toolchain_variant`` is stamped into build_state so ``sysforge update``
     can flag drift. Set only on install-bearing passes — intermediate PGO
@@ -67,7 +70,7 @@ def build_pkg(
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
         _log.ui(f"[dry-run] would build {name}{cc_label}")
-        return
+        return None
     # Strip install flags — toolchain controls install/no-install via extra_flags.
     user_flags = [
         f for f in getattr(options, "makepkg_flags", []) if f not in ("-i", "--install")
@@ -82,7 +85,7 @@ def build_pkg(
             )
     combined_flags = list(extra_flags or []) + user_flags
     try:
-        makepkg_run(pkgbuild_path, options=make_build_options(
+        return makepkg_run(pkgbuild_path, options=make_build_options(
             "toolchain", options,
             extra_flags=combined_flags,
             compiler_flags_extra=compiler_flags_extra,
@@ -108,6 +111,7 @@ def build_pkg(
             f"{name}: package already built; reusing existing artifact "
             "in PKGDEST"
         )
+        return None
 
 
 def pass_size(*pkgbuild_maps: dict[str, Path]) -> int:
@@ -137,6 +141,7 @@ def build_pass(
     reuse_ctx: "reuse.ReuseCtx | None" = None,
     pgo_reuse: bool = True,
     tick: "progress.Tick | None" = None,
+    build_roots: dict[Path, Path] | None = None,
 ) -> dict[str, str]:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -175,6 +180,10 @@ def build_pass(
     several calls shows one monotonic counter instead of restarting at
     ``[1/n]`` per call (3.3.0-B12). ``label`` then only heads the sub-pass.
     Without it the call opens its own tracker, as before.
+
+    ``build_roots``, when given, collects ``{pkgbuild_dir: build root}`` for
+    each directory this call built (see :func:`build_pkg`), so a later step
+    can find the tree the build left (BOLT, 3.5.0-B22).
     """
     # makepkg never escalates (3.4.0-F1): no --install, and --syncdeps is
     # always stripped. A sudo inside the build's forwarded output could not
@@ -227,7 +236,7 @@ def build_pass(
                         )
                         continue  # build skipped; do not consume `first`
 
-            build_pkg(
+            root = build_pkg(
                 name,
                 pkgbuild_path,
                 options,
@@ -246,6 +255,8 @@ def build_pass(
                 pgo_reuse=pgo_reuse,
             )
             first = False
+            if build_roots is not None and root is not None:
+                build_roots[pkg_dir] = root
             if install and not options.dry_run:
                 tick.note(f"installing {pkg_dir.name}")
                 install_built_packages(pkg_dir, noconfirm=True)

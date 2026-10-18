@@ -33,7 +33,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sysforge.primitives.build_state import BUILD_MODE_SOURCE
+from sysforge.primitives.build_state import is_source_build_mode
 from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.pkgbuild_meta import option_disabled, parse_pkgbuild
 from sysforge.primitives.pkgbuild_patcher import extract_pkgbuild_profile
@@ -109,13 +109,14 @@ def _is_pgo_mode(build_mode: str | None) -> bool:
 def drift_candidate(entry: dict) -> bool:
     """Whether ``entry`` is judged by flag drift at all.
 
-    A ``source_built`` entry is judged on every sub-axis. A PGO build
+    A ``source_built`` entry (or ``bolt_llvm``, the same build BOLTed,
+    3.5.0-B31) is judged on every sub-axis. A PGO build
     (``pgo`` / ``pgo_mesa``) is judged on the build-inputs sub-axis only, and
     only once it has recorded ``build_inputs`` (3.2.0-F18): its profile flags
     were never compared, and that stays unchanged.
     """
     mode = entry.get("build_mode")
-    return mode == BUILD_MODE_SOURCE or (
+    return is_source_build_mode(mode) or (
         _is_pgo_mode(mode) and "build_inputs" in entry)
 
 

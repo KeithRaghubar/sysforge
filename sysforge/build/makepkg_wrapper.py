@@ -115,6 +115,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_config_install,
     patch_kernel_subpackages,
     patch_llvm_dir,
+    patch_llvm_std_exports,
     patch_llvm_targets,
     patch_mesa_drivers,
     patch_package_suffix,
@@ -310,6 +311,19 @@ def built_kernel_artifact_release(pkgbuild_dir) -> str | None:
     return None
 
 
+def _pkgbuild_version(globals_: dict) -> tuple[str, str, str] | None:
+    """``(epoch, pkgver, pkgrel)`` as :func:`_parse_built_pkg_filename` returns
+    it, from parsed PKGBUILD globals; ``None`` when pkgver or pkgrel is absent."""
+    def _one(key: str) -> str:
+        v = globals_.get(key, "")
+        return (v[0] if v else "") if isinstance(v, list) else str(v)
+
+    pkgver, pkgrel = _one("pkgver"), _one("pkgrel")
+    if not pkgver or not pkgrel:
+        return None
+    return (_one("epoch") or "0", pkgver, pkgrel)
+
+
 def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
     """Return only the artifacts in PKGDEST that belong to ``pkgbuild_dir``.
 
@@ -349,11 +363,19 @@ def _artifacts_for_pkgbuild(pkgbuild_dir) -> list:
         pkgnames = [pkgnames]
     if not pkgnames:
         return found
-    scoped = [
-        p for p in found
-        if any(_parse_built_pkg_filename(name, p.name) is not None
-               for name in pkgnames)
-    ]
+    versions = {
+        p: v for p in found for name in pkgnames
+        if (v := _parse_built_pkg_filename(name, p.name)) is not None
+    }
+    scoped = [p for p in found if p in versions]
+    # An older build of the same pkgnames left in PKGDEST is not this build's
+    # output (3.5.0-B21): keep the PKGBUILD's own epoch:pkgver-pkgrel. When it
+    # matches nothing (a VCS PKGBUILD whose pkgver() rewrote a copy), keep them
+    # all rather than find nothing.
+    own = _pkgbuild_version(globals_)
+    current = [p for p in scoped if versions[p] == own]
+    if current:
+        scoped = current
     # Return the scoped set even when empty — do NOT degrade to the full PKGDEST
     # union. When the PKGBUILD parses cleanly and advertises pkgnames but none of
     # them match any artifact, this build's output simply isn't here under those
@@ -542,6 +564,20 @@ def _maybe_patch_llvm_targets(
     return patch_llvm_targets(pkgbuild_path, targets)
 
 
+def _maybe_patch_llvm_std_exports(pkgbuild_path, pkgmeta) -> bool:
+    """Add the libLLVM ``std::`` export parity thunks to an LLVM PKGBUILD (3.5.0-F4).
+
+    Same gate as :func:`_maybe_patch_llvm_targets`: an LLVM-family pkgbase in
+    any build mode, never ``lib32-*`` (the consumer gate checks only the system
+    libLLVM). A family PKGBUILD without the ``llvm-shlib`` tree is a runtime
+    no-op inside the injected block. Returns True when the PKGBUILD changed.
+    """
+    pkgname = _pkgname_from_meta(pkgmeta)
+    if not is_llvm_pkgbase(pkgname) or pkgname.startswith("lib32-"):
+        return False
+    return patch_llvm_std_exports(pkgbuild_path)
+
+
 def _maybe_patch_mesa_drivers(
     pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
 ):
@@ -699,6 +735,10 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
     cmake_injected = (
         _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir) or cmake_injected
+    )
+
+    cmake_injected = (
+        _maybe_patch_llvm_std_exports(pkgbuild_path, pkgmeta) or cmake_injected
     )
 
     # Mesa (meson, not cmake): trim gallium/vulkan drivers to this host. Opt-in —

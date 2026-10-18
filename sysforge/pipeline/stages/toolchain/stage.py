@@ -18,6 +18,7 @@ import contextlib
 
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives import build_fingerprint
+from sysforge.primitives import sudo_session
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
 from sysforge.primitives.stage_sentinel import sentinel_scope
@@ -95,6 +96,16 @@ class ToolchainStage(Stage):
         staging1, staging, staging3 = tcfg.staging1, tcfg.staging, tcfg.staging3
         # resolve_pgo_store owns its own precedence and takes the whole table.
         pgo_store = resolve_pgo_store(tcfg.raw)
+
+        # --bolt-only / --install-only act on what a PGO LLVM run left; refuse
+        # any other configuration before a register-only path returns quietly.
+        no_build = gates.no_build_mode(options)
+        bolt_only = no_build == "--bolt-only"
+        if no_build and not (compiler == "llvm" and pgo_enabled and not tcfg.skip_build):
+            raise RuntimeError(
+                f"[TOOLCHAIN] {no_build} needs the PGO LLVM toolchain "
+                '(toolchain.toml compiler = "llvm", [pgo] enabled, no skip_build): '
+                "it uses what a PGO run left")
 
         # GCC path: never build from source. Register system gcc paths so
         # downstream stages (packages, kernel) pick them up; stock gcc-libs
@@ -197,16 +208,12 @@ class ToolchainStage(Stage):
         )
 
         all_names = pgo_pkgs + non_pgo_pkgs + lib32_pkgs
-        total = len(all_names)
-        if pgo_enabled:
-            parts = [f"{len(pgo_pkgs)} pgo", f"{len(non_pgo_pkgs)} non-pgo"]
-        else:
-            parts = [f"{len(pgo_pkgs) + len(non_pgo_pkgs)} packages"]
-        if lib32_pkgs:
-            parts.append(f"{len(lib32_pkgs)} lib32")
-        pkg_summary = f"{total} total  ({' / '.join(parts)})"
+        # The pgo/non-pgo split is only known after PKGBUILD resolution folds
+        # split packages into their pkgbase; the build plan prints it then
+        # (3.5.0-B28), so the header states only the configured total.
         _log.ui(
-            f"Compiler: {compiler}  |  PGO: {pgo_enabled}  |  Packages: {pkg_summary}",
+            f"Compiler: {compiler}  |  PGO: {'on' if pgo_enabled else 'off'}  |  "
+            f"Packages: {len(all_names)}",
         )
 
         # Resolve PKGBUILDs for all packages. Sync through SourceSyncScheduler
@@ -322,7 +329,7 @@ class ToolchainStage(Stage):
             import sys as _sys
 
             if _sys.stdin.isatty() and not options.dry_run:
-                pkgbuilds.confirm_or_abort(options.state_dir)
+                pkgbuilds.confirm_or_abort(options.state_dir, mode=no_build)
         except RuntimeError:
             raise
 
@@ -355,16 +362,28 @@ class ToolchainStage(Stage):
                     "rules": sysforge_config.get("rules"),
                     "toolchain": tcfg.reuse_digest_raw,
                 })
-                built_map, cc, cxx, ld, variant = pgo.build_llvm_pgo_inner(
-                    pgo_map, non_pgo_map, lib32_map,
-                    staging1, staging, staging3, pgo_store, options,
-                    config_digest=config_digest,
-                    reuse_built=reuse_built,
-                    corpus_map=corpus_map,
-                    # [bolt] (opt-in) links 4a/4b with -Wl,--emit-relocs and
-                    # BOLTs the 4a build tree before install (3.5.0-F3).
-                    tcfg=tcfg,
-                )
+                if bolt_only:
+                    # 3.5.0-F7: BOLT the last Pass-4a tree, repackage llvm,
+                    # build nothing; Gate 2 / install / Gate 3 below as usual.
+                    built_map, cc, cxx, ld, variant = pgo.bolt_only(
+                        pgo_map, non_pgo_map, lib32_map, pgo_store, options, tcfg=tcfg,
+                    )
+                elif no_build == "--install-only":
+                    # 3.5.0-F8: install the last run's packages as built.
+                    built_map, cc, cxx, ld, variant = pgo.install_only(
+                        pgo_map, non_pgo_map, lib32_map, options,
+                    )
+                else:
+                    built_map, cc, cxx, ld, variant = pgo.build_llvm_pgo_inner(
+                        pgo_map, non_pgo_map, lib32_map,
+                        staging1, staging, staging3, pgo_store, options,
+                        config_digest=config_digest,
+                        reuse_built=reuse_built,
+                        corpus_map=corpus_map,
+                        # [bolt] (opt-in) links 4a/4b with -Wl,--emit-relocs and
+                        # BOLTs the 4a build tree before install (3.5.0-F3).
+                        tcfg=tcfg,
+                    )
             else:
                 built_map, cc, cxx, ld, variant = pgo.build_llvm_single(
                     pgo_map, non_pgo_map, lib32_map, options
@@ -379,6 +398,18 @@ class ToolchainStage(Stage):
                 built_map, all_names, options, tcfg, dry_run=options.dry_run,
             )
 
+            # sudo must be usable before the sentinel goes down: an unanswered
+            # prompt means nothing ran, and a sentinel left for it would offer
+            # a recovery that replaces the live toolchain (3.5.0-B30).
+            # A PGO build is kept for --install-only (3.5.0-F8); a single-pass
+            # build has no such recovery, so it reruns.
+            retry = ("sysforge run toolchain --install-only" if pgo_enabled
+                     else "sysforge run toolchain")
+            if not options.dry_run and not sudo_session.authenticate():
+                raise RuntimeError(
+                    "[TOOLCHAIN] sudo was not authorized, so nothing was installed "
+                    f"and the built packages are kept; install them with: {retry}")
+
             # Install + post-install verify are the mutation window — wrap them
             # in the sentinel so an interrupted/failed install blocks the next
             # run with a recovery command. CleanExitRequested → RuntimeError
@@ -388,7 +419,7 @@ class ToolchainStage(Stage):
                 options.state_dir,
                 "toolchain",
                 recovery_cmd=gates.snapshot_recovery_cmd(snapshot),
-                retry_cmd="sysforge run toolchain",
+                retry_cmd=retry,
                 compiler=compiler,
                 pgo=pgo_enabled,
             ) as sentinel:
@@ -396,9 +427,17 @@ class ToolchainStage(Stage):
                     _log.ui("[dry-run] would install built toolchain and verify")
                 else:
                     label = "PGO optimize" if pgo_enabled else "LLVM build (single pass, no PGO)"
-                    profdata.pgo_install(
-                        label, built_map, options.dry_run, members=install_set,
-                    )
+                    try:
+                        profdata.pgo_install(
+                            label, built_map, options.dry_run, members=install_set,
+                        )
+                    except RuntimeError as e:
+                        if not pgo_enabled:
+                            raise
+                        raise RuntimeError(
+                            f"{e}; the built packages are kept: once the system is "
+                            f"consistent, install them without rebuilding: {retry}"
+                        ) from e
 
                 # Gate 3 — post-install verify (H). On failure, auto-restore the
                 # prior-good toolchain from the snapshot (offline pacman -U):
@@ -437,7 +476,14 @@ class ToolchainStage(Stage):
                     # EXPECTED here (mesa is not rebuilt until after Gate 3): they
                     # must NOT trip rollback, or we would revert the very libLLVM
                     # the post-Gate-3 consumer rebuild is about to make coherent.
-                    for f in toolchain_safety.check_installed_consumer_symbols():
+                    # The batch's own members (lldb, libclc, ...) were just
+                    # replaced: they are not stale consumers (3.5.0-B20).
+                    shipped = toolchain_safety.shipped_pkgnames(
+                        profdata.collect_pgo_packages(built_map)
+                    )
+                    for f in toolchain_safety.check_installed_consumer_symbols(
+                        exclude=shipped,
+                    ):
                         if f.healable:
                             _log.ui(
                                 "Gate 3: std:: re-export drift (healable by the "

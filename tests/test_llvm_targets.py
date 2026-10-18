@@ -882,3 +882,19 @@ def test_resolve_disabled_filtering_never_scans(tmp_path, monkeypatch):
     _write_toolchain(tc, "[llvm]\ntargets = []\n")
     assert resolve_llvm_targets(tc, tmp_path / "missing-hw.toml") is None
     assert calls == []
+
+
+def test_resolve_consumer_backends_warn_once_in_short_form(tmp_path, monkeypatch, capsys):
+    """3.5.0-B27: resolved three times a run, the notice prints once, naming
+    each consumer once rather than per target."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_VERBOSITY", 1)
+    _consumers(monkeypatch, {"WebAssembly": ["bpf", "lldb"], "ARM": ["bpf", "lldb"]})
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, '[llvm]\ntargets = ["X86"]\n')
+    for _ in range(3):
+        resolve_llvm_targets(tc, tmp_path / "missing-hw.toml")
+    out, err = capsys.readouterr()
+    text = out + err
+    assert text.count("keeping 2 LLVM target(s)") == 1
+    assert text.count("lldb") == 1

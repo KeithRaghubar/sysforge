@@ -81,6 +81,32 @@ def test_mark_failed(state):
     assert state.stage_status("packages") == "failed"
     assert state._data["stages"]["packages"]["error"] == "something broke"
 
+def test_rerun_after_failure_drops_the_old_error(state, tmp_path):
+    """3.5.0-B24: a stage that failed, then ran and completed, carries no
+    error from the failed attempt — in memory or on disk."""
+    state.mark_failed("toolchain", "consumers did not fully succeed")
+    state.mark_running("toolchain")
+    assert "error" not in state._data["stages"]["toolchain"]
+    state.mark_failed("toolchain", "consumers did not fully succeed")
+    state.mark_done("toolchain")
+    state.save()
+    reloaded = PipelineState(tmp_path)
+    assert reloaded.stage_status("toolchain") == "done"
+    assert "error" not in reloaded._data["stages"]["toolchain"]
+
+def test_completed_once_survives_failure_and_reload(state, tmp_path):
+    """3.5.0-B25: the first completion is kept; status alone forgets it."""
+    assert not state.stage_ever_done("toolchain")
+    state.mark_done("toolchain")
+    first = state._data["stages"]["toolchain"]["first_done_at"]
+    state.mark_failed("toolchain", "boom")
+    state.mark_done("toolchain")
+    state.mark_failed("toolchain", "boom")
+    state.save()
+    reloaded = PipelineState(tmp_path)
+    assert reloaded.stage_ever_done("toolchain")
+    assert reloaded._data["stages"]["toolchain"]["first_done_at"] == first
+
 def test_mark_skipped_to(state):
     state.mark_skipped_to("partition")
     assert state.stage_status("partition") == "skipped_to"
@@ -235,3 +261,15 @@ def test_get_toolchain_variant_helper(tmp_path):
 
     state.set_stage_result("toolchain", {"cc": "/usr/bin/clang", "variant": "pgo_llvm"})
     assert get_toolchain_variant(state) == "pgo_llvm"
+
+
+def test_resolve_state_dir_narrates_its_source_once(tmp_path, monkeypatch, capsys):
+    """3.5.0-B27: resolved by every stage helper, announced once a run."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_VERBOSITY", 2)
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path))
+    for _ in range(3):
+        resolve_state_dir()
+    err = capsys.readouterr().err
+    assert err.count("State dir source(s) found") == 1
+    assert err.count("Using state dir") == 1

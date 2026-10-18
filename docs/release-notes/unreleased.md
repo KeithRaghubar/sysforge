@@ -54,6 +54,18 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-F1` — `bench toolchain` gets past an out-of-date sync database.** The bench downloads the stock `clang` and `llvm-libs` that your sync database names. When the repo rebuilt them after your last `pacman -Sy`, every mirror had already dropped those files, so each download failed with HTTP 404 and the bench stopped. It now notices that every mirror failed, downloads a fresh copy of the sync database into its own temporary directory, and compares against the build the repo carries now. It does this as your user with `fakeroot` (from `base-devel`), never with sudo, and your system's sync database is left alone, because syncing it without upgrading would leave the system partially upgraded. The report shows the stock version it used, so a newer stock build is flagged as a version difference, as before. If the refresh fails too, the error says so and suggests `pacman -Syu`. `--offline` never refreshes. The PGO guide describes the fallback.
 
+---
+
+- **`3.5.0-F4` — mesa built against the stock LLVM loads with sysforge's optimized LLVM.** The optimized libLLVM that `run toolchain` builds stopped providing some C++ string functions that the stock libLLVM happens to provide, so a mesa linked against the stock one (as the build sandbox does, for mesa's Rust parts) imported them from libLLVM and could not load against sysforge's. sysforge refused to install such a mesa, and rebuilding it did not help, because the sandbox links it against the stock libLLVM again. The toolchain build now gives libLLVM those functions back, as small forwarders to the C++ library's own copies, in a form that only already-built programs use: nothing newly built against the optimized libLLVM starts depending on them, so the toolchain's own programs keep using the C++ library directly. At `-v`, the toolchain build also lists any C++ library functions the stock libLLVM provides that the new one still lacks, when the stock `llvm-libs` of the same version is in the pacman cache. This applies to x86-64 builds linked with lld, which every optimized toolchain build is. A build reused with `--reuse-built` from before this release is rebuilt once.
+
+---
+
+- **`3.5.0-F7` — `run toolchain --bolt-only` reruns BOLT without rebuilding LLVM.** BOLT only needs the LLVM build that `run toolchain` leaves in your build directory, so `sysforge run toolchain --bolt-only` now rewrites that build, repackages llvm and installs it through the usual checks (the pre-install audit, the install snapshot and the post-install verification) in minutes instead of the hour a full build takes. It works even with `[bolt] enabled` off, using your other `[bolt]` settings, and never syncs sources. It refuses, saying why, when that build isn't the finished optimized build of the version you have checked out: for example after an interrupted run, a version change, or a non-PGO build. sysforge now keeps the original libraries next to the build, so every BOLT run, including a repeat `--bolt-only`, starts from them rather than rewriting BOLT's own output. If BOLT can't run, `--bolt-only` stops before installing anything. Before installing it asks whether to go ahead with BOLT and the install (not with a build), and it doesn't require the 40 GiB of free space a full build needs.
+
+---
+
+- **`3.5.0-F8` — `run toolchain --install-only` installs the last build without rebuilding it.** When a run built the toolchain but didn't install it (the install failed, or its sudo prompt timed out), the only way forward was another multi-hour build. `sysforge run toolchain --install-only` installs the packages that run left, BOLTed ones included, with the same checks, snapshot and verification as a full run. It refuses if the last build isn't the optimized build of the version you have checked out, or a package is missing. A failed install now suggests it.
+
 ## Changed
 
 - **`3.0.0-F3` — `update` no longer builds a changed source nobody looked at.** The PKGBUILD review gate, which diffs a package's whole source tree since the last build you accepted, used to accept every change during `update` with a logged line, and accepted silently whenever there was no terminal, so a timer-driven `update` built and installed whatever had arrived. Now a changed source is shown to you at a terminal (view, accept, skip or abort, as `--review` did), and with no terminal (a timer, cron, a pipe) that package is refused: the rest of the run still builds, the summary lists it under "Refused at review" and the run exits 1. Changes from Arch's own packaging repos are accepted with a logged line, since the same people publish the binary packages you already install; `[build] review_trusted_sources` in `packages.toml` changes that list, and `--review` reviews everything. `build` and the toolchain stage's rebuild of libLLVM consumers follow the same rules, and `build` gains `--review`. To keep the old unattended behaviour, set `[build] review = "accept"` (every accepted change is still listed in the summary) or pass `--no-review`. The config comment explains the risk: a build sandbox limits what a build can read, but it does not inspect what gets installed.
@@ -77,6 +89,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.4.0-STD2` — the standards table no longer has two rows numbered 28.** The standards table in `docs/design/21-standards.md` numbers every row in one sequence shared by its two subsections, and code, tests and release notes cite rows by that number. Row 28 was used twice: by the `pam.d(5)` / `sysusers.d(5)` non-recursive directories row, and later by "Subprocess goes through `primitives/run`". The subprocess row took the number second, so it is now row 31 and notes its former number. The `pam.d(5)` row keeps 28, so the one published citation of row 28 (the v3.4.0 note for `3.2.0-F15`) still points at the right row. Every citation in code, tests and design docs now points at the right row. A new `make check-standards` group, `standards_rows`, rejects a repeated row number and checks that the table's "next row is N" counter is one past the highest row, since a stale counter is how the number got reused.
+
+---
+
+- **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line.
 
 ---
 
@@ -193,3 +209,61 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B19` — Failed rebuilds after `run toolchain` are recorded.** When a package that `run toolchain` rebuilds after installing the new libLLVM failed, sysforge logged "Failed to record build failure … not 'NoneType'" instead of saving the failure, so `sysforge state failed` never listed it. Failures are now saved to the usual state directory.
+
+---
+
+- **`3.5.0-B20` — `run toolchain` no longer checks lldb and libclc against the libLLVM that replaces them.** Before and after installing a new libLLVM, sysforge checks that installed programs still find every symbol they import from it. It skipped the LLVM packages installed together with libLLVM, but since the toolchain build started producing lldb, libclc and llvm-lit from the same `llvm` package, the check also inspected the old copies of those three that the same install was about to replace. A missing symbol there could queue a needless rebuild or, for a missing LLVM backend, stop an install that would have fixed it. The check now skips every package the toolchain build produces.
+
+---
+
+- **`3.5.0-B21` — the check after a build looks only at the packages that build produced.** After a build, sysforge checks the packages it produced for library problems. It finds them in your package output directory (`PKGDEST`), and for most builds it matched them by package name only, so older builds of the same packages still in that directory were checked too: after mesa 26.2.5 built, findings were also reported for the 26.2.4 packages left from the previous build. It now keeps only the packages at the version the PKGBUILD names. The same fix applies to the package-layout check, and to the kernel stage's install, which finds its packages the same way. For a `-git` package whose PKGBUILD version can't be matched to its packages, the behaviour is unchanged.
+
+---
+
+- **`3.5.0-B22` — BOLT now runs when your sysforge profile sets the build directory.** With `[bolt] enabled = true`, `run toolchain` skipped BOLT with "no llvm build tree found" whenever your profile sets `BUILDDIR` (for example `$HOME/builds`) to something other than `/etc/makepkg.conf`: it looked for the llvm build tree only where the system config says, not where the build actually ran. It now looks first in the directory Pass 4a reported building in, then falls back to the system location as before. Until this fix, an enabled BOLT never ran on such a setup, and the toolchain installed un-BOLTed.
+
+---
+
+- **`3.5.0-B23` — Gate 2 no longer reports harmless libstdc++ exports as missing from libLLVM.** After a healthy `run toolchain`, Gate 2 warned that the built libLLVM "lacks 30 libstdc++ export(s) stock libLLVM has" (`_Temporary_buffer` constructors, `mersenne_twister_engine::seed`, …). None of them can break anything: they are template code every program that uses it compiles into itself, and stock libLLVM exports them only because it is built with GCC. The check now counts only symbols the system `libstdc++.so.6` exports itself, the ones a program can actually look for in libLLVM, so a healthy build reports no gap. If libstdc++'s exports cannot be read, the check is skipped and says why.
+
+---
+
+- **`3.5.0-B24` — a stage that succeeds no longer keeps the error from an earlier failed run.** After a successful `run toolchain`, `pipeline_state.toml` still showed the previous attempt's "rebuilding its consumers did not fully succeed" error next to `status = "done"`. A stage's error is now cleared when it starts again and when it completes; a failure still records one.
+
+---
+
+- **`3.5.0-B25` — the "first run" config notice no longer appears after a stage has completed before.** `run toolchain` printed "This is the first toolchain run on this install" on a machine where the stage had completed in the past, because the previous attempt had failed and only the latest result was kept. sysforge now remembers when a stage first completed, and the notice appears only for a stage that has never completed. A stage that last completed before this release and then failed shows it one final time.
+
+---
+
+- **`3.5.0-B26` — build logs show the real ccache size.** Every build logged `ccache … cache=0.0 B` however full the cache was, because ccache 4.x reports its size in KiB under a name sysforge did not read. The size is now read correctly, and the sccache line leaves the size out when sccache reports none, instead of ending in an empty `cache=`.
+
+---
+
+- **`3.5.0-B27` — the run log no longer repeats the same setup lines over and over.** One `run toolchain` logged the system `makepkg.conf` and all its keys 16 times (almost half the log), the state-directory choice 12 times, and a 1,000-character "keeping 17 LLVM target(s)" warning 3 times. Each is now logged once per run, and again only if what it reports changes. The LLVM targets warning is shorter too: it lists the targets once and the packages that need them once, instead of repeating the package list for every target. It stays a warning, since it overrides a target list you may have set yourself.
+
+---
+
+- **`3.5.0-B28` — several `run toolchain` log lines now say what actually happened.**
+  - The stage header said `PGO: True` and `Packages: 8 total (2 pgo / 6 non-pgo)`, a split the build plan then contradicted (`7 pgo / 1 non-pgo`). It now reads `PGO: on` and gives the package total only; the build plan shows the real split.
+  - The LLVM source pre-flight no longer lists old `clang`, `lld` or `compiler-rt` checkouts as packages with a downgrade arrow (`23.1.3-3 → 23.1.1-1`): those packages come from the llvm PKGBUILD now, so they are shown as part of llvm.
+  - makepkg no longer receives `--cleanbuild` twice.
+  - The "Overriding shell RUSTC_WRAPPER" warning (and the same warning for any variable) appears only when the value actually changes.
+  - The log no longer says `CC overridden via --cc` when you passed no `--cc`.
+  - The change summary lists a package rebuilt at the same version under **Rebuilt (same version)** instead of calling it updated. A reinstall that changes neither version nor size still isn't listed, since the summary compares what pacman has installed before and after.
+
+---
+
+- **`3.5.0-B29` — zsh completion describes `--rebuild-profdata` correctly.** The zsh completion for `sysforge run toolchain` described `--rebuild-profdata` as forcing a "3-pass" PGO build; the toolchain build has four passes, as `--help` says. It now reads "4-pass".
+
+---
+
+- **`3.5.0-B30` — a timed-out sudo prompt at install no longer leaves you facing a full rebuild.** `run toolchain --bolt-only` asked for sudo only when it reached the install, minutes after BOLT started, so an unattended run hit a password prompt that timed out. The run then left a recovery marker whose suggested fix reinstalls the stock LLVM packages, though nothing had been installed. `--bolt-only` now asks for sudo before BOLT and keeps it alive, as a full build does. Both now check sudo before installing: if it isn't granted, the run stops with nothing changed and no marker, and says to run `sysforge run toolchain --install-only`.
+
+---
+
+- **`3.5.0-B31` — `sysforge state list` shows which toolchain packages are BOLTed.** After BOLT, the run log said the packages were recorded as `bolt_llvm`, but nothing recorded it: the build history still called them plain source builds, so only `readelf` on the library could tell. The packages that carry a BOLTed library (`clang` by default, `llvm-libs` too with `libllvm = true`) are now recorded with build mode `bolt_llvm`, shown in `sysforge state list`. They are otherwise treated as the source builds they are: update, flag drift and `revert-to-stock` handle them as before.
+
+---
+
+- **`3.5.0-B32` — the package's optional dependencies list only what you install for LLVM.** The PKGBUILD listed `clang`, `lld`, `llvm` and `compiler-rt` as separate optional dependencies, and the README named all four. Installing `clang` already brings in `llvm` and `compiler-rt`, and `run toolchain` installs the compilers it needs itself. Both also pointed at a `sysforge run toolchain --compiler=llvm` flag that doesn't exist. The list is now `clang` and `lld`, and the README says to set `compiler = "llvm"` in `toolchain.toml` instead.

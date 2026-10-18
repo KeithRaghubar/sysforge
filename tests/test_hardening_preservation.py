@@ -240,3 +240,16 @@ def test_apply_preserved_system_tokens_passes_through_non_string_values():
     )
     assert merged == values
     assert restored == {}
+
+
+def test_cc_override_is_not_attributed_to_the_cli(sys_conf_path, monkeypatch, capsys):
+    """3.5.0-B28: the toolchain stage sets cc_override itself; the log must
+    not claim the user passed --cc."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_VERBOSITY", 2)
+    with emit_makepkg_conf({}, system_conf_path=sys_conf_path,
+                           cc_override="/usr/bin/clang", cxx_override="/usr/bin/clang++"):
+        pass
+    err = capsys.readouterr().err
+    assert "via --cc" not in err and "via --cxx" not in err
+    assert "CC overridden: /usr/bin/clang" in err
