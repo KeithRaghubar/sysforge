@@ -397,6 +397,30 @@ def _consumer_built_after_libllvm(consumer: Path, libllvm: Path) -> bool:
     return built is not None and installed is not None and built > installed
 
 
+def _consumer_candidates() -> list[tuple[Path, str | None, bool]]:
+    """Every file the consumer gate diffs: ``(path, pkgname or None, graphics)``.
+
+    The curated graphics globs first (brick-class: a miss black-screens the
+    desktop), then each installed libLLVM consumer's ELF files from
+    :func:`libllvm_consumer_files` (3.5.0-B14), minus the lockstep suite that is
+    replaced in the same transaction. A file both lists name is checked once,
+    as graphics.
+    """
+    out: list[tuple[Path, str | None, bool]] = []
+    seen: set[Path] = set()
+    for pattern in _SYSTEM_LIBLLVM_CONSUMER_GLOBS:
+        for consumer in sorted(_USR_LIB.glob(pattern)):
+            if consumer.is_file() and not consumer.is_symlink():
+                out.append((consumer, None, True))
+                seen.add(consumer)
+    for pkg, files in libllvm_consumer_files(exclude=set(LLVM_LOCKSTEP_SUITE)).items():
+        for path in files:
+            if path not in seen:
+                out.append((path, pkg, False))
+                seen.add(path)
+    return out
+
+
 def _diff_consumers_against_libllvm(
     libllvm_path: Path, *, source_label: str,
 ) -> list[ToolchainFinding]:
@@ -409,12 +433,16 @@ def _diff_consumers_against_libllvm(
     are checked (a soname *bump* is owned by ``assess_libllvm_soname_impact`` /
     ``_gate_soname_consumers`` — those consumers are rebuilt, not symbol-diffed).
     Only the consumer's ``LLVM_*`` version-node imports are considered; its libc
-    / libstdc++ imports are irrelevant to a libLLVM swap. A non-empty miss is
+    / libstdc++ imports are irrelevant to a libLLVM swap, and so is an
+    ``LLVM_*`` import another of its NEEDED libs exports: libclang, libclang-cpp
+    and liblldb version their own exports ``LLVM_*`` too. A non-empty miss is
     brick-class. Fail-open on an unreadable export set (returns []) — the gate
     must not block a build on an ``nm`` hiccup; Part-1 enforcement + the other
     gate arm still protect.
     """
     from sysforge.primitives.abi_check import (
+        _build_ldconfig_map,
+        _elf_class,
         _exported_versioned,
         _undefined_versioned,
         needed_sonames,
@@ -422,94 +450,109 @@ def _diff_consumers_against_libllvm(
 
     new_soname = libllvm_path.name  # LLVM sets SONAME == versioned filename
     cache: dict[str, set[tuple[str, str]]] = {}
+    ldconfig_map: dict[tuple[str, str], str] | None = None
     exported = _exported_versioned(str(libllvm_path), cache)
     if not exported:
         return []
 
     findings: list[ToolchainFinding] = []
-    for pattern in _SYSTEM_LIBLLVM_CONSUMER_GLOBS:
-        for consumer in sorted(_USR_LIB.glob(pattern)):
-            if not consumer.is_file() or consumer.is_symlink():
-                continue
-            if new_soname not in needed_sonames(consumer):
-                continue  # doesn't link this libLLVM soname
-            missing = sorted(
-                (s, v)
-                for (s, v) in _undefined_versioned(consumer)
-                if v.startswith("LLVM_") and (s, v) not in exported
-            )
-            if not missing:
-                continue
-            targets = sorted(
-                {t for (s, _) in missing if (t := _llvm_init_target(s))}
-            )
-            shown = ", ".join(f"{s}@{v}" for s, v in missing[:6])
-            more = "" if len(missing) <= 6 else f" (+{len(missing) - 6} more)"
-            # Class split. A *target-init* drop (an LLVMInitialize<T>* symbol the
-            # new libLLVM no longer provides) is unhealable — the backend is gone,
-            # rebuilding the consumer cannot conjure the symbol; it stays a hard
-            # block and the AMDGPU baseline is the real fix. A drop of *only*
-            # non-target-init LLVM_*-versioned symbols is the same-soname std::
-            # re-export drift: the -fprofile-use libLLVM inlined away the weak
-            # libstdc++ copies the stock `global: *` script globbed into the
-            # LLVM_<ver> node. Rebuilding the consumer re-links those to libstdc++
-            # (@GLIBCXX_*), so it is healable via the consumer-rebuild path.
-            if targets:
-                tgt = f"; dropped LLVM target(s): {', '.join(targets)}"
-                findings.append(ToolchainFinding(
-                    SEV_ERROR, "libllvm_consumer_symbols",
-                    f"{consumer.name} links {new_soname} but the {source_label} "
-                    f"libLLVM does not export {len(missing)} symbol(s) it imports"
-                    f"{tgt}: {shown}{more}. mesa EGL/GL would fail to load: the "
-                    "whole desktop black-screens.",
-                    "Rebuild the toolchain with the dropped target(s) kept in "
-                    "LLVM_TARGETS_TO_BUILD (sysforge enforces the AMDGPU baseline "
-                    "automatically: check toolchain.toml [llvm] targets for an "
-                    "explicit override that omits them). To recover a system "
-                    "already in this state, reinstall the official llvm-libs.",
-                    is_brick=True,
-                ))
-            elif source_label == "installed" and _consumer_built_after_libllvm(
-                consumer, libllvm_path,
-            ):
-                # Same symptom, other cause: the consumer is newer than the
-                # libLLVM it runs against, so it was never linked against this
-                # one. Rebuilding it the same way reproduces the break
-                # (3.2.0-B22).
-                findings.append(ToolchainFinding(
-                    SEV_ERROR, "libllvm_consumer_symbols",
-                    f"{consumer.name} links {new_soname} but imports "
-                    f"{len(missing)} libstdc++ symbol(s) from the LLVM version "
-                    f"namespace that the installed libLLVM does not export: "
-                    f"{shown}{more}. Its package was built after this libLLVM "
-                    "was installed, so it was linked against a different build "
-                    "of libLLVM (e.g. the repo one inside a sandbox container). "
-                    "Until fixed mesa EGL/GL fails to load (desktop black-screens).",
-                    "Do not rebuild it the same way: check how it was built "
-                    "(a sandboxed build must inject the host's libLLVM; see "
-                    "[security] sandbox_builds). Meanwhile restore the stock "
-                    "package: sudo pacman -S <consumer package>.",
-                    is_brick=True,
-                ))
-            else:
-                findings.append(ToolchainFinding(
-                    SEV_ERROR, "libllvm_consumer_symbols",
-                    f"{consumer.name} links {new_soname} but the {source_label} "
-                    f"libLLVM no longer re-exports {len(missing)} libstdc++ "
-                    f"symbol(s) it imports from the LLVM version namespace: "
-                    f"{shown}{more}. The PGO (-fprofile-use) libLLVM inlined away "
-                    "the weak std:: copies the stock build globbed into the "
-                    "LLVM_<ver> node; rebuilding the consumer re-links them to "
-                    "libstdc++. Until then mesa EGL/GL fails to load (desktop "
-                    "black-screens).",
-                    "Rebuild the affected libLLVM consumer(s) against the new "
-                    "libLLVM so they re-link these symbols to libstdc++ "
-                    "(@GLIBCXX_*). sysforge does this automatically per "
-                    "rebuild_soname_consumers (prompt|auto|off); or rebuild them "
-                    "yourself with: sysforge build <consumer pkgbases>.",
-                    is_brick=True,
-                    healable=True,
-                ))
+    for consumer, pkg, graphics in _consumer_candidates():
+        needed = needed_sonames(consumer)
+        if new_soname not in needed:
+            continue  # doesn't link this libLLVM soname
+        name = f"{consumer.name} ({pkg})" if pkg else consumer.name
+        impact = (
+            "mesa EGL/GL would fail to load: the whole desktop black-screens."
+            if graphics else f"{pkg or consumer.name} would fail to load."
+        )
+        missing = sorted(
+            (s, v)
+            for (s, v) in _undefined_versioned(consumer)
+            if v.startswith("LLVM_") and (s, v) not in exported
+        )
+        others = [n for n in needed if n != new_soname]
+        if missing and others:
+            # Resolved to the installed copies, also pre-install: a symbol the
+            # batch drops from libclang is not a libLLVM miss (3.5.0-B14).
+            if ldconfig_map is None:
+                ldconfig_map = _build_ldconfig_map()
+            klass = _elf_class(consumer) or "ELF64"
+            provided: set[tuple[str, str]] = set()
+            for soname in others:
+                if (path := ldconfig_map.get((soname, klass))) is not None:
+                    provided |= _exported_versioned(path, cache)
+            missing = [m for m in missing if m not in provided]
+        if not missing:
+            continue
+        targets = sorted(
+            {t for (s, _) in missing if (t := _llvm_init_target(s))}
+        )
+        shown = ", ".join(f"{s}@{v}" for s, v in missing[:6])
+        more = "" if len(missing) <= 6 else f" (+{len(missing) - 6} more)"
+        # Class split. A *target-init* drop (an LLVMInitialize<T>* symbol the
+        # new libLLVM no longer provides) is unhealable — the backend is gone,
+        # rebuilding the consumer cannot conjure the symbol; it stays a hard
+        # block and the AMDGPU baseline is the real fix. A drop of *only*
+        # non-target-init LLVM_*-versioned symbols is the same-soname std::
+        # re-export drift: the -fprofile-use libLLVM inlined away the weak
+        # libstdc++ copies the stock `global: *` script globbed into the
+        # LLVM_<ver> node. Rebuilding the consumer re-links those to libstdc++
+        # (@GLIBCXX_*), so it is healable via the consumer-rebuild path.
+        if targets:
+            tgt = f"; dropped LLVM target(s): {', '.join(targets)}"
+            findings.append(ToolchainFinding(
+                SEV_ERROR, "libllvm_consumer_symbols",
+                f"{name} links {new_soname} but the {source_label} "
+                f"libLLVM does not export {len(missing)} symbol(s) it imports"
+                f"{tgt}: {shown}{more}. {impact}",
+                "Rebuild the toolchain with the dropped target(s) kept in "
+                "LLVM_TARGETS_TO_BUILD (sysforge keeps the AMDGPU baseline "
+                "and every backend an installed package imports: check "
+                "toolchain.toml [llvm] targets for an explicit override that "
+                "omits them). To recover a system already in this state, "
+                "reinstall the official llvm-libs.",
+                is_brick=graphics,
+            ))
+        elif source_label == "installed" and _consumer_built_after_libllvm(
+            consumer, libllvm_path,
+        ):
+            # Same symptom, other cause: the consumer is newer than the
+            # libLLVM it runs against, so it was never linked against this
+            # one. Rebuilding it the same way reproduces the break
+            # (3.2.0-B22).
+            findings.append(ToolchainFinding(
+                SEV_ERROR, "libllvm_consumer_symbols",
+                f"{name} links {new_soname} but imports "
+                f"{len(missing)} libstdc++ symbol(s) from the LLVM version "
+                f"namespace that the installed libLLVM does not export: "
+                f"{shown}{more}. Its package was built after this libLLVM "
+                "was installed, so it was linked against a different build "
+                "of libLLVM (e.g. the repo one inside a sandbox container). "
+                f"Until fixed, {impact}",
+                "Do not rebuild it the same way: check how it was built "
+                "(a sandboxed build must inject the host's libLLVM; see "
+                "[security] sandbox_builds). Meanwhile restore the stock "
+                "package: sudo pacman -S <consumer package>.",
+                is_brick=graphics,
+            ))
+        else:
+            findings.append(ToolchainFinding(
+                SEV_ERROR, "libllvm_consumer_symbols",
+                f"{name} links {new_soname} but the {source_label} "
+                f"libLLVM no longer re-exports {len(missing)} libstdc++ "
+                f"symbol(s) it imports from the LLVM version namespace: "
+                f"{shown}{more}. The PGO (-fprofile-use) libLLVM inlined away "
+                "the weak std:: copies the stock build globbed into the "
+                "LLVM_<ver> node; rebuilding the consumer re-links them to "
+                f"libstdc++. Until then, {impact}",
+                "Rebuild the affected libLLVM consumer(s) against the new "
+                "libLLVM so they re-link these symbols to libstdc++ "
+                "(@GLIBCXX_*). sysforge does this automatically per "
+                "rebuild_soname_consumers (prompt|auto|off); or rebuild them "
+                "yourself with: sysforge build <consumer pkgbases>.",
+                is_brick=graphics,
+                healable=True,
+            ))
     return findings
 
 
@@ -752,14 +795,97 @@ def libllvm_soname_consumers(mm: str, *, exclude: set[str]) -> list[str]:
     except Exception:
         return []
     for name, deps in depends_by_pkg.items():
-        for dep in deps:
-            m = _SONAME_RE.match(dep)
-            if m and m.group("base") == "libLLVM.so" and m.group("ver") == mm:
-                pkgbase = pacman.get_pkgbase(name) or name
-                if pkgbase not in exclude:
-                    consumers.add(pkgbase)
-                break
+        if _links_libllvm(deps, mm, _SONAME_RE):
+            pkgbase = pacman.get_pkgbase(name) or name
+            if pkgbase not in exclude:
+                consumers.add(pkgbase)
     return sorted(consumers)
+
+
+def _links_libllvm(deps: list[str], mm: str | None, soname_re) -> bool:
+    """True when a package's ``%DEPENDS%`` say it links the system libLLVM.
+
+    Either form counts (3.5.0-B14): the auto-generated ``libLLVM.so=<mm>-64``
+    soname dep (matched against ``mm`` when given), or a bare ``llvm-libs``
+    dep with any version constraint, which is what Arch's own consumers
+    (mesa, lldb, bpf, …) actually declare. Matching only the soname form
+    found no consumer at all on a stock Arch system.
+    """
+    for dep in deps:
+        m = soname_re.match(dep)
+        if m and m.group("base") == "libLLVM.so" and (mm is None or m.group("ver") == mm):
+            return True
+        if re.split(r"[<>=]", dep, maxsplit=1)[0] == _LIBLLVM_PKG:
+            return True
+    return False
+
+
+# Filesystem root the consumer scan reads installed files under (tests repoint it).
+_ROOT = Path("/")
+_LIBLLVM_PKG = "llvm-libs"
+_ELF_MAGIC = b"\x7fELF"
+
+
+def _is_elf(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(4) == _ELF_MAGIC
+    except OSError:
+        return False
+
+
+def libllvm_consumer_files(*, exclude: set[str]) -> dict[str, list[Path]]:
+    """Installed libLLVM consumers' ELF files, keyed by pkgname (3.5.0-B14).
+
+    Every installed package whose ``%DEPENDS%`` link the system libLLVM (see
+    :func:`_links_libllvm`), minus the pkgnames in ``exclude``,
+    with its regular, non-symlink ELF files. Degrades to ``{}`` on a pacman read
+    error, like the soname walk.
+
+    ``exclude`` matches pkgnames only, never pkgbase: since upstream folded the
+    LLVM suite into one pkgbase, lldb's pkgbase is ``llvm``, yet the toolchain
+    does not rebuild it, so it stays a consumer.
+    """
+    from sysforge.primitives import pacman
+    from sysforge.primitives.dep_analysis import _SONAME_RE
+
+    try:
+        depends_by_pkg = pacman.get_all_package_depends()
+    except Exception:
+        return {}
+    out: dict[str, list[Path]] = {}
+    for name, deps in sorted(depends_by_pkg.items()):
+        if name in exclude or not _links_libllvm(deps, None, _SONAME_RE):
+            continue
+        files = [
+            path for rel in pacman.get_package_files(name)
+            if (path := _ROOT / rel).is_file() and not path.is_symlink() and _is_elf(path)
+        ]
+        if files:
+            out[name] = files
+    return out
+
+
+def consumer_required_targets(*, exclude: set[str]) -> dict[str, list[str]]:
+    """LLVM backend → the installed consumer packages that import its init symbols.
+
+    3.5.0-B14. A consumer that calls ``InitializeAll*()`` (lldb, bpftool,
+    opencl-mesa, faust) imports ``LLVMInitialize<Target>*@LLVM_<ver>`` for every
+    backend the libLLVM it was linked against carried, so a target-filtered
+    system libLLVM leaves it unloadable. Reads each consumer's imports (not its
+    resolution against the current libLLVM), so the answer does not depend on
+    what is installed right now. ``exclude`` keeps out packages rebuilt in the
+    same pass (the lockstep suite), whose imports follow the new target list.
+    """
+    from sysforge.primitives.abi_check import _undefined_versioned
+
+    needed: dict[str, set[str]] = {}
+    for pkg, files in libllvm_consumer_files(exclude=exclude).items():
+        for path in files:
+            for sym, ver in _undefined_versioned(path):
+                if ver.startswith("LLVM_") and (target := _llvm_init_target(sym)):
+                    needed.setdefault(target, set()).add(pkg)
+    return {t: sorted(pkgs) for t, pkgs in sorted(needed.items())}
 
 
 def libllvm_abi_consumers(*, exclude: set[str]) -> list[str]:

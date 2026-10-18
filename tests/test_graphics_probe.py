@@ -428,6 +428,7 @@ def test_mesa_llvm_symbols_broken_maps_to_error(monkeypatch):
         message="libgallium-26.so links libLLVM.so.22.1 but the installed "
         "libLLVM does not export 6 symbol(s) — dropped LLVM target(s): AMDGPU",
         remediation="Rebuild the toolchain with AMDGPU kept.",
+        is_brick=True,
     )
     monkeypatch.setattr(_CHECK, lambda: [finding])
     f = gp._check_mesa_llvm_symbols()
@@ -439,12 +440,19 @@ def test_mesa_llvm_symbols_broken_maps_to_error(monkeypatch):
 
 
 def test_mesa_llvm_symbols_multiple_consumers_count(monkeypatch):
-    f1 = SimpleNamespace(message="consumer one broken", remediation="r")
-    f2 = SimpleNamespace(message="consumer two broken", remediation="r")
+    f1 = SimpleNamespace(message="consumer one broken", remediation="r", is_brick=True)
+    f2 = SimpleNamespace(message="consumer two broken", remediation="r", is_brick=True)
     monkeypatch.setattr(_CHECK, lambda: [f1, f2])
     f = gp._check_mesa_llvm_symbols()
     assert f is not None
     assert "(2 consumers affected)" in f.message
+
+
+def test_mesa_llvm_symbols_ignores_non_graphics_consumers(monkeypatch):
+    """3.5.0-B14: an lldb finding is a toolchain-axis concern, not a black screen."""
+    lldb = SimpleNamespace(message="liblldb.so.23.1 (lldb) ...", remediation="r", is_brick=False)
+    monkeypatch.setattr(_CHECK, lambda: [lldb])
+    assert gp._check_mesa_llvm_symbols() is None
 
 
 def test_check_system_graphics_includes_mesa_llvm(monkeypatch):
@@ -452,7 +460,7 @@ def test_check_system_graphics_includes_mesa_llvm(monkeypatch):
     monkeypatch.setattr(pacman_mod, "get_all_installed_packages", lambda: {})
     monkeypatch.setattr(
         _CHECK,
-        lambda: [SimpleNamespace(message="broken AMDGPU link", remediation="fix")],
+        lambda: [SimpleNamespace(message="broken AMDGPU link", remediation="fix", is_brick=True)],
     )
     findings = gp.check_system_graphics(None, gpu_vendors=[]).findings
     assert "mesa_llvm_symbols" in {f.check_id for f in findings}

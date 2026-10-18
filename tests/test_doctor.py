@@ -2186,3 +2186,22 @@ def test_graphics_axis_prints_roster_at_vv(monkeypatch, capsys):
     assert "session_type: session: wayland" in err
     assert "ran:     session_type" in err
     assert "skipped: nvidia_modeset (no NVIDIA GPU detected)" in err
+
+
+def test_toolchain_axis_reports_non_graphics_consumer_symbols(monkeypatch):
+    """3.5.0-B14: a non-graphics libLLVM consumer that no longer loads shows up
+    under `doctor --toolchain`; graphics ones stay on the graphics axis."""
+    from sysforge.primitives import toolchain_safety as ts
+    monkeypatch.setattr(
+        "sysforge.primitives.llvm_state.detect_toolchain_config_mismatch", lambda config: [])
+    lldb = ts.ToolchainFinding(ts.SEV_ERROR, "libllvm_consumer_symbols",
+                               "liblldb.so.23.1 (lldb) cannot load", "fix", is_brick=False)
+    mesa = ts.ToolchainFinding(ts.SEV_ERROR, "libllvm_consumer_symbols",
+                               "libgallium.so cannot load", "fix", is_brick=True)
+    monkeypatch.setattr(ts, "check_installed_consumer_symbols", lambda: [lldb, mesa])
+    res = doctor._collect_toolchain_findings({})
+    messages = [f.message for f in res.findings]
+    assert any("lldb" in m for m in messages)
+    assert not any("gallium" in m for m in messages)
+    assert "libllvm_consumers" in res.roster.ran
+

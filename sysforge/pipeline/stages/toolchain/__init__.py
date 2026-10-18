@@ -115,7 +115,7 @@ banners:
   pgo.py        the four-pass sequence itself
   gates.py      Gate 1 / Gate 2, soname consumers, snapshot + rollback
   identity.py   which toolchain is active; the register-only GCC path
-  bolt.py       Pass 5, optional post-link optimization
+  bolt.py       BOLT of the Pass-4a build tree, optional (3.5.0-F3)
   stage.py      ToolchainStage: sequencing only, delegating every step
 
 Dependencies run one way (constants <- config <- ... <- stage); ``stage.py`` is
@@ -241,8 +241,7 @@ from sysforge.pipeline.stages.toolchain.measure import (  # noqa: F401
     after_install,
 )
 from sysforge.pipeline.stages.toolchain.bolt import (  # noqa: F401
-    build_bolt_tools,
-    run_bolt,
+    optimize_in_build,
 )
 from sysforge.pipeline.stages.toolchain.stage import (  # noqa: F401
     ToolchainStage,
@@ -269,7 +268,6 @@ __all__ = [
     "assert_pass_links_shipped_libllvm",
     "assert_staging_has_llvm_cmake",
     "bolt_config",
-    "build_bolt_tools",
     "build_llvm_pgo_inner",
     "build_llvm_single",
     "build_pass",
@@ -315,7 +313,7 @@ __all__ = [
     "resolve_training_corpus",
     "reuse_cache_path",
     "rollback_to_snapshot",
-    "run_bolt",
+    "optimize_in_build",
     "run_llvm_preflight",
     "show_resolution_table",
     "show_version_changes",

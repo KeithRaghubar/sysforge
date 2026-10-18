@@ -176,13 +176,14 @@ def resolve_training_corpus(tcfg: dict) -> list[str]:
 
 
 def bolt_config(tcfg: dict) -> dict:
-    """Return the ``[bolt]`` config with defaults applied (LLVM/PGO Pass 5).
+    """Return the ``[bolt]`` config with defaults applied (LLVM/PGO path).
 
-    Keys: ``enabled`` (default false — opt-in), ``libllvm`` (also BOLT
-    libLLVM.so, default false — the shared lib is more fragile than the clang
-    executable), ``training_workload`` (path to a .cpp profiled to collect the
-    BOLT profile; empty → a generated header-heavy TU). One read home so the
-    Pass-4 emit-relocs gate and the Pass-5 orchestration agree on the same flags.
+    Keys: ``enabled`` (default false — opt-in; BOLT libclang-cpp inside the
+    llvm build), ``libllvm`` (also BOLT libLLVM.so, default false — every
+    libLLVM consumer loads it), ``training_workload`` (path to a .cpp compiled
+    to collect the profile; empty → a sample of the tree's own compile
+    commands). One read home so the Pass-4 emit-relocs gate and the in-build
+    BOLT step (3.5.0-F3) agree on the same flags.
     """
     bcfg = tcfg.get("bolt", {}) or {}
     return {
@@ -198,11 +199,11 @@ def bolt_config(tcfg: dict) -> dict:
 
 @dataclass(frozen=True)
 class BoltConfig:
-    """The ``[bolt]`` section — Pass 5, opt-in post-link optimization.
+    """The ``[bolt]`` section — opt-in BOLT of the llvm build tree (3.5.0-F3).
 
-    ``libllvm`` defaults off separately from ``enabled`` because BOLTing the
-    shared library is materially more fragile than BOLTing the clang
-    executable, and a user opting into the latter has not opted into the former.
+    ``libllvm`` defaults off separately from ``enabled`` because every libLLVM
+    consumer on the system loads ``libLLVM.so``, while ``libclang-cpp.so`` only
+    serves clang: a user opting into the latter has not opted into the former.
     """
 
     enabled: bool = False

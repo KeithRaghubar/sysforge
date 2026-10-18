@@ -29,6 +29,50 @@ from tests.toolchain_helpers import (  # noqa: F401 — autouse fixture
 )
 
 
+def test_reuse_path_installs_every_pkgbuilds_repo_deps_before_building(
+        tmp_path, monkeypatch):
+    """3.5.0-B15: reusing profdata skips Pass 1, the only pass that installed
+    missing repo build deps, so the merged llvm PKGBUILD's new makedepends
+    (wasi-libc) were never installed and 4a died in the wasm libc++ build.
+    One up-front install covers every PKGBUILD of the run, never a suite name."""
+    from sysforge import build_core
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    spirv = make_pkgbuild(builds, "spirv-llvm-translator")
+    lib32 = make_pkgbuild(builds, "lib32-llvm")
+    pgo_map = {"llvm": llvm, "llvm-libs": llvm, "clang": llvm}
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = pgo_store / "clang.profdata"
+    profdata.write_bytes(b"fake")
+    order = []
+    monkeypatch.setattr(
+        build_core, "install_missing_repo_deps",
+        lambda paths, **k: order.append(("deps", sorted(paths), k.get("exclude"))))
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "profdata.validate_pgo_environment"), \
+         patch(T + "profdata.check_existing_profdata", return_value=("ready", str(profdata))), \
+         patch(T + "pgo.pgo_confirm"), \
+         patch(T + "passes.build_pass",
+               side_effect=lambda label, m, o, **kw: order.append(("build", label)) or {}), \
+         patch(T + "profdata.extract_built_to_staging"), \
+         patch(T + "profdata.assert_staging_has_llvm_cmake"), \
+         patch(T + "profdata.remove_staging"), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        build_llvm_pgo_inner(
+            pgo_map, {"spirv-llvm-translator": spirv}, {"lib32-llvm": lib32},
+            tmp_path / "s1", tmp_path / "s2", tmp_path / "s3", pgo_store,
+            make_options(dry_run=False, rebuild_profdata=False,
+                         state_dir=tmp_path / "state"),
+        )
+
+    assert order[0] == ("deps", sorted([llvm, spirv, lib32]), frozenset(
+        {"llvm", "llvm-libs", "clang", "spirv-llvm-translator", "lib32-llvm"}))
+    assert [k for k, *_ in order].count("deps") == 1
+    assert order[1][0] == "build"
+
+
 def test_build_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
     """Regression: in the profdata-reuse fast path, the non-pgo suite (clang, …)
     must build against the freshly-built OPTIMIZED libLLVM staged in stage3, NOT
@@ -722,3 +766,57 @@ def test_verified_llvm_build_hands_off_to_the_bench_step(tmp_path, monkeypatch):
                         lambda tcfg, options: calls.append(tcfg))
     _run_pgo(tmp_path, pgo_pkgs=["llvm"])
     assert len(calls) == 1 and calls[0].compiler == "llvm"
+
+
+def test_bolt_runs_on_the_4a_tree_before_staging_and_repackages(tmp_path):
+    """3.5.0-F3: BOLT rewrites the Pass-4a build tree and repackages it before
+    anything is staged or installed from those packages. The repackage reruns
+    package() only (--repackage), never re-syncing the source it just BOLTed."""
+    from tests.toolchain_helpers import toolchain_cfg
+    builds = tmp_path / "builds"
+    llvm = make_pkgbuild(builds, "llvm")
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    profdata = pgo_store / "clang.profdata"
+    profdata.write_bytes(b"fake")
+    options = make_options(dry_run=False, rebuild_profdata=False,
+                           state_dir=tmp_path / "state")
+    events, repacks = [], []
+
+    def fake_build_pass(label, pkgbuild_map, options, **kw):
+        events.append(("build", set(pkgbuild_map), kw.get("linker_flags_extra")))
+        return {}
+
+    def fake_optimize(pgo_map, tcfg, options, *, repackage):
+        events.append(("bolt", set(pgo_map)))
+        repackage()
+        return True
+
+    def fake_build_pkg(name, path, opts, **kw):
+        repacks.append((name, path, opts.no_update, kw.get("extra_flags")))
+
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "profdata.validate_pgo_environment"), \
+         patch(T + "profdata.check_existing_profdata", return_value=("ready", str(profdata))), \
+         patch(T + "pgo.pgo_confirm"), \
+         patch(T + "passes.build_pass", side_effect=fake_build_pass), \
+         patch(T + "passes.build_pkg", side_effect=fake_build_pkg), \
+         patch(T + "bolt.optimize_in_build", side_effect=fake_optimize), \
+         patch(T + "profdata.extract_built_to_staging",
+               side_effect=lambda m, s, d: events.append(("stage", s.name))), \
+         patch(T + "profdata.assert_staging_has_llvm_cmake"), \
+         patch(T + "profdata.remove_staging"), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+        build_llvm_pgo_inner(
+            {"llvm": llvm, "clang": llvm}, {"spirv-llvm-translator": make_pkgbuild(
+                builds, "spirv-llvm-translator")}, {},
+            tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3", pgo_store,
+            options, tcfg=toolchain_cfg(bolt={"enabled": True}),
+        )
+
+    kinds = [e[0] for e in events]
+    assert kinds.index("bolt") == kinds.index("build") + 1  # right after 4a
+    assert kinds.index("bolt") < kinds.index("stage")
+    assert events[0][2] == "-Wl,--emit-relocs"  # 4a keeps relocations
+    assert repacks == [("llvm", llvm, True, ["--repackage", "--force"])]
+    assert getattr(options, "no_update", False) is False

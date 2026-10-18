@@ -3,237 +3,217 @@
 # SPDX-License-Identifier: MIT
 
 """
-toolchain/bolt.py — Pass 5, BOLT post-link optimization.
+toolchain/bolt.py — BOLT the PGO toolchain inside the llvm build (3.5.0-F3).
 
-Strictly optional and strictly last: BOLT rewrites the *already installed* PGO
-clang binary, so it runs after the suite is installed and verified, and a
-failure here leaves a working toolchain rather than a broken one.
+Runs right after Pass 4a, between the build and the install. Upstream builds
+clang and BOLT in the same tree as llvm, so after 4a the build directory holds
+unstripped, relocation-carrying ``libclang-cpp.so``/``libLLVM.so`` and the
+in-tree ``llvm-bolt``. This step instruments those libraries, trains them by
+replaying a sample of the tree's own compile commands with the new clang,
+rewrites them with the merged profile, smoke-tests the result, swaps it into
+the tree keeping the original mtime, and has makepkg repackage. The facts and
+why each is needed are in ``primitives/bolt.py``.
+
+Strictly optional: any failure before the repackage restores the tree and
+leaves the 4a packages exactly as built, so the PGO toolchain still installs. A
+failed repackage stops the stage before install, since the 4a packages may be
+half-rewritten by then.
 
 Separate from ``pgo.py`` because it is a different tool with a different
 failure mode — the four PGO passes are one interdependent sequence, while this
 either improves the result or is skipped.
 """
-from pathlib import Path
 import contextlib
+import os
+import shutil
+import tempfile
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
-from sysforge.pipeline.stages.toolchain import config, passes, verify
+from sysforge.pipeline.stages.toolchain import config
 
 from sysforge import log
+from sysforge.primitives import bolt as _bolt
+from sysforge.primitives import fs_provision
 from sysforge.primitives import run
 
 _log = log.get_logger("TOOLCHAIN")
 
+# Compile commands replayed to train the instrumented libraries. Enough of
+# clang's own front-end sources to cover parsing, Sema and codegen; the cost is
+# a few minutes of instrumented compiles on top of a multi-hour build.
+TRAINING_UNITS = 400
 
-# ---------------------------------------------------------------------------
-# BOLT Pass 5 (post-link optimization of the just-installed PGO clang)
-# ---------------------------------------------------------------------------
+# Fewer successful training compiles than this share of the attempted ones
+# means the instrumented libraries are not working: do not trust the profile.
+_MIN_TRAINING_SHARE = 0.5
 
 
-def build_bolt_tools(
-    tcfg: "config.ToolchainConfig", sysforge_config: dict, options,
-    variant: str | None,
+def _store(tcfg: "config.ToolchainConfig") -> Path:
+    return _bolt.resolve_store(tcfg.raw)
+
+
+def _run_training(cmds: list[list[str]], *, env: dict, cwd: Path) -> int:
+    """Run the training compiles in parallel; return how many succeeded."""
+    def one(argv: list[str]) -> bool:
+        return run.probe(argv, env=env, cwd=cwd).returncode == 0
+
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
+        return sum(pool.map(one, cmds))
+
+
+def _mirror_symlinks(lib_dir: Path, target: Path, into: Path) -> None:
+    """Give ``into`` the soname symlinks ``lib_dir`` has for ``target``, so the
+    dynamic loader finds the rewritten copy under every name it is asked for."""
+    for link in lib_dir.iterdir():
+        if link.is_symlink() and link.readlink() == Path(target.name):
+            with contextlib.suppress(FileExistsError):
+                (into / link.name).symlink_to(target.name)
+
+
+def _cycle(build: Path, targets: list[Path], workload: str, td: Path) -> dict[Path, Path]:
+    """Instrument → train → merge → optimize → smoke-test. Returns
+    ``{build-tree lib: rewritten copy}``; raises :class:`BoltError`."""
+    llvm_bolt = _bolt.tree_tool(build, "llvm-bolt")
+    merge_fdata = _bolt.tree_tool(build, "merge-fdata")
+    runtime = _bolt.tree_tool(build, "libbolt_rt_instr.a")
+    clangxx = _bolt.tree_tool(build, "clang++")
+    missing = [p.name for p in (llvm_bolt, merge_fdata, runtime, clangxx) if not p.exists()]
+    if missing:
+        raise _bolt.BoltError(
+            f"the build tree has no {', '.join(missing)}: upstream's llvm PKGBUILD "
+            "builds bolt in-tree since 23.1.3-3; an older pin does not")
+    if not _bolt.runtime_linkable(runtime):
+        raise _bolt.BoltError(
+            f"{runtime} calls memset through the GOT (built by GCC with -fno-plt), "
+            "which llvm-bolt's linker rejects for every input")
+    for lib in targets:
+        if not _bolt.has_relocations(lib):
+            raise _bolt.BoltError(
+                f"{lib.name} has no relocations: it was not linked with "
+                f"{_bolt.EMIT_RELOCS_LDFLAG}")
+
+    inst, prof, opt, obj = (td / d for d in ("inst", "prof", "opt", "obj"))
+    for d in (inst, prof, opt, obj):
+        d.mkdir()
+    for lib in targets:
+        _bolt.run_step(
+            _bolt.instrument_cmd(llvm_bolt, lib, inst / lib.name,
+                                 prof / f"{lib.name}.fdata", runtime),
+            what=f"instrument {lib.name}")
+        _mirror_symlinks(lib.parent, lib, inst)
+
+    if workload:
+        src = Path(workload).expanduser()
+        if not src.is_file():
+            raise _bolt.BoltError(f"[bolt] training_workload {src} not found")
+        cmds = [_bolt.compile_workload_argv(clangxx, src, obj / "w.o")]
+    else:
+        cmds = _bolt.training_commands(
+            build, clangxx, obj, target=f"lib/{targets[0].name}", limit=TRAINING_UNITS)
+        if not cmds:
+            src = _bolt.write_default_workload(td)
+            cmds = [_bolt.compile_workload_argv(clangxx, src, obj / "w.o")]
+    lib_path = f"{inst}:{build / 'lib'}"
+    _log.ui(f"[BOLT] training: {len(cmds)} compile(s) with the instrumented libraries")
+    ok = _run_training(cmds, env={**os.environ, "LD_LIBRARY_PATH": lib_path}, cwd=build)
+    if ok < max(1, int(len(cmds) * _MIN_TRAINING_SHARE)):
+        raise _bolt.BoltError(
+            f"only {ok} of {len(cmds)} training compiles succeeded with the "
+            "instrumented libraries")
+
+    rewritten: dict[Path, Path] = {}
+    for lib in targets:
+        profiles = sorted(prof.glob(f"{lib.name}.fdata.*.fdata"))
+        if not profiles:
+            raise _bolt.BoltError(f"training wrote no profile for {lib.name}")
+        merged = td / f"{lib.name}.merged.fdata"
+        _bolt.run_step(_bolt.merge_cmd(merge_fdata, profiles, merged),
+                       what=f"merge {len(profiles)} profile(s) for {lib.name}")
+        _bolt.run_step(_bolt.optimize_cmd(llvm_bolt, lib, merged, opt / lib.name),
+                       what=f"optimize {lib.name}")
+        _mirror_symlinks(lib.parent, lib, opt)
+        rewritten[lib] = opt / lib.name
+
+    _bolt.run_step(
+        cmds[0], what="smoke test (compile with the rewritten libraries)",
+        env={**os.environ, "LD_LIBRARY_PATH": f"{opt}:{build / 'lib'}"}, cwd=build)
+    return rewritten
+
+
+def _keep_profiles(tcfg: "config.ToolchainConfig", td: Path, targets: list[Path]) -> None:
+    """Copy the merged profiles into the BOLT store, for the record."""
+    store = _store(tcfg)
+    try:
+        fs_provision.ensure_writable_dir(store)
+        for lib in targets:
+            merged = td / f"{lib.name}.merged.fdata"
+            if merged.is_file():
+                shutil.copy2(merged, store / f"{lib.name}.fdata")
+    except (OSError, fs_provision.FsProvisionError) as e:
+        _log.warn(f"[BOLT] could not keep the profiles in {store}: {e}")
+
+
+def optimize_in_build(
+    pgo_map: dict, tcfg: "config.ToolchainConfig", options, *,
+    repackage: Callable[[], None],
 ) -> bool:
-    """Pass 5a — build+install the BOLT tools (`llvm-bolt`/`perf2bolt`/…).
+    """BOLT the Pass-4a build tree and repackage; True when the packages changed.
 
-    BOLT is EXPERIMENTAL: it is not in the official Arch repos and the stock
-    `llvm` package does not build it. sysforge generates an `llvm-bolt` PKGBUILD
-    (`bolt.materialize_pkgbuild`, version-locked to the just-installed llvm) and
-    builds it standalone against the installed PGO libLLVM — the `bolt/` subtree
-    rides inside the same `llvm-project` monorepo tarball the `llvm` build used.
-
-    Returns True if the tools are available afterward (built now, or already
-    present). Best-effort: a build failure WARNs and returns False so Pass 5b is
-    skipped and the verified PGO toolchain is left intact.
+    No-op unless ``[bolt] enabled`` (and not a dry run). ``repackage`` reruns
+    makepkg's ``package()`` for the llvm PKGBUILD (``--repackage``) with the
+    same settings 4a used; the caller owns those.
     """
-    from sysforge.primitives import bolt as _bolt
-
-    # Already present (e.g. a prior run installed them) — nothing to build.
-    if _bolt.tools_available(need_perf=False)[0]:
-        return True
-
-    # BLOCKED guard: BOLT's tools all force static LLVM linkage
-    # (DISABLE_LLVM_LINK_LLVM_DYLIB), so a standalone build needs the per-component
-    # static archives. The PGO toolchain (like stock Arch llvm) is dylib-only and
-    # omits them — the build would fail ~100 ninja steps in with an unfindable
-    # -lLLVMObject. Fail fast with the reason instead of a cryptic late link error.
-    if not _bolt.standalone_build_viable():
-        _log.warn(
-            "[BOLT] Pass 5 skipped; BLOCKED: the BOLT tools link LLVM statically, but "
-            "the PGO toolchain ships a dylib-only libLLVM without the per-component "
-            "static archives a standalone llvm-bolt build needs. Building BOLT in-tree "
-            "with LLVM is the only viable path (not yet implemented). PGO toolchain left "
-            "intact: see DESIGN.md §Toolchain stage (BOLT Pass 5)."
-        )
-        return False
-
-    pkgbuild_dir = (sysforge_config.get("paths", {}) or {}).get("pkgbuild_src_dir")
-    if not pkgbuild_dir:
-        _log.warn(
-            "[BOLT] Pass 5a skipped: no [paths] pkgbuild_src_dir to materialize "
-            "the llvm-bolt PKGBUILD into; PGO toolchain left as-is."
-        )
-        return False
-
-    llvm_ver = verify.query_pacman_versions(("llvm",)).get("llvm")
-    if not llvm_ver:
-        _log.warn("[BOLT] Pass 5a skipped: installed llvm version not found")
-        return False
-    pkgver = llvm_ver.split("-", 1)[0]  # strip pkgrel; BOLT locks to llvm pkgver
-
-    try:
-        pkgbuild = _bolt.materialize_pkgbuild(Path(pkgbuild_dir), pkgver)
-    except OSError as e:
-        _log.warn(f"[BOLT] Pass 5a skipped: could not write llvm-bolt PKGBUILD ({e})")
-        return False
-
-    _log.ui(
-        f"[BOLT] Pass 5a: building the BOLT tools (llvm-bolt {pkgver}, "
-        "experimental: no official Arch package) against the installed libLLVM"
-    )
-    try:
-        passes.build_pkg(
-            _bolt.PKG_NAME, pkgbuild, options,
-            toolchain_variant=variant,
-            owner_stage="toolchain",
-        )
-        # sysforge installs, not makepkg --install (3.4.0-F1).
-        if not options.dry_run:
-            passes.install_built_packages(Path(pkgbuild).parent, noconfirm=True)
-    except Exception as e:
-        _log.warn(
-            f"[BOLT] Pass 5a failed to build llvm-bolt ({e}): PGO toolchain "
-            "left in place; BOLT optimization skipped."
-        )
-        return False
-
-    ok, missing = _bolt.tools_available(need_perf=False)
-    if not ok:
-        _log.warn(
-            f"[BOLT] llvm-bolt built but {', '.join(missing)} still not on PATH: "
-            "skipping BOLT optimization."
-        )
-    return ok
-
-
-def run_bolt(
-    tcfg: "config.ToolchainConfig", sysforge_config: dict, options,
-    variant: str | None,
-) -> None:
-    """Pass 5 — BOLT-optimize the freshly-installed PGO clang (post-link).
-
-    Runs after Gate 3 has *verified* the PGO toolchain in ``/usr`` and inside the
-    stage sentinel, so a mishap is covered by the same snapshot rollback as the
-    install. The canonical PGO→BOLT "fast clang" stack, in two steps: **4a**
-    builds the BOLT tools sysforge needs (see :func:`build_bolt_tools` — they are
-    not in the Arch repos), then **4b** profiles the installed clang on a
-    representative compile job (``perf record``), converts with ``perf2bolt``,
-    rewrites with ``llvm-bolt``, smoke-tests the result, and only then atomically
-    replaces ``/usr/bin/clang``.
-
-    EXPERIMENTAL and best-effort throughout: a failed tool build, a missing
-    ``perf``, a ``perf``/``llvm-bolt`` failure, or a failed smoke test WARNs and
-    leaves the verified PGO clang untouched — BOLT is an opt-in extra win, never
-    allowed to regress the working toolchain. No-op unless ``[bolt] enabled`` (and
-    not dry-run). Note: this rewrites the installed binary post-link, so
-    ``pacman -Qkk clang`` will report it modified — an inherent property of
-    post-link optimization, not corruption.
-    """
-    import tempfile as _tempfile
-
     bcfg = tcfg.bolt
     if not bcfg.enabled:
-        return
+        return False
     if options.dry_run:
-        _log.ui(
-            "[dry-run] would build the BOLT tools (experimental) and "
-            "BOLT-optimize the installed clang (Pass 5)"
-        )
-        return
-
-    from sysforge.primitives import bolt as _bolt
-    from sysforge.primitives import fs_provision as _fsp
-
-    # Pass 5a — sysforge builds llvm-bolt/perf2bolt itself (not in Arch repos).
-    if not build_bolt_tools(tcfg, sysforge_config, options, variant):
-        return
-
-    # perf (linux-tools) is needed for collection but isn't something sysforge
-    # builds — surface its absence with an actionable hint, don't silently skip.
-    ok, missing = _bolt.tools_available(need_perf=True)
-    if not ok:
+        _log.ui("[dry-run] would BOLT libclang-cpp"
+                f"{' and libLLVM' if bcfg.libllvm else ''} in the llvm build tree")
+        return False
+    pkgbuild = pgo_map.get("clang")
+    if pkgbuild is None:
         _log.warn(
-            f"[BOLT] Pass 5b skipped: {', '.join(missing)} not on PATH "
-            "(install the linux-tools `perf` package). PGO clang left in place."
-        )
-        return
+            "[BOLT] skipped: clang is not built by the PGO PKGBUILD, so its "
+            "libraries are not in the Pass-4a build tree (BOLT needs upstream's "
+            "single llvm package). The PGO toolchain is unaffected.")
+        return False
+    build = _bolt.build_tree_for(Path(pkgbuild))
+    if build is None:
+        _log.warn(f"[BOLT] skipped: no llvm build tree found for {pkgbuild}")
+        return False
+    targets = _bolt.bolt_targets(build, libllvm=bcfg.libllvm)
+    if not targets:
+        _log.warn(f"[BOLT] skipped: no libclang-cpp in {build / 'lib'}")
+        return False
 
-    clang = Path("/usr/bin/clang")
-    clangxx = Path("/usr/bin/clang++")
-    if not clang.exists():
-        _log.warn("[BOLT] Pass 5 skipped: /usr/bin/clang not found")
-        return
-
-    store = _bolt.resolve_store(tcfg.raw)
-    try:
-        _fsp.ensure_writable_dir(store)
-    except _fsp.FsProvisionError as e:
-        _log.warn(f"[BOLT] profile store {store} not group-provisioned ({e})")
-
-    with _tempfile.TemporaryDirectory(prefix="sysforge-bolt-") as _td:
-        td = Path(_td)
-        workload_cfg = bcfg.training_workload
-        workload = (
-            Path(workload_cfg).expanduser()
-            if workload_cfg
-            else _bolt.write_default_workload(td)
-        )
-        if not workload.is_file():
-            _log.warn(
-                f"[BOLT] training_workload {workload} not found: Pass 5 skipped"
-            )
-            return
-
-        _log.ui(
-            "[BOLT] Pass 5: profiling clang on a compile job and rewriting "
-            "with llvm-bolt (PGO→BOLT)"
-        )
+    names = ", ".join(t.name for t in targets)
+    _log.ui(f"[BOLT] optimizing {names} in {build}")
+    with tempfile.TemporaryDirectory(prefix="sysforge-bolt-") as tmp:
+        td = Path(tmp)
         try:
-            fdata = _bolt.collect_profile(
-                clang, store,
-                _bolt.compile_workload_argv(str(clangxx), workload, td / "w.o"),
-            )
-            bolted = _bolt.bolt_binary(clang, fdata, out=td / "clang.bolt")
+            rewritten = _cycle(build, targets, bcfg.training_workload, td)
         except _bolt.BoltError as e:
-            _log.warn(f"[BOLT] Pass 5 failed ({e}): PGO clang left in place")
-            return
+            _log.warn(f"[BOLT] skipped: {e}. The PGO toolchain installs un-BOLTed.")
+            return False
 
-        # Smoke-test the BOLTed clang *before* it replaces the system compiler.
-        smoke = run.probe(
-            [str(bolted), "-std=c++17", "-O2", "-c", str(workload), "-o", str(td / "s.o")],
-        )
-        if smoke.returncode != 0 or not (td / "s.o").exists():
-            _log.warn(
-                "[BOLT] the BOLT-optimized clang failed its smoke test: "
-                "discarding it; the verified PGO clang stays in place"
-            )
-            return
-
+        backup = td / "orig"
+        backup.mkdir()
+        for lib in targets:
+            shutil.copy2(lib, backup / lib.name)
+        for lib, new in rewritten.items():
+            _bolt.replace_keep_mtime(new, lib)
         try:
-            _fsp._run_priv(["install", "-Dm755", str(bolted), str(clang)])
-        except _fsp.FsProvisionError as e:
-            _log.warn(
-                f"[BOLT] could not install the BOLTed clang ({e}): "
-                "PGO clang left in place"
-            )
-            return
-
-        # Provenance sidecar (the build_state entry stays the PGO record; this
-        # marks that a post-link BOLT pass was applied on top).
-        with contextlib.suppress(OSError):
-            (store / "applied.txt").write_text(
-                f"bolt_llvm applied to {clang}\n", encoding="utf-8"
-            )
-        _log.ui(
-            "[BOLT] Pass 5 complete: /usr/bin/clang is now PGO+BOLT optimized "
-            f"(build_mode {_bolt.BUILD_MODE})"
-        )
+            repackage()
+        except Exception as e:
+            for lib in targets:
+                _bolt.replace_keep_mtime(backup / lib.name, lib)
+            raise RuntimeError(
+                f"[BOLT] repackaging llvm after BOLT failed ({e}); the Pass-4a "
+                "packages may be partly rewritten, so nothing was installed. "
+                "Rerun with [bolt] enabled = false to install the PGO toolchain "
+                "without BOLT.") from e
+        _keep_profiles(tcfg, td, targets)
+    _log.ui(f"[BOLT] {names} rewritten and repackaged (build_mode {_bolt.BUILD_MODE})")
+    return True

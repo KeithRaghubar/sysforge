@@ -222,7 +222,7 @@ def _record_build_failure(state_dir, target, exc) -> None:
     try:
         diagnosis = getattr(exc, "diagnosis", None) or []
         first = diagnosis[0] if diagnosis else None
-        bs_fail = BuildState(state_dir)
+        bs_fail = BuildState(_state_dir_path(state_dir))
         bs_fail.record_failure(
             target.pkgbase,
             error=str(exc),

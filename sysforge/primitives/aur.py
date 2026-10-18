@@ -260,6 +260,37 @@ def is_aur_checkout(pkgbuild_dir) -> bool:
 
 _AUR_HOST = urllib.parse.urlsplit(AUR_GIT_BASE).hostname
 
+# Where `pkgctl repo clone` checks out an official package: one project per
+# pkgbase under this group.
+_REPO_HOST = "gitlab.archlinux.org"
+_REPO_GROUP = "archlinux/packaging/packages/"
+
+
+def repo_checkout_pkgbase(pkgbuild_dir) -> str | None:
+    """The official packaging repo this checkout was cloned from, or None.
+
+    Provenance comes from ``origin`` alone (3.5.0-B16): the host must be Arch's
+    GitLab and the project must sit in the packaging group, whose project name
+    is the pkgbase. The names a PKGBUILD declares prove nothing — an AUR
+    PKGBUILD can list any pkgname it likes.
+    """
+    d = Path(pkgbuild_dir)
+    if not (d / ".git").exists():
+        return None
+    try:
+        proc = run.probe(["git", "-C", str(d), "remote", "get-url", "origin"])
+    except OSError:
+        return None
+    url = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    if not url or _url_host(url) != _REPO_HOST:
+        return None
+    path = (urllib.parse.urlsplit(url).path if "://" in url
+            else url.split(":", 1)[1]).lstrip("/")
+    if not path.startswith(_REPO_GROUP):
+        return None
+    name = path[len(_REPO_GROUP):].removesuffix(".git")
+    return name if name and "/" not in name else None
+
 
 def _url_host(url: str) -> str | None:
     """Host of a git remote URL: ``scheme://[user@]host[:port]/path`` or the

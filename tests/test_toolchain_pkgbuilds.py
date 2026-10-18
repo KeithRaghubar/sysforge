@@ -66,6 +66,48 @@ def test_resolve_all_pkgbuilds_split_found_after_pass3_clone(tmp_path):
     # Both must resolve to the same PKGBUILD — not two separate clones
     assert result["gcc"].parent == result["gcc-libs"].parent
 
+def _merged_llvm_tree(root):
+    """An llvm pkgbase that now builds clang, plus a stale standalone clang/."""
+    llvm = root / "llvm"
+    llvm.mkdir()
+    (llvm / "PKGBUILD").write_text(
+        "pkgbase=llvm\npkgname=('llvm' 'llvm-libs' 'clang')\npkgver=23.1.3\npkgrel=2\n"
+    )
+    make_pkgbuild(root, "clang")  # frozen pre-merge checkout
+
+
+def test_resolve_prefers_sync_db_pkgbase_over_stale_checkout(tmp_path, monkeypatch):
+    """3.5.0-B13: clang now comes from the llvm pkgbase; the old clang/ checkout
+    must not win just because it exists on disk."""
+    from sysforge.primitives import pacman
+    _merged_llvm_tree(tmp_path)
+    bases = {"llvm": "llvm", "clang": "llvm"}
+    monkeypatch.setattr(pacman, "get_sync_pkgbase", bases.get)
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+    result = resolve_all_pkgbuilds(["llvm", "clang"], config, update=False)
+    assert result["clang"] == (tmp_path / "llvm" / "PKGBUILD").resolve()
+
+
+def test_resolve_warns_once_about_the_stale_checkout(tmp_path, monkeypatch, capsys):
+    from sysforge import log
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(log, "_VERBOSITY", 1)  # warn() is a -v narration level
+    _merged_llvm_tree(tmp_path)
+    monkeypatch.setattr(pacman, "get_sync_pkgbase", {"clang": "llvm"}.get)
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+    resolve_all_pkgbuilds(["llvm", "clang"], config, update=False)
+    out, err = capsys.readouterr()
+    assert (out + err).count(str(tmp_path / "clang")) == 1
+
+
+def test_resolve_without_sync_db_entry_keeps_local_order(tmp_path):
+    """No repo entry (AUR, or the autouse stub): the local dir still wins."""
+    _merged_llvm_tree(tmp_path)
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+    result = resolve_all_pkgbuilds(["llvm", "clang"], config, update=False)
+    assert result["clang"] == (tmp_path / "clang" / "PKGBUILD").resolve()
+
+
 def test_resolve_all_pkgbuilds_calls_scheduler_when_update_true(tmp_path):
     """update=True must route every unique resolved dir through SourceSyncScheduler."""
     make_pkgbuild(tmp_path, "llvm")
@@ -236,3 +278,49 @@ def test_show_version_changes_tolerates_unreadable_pkgbuild(tmp_path, capsys):
 
     out = capsys.readouterr()
     assert "1 of 1 changing" in out.out + out.err
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F2: upstream's single llvm pkgbase
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages.toolchain.pkgbuilds import (  # noqa: E402
+    install_names,
+    partition_by_pkgbuild,
+)
+
+
+def test_partition_moves_names_built_by_a_pgo_pkgbuild_into_pgo(tmp_path):
+    """clang/lld come out of the llvm PKGBUILD now: building them in Pass 2 and
+    4b would rebuild the whole llvm tree twice more."""
+    llvm, spirv = tmp_path / "llvm/PKGBUILD", tmp_path / "spirv-llvm-translator/PKGBUILD"
+    pgo, non_pgo, lib32 = partition_by_pkgbuild(
+        {"llvm": llvm, "llvm-libs": llvm},
+        {"clang": llvm, "lld": llvm, "spirv-llvm-translator": spirv},
+        {},
+    )
+    assert pgo == {"llvm": llvm, "llvm-libs": llvm, "clang": llvm, "lld": llvm}
+    assert non_pgo == {"spirv-llvm-translator": spirv}
+    assert lib32 == {}
+
+
+def test_partition_leaves_the_split_layout_alone(tmp_path):
+    llvm, clang = tmp_path / "llvm/PKGBUILD", tmp_path / "clang/PKGBUILD"
+    pgo, non_pgo, _ = partition_by_pkgbuild({"llvm": llvm}, {"clang": clang}, {})
+    assert pgo == {"llvm": llvm} and non_pgo == {"clang": clang}
+
+
+def test_install_names_adds_installed_members_only(tmp_path, monkeypatch):
+    """lldb is installed and comes from the llvm pkgbase: install the new
+    build of it. wasi-libc++ is built but was never installed: leave it."""
+    from sysforge.primitives import pacman
+    d = tmp_path / "llvm"
+    d.mkdir()
+    (d / "PKGBUILD").write_text(
+        "pkgbase=llvm\npkgname=('llvm' 'llvm-libs' 'clang' 'lldb' 'wasi-libc++')\n"
+        "pkgver=23.1.3\npkgrel=4\n"
+    )
+    monkeypatch.setattr(pacman, "get_all_installed_packages",
+                        lambda: {"llvm": "1", "llvm-libs": "1", "lldb": "1", "zlib": "1"})
+    names = install_names({"llvm": d / "PKGBUILD", "clang": d / "PKGBUILD"})
+    assert names == {"llvm", "llvm-libs", "clang", "lldb"}

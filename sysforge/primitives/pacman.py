@@ -1205,6 +1205,49 @@ def get_pacman_sync_version(pkgname: str) -> str | None:
     return None
 
 
+def get_sync_pkgbase(pkgname: str) -> str | None:
+    """Return ``pkgname``'s pkgbase in the sync databases, or None if no repo has it.
+
+    3.5.0-B13: a repo can move a package under another pkgbase (upstream folded
+    clang/lld/… into ``llvm``), so the sync DB, not the name of a local checkout,
+    says which PKGBUILD builds it. ``pacman -Si`` does not print the base;
+    ``--print-format %e`` does. ``-dd`` keeps ``-Sp`` from also printing the
+    dependencies it would pull in. One name per call: an unknown target fails
+    the whole transaction.
+    """
+    if _use_pyalpm():
+        try:
+            for db in _get_alpm_handle().get_syncdbs():
+                pkg = db.get_pkg(pkgname)
+                if pkg:
+                    return pkg.base or pkgname
+            return None
+        except _alpm().error:
+            pass
+    result = run.probe(["pacman", "-Sddp", "--print-format", "%n %e", "--", pkgname])
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        name, _, base = line.strip().partition(" ")
+        if name == pkgname and base:
+            return base
+    return None
+
+
+
+def is_installed_repo_pkgbase(pkgbase: str) -> bool:
+    """True when ``pkgbase`` is an official repo pkgbase you have a member of.
+
+    3.5.0-B17: a split pkgbase (``linux-tools``: bpftool, perf, …) is no
+    package name, so ``pacman -Si`` rejects it and no sync DB lookup by name
+    finds it. An installed member whose *sync* pkgbase is the same proves it:
+    the repo still builds that member from this pkgbase. A local build sharing
+    the base name but filed under another repo base does not count.
+    """
+    members = [name for name, f in get_all_package_fields("%BASE%").items()
+               if f["%BASE%"][:1] == [pkgbase]]
+    return any(get_sync_pkgbase(m) == pkgbase for m in members)
+
 # Sentinel for checkupdates_map: distinguishes "tool unavailable" (None) from
 # "tool ran, nothing to upgrade" (empty dict).
 CHECKUPDATES_UNAVAILABLE = None

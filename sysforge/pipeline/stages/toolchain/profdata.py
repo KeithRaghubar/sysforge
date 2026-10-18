@@ -21,6 +21,7 @@ import os
 import subprocess
 import threading
 
+from sysforge.primitives import pacman
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives import run
@@ -290,7 +291,36 @@ def assert_pass_links_shipped_libllvm(
         )
 
 
-def pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> None:
+def select_install_members(pkg_files: list[Path], wanted: set[str]) -> list[Path]:
+    """The built packages to install: ``wanted`` plus the members they depend on.
+
+    3.5.0-F2. A split build produces members nobody asked for; install only the
+    wanted ones, then close over ``depend`` edges between the built members
+    (``clang`` → ``clang-libs=<ver>``), so a selected package never resolves an
+    exact-version dependency from the repos instead of from this build. A file
+    whose pkgname cannot be read is kept, which installs too much rather than
+    silently dropping a package. Order follows ``pkg_files``.
+    """
+    name_of = {p: pacman.read_pkgname_from_file(p) for p in pkg_files}
+    built = {n for n in name_of.values() if n}
+    selected = {n for n in built if n in wanted}
+    queue = list(selected)
+    while queue:
+        name = queue.pop()
+        for p, n in name_of.items():
+            if n != name:
+                continue
+            for dep in pacman.read_pkginfo_relations(p)["depend"]:
+                if dep in built and dep not in selected:
+                    selected.add(dep)
+                    queue.append(dep)
+    return [p for p, n in name_of.items() if n is None or n in selected]
+
+
+def pgo_install(
+    label: str, pkgbuild_map: dict[str, Path], dry_run: bool,
+    *, members: set[str] | None = None,
+) -> None:
     """
     Install packages built by a PGO pass via a direct 'sudo pacman -U' call.
 
@@ -317,6 +347,8 @@ def pgo_install(label: str, pkgbuild_map: dict[str, Path], dry_run: bool) -> Non
             f"[TOOLCHAIN] No built packages found for {label}: "
             "check that the build completed successfully"
         )
+    if members is not None:
+        pkgs = select_install_members(pkgs, members)
     _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
         _log.info(f"  {p.name}")

@@ -2323,3 +2323,12 @@ def test_build_and_install_rejects_an_unknown_review_mode(tmp_path):
     with pytest.raises(ValueError, match="review"):
         build_core.build_and_install(
             [_make_target(tmp_path)], config={}, sync_source=False, review="auto")
+
+
+def test_record_build_failure_without_state_dir_uses_the_resolved_one(state_dir):
+    """The toolchain's consumer rebuild passes no state_dir: the failure still
+    lands in the resolved state dir instead of ``Path(None)`` raising."""
+    from sysforge.primitives.build_state import BuildState
+    target = SimpleNamespace(pkgbase="linux-tools", pkgbuild_ver="7.2.11-1")
+    build_core._record_build_failure(None, target, RuntimeError("makepkg failed"))
+    assert "linux-tools" in BuildState(state_dir).all_failures()

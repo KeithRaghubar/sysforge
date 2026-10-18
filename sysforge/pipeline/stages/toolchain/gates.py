@@ -27,6 +27,7 @@ from sysforge.pipeline.stages.toolchain import config, profdata, verify
 from sysforge.primitives import prompt
 from sysforge.primitives import pacman
 from sysforge.primitives import config as prim_config
+from sysforge.primitives import aur
 from sysforge.primitives.pkgbuild_review import resolve_review_policy
 from sysforge import log
 
@@ -362,7 +363,15 @@ def rebuild_soname_consumers(consumers: list[str], config, options, state) -> No
             _log.warn(f"  could not resolve PKGBUILD for {pkg}: {e}")
             unresolved.append(pkg)
             continue
-        targets.append(build_core.target_from_pkgbuild(pkgbuild))
+        target = build_core.target_from_pkgbuild(pkgbuild)
+        # A checkout of the official packaging repo for this very pkgbase is
+        # source="repo", which the review gate's default trusted list accepts
+        # without a prompt (3.5.0-B16). Judged by the clone's origin, never by
+        # the pkgnames the PKGBUILD declares (an AUR PKGBUILD can claim glibc).
+        if (target.source is None
+                and aur.repo_checkout_pkgbase(pkgbuild.parent) == target.pkgbase):
+            target.source = "repo"
+        targets.append(target)
 
     if not targets:
         raise RuntimeError(
@@ -448,7 +457,8 @@ def gate2_audit(
             "Restart with: sysforge run toolchain --rebuild-profdata"
         )
 
-    # Graphics-consumer symbol sufficiency vs the freshly-built libLLVM.
+    # Consumer symbol sufficiency vs the freshly-built libLLVM: the graphics
+    # globs plus every installed libLLVM consumer (3.5.0-B14).
     # Pre-install, outside the sentinel — an abort here leaves the live graphics
     # stack untouched, vs. a post-reboot black screen.
     consumer_findings = toolchain_safety.check_system_consumer_symbols(pkgs)
@@ -463,10 +473,10 @@ def gate2_audit(
         joined = "\n".join(f"  - {f.message}" for f in unhealable)
         raise RuntimeError(
             "[TOOLCHAIN] Gate 2: the freshly-built libLLVM would strand an "
-            "installed graphics consumer (mesa) by dropping LLVM target-init "
-            "symbols it imports; refusing to install (the desktop would "
-            f"black-screen on next session). Nothing was installed.\n{joined}\n"
-            f"{unhealable[0].remediation}"
+            "installed libLLVM consumer by dropping LLVM target-init symbols it "
+            "imports; refusing to install (a graphics consumer black-screens the "
+            "desktop, any other fails to load). Nothing was installed.\n"
+            f"{joined}\n{unhealable[0].remediation}"
         )
 
     # All healable: the same-soname std:: re-export drift. Capture the installed
@@ -553,10 +563,14 @@ def resolve_abi_consumers_to_rebuild(
     return consumers
 
 
-def snapshot_suite(built_map: dict[str, Path]) -> dict[str, "Path | None"]:
+def snapshot_suite(
+    built_map: dict[str, Path], *, extra_names: "set[str] | frozenset[str]" = frozenset(),
+) -> dict[str, "Path | None"]:
     """Capture the current-install ``.pkg.tar*`` for the suite + built packages.
 
-    The keys are the lockstep suite ∪ the names this build produced; each maps
+    The keys are the lockstep suite ∪ the names this build produced ∪
+    ``extra_names`` (the other installed members of the built PKGBUILDs, which
+    the install step replaces too, 3.5.0-F2); each maps
     to the cached archive for that package's currently-installed version (or
     None when not installed / not in the cache). Used as the offline-undo
     source: on Gate-3 failure the stage reinstalls the present paths in one
@@ -566,6 +580,7 @@ def snapshot_suite(built_map: dict[str, Path]) -> dict[str, "Path | None"]:
     for path in built_map.values():
         names.add(path.parent.name)  # pkgbase dir name; harmless if not a pkg
     names.update(built_map.keys())
+    names.update(extra_names)
     return pacman.cached_pkg_files_for(sorted(names))
 
 

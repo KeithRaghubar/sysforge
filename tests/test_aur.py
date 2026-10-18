@@ -2029,3 +2029,33 @@ def test_is_aur_checkout_rejects_lookalike_hosts(tmp_path):
     subprocess.run(["git", "-C", str(d), "remote", "add", "origin",
                     "https://aur.archlinux.org.example.com/foo.git"], check=True)
     assert is_aur_checkout(d) is False
+
+
+@pytest.mark.parametrize("url, expected", [
+    ("https://gitlab.archlinux.org/archlinux/packaging/packages/doxygen.git", "doxygen"),
+    ("https://gitlab.archlinux.org/archlinux/packaging/packages/linux-tools", "linux-tools"),
+    ("git@gitlab.archlinux.org:archlinux/packaging/packages/faust.git", "faust"),
+    ("ssh://git@gitlab.archlinux.org/archlinux/packaging/packages/mesa.git", "mesa"),
+    # Same host, outside the packaging group: not an official package.
+    ("https://gitlab.archlinux.org/someone/doxygen.git", None),
+    # The host name inside another host's path is not that host.
+    ("https://evil.example/gitlab.archlinux.org/archlinux/packaging/packages/doxygen.git",
+     None),
+    ("https://aur.archlinux.org/doxygen.git", None),
+])
+def test_repo_checkout_pkgbase(tmp_path, url, expected):
+    """3.5.0-B16: the official packaging repo a checkout was cloned from, by
+    its origin URL, never by the names its PKGBUILD declares."""
+    import subprocess
+    from sysforge.primitives.aur import repo_checkout_pkgbase
+    d = tmp_path / "c"
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    subprocess.run(["git", "-C", str(d), "remote", "add", "origin", url], check=True)
+    assert repo_checkout_pkgbase(d) == expected
+
+
+def test_repo_checkout_pkgbase_without_a_checkout(tmp_path):
+    from sysforge.primitives.aur import repo_checkout_pkgbase
+    assert repo_checkout_pkgbase(tmp_path / "missing") is None
+    (tmp_path / "plain").mkdir()
+    assert repo_checkout_pkgbase(tmp_path / "plain") is None

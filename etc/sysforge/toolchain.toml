@@ -133,46 +133,32 @@ drift_detect = "fingerprint"
 #reuse_unchanged = false
 
 # ---------------------------------------------------------------------------
-# BOLT post-link optimization (Pass 5 — LLVM/PGO path only) — EXPERIMENTAL
+# BOLT post-link optimization (LLVM/PGO path only) — EXPERIMENTAL
 #
-# CURRENTLY BLOCKED — keep `enabled = false`. The BOLT tools are all built with
-# DISABLE_LLVM_LINK_LLVM_DYLIB, so they link the per-component static LLVM archives
-# (libLLVMObject.a, libLLVMMC.a, ...). A PGO toolchain — like the stock Arch `llvm`
-# package — ships a dylib-only libLLVM without those archives, so the standalone
-# llvm-bolt build can't link. sysforge detects this and skips Pass 5 with a warning;
-# building BOLT in-tree with LLVM is the planned fix but is not yet implemented.
+# After the PGO passes build the optimized LLVM, BOLT (Binary Optimization and
+# Layout Tool) rewrites clang's library from a profile of it compiling code: the
+# PGO→BOLT "fast clang" stack. It runs inside the llvm build, right after the
+# optimized build and before anything is installed: sysforge instruments
+# libclang-cpp (and libLLVM with `libllvm`), compiles a sample of LLVM's own
+# sources with it, rewrites the libraries, checks the result still compiles,
+# and repackages. It uses the BOLT tools built in the same tree, so it needs the
+# repos' single `llvm` package, and it profiles by instrumentation, so it does
+# not need `perf` or any CPU feature. Every step is best-effort: a failure warns
+# and the PGO toolchain installs without BOLT. Off by default; not yet run
+# through a full toolchain build.
 #
-# After the PGO passes produce an optimized clang/libLLVM, BOLT (Binary
-# Optimization and Layout Tool) can rewrite the finished binaries for a further
-# layout/locality win — the canonical PGO→BOLT "fast clang" stack. Unlike PGO,
-# BOLT is post-link: Pass 4 links with -Wl,--emit-relocs, then `llvm-bolt`
-# rewrites the binary using a profile that `perf2bolt` converts from a `perf
-# record` run of clang on a representative compile job.
-#
-# EXPERIMENTAL: there is no official Arch package for BOLT, and the stock `llvm`
-# package does not build it. sysforge therefore builds the BOLT tools itself
-# (Pass 5a): it generates an `llvm-bolt` PKGBUILD version-locked to your llvm and
-# builds it from the same llvm-project monorepo tarball the toolchain already
-# downloaded (the `bolt/` subtree rides inside it), then installs it (a persistent
-# pacman package, kept in sync each run). You only need `perf` (linux-tools) for
-# the profile-collection step. Off by default; every step is best-effort — a
-# failed tool build, a missing `perf`, or a BOLT/smoke failure warns and leaves
-# the verified PGO toolchain in place.
-#
-# `enabled` is the BOLT-inclusion gate and is LIVE below at its default (off);
-# uncomment the optional sub-keys to tune. Only takes effect on the LLVM PGO path.
 [bolt]
-# enabled — opt-in; build llvm-bolt + BOLT-optimize clang
+# enabled — opt-in; BOLT libclang-cpp inside the llvm build
 enabled = false
 
-# libllvm — also BOLT libLLVM.so (shared lib; more fragile than the clang
-#   executable — leave off unless you know you want it). The clang
-#   executable is BOLTed regardless.
+# libllvm — also BOLT libLLVM.so. Every program that uses LLVM loads it
+#   (mesa, lldb, …), so it is the riskier half: leave off unless you want it.
+#   libclang-cpp is BOLTed whenever BOLT is on.
 #libllvm = false
 
-# training_workload — path to a .cpp the freshly-built clang compiles under
-#   perf to collect the profile; empty = a generated header-heavy C++ TU
-#   (front-end + optimizer + codegen).
+# training_workload — path to a .cpp the instrumented clang compiles to collect
+#   the profile; empty = a sample of LLVM's own compile commands from the build
+#   (clang's front-end sources first).
 #training_workload = ""
 # ---------------------------------------------------------------------------
 
@@ -199,6 +185,14 @@ enabled = false
 
 # ---------------------------------------------------------------------------
 # Package lists — override built-in defaults if needed
+#
+# A name is built with the PKGBUILD that builds it, not by its own name: the
+# repos now build clang, lld, polly, compiler-rt and openmp (and lldb, libclc,
+# …) from the one llvm PKGBUILD, so those names go through the PGO passes with
+# llvm, and only separate packages such as spirv-llvm-translator build in the
+# non-PGO slots. Installing replaces the packages listed here plus every
+# member of those PKGBUILDs that is already installed (e.g. lldb); members you
+# never installed are built but left out.
 #
 [packages]
 #pgo     = ["llvm", "llvm-libs"]
@@ -237,6 +231,12 @@ enabled = false
 #      targets (the upstream default).
 #
 # Setting `targets = []` here disables filtering entirely (force build all).
+#
+# Whatever the source, sysforge adds back any backend an installed package
+# needs: AMDGPU always (mesa), plus every backend an installed libLLVM consumer
+# imports. Programs that initialize all LLVM targets (lldb, bpftool, OpenCL,
+# faust) need every backend, so with one of those installed the filter keeps
+# all targets; the build log names the packages responsible.
 #
 [llvm]
 #targets = ["X86", "AMDGPU", "NVPTX"]

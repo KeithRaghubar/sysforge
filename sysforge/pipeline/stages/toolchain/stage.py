@@ -23,7 +23,6 @@ from sysforge.primitives.makepkg_pgo import resolve_pgo_store
 from sysforge.primitives.stage_sentinel import sentinel_scope
 
 from sysforge.pipeline.stages.toolchain import (
-    bolt,
     config,
     gates,
     identity,
@@ -230,6 +229,19 @@ class ToolchainStage(Stage):
         pgo_map = {n: pkgbuild_map[n] for n in pgo_pkgs}
         non_pgo_map = {n: pkgbuild_map[n] for n in non_pgo_pkgs}
         lib32_map = {n: pkgbuild_map[n] for n in lib32_pkgs}
+        # 3.5.0-F2: a name the pgo PKGBUILD builds (clang, lld, … since upstream
+        # merged them into llvm) is built in the pgo passes, never a second time
+        # in Pass 2/4b. A no-op for the old per-package layout.
+        pgo_map, non_pgo_map, lib32_map = pkgbuilds.partition_by_pkgbuild(
+            pgo_map, non_pgo_map, lib32_map,
+        )
+        pgo_pkgs, non_pgo_pkgs, lib32_pkgs = (
+            list(pgo_map), list(non_pgo_map), list(lib32_map)
+        )
+        # What the install step puts on the system, and so what the snapshot
+        # must be able to roll back: the configured names plus every installed
+        # member of the PKGBUILDs being built (lldb, libclc, … from llvm).
+        install_set = pkgbuilds.install_names({**pgo_map, **non_pgo_map, **lib32_map})
 
         # Training-corpus extras (e.g. mesa): compiled by the instrumented
         # stage1 clang in Pass 3 purely to enrich clang.profdata with non-LLVM
@@ -274,7 +286,9 @@ class ToolchainStage(Stage):
         # Capture the prior-good install set BEFORE any mutation so it can be
         # restored offline if Gate 3 (post-install verify) fails. Cheap pacman
         # cache lookup; safe in dry-run (read-only).
-        snapshot = gates.snapshot_suite({**pgo_map, **non_pgo_map, **lib32_map})
+        snapshot = gates.snapshot_suite(
+            {**pgo_map, **non_pgo_map, **lib32_map}, extra_names=install_set,
+        )
 
         # B1: consolidated resolution summary — one labelled block plus the
         # readable core of a --dry-run preview (kernel parity).
@@ -347,9 +361,9 @@ class ToolchainStage(Stage):
                     config_digest=config_digest,
                     reuse_built=reuse_built,
                     corpus_map=corpus_map,
-                    # BOLT Pass 5 (opt-in) needs the shipped clang/libLLVM linked
-                    # with -Wl,--emit-relocs so llvm-bolt can rewrite them.
-                    bolt_relocs=tcfg.bolt.enabled,
+                    # [bolt] (opt-in) links 4a/4b with -Wl,--emit-relocs and
+                    # BOLTs the 4a build tree before install (3.5.0-F3).
+                    tcfg=tcfg,
                 )
             else:
                 built_map, cc, cxx, ld, variant = pgo.build_llvm_single(
@@ -382,7 +396,9 @@ class ToolchainStage(Stage):
                     _log.ui("[dry-run] would install built toolchain and verify")
                 else:
                     label = "PGO optimize" if pgo_enabled else "LLVM build (single pass, no PGO)"
-                    profdata.pgo_install(label, built_map, options.dry_run)
+                    profdata.pgo_install(
+                        label, built_map, options.dry_run, members=install_set,
+                    )
 
                 # Gate 3 — post-install verify (H). On failure, auto-restore the
                 # prior-good toolchain from the snapshot (offline pacman -U):
@@ -412,9 +428,10 @@ class ToolchainStage(Stage):
                     issues = list(
                         verify.verify_llvm_install(expected_targets=expected_targets)
                     )
-                    # Graphics-consumer sufficiency vs the NOW-INSTALLED libLLVM.
-                    # An *unhealable* dropped backend an installed mesa consumer
-                    # imports is brick-class — folded into `issues` so the same
+                    # Consumer sufficiency vs the NOW-INSTALLED libLLVM (graphics
+                    # globs + every installed libLLVM consumer, 3.5.0-B14). An
+                    # *unhealable* dropped backend an installed consumer imports
+                    # is folded into `issues` so the same
                     # snapshot auto-restore fires while rollback is still armed
                     # (inside the sentinel). *Healable* std:: re-export misses are
                     # EXPECTED here (mesa is not rebuilt until after Gate 3): they
@@ -463,13 +480,6 @@ class ToolchainStage(Stage):
                     if pgo_enabled:
                         profdata.remove_staging(staging, options.dry_run)
                         profdata.remove_staging(staging3, options.dry_run)
-                        # Pass 5 — BOLT the verified PGO clang (opt-in, gated on
-                        # [bolt] enabled). 4a builds the BOLT tools (not in the
-                        # Arch repos), 4b rewrites clang. Best-effort and
-                        # smoke-tested before it replaces /usr/bin/clang; runs
-                        # inside the sentinel so a mishap stays covered by the
-                        # snapshot rollback.
-                        bolt.run_bolt(tcfg, sysforge_config, options, variant)
 
         # Toolchain is installed and Gate-3-verified. Rebuild the libLLVM
         # consumers so the live system is left coherent: the pre-build soname

@@ -821,3 +821,64 @@ def test_validate_allows_legitimate_dash_d_array_elements(tmp_path):
     patched.write_text(original.read_text())
     assert patch_llvm_dir(patched, _STAGED_LLVM_DIR) is True
     validate_patched_pkgbuild(original, patched)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B14: installed consumers that initialize every target keep them
+# ---------------------------------------------------------------------------
+
+def _consumers(monkeypatch, mapping):
+    from sysforge.primitives import toolchain_safety
+    calls = []
+
+    def fake(*, exclude):
+        calls.append(exclude)
+        return mapping
+    monkeypatch.setattr(toolchain_safety, "consumer_required_targets", fake)
+    return calls
+
+
+def test_resolve_explicit_targets_gain_consumer_backends(tmp_path, monkeypatch):
+    _consumers(monkeypatch, {"WebAssembly": ["bpf", "lldb"], "X86": ["mesa"]})
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, '[llvm]\ntargets = ["X86", "NVPTX"]\n')
+    assert resolve_llvm_targets(tc, tmp_path / "missing-hw.toml") == [
+        "X86", "NVPTX", "AMDGPU", "WebAssembly",
+    ]
+
+
+def test_resolve_hardware_targets_gain_consumer_backends(tmp_path, monkeypatch):
+    _consumers(monkeypatch, {"Hexagon": ["lldb"]})
+    hw = tmp_path / "hardware_profile.toml"
+    _write_hardware(hw, ["X86", "AMDGPU"])
+    assert resolve_llvm_targets(tmp_path / "missing-tc.toml", hw) == [
+        "X86", "AMDGPU", "Hexagon",
+    ]
+
+
+def test_resolve_consumer_backends_are_named_in_a_warning(tmp_path, monkeypatch, capsys):
+    from sysforge import log
+    monkeypatch.setattr(log, "_VERBOSITY", 1)
+    _consumers(monkeypatch, {"WebAssembly": ["bpf", "lldb"]})
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, '[llvm]\ntargets = ["X86"]\n')
+    resolve_llvm_targets(tc, tmp_path / "missing-hw.toml")
+    out, err = capsys.readouterr()
+    assert "WebAssembly" in out + err and "lldb" in out + err
+
+
+def test_resolve_consumer_scan_excludes_the_lockstep_suite(tmp_path, monkeypatch):
+    from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+    calls = _consumers(monkeypatch, {})
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, '[llvm]\ntargets = ["X86"]\n')
+    resolve_llvm_targets(tc, tmp_path / "missing-hw.toml")
+    assert calls and set(LLVM_LOCKSTEP_SUITE) <= set(calls[0])
+
+
+def test_resolve_disabled_filtering_never_scans(tmp_path, monkeypatch):
+    calls = _consumers(monkeypatch, {"WebAssembly": ["lldb"]})
+    tc = tmp_path / "toolchain.toml"
+    _write_toolchain(tc, "[llvm]\ntargets = []\n")
+    assert resolve_llvm_targets(tc, tmp_path / "missing-hw.toml") is None
+    assert calls == []

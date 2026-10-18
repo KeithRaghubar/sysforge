@@ -278,7 +278,7 @@ _sysforge_doctor_system() {
     '--gfxperf[advisory graphics-performance sweep]' \
     '--hardware[inventory PCI/USB devices; audit kernel drivers]' \
     '--distro[running distribution and its support tier]' \
-    '--toolchain[configured toolchain vs installed LLVM]' \
+    '--toolchain[configured vs installed LLVM; broken libLLVM users]' \
     '--rust[Rust toolchain owner + rustup default; opt-in]' \
     '--cache[compile-cache readiness: ccache/sccache]' \
     '--pacman[pacman-db consistency, .pacnew drift, orphans]' \

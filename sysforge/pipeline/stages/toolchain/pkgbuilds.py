@@ -151,6 +151,62 @@ def sync_pkgbuild_dirs(
 # ---------------------------------------------------------------------------
 
 
+def partition_by_pkgbuild(
+    pgo_map: dict[str, Path],
+    non_pgo_map: dict[str, Path],
+    lib32_map: dict[str, Path],
+) -> tuple[dict[str, Path], dict[str, Path], dict[str, Path]]:
+    """Move every name a pgo PKGBUILD builds into the pgo set (3.5.0-F2).
+
+    The passes are planned per *name*, but they build per *PKGBUILD*. Upstream
+    now builds clang, lld, polly, compiler-rt and openmp from the ``llvm``
+    PKGBUILD, so after resolution those names point at the same file as
+    ``llvm``. Left in ``non_pgo`` they would send the whole llvm tree through
+    Pass 2 and Pass 4b again. Moved into ``pgo``, Pass 1 instruments the whole
+    tree (clang included, which gives stage1 its own clang), Pass 4a optimizes
+    it once, and Pass 2/4b keep only the genuinely separate pkgbases
+    (``spirv-llvm-translator``). With the old per-package PKGBUILDs nothing
+    shares a file and nothing moves, so the split layout needs no detection.
+    """
+    pgo_files = set(pgo_map.values())
+    pgo = dict(pgo_map)
+    rest: list[dict[str, Path]] = []
+    for group in (non_pgo_map, lib32_map):
+        kept: dict[str, Path] = {}
+        for name, path in group.items():
+            if path in pgo_files:
+                pgo[name] = path
+            else:
+                kept[name] = path
+        rest.append(kept)
+    return pgo, rest[0], rest[1]
+
+
+def install_names(pkgbuild_map: dict[str, Path]) -> set[str]:
+    """The packages a toolchain build installs: the configured names plus every
+    *installed* member of the PKGBUILDs it builds (3.5.0-F2).
+
+    One ``llvm`` build now produces 18 split packages. Installing all of them
+    would add WASI runtimes, libc++ and the like that were never installed;
+    installing only the configured names would leave members such as lldb on
+    the old version against a new libLLVM. Members a selected package depends
+    on are added after the build, from the built packages' ``.PKGINFO``
+    (``profdata.select_install_members``).
+    """
+    names = set(pkgbuild_map)
+    installed = pacman.get_all_installed_packages()
+    for path in set(pkgbuild_map.values()):
+        try:
+            members = pkgbuild_meta.parse_pkgbuild(path).get("globals", {}).get("pkgname", [])
+        except Exception as e:
+            _log.info(f"  install set: parse failed for {path}: {e}")
+            continue
+        if isinstance(members, str):
+            members = [members]
+        names.update(m for m in members if m in installed)
+    return names
+
+
 def resolve_all_pkgbuilds(
     names: list[str], config: dict, *,
     update: bool = True,
@@ -186,13 +242,26 @@ def resolve_all_pkgbuilds(
         if raw:
             pkgbuild_dir = Path(raw).expanduser()
 
+    # Pass 0 — 3.5.0-B13: the sync DB names the pkgbase that builds each
+    # package. Look that directory up, not one named after the package: after
+    # upstream folded clang/lld/… into the llvm pkgbase, the old per-package
+    # checkouts still exist and would otherwise win Pass 1 with a frozen tree.
+    # A name no repo carries (AUR, local) keeps its own name.
+    source_of = {name: pacman.get_sync_pkgbase(name) or name for name in names}
+
     # Pass 1 — local direct (no clone)
     remaining = []
     for name in names:
         if pkgbuild_dir:
-            candidate = pkgbuild_dir / name / "PKGBUILD"
+            candidate = pkgbuild_dir / source_of[name] / "PKGBUILD"
             if candidate.exists():
                 resolved[name] = candidate.resolve()
+                stale = pkgbuild_dir / name
+                if source_of[name] != name and (stale / "PKGBUILD").exists():
+                    _log.warn(
+                        f"{stale} is stale: {name} is now built by the "
+                        f"{source_of[name]} pkgbase; using {candidate.parent}"
+                    )
                 continue
         remaining.append(name)
 
@@ -231,7 +300,7 @@ def resolve_all_pkgbuilds(
     while i < len(remaining):
         name = remaining[i]
         try:
-            path = prim_config.find_pkgbuild(name, config)
+            path = prim_config.find_pkgbuild(source_of[name], config)
             resolved[name] = path
             # Re-run split scan: the freshly cloned PKGBUILD may cover other remaining names
             try:

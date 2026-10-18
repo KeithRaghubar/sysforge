@@ -6,8 +6,6 @@
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from sysforge.primitives import bolt
 
 
@@ -25,11 +23,6 @@ def test_store_is_bolt_method_subdir(monkeypatch):
 
 def test_store_honours_profile_store_override(tmp_path):
     assert bolt.resolve_store({"profile_store": str(tmp_path)}) == tmp_path / "bolt"
-
-
-def test_fdata_and_perf_paths_under_store(tmp_path):
-    assert bolt.fdata_path(tmp_path).name == bolt.FDATA_NAME
-    assert bolt.perf_data_path(tmp_path).name == bolt.PERF_DATA_NAME
 
 
 def test_emit_relocs_ldflag():
@@ -53,33 +46,6 @@ def test_build_mode_is_optimized_and_conflict():
 # Command builders
 # ---------------------------------------------------------------------------
 
-def test_perf_record_cmd_has_branch_stack(tmp_path):
-    cmd = bolt.perf_record_cmd(tmp_path / "perf.data", ["clang++", "-c", "x.cpp"])
-    assert cmd[0] == "perf" and "record" in cmd
-    assert "-j" in cmd and "any,u" in cmd  # branch stack (LBR/BRS)
-    assert cmd[-3:] == ["clang++", "-c", "x.cpp"]
-
-
-def test_perf2bolt_cmd_targets_binary(tmp_path):
-    cmd = bolt.perf2bolt_cmd(Path("/usr/bin/clang"), tmp_path / "perf.data", tmp_path / "o.fdata")
-    assert cmd[0] == "perf2bolt" and "/usr/bin/clang" in cmd
-    assert "-p" in cmd and "-o" in cmd
-
-
-def test_llvm_bolt_cmd_carries_opt_flags(tmp_path):
-    cmd = bolt.llvm_bolt_cmd(Path("/usr/bin/clang"), tmp_path / "o.fdata", tmp_path / "clang.bolt")
-    assert cmd[0] == "llvm-bolt"
-    assert "-reorder-blocks=ext-tsp" in cmd
-    assert "-reorder-functions=hfsort+" in cmd
-    assert "-split-functions" in cmd
-
-
-def test_compile_workload_argv():
-    argv = bolt.compile_workload_argv("/usr/bin/clang++", Path("/t/w.cpp"), Path("/t/w.o"))
-    assert argv[0] == "/usr/bin/clang++"
-    assert "-O2" in argv and "-c" in argv
-
-
 def test_write_default_workload(tmp_path):
     src = bolt.write_default_workload(tmp_path)
     assert src.is_file() and src.suffix == ".cpp"
@@ -88,156 +54,120 @@ def test_write_default_workload(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# tools_available
+# 3.5.0-F3: BOLT inside the llvm build
 # ---------------------------------------------------------------------------
 
-def test_tools_available_all_present(monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: f"/usr/bin/{t}")
-    ok, missing = bolt.tools_available()
-    assert ok and missing == []
+def _tree(root: Path) -> Path:
+    build = root / "llvm" / "src" / "llvm-project-23.1.3.src" / "build"
+    (build / "lib").mkdir(parents=True)
+    (build / "build.ninja").write_text("")
+    return build
 
 
-def test_tools_available_reports_missing(monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which",
-                        lambda t: None if t == "perf2bolt" else f"/usr/bin/{t}")
-    ok, missing = bolt.tools_available()
-    assert not ok and missing == ["perf2bolt"]
+def test_build_tree_for_finds_the_tree_under_builddir(tmp_path, monkeypatch):
+    from sysforge.primitives import pacman
+    build = _tree(tmp_path / "builds")
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path / "builds")
+    assert bolt.build_tree_for(tmp_path / "src/llvm/PKGBUILD") == build
 
 
-def test_tools_available_skips_perf_when_not_needed(monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: None if t == "perf" else f"/usr/bin/{t}")
-    ok, missing = bolt.tools_available(need_perf=False)
-    assert ok and missing == []
+def test_build_tree_for_without_builddir_uses_the_pkgbuild_dir(tmp_path, monkeypatch):
+    from sysforge.primitives import pacman
+    build = _tree(tmp_path / "src")
+    monkeypatch.setattr(pacman, "get_builddir", lambda: None)
+    assert bolt.build_tree_for(tmp_path / "src/llvm/PKGBUILD") == build
 
 
-# ---------------------------------------------------------------------------
-# standalone_build_viable — BLOCKED guard for dylib-only LLVM installs
-# ---------------------------------------------------------------------------
-
-def test_standalone_build_viable_true_with_static_components(tmp_path):
-    # A full static LLVM install ships the per-component archives BOLT links.
-    for name in bolt._STATIC_COMPONENT_PROBE:
-        (tmp_path / name).write_text("")
-    assert bolt.standalone_build_viable(tmp_path) is True
+def test_build_tree_for_missing_tree_is_none(tmp_path, monkeypatch):
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path)
+    assert bolt.build_tree_for(tmp_path / "src/llvm/PKGBUILD") is None
 
 
-def test_standalone_build_viable_false_for_dylib_only(tmp_path):
-    # Dylib-only install (PGO toolchain / stock Arch llvm): only libLLVM.so + a few
-    # static libs, none of the component archives BOLT's static-linked tools need.
-    (tmp_path / "libLLVM.so").write_text("")
-    (tmp_path / "libLLVMSupport.a").write_text("")  # shipped static, but not a probe
-    assert bolt.standalone_build_viable(tmp_path) is False
+def test_bolt_targets_are_the_shared_libraries_not_the_driver(tmp_path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    for real in ("libclang-cpp.so.23.1", "libLLVM.so.23.1"):
+        (lib / real).write_bytes(b"\x7fELF")
+    (lib / "libclang-cpp.so").symlink_to("libclang-cpp.so.23.1")
+    (lib / "libLLVM.so").symlink_to("libLLVM.so.23.1")
+    assert bolt.bolt_targets(tmp_path, libllvm=False) == [lib / "libclang-cpp.so.23.1"]
+    assert bolt.bolt_targets(tmp_path, libllvm=True) == [
+        lib / "libclang-cpp.so.23.1", lib / "libLLVM.so.23.1"]
 
 
-def test_standalone_build_viable_false_when_partial(tmp_path):
-    # Even one missing probe archive blocks the standalone build.
-    (tmp_path / bolt._STATIC_COMPONENT_PROBE[0]).write_text("")
-    assert bolt.standalone_build_viable(tmp_path) is False
-
-
-# ---------------------------------------------------------------------------
-# collect_profile + bolt_binary (subprocess mocked)
-# ---------------------------------------------------------------------------
-
-def test_collect_profile_missing_tools_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: None)
-    with pytest.raises(bolt.BoltError) as exc:
-        bolt.collect_profile(Path("/usr/bin/clang"), tmp_path, ["clang++", "-c", "x.cpp"])
-    assert "perf" in str(exc.value)
-
-
-def test_collect_profile_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: f"/usr/bin/{t}")
+def _probe(monkeypatch, stdout, rc=0):
     calls = []
-
-    def fake_run(argv, **kw):
-        calls.append(argv[0])
-        # perf2bolt writes the .fdata
-        if argv[0] == "perf2bolt":
-            out_idx = argv.index("-o") + 1
-            Path(argv[out_idx]).write_text("fdata")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(bolt.subprocess, "run", fake_run)
-    fdata = bolt.collect_profile(Path("/usr/bin/clang"), tmp_path, ["clang++", "-c", "x.cpp"])
-    assert fdata == tmp_path / bolt.FDATA_NAME
-    assert fdata.read_text() == "fdata"
-    assert calls == ["perf", "perf2bolt"]
+    monkeypatch.setattr(bolt.run, "probe", lambda argv, **kw: calls.append(argv)
+                        or subprocess.CompletedProcess(argv, rc, stdout, ""))
+    return calls
 
 
-def test_collect_profile_tool_failure_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: f"/usr/bin/{t}")
-    monkeypatch.setattr(
-        bolt.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, "", "perf_event_paranoid"),
-    )
-    with pytest.raises(bolt.BoltError) as exc:
-        bolt.collect_profile(Path("/usr/bin/clang"), tmp_path, ["clang++", "-c", "x.cpp"])
-    assert "perf_event_paranoid" in str(exc.value)
+def test_has_relocations_reads_the_rela_text_section(monkeypatch):
+    _probe(monkeypatch, "  [12] .rela.text RELA 0000 ...\n")
+    assert bolt.has_relocations(Path("/x/libclang-cpp.so.23.1"))
+    _probe(monkeypatch, "  [12] .rela.dyn RELA 0000 ...\n")
+    assert not bolt.has_relocations(Path("/x/libclang-cpp.so.23.1"))
 
 
-def test_bolt_binary_success(tmp_path, monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: f"/usr/bin/{t}")
-    fdata = tmp_path / "llvm.fdata"
-    fdata.write_text("p")
-    binary = tmp_path / "clang"
-    binary.write_text("elf")
-
-    def fake_run(argv, **kw):
-        out_idx = argv.index("-o") + 1
-        Path(argv[out_idx]).write_text("bolted")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(bolt.subprocess, "run", fake_run)
-    out = bolt.bolt_binary(binary, fdata)
-    assert out == binary.with_suffix(binary.suffix + ".bolt")
-    assert out.read_text() == "bolted"
+def test_runtime_with_got_calls_is_not_linkable(monkeypatch):
+    """A runtime built by GCC with -fno-plt carries GOTPCRELX calls that BOLT's
+    JITLink rejects for every input (the packaged llvm-bolt 23.1.3-3 does)."""
+    _probe(monkeypatch, "0000 000b0000002a R_X86_64_GOTPCRELX 0 memset - 4\n")
+    assert not bolt.runtime_linkable(Path("/x/libbolt_rt_instr.a"))
+    _probe(monkeypatch, "0000 000b00000004 R_X86_64_PLT32 0 memset - 4\n")
+    assert bolt.runtime_linkable(Path("/x/libbolt_rt_instr.a"))
 
 
-def test_bolt_binary_missing_profile_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(bolt.shutil, "which", lambda t: f"/usr/bin/{t}")
-    with pytest.raises(bolt.BoltError) as exc:
-        bolt.bolt_binary(tmp_path / "clang", tmp_path / "absent.fdata")
-    assert "no BOLT profile" in str(exc.value)
+_NINJA_COMMANDS = "\n".join([
+    "/usr/bin/sccache /usr/bin/clang++ -DFOO -I/b/include -O2 -MD -MT tools/x.o"
+    " -MF tools/x.o.d -o tools/clang/lib/Sema/Sema.cpp.o -c /s/clang/lib/Sema/Sema.cpp",
+    "/usr/bin/clang++ -O2 -MD -MT a.o -MF a.o.d -o lib/Support/APInt.cpp.o"
+    " -c /s/llvm/lib/Support/APInt.cpp",
+    "/usr/bin/clang++ -O2 -o tools/clang/lib/AST/Decl.cpp.o -c /s/clang/lib/AST/Decl.cpp",
+    ": && /usr/bin/clang++ -shared -o lib/libclang-cpp.so.23.1 @rsp && :",
+]) + "\n"
 
 
-# ---------------------------------------------------------------------------
-# llvm-bolt PKGBUILD generation
-# ---------------------------------------------------------------------------
-
-def test_render_pkgbuild_version_locks_to_llvm():
-    text = bolt.render_pkgbuild("22.1.8")
-    assert "pkgname=llvm-bolt" in text
-    assert "pkgver=22.1.8" in text
-    # builds the bolt subtree of the same monorepo tarball, standalone
-    assert "llvm-project-$pkgver.src/bolt" in text
-    assert 'makedepends=("llvm=$pkgver"' in text
-    assert "sha256sums=('SKIP')" in text
-    # experimental provenance is stated in the generated file
-    assert "experimental" in text.lower()
+def test_training_commands_rewrite_the_compiler_and_outputs(tmp_path, monkeypatch):
+    _probe(monkeypatch, _NINJA_COMMANDS)
+    cmds = bolt.training_commands(Path("/b"), Path("/b/bin/clang++"), tmp_path,
+                                  target="lib/libclang-cpp.so.23.1", limit=10)
+    # compile lines only, launcher dropped, front-end (clang/lib) sources first
+    assert [c[0] for c in cmds] == ["/b/bin/clang++"] * 3
+    assert cmds[0][-1].endswith("Sema.cpp") and cmds[1][-1].endswith("Decl.cpp")
+    for c in cmds:
+        assert "-MD" not in c and "-MF" not in c and "-MT" not in c
+        assert Path(c[c.index("-o") + 1]).parent == tmp_path
 
 
-def test_render_pkgbuild_is_valid_bash_syntax():
-    import shutil as _sh
-    import subprocess as _sp
-    if _sh.which("bash") is None:
-        pytest.skip("bash not available")
-    text = bolt.render_pkgbuild("22.1.8")
-    # `bash -n` parses without executing — catches a broken brace/quote in the
-    # generated PKGBUILD before makepkg ever sees it.
-    res = _sp.run(["bash", "-n"], input=text, text=True, capture_output=True)
-    assert res.returncode == 0, res.stderr
+def test_training_commands_respect_the_limit(tmp_path, monkeypatch):
+    _probe(monkeypatch, _NINJA_COMMANDS)
+    assert len(bolt.training_commands(Path("/b"), Path("/b/bin/clang++"), tmp_path,
+                                      target="t", limit=2)) == 2
 
 
-def test_materialize_pkgbuild_writes_versioned_file(tmp_path):
-    pkgbuild = bolt.materialize_pkgbuild(tmp_path, "22.1.8")
-    assert pkgbuild == tmp_path / "llvm-bolt" / "PKGBUILD"
-    assert pkgbuild.is_file()
-    assert "pkgver=22.1.8" in pkgbuild.read_text()
+def test_optimize_cmd_uses_the_llvm23_flag_spellings(tmp_path):
+    argv = bolt.optimize_cmd(tmp_path / "llvm-bolt", tmp_path / "lib.so",
+                             tmp_path / "lib.fdata", tmp_path / "out.so")
+    assert "-reorder-functions=cdsort" in argv and "-icf=all" in argv
+    assert not any("hfsort" in a for a in argv) and "-icf=1" not in argv
 
 
-def test_materialize_pkgbuild_overwrites_with_new_version(tmp_path):
-    bolt.materialize_pkgbuild(tmp_path, "21.0.0")
-    pkgbuild = bolt.materialize_pkgbuild(tmp_path, "22.1.8")
-    text = pkgbuild.read_text()
-    assert "pkgver=22.1.8" in text and "pkgver=21.0.0" not in text
+def test_instrument_cmd_appends_pid_and_names_the_runtime(tmp_path):
+    argv = bolt.instrument_cmd(tmp_path / "llvm-bolt", tmp_path / "lib.so", tmp_path / "o.so",
+                               tmp_path / "lib.fdata", tmp_path / "rt.a")
+    assert "-instrument" in argv and "--instrumentation-file-append-pid" in argv
+    assert f"--runtime-instrumentation-lib={tmp_path / 'rt.a'}" in argv
+
+
+def test_replace_keep_mtime_keeps_ninja_from_relinking(tmp_path):
+    import os
+    dest, new = tmp_path / "libclang-cpp.so.23.1", tmp_path / "bolted"
+    dest.write_bytes(b"old")
+    os.utime(dest, (1_000_000, 1_000_000))
+    new.write_bytes(b"bolted")
+    bolt.replace_keep_mtime(new, dest)
+    assert dest.read_bytes() == b"bolted"
+    assert dest.stat().st_mtime == 1_000_000
+

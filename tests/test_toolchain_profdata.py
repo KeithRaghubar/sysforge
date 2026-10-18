@@ -1041,3 +1041,33 @@ def test_validate_pgo_environment_instrumented_non_tty_raises():
          patch("sys.stdin.isatty", return_value=False):
         with pytest.raises(RuntimeError, match="Aborting unattended"):
             validate_pgo_environment(dry_run=False)
+
+
+def test_select_install_members_takes_wanted_plus_member_dependencies(tmp_path, monkeypatch):
+    """3.5.0-F2: clang depends on clang-libs=<ver> (split out upstream in
+    23.1.3-4), so selecting clang must bring the matching clang-libs along."""
+    from sysforge.pipeline.stages.toolchain.profdata import select_install_members
+    from sysforge.primitives import pacman
+    files = {n: tmp_path / f"{n}-23.1.3-4-x86_64.pkg.tar.zst"
+             for n in ("llvm", "clang", "clang-libs", "wasi-libc++", "libc++")}
+    deps = {"clang": {"clang-libs", "llvm-libs", "gcc"}, "wasi-libc++": {"libc++"},
+            "llvm": set(), "clang-libs": set(), "libc++": set()}
+    by_path = {str(p): n for n, p in files.items()}
+    monkeypatch.setattr(pacman, "read_pkgname_from_file", lambda p: by_path[str(p)])
+    monkeypatch.setattr(pacman, "read_pkginfo_relations",
+                        lambda p: {"depend": deps[by_path[str(p)]], "provides": set()})
+    out = select_install_members(list(files.values()), {"llvm", "clang"})
+    assert [by_path[str(p)] for p in out] == ["llvm", "clang", "clang-libs"]
+
+
+def test_pgo_install_with_members_installs_only_those(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.toolchain import profdata
+    llvm = tmp_path / "llvm-1-1-x86_64.pkg.tar.zst"
+    wasi = tmp_path / "wasi-libc++-1-1-x86_64.pkg.tar.zst"
+    monkeypatch.setattr(profdata, "collect_pgo_packages", lambda m: [llvm, wasi])
+    monkeypatch.setattr(profdata, "select_install_members", lambda files, wanted: [llvm])
+    calls = []
+    monkeypatch.setattr(profdata.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or MagicMock(returncode=0))
+    profdata.pgo_install("test", {"llvm": tmp_path / "PKGBUILD"}, False, members={"llvm"})
+    assert str(llvm) in calls[0] and str(wasi) not in calls[0]

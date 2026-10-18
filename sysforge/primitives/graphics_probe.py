@@ -364,7 +364,12 @@ def _check_mesa_llvm_symbols() -> GraphicsFinding | None:
     """
     from sysforge.primitives import toolchain_safety
 
-    findings = toolchain_safety.check_installed_consumer_symbols()
+    # Graphics consumers only (brick-class). Since 3.5.0-B14 the fact also
+    # covers non-graphics consumers (lldb, bpftool, …), which `doctor
+    # --toolchain` reports instead; a broken debugger is not a black screen.
+    findings = [
+        f for f in toolchain_safety.check_installed_consumer_symbols() if f.is_brick
+    ]
     if not findings:
         return None
     f = findings[0]

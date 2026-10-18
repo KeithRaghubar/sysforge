@@ -68,6 +68,11 @@ def _toolchain_gates_clean(monkeypatch, tmp_path):
     from sysforge.primitives import toolchain_safety as _ts
 
     monkeypatch.setattr(_ts, "smoke_test_compilers", lambda: [], raising=True)
+    # 3.5.0-B13: PKGBUILD resolution asks the host sync DB for each name's
+    # pkgbase. Default to "not in any repo" so resolution sees only the
+    # fixture tree; pkgbase tests re-patch it.
+    from sysforge.primitives import pacman as _pacman
+    monkeypatch.setattr(_pacman, "get_sync_pkgbase", lambda name: None, raising=True)
     # 3.4.0-F1: a staged_deps=False pass pre-installs missing repo deps itself
     # (pacman -T against the host, then sudo pacman -S). Never from a test;
     # tests of that step re-patch it.

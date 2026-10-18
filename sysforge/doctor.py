@@ -802,10 +802,22 @@ def _collect_toolchain_findings(config) -> diag.AxisResult:
     """Configured-vs-installed toolchain provenance (custom LLVM requested but
     stock repo LLVM installed, or PGO profdata skew). Built on
     ``llvm_state.detect_toolchain_config_mismatch`` — provenance reporting, not
-    a third toolchain health probe."""
+    a third toolchain health probe.
+
+    Also the installed libLLVM consumers that no longer load against the
+    system libLLVM (3.5.0-B14), from the toolchain stage's own post-install
+    fact. Graphics consumers are left to ``--graphics``, which reports them as
+    the black-screen case."""
     from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
-    return _ran(diag.adapt_many("toolchain", detect_toolchain_config_mismatch(config)),
-                "toolchain_provenance")
+    from sysforge.primitives import toolchain_safety
+
+    consumers = [
+        f for f in toolchain_safety.check_installed_consumer_symbols() if not f.is_brick
+    ]
+    return _ran(
+        diag.adapt_many("toolchain", [*detect_toolchain_config_mismatch(config), *consumers]),
+        "toolchain_provenance", "libllvm_consumers",
+    )
 
 
 def _collect_rust_findings(config, args) -> diag.AxisResult:
@@ -1191,7 +1203,8 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "toolchain", "toolchain checks",
             lambda: _collect_toolchain_findings(config),
             clean_msg=("toolchain config matches the installed LLVM "
-                       "(or no custom LLVM toolchain is configured)")),
+                       "(or no custom LLVM toolchain is configured), and every "
+                       "installed libLLVM consumer resolves against it")),
         "rust": diag.Axis(
             "rust", "rust toolchain provenance",
             lambda: _collect_rust_findings(config, args),
@@ -1644,7 +1657,9 @@ def _add_system_axis_flags(p):
         help="Check that the configured toolchain matches what's installed: when "
              "toolchain.toml requests a custom LLVM toolchain (compiler = llvm, "
              "optionally PGO) but stock repo LLVM is installed, or the PGO "
-             "profdata is version-skewed, report it.")
+             "profdata is version-skewed, report it. Also report installed "
+             "programs that no longer load against the system libLLVM (e.g. "
+             "after building it with fewer LLVM targets).")
     p.add_argument("--rust", action="store_true",
         help="Report which Rust toolchain a build will actually use: the "
              "effective cargo/rustc owner (rustup channel or distro `rust` "

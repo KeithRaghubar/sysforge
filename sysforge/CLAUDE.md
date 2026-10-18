@@ -137,9 +137,11 @@ Mechanism lives in the cited §DESIGN section.
     `kernel_fdo.write_round`/`read_round`, `applied.toml` only via `kernel_fdo.write_applied`/
     `read_applied` (a `use` forces `-f` when the profile changed; every `record` forces).
     `capture` read-only; profiles go in via the `extra_env` make-var seam. LLVM-only. §Kernel stage.
-  - **BOLT post-link** (`primitives/bolt.py`): EXPERIMENTAL **and BLOCKED** (dylib-only LLVM can't
-    link standalone BOLT tools; `standalone_build_viable()` guards) — **keep `[bolt] enabled =
-    false`**. Toolchain Pass 5, in-place stock name.
+  - **BOLT post-link** (`primitives/bolt.py`, orchestration `toolchain/bolt.py::optimize_in_build`):
+    EXPERIMENTAL, default off. Runs on the Pass-4a **build tree** (unstripped, `--emit-relocs`),
+    then `makepkg --repackage`; never rewrites an installed file. Replace tree files only via
+    `bolt.replace_keep_mtime` (a changed mtime makes ninja relink and undo it). Targets
+    `libclang-cpp` (+ `libLLVM` behind `[bolt] libllvm`), never the clang driver.
   - §CLI Verb / §Flag-Profile / §`pkgbuild_patcher.py`.
 - **Bench engine**: `bench_core.run_toolchain_bench` is the one home, called by `bench_cmd` (the
   verb), `state_cmd` (GAIN, via `bench_core.current_fingerprint`) and the toolchain stage

@@ -22,6 +22,8 @@ from sysforge.primitives.pacman import (
     get_pacman_cache_dirs,
     get_pacman_sync_version,
     get_pkgbase,
+    get_sync_pkgbase,
+    is_installed_repo_pkgbase,
     pkg_supersedes_installed,
     read_pkg_replaces_from_file,
     read_pkginfo_relations,
@@ -234,6 +236,58 @@ class TestGetPacmanSyncVersion:
     def test_not_found(self, mock_run):
         mock_run.return_value = MagicMock(stdout="", returncode=1)
         assert get_pacman_sync_version("nonexistent") is None
+
+
+class TestGetSyncPkgbase:
+    """3.5.0-B13: the sync DB's %BASE%, via pacman's own --print-format."""
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_split_member_reports_its_pkgbase(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="clang llvm\n", returncode=0)
+        assert get_sync_pkgbase("clang") == "llvm"
+        argv = mock_run.call_args.args[0]
+        # -dd: print only the target, never the dependencies it would pull in.
+        assert "-Sddp" in argv and "%n %e" in argv and argv[-1] == "clang"
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_not_in_any_repo_is_none(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="", returncode=1)
+        assert get_sync_pkgbase("some-aur-pkg") is None
+
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_line_for_another_name_is_ignored(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="other llvm\n", returncode=0)
+        assert get_sync_pkgbase("clang") is None
+
+
+class TestIsInstalledRepoPkgbase:
+    """3.5.0-B17: a split repo pkgbase (linux-tools) is no sync-DB pkgname, so
+    it is recognised through an installed member whose sync %BASE% agrees."""
+
+    def _local(self, monkeypatch, bases):
+        from sysforge.primitives import pacman
+        monkeypatch.setattr(
+            pacman, "get_all_package_fields",
+            lambda *s, **k: {n: {"%BASE%": [b]} for n, b in bases.items()})
+
+    def test_installed_split_member_in_the_repo(self, monkeypatch):
+        from sysforge.primitives import pacman
+        self._local(monkeypatch, {"bpftool": "linux-tools", "perf": "linux-tools"})
+        monkeypatch.setattr(pacman, "get_sync_pkgbase",
+                            lambda n: "linux-tools" if n == "perf" else None)
+        assert is_installed_repo_pkgbase("linux-tools")
+
+    def test_local_build_whose_name_the_repo_files_elsewhere(self, monkeypatch):
+        from sysforge.primitives import pacman
+        self._local(monkeypatch, {"mytool": "mytool-git"})
+        monkeypatch.setattr(pacman, "get_sync_pkgbase", lambda n: "mytool")
+        assert not is_installed_repo_pkgbase("mytool-git")
+
+    def test_no_installed_member(self, monkeypatch):
+        from sysforge.primitives import pacman
+        self._local(monkeypatch, {"other": "other"})
+        monkeypatch.setattr(pacman, "get_sync_pkgbase", lambda n: n)
+        assert not is_installed_repo_pkgbase("linux-tools")
 
 
 # ---------------------------------------------------------------------------

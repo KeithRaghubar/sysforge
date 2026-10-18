@@ -1147,3 +1147,66 @@ def test_gcc_register_only_path_never_hands_off_to_the_bench(tmp_path, monkeypat
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path):
         ToolchainStage().run(config, state, make_options(dry_run=False))
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F2: upstream's single llvm pkgbase
+# ---------------------------------------------------------------------------
+
+def _merge_into_llvm(pkgbuild_dir, members):
+    """Rewrite the fixture llvm PKGBUILD as the merged pkgbase and drop the
+    per-package dirs of the members it now builds."""
+    import shutil
+    (pkgbuild_dir / "llvm" / "PKGBUILD").write_text(
+        f"pkgbase=llvm\npkgname=({' '.join(repr(m) for m in members)})\n"
+        "pkgver=23.1.3\npkgrel=4\n"
+    )
+    for m in members:
+        if m != "llvm" and (pkgbuild_dir / m).exists():
+            shutil.rmtree(pkgbuild_dir / m)
+
+
+def test_pgo_plan_builds_merged_members_in_the_pgo_passes(tmp_path):
+    toml_path, pkgbuild_dir, _s, _p, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["clang", "lld", "spirv-llvm-translator"])
+    _merge_into_llvm(pkgbuild_dir, ["llvm", "llvm-libs", "clang", "lld"])
+    seen = {}
+
+    def fake_inner(pgo_map, non_pgo_map, lib32_map, *a, **k):
+        seen["pgo"], seen["non_pgo"] = set(pgo_map), set(non_pgo_map)
+        raise RuntimeError("stop after planning")
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.build_llvm_pgo_inner",
+               side_effect=fake_inner), \
+         pytest.raises(RuntimeError, match="stop after planning"):
+        ToolchainStage().run(config, state, options)
+    assert seen["pgo"] == {"llvm", "llvm-libs", "clang", "lld"}
+    assert seen["non_pgo"] == {"spirv-llvm-translator"}
+
+
+def test_install_and_snapshot_cover_installed_pkgbase_members(tmp_path, monkeypatch):
+    """lldb comes from the llvm pkgbase and is installed: the toolchain must
+    install its new build (and be able to roll it back); wasi-libc++ is
+    built but was never installed, so it is left out."""
+    from sysforge.primitives import pacman
+    toml_path, state, config, options = _single_pass_setup(tmp_path, pkgs=("llvm", "clang"))
+    pkgbuild_dir = Path(config["paths"]["pkgbuild_src_dir"])
+    _merge_into_llvm(pkgbuild_dir, ["llvm", "llvm-libs", "clang", "lldb", "wasi-libc++"])
+    monkeypatch.setattr(pacman, "get_all_installed_packages",
+                        lambda: {"llvm": "1", "clang": "1", "lldb": "1"})
+    snap_names = []
+    monkeypatch.setattr(pacman, "cached_pkg_files_for",
+                        lambda names: snap_names.extend(names) or {n: None for n in names})
+    installs = []
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install",
+               side_effect=lambda *a, **k: installs.append(k)), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install", return_value=[]), \
+         patch("sys.stdin.isatty", return_value=False):
+        ToolchainStage().run(config, state, options)
+    assert installs and installs[0]["members"] == {"llvm", "clang", "lldb"}
+    assert "lldb" in snap_names and "wasi-libc++" not in snap_names

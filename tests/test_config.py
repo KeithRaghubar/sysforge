@@ -526,6 +526,34 @@ class TestFindPkgbuild:
         assert observed_parent_exists.get("before") is True
         assert result == (src_dir / "htop" / "PKGBUILD").resolve()
 
+    def test_repo_split_pkgbase_clones_under_that_pkgbase(self, tmp_path, monkeypatch):
+        """3.5.0-B17: linux-tools is a repo pkgbase but no repo pkgname, so
+        `pacman -Si linux-tools` fails. An installed member proves it is a repo
+        pkgbase, and pkgctl clones the packaging repo, which is named by pkgbase."""
+        from unittest.mock import patch
+
+        from sysforge.primitives.config import find_pkgbuild
+        monkeypatch.chdir(tmp_path)
+        src_dir = tmp_path / "src"
+        cloned = []
+
+        def fake_pkgctl_checkout(name, dest, *, timeout=60):
+            cloned.append(name)
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "PKGBUILD").write_text("pkgbase=linux-tools\n")
+
+        with patch("sysforge.primitives.aur.is_repo_package", return_value=False), \
+             patch("sysforge.primitives.pacman.is_installed_repo_pkgbase",
+                   side_effect=lambda b: b == "linux-tools"), \
+             patch("sysforge.primitives.aur.pkgctl_checkout",
+                   side_effect=fake_pkgctl_checkout), \
+             patch("sysforge.primitives.aur.aur_info", return_value={}):
+            result = find_pkgbuild(
+                "linux-tools", config={"paths": {"pkgbuild_src_dir": str(src_dir)}})
+
+        assert cloned == ["linux-tools"]
+        assert result == (src_dir / "linux-tools" / "PKGBUILD").resolve()
+
     def test_split_package_resolves_via_pkgbase_locally(self, tmp_path, monkeypatch):
         """A split-package pkgname (wayland-docs-git) lives in its pkgbase's
         tree (wayland-git). If that tree is already checked out, resolve to it

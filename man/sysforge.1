@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-16"
+.TH "sysforge" "1" "2026\-10\-17"
 .PP
 .PP
 .SH NAME
@@ -604,7 +604,7 @@ Report the running distribution and its support tier, read from os\-release(5): 
 .RE
 \fB\-\-toolchain\fR
 .RS 4
-Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed, or the PGO profdata is version\-skewed, report it.\&
+Check that the configured toolchain matches what'\&s installed: when toolchain.\&toml requests a custom LLVM toolchain (compiler = llvm, optionally PGO) but stock repo LLVM is installed, or the PGO profdata is version\-skewed, report it.\& Also report installed programs that no longer load against the system libLLVM (e.\&g.\& after building it with fewer LLVM targets).\&
 .PP
 .RE
 \fB\-\-rust\fR

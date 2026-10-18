@@ -3,36 +3,46 @@
 # SPDX-License-Identifier: MIT
 
 """
-bolt.py — BOLT post-link optimization orchestration (toolchain Pass 4)
+bolt.py — BOLT post-link optimization of the PGO toolchain (3.5.0-F3)
 
-The one home for sysforge's BOLT (Binary Optimization and Layout Tool) support —
-the fourth optimization method on the shared profile-store rails, and the only
-one that is **post-link** rather than compile- or sample-driven.
+The one home for sysforge's BOLT (Binary Optimization and Layout Tool) facts and
+subprocess seams — the fourth optimization method on the shared profile-store
+rails, and the only one that is **post-link** rather than compile- or
+sample-driven.
 
 PGO, mesa PGO and kernel AutoFDO are all *flag*-driven: you inject a compiler
 flag (`-fprofile-use`, `-fprofile-sample-use`) and the compiler does the rest.
-BOLT is different — there is no "BOLT flag". You link the binary with
-`-Wl,--emit-relocs` to retain relocations, then run a *separate tool*
-(`llvm-bolt`) that rewrites the finished binary using a profile that `perf2bolt`
-converts from a `perf record` run. The canonical use is the **PGO→BOLT** "fast
-clang" stack: BOLT the already-PGO-optimized clang/libLLVM, where it delivers the
-most. That is why sysforge wires BOLT as a Pass 4 in the toolchain stage, after
-the PGO passes have produced an optimized toolchain.
+BOLT is different — there is no "BOLT flag". You link with `-Wl,--emit-relocs`
+to keep relocations, then a separate tool (`llvm-bolt`) rewrites the finished
+binary using a profile. sysforge applies it to the PGO toolchain (the
+canonical PGO→BOLT "fast clang" stack), and where it runs is dictated by four
+facts a 2026-10-17 spike established:
 
-Flow (orchestrated by the toolchain stage; this module is the facts + the
-subprocess seams):
+  * **Target the shared libraries.** With ``LLVM_LINK_LLVM_DYLIB=ON`` the
+    ``clang`` executable is a ~100 KB driver; the compiler's code is in
+    ``libclang-cpp.so`` and ``libLLVM.so``.
+  * **Run inside the build.** BOLT refuses stripped input and instrumentation
+    needs relocations, but makepkg strips while packaging. makepkg only strips
+    the copies in ``$pkgdir``, so the *build tree* still holds unstripped,
+    relocation-carrying libraries: BOLT them there, then ``makepkg --repackage``
+    reruns ``package()`` from the tree. The replacement keeps the original
+    mtime (:func:`replace_keep_mtime`), or ninja relinks the library during
+    ``package()`` and silently undoes the rewrite.
+  * **Profile by instrumentation.** ``perf record -j any`` needs branch-stack
+    sampling, which the tested Zen 3 hardware does not have.
+    ``llvm-bolt -instrument`` is hardware-independent.
+  * **Use the in-tree tools, and check the runtime.** Upstream builds ``bolt``
+    in the same tree, so ``llvm-bolt``/``merge-fdata``/``libbolt_rt_instr.a``
+    sit in the build directory. A runtime built by GCC with ``-fno-plt`` (Arch's
+    packaged one) routes ``memset`` through the GOT, which BOLT's JITLink
+    rejects for every input; :func:`runtime_linkable` detects that up front.
 
-  1. The PGO Pass 3 links with :func:`emit_relocs_ldflag` so the shipped
-     binaries are BOLT-able.
-  2. :func:`collect_profile` profiles the freshly-built clang on a representative
-     compile workload (`perf record` → `perf2bolt`) into the ``bolt`` store.
-  3. :func:`bolt_binary` runs ``llvm-bolt`` to rewrite the binary with the
-     collected profile.
-
-LLVM-only — `llvm-bolt`/`perf2bolt` ship with LLVM, and the whole feature is
-gated on the LLVM toolchain upstream. Pure except for the subprocess seams
-(:func:`collect_profile`, :func:`bolt_binary`, :func:`tools_available`).
+The orchestration lives in the toolchain stage (``toolchain/bolt.py``); this
+module is the facts plus the subprocess seams.
 """
+import os
+import re
+import shlex
 import shutil
 import subprocess
 import tomllib
@@ -51,42 +61,45 @@ _log = log.get_logger("BOLT")
 BUILD_MODE = "bolt_llvm"
 
 # Linker flag that retains relocations in the final binary — BOLT needs them to
-# safely rewrite. Injected into the PGO Pass-3 link (LDFLAGS) when BOLT is enabled.
+# rewrite safely, and instrumentation refuses to run without them. Injected into
+# the Pass-4a link (LDFLAGS) when BOLT is enabled.
 EMIT_RELOCS_LDFLAG = "-Wl,--emit-relocs"
 
-# Artifact names inside the per-method store.
-FDATA_NAME = "llvm.fdata"       # perf2bolt-converted BOLT profile
-PERF_DATA_NAME = "perf.data"    # raw perf sample buffer
-
-# External tools the cycle needs. perf collects, perf2bolt converts, llvm-bolt
-# rewrites. All optional at import — checked at run via tools_available().
-PERF_TOOL = "perf"
-PERF2BOLT_TOOL = "perf2bolt"
-LLVM_BOLT_TOOL = "llvm-bolt"
-
-# Standard llvm-bolt optimization set for a PGO'd clang/libLLVM. ext-tsp block
-# layout + hfsort+ function reordering + function/cold/eh splitting are the
-# canonical "fast clang" options from the BOLT docs; -icf=1 folds identical code.
+# llvm-bolt optimization set for a PGO'd clang/libLLVM, in LLVM 23 spellings
+# (`hfsort+` and a numeric `-icf` are deprecated there): ext-tsp block layout,
+# cdsort function ordering, function/cold/EH splitting, identical-code folding.
 _BOLT_OPT_FLAGS = (
     "-reorder-blocks=ext-tsp",
-    "-reorder-functions=hfsort+",
+    "-reorder-functions=cdsort",
     "-split-functions",
     "-split-all-cold",
     "-split-eh",
-    "-icf=1",
+    "-icf=all",
     "-dyno-stats",
 )
 
-# perf event for BOLT sampling. cycles with a branch stack (LBR on Intel, BRS on
-# AMD Zen3+) gives perf2bolt the taken-branch data it wants; userspace-only (:u)
-# since we profile clang, not the kernel.
-_PERF_EVENT = ("-e", "cycles:u", "-j", "any,u")
+# Shared-library basenames BOLT rewrites, by role. libclang-cpp is always the
+# target; libLLVM only behind `[bolt] libllvm`, since rewriting the library every
+# libLLVM consumer on the system loads is the more fragile half.
+_CLANG_LIB = "libclang-cpp.so"
+_LLVM_LIB = "libLLVM.so"
+
+# A real versioned soname file (libfoo.so.23.1), never the unversioned symlink.
+_RE_VERSIONED = re.compile(r"\.so\.\d+(\.\d+)*$")
+
+# Launchers a build may prefix to the compiler in `ninja -t commands` output.
+_LAUNCHERS = {"ccache", "sccache"}
+
+# Dependency-file flags in a compile command: they would write into the build
+# tree, so the training replay drops them.
+_DEPFILE_FLAG = {"-MD", "-MMD"}
+_DEPFILE_ARG = {"-MF", "-MT", "-MQ"}
 
 
 class BoltError(Exception):
-    """A BOLT step could not complete (missing tool, perf/perf2bolt/llvm-bolt
-    failure). Raised so the caller aborts the BOLT pass cleanly — the underlying
-    PGO toolchain stays installed — rather than shipping a half-rewritten binary."""
+    """A BOLT step could not complete. Raised so the caller restores the
+    original libraries and keeps the un-BOLTed packages, rather than shipping a
+    half-rewritten toolchain."""
 
 
 def _load_tcfg() -> dict | None:
@@ -105,153 +118,169 @@ def resolve_store(tcfg: dict | None = None) -> Path:
     return resolve_method_store(tcfg if tcfg is not None else _load_tcfg(), "bolt")
 
 
-def fdata_path(store: Path) -> Path:
-    """The perf2bolt-converted BOLT profile inside the store."""
-    return store / FDATA_NAME
-
-
-def perf_data_path(store: Path) -> Path:
-    """The raw ``perf.data`` the profiling step writes."""
-    return store / PERF_DATA_NAME
-
-
 def emit_relocs_ldflag() -> str:
     """The linker flag that keeps the PGO build BOLT-able (retains relocations)."""
     return EMIT_RELOCS_LDFLAG
 
 
-def tools_available(*, need_perf: bool = True) -> tuple[bool, list[str]]:
-    """Return ``(ok, missing)`` for the BOLT toolchain.
+# ---------------------------------------------------------------------------
+# The build tree and what is in it
+# ---------------------------------------------------------------------------
 
-    ``llvm-bolt`` + ``perf2bolt`` are always required; ``perf`` is required for
-    the collection step (``need_perf``) but not when consuming a pre-collected
-    profile. Lets the caller skip the BOLT pass with an actionable warning rather
-    than crashing mid-build.
+def build_tree_for(pkgbuild_path: Path) -> Path | None:
+    """The CMake build directory the last ``makepkg`` of ``pkgbuild_path`` left.
+
+    ``<BUILDDIR>/<pkgbase>/src/llvm-project-*/build`` (makepkg builds in the
+    PKGBUILD's own directory when ``BUILDDIR`` is unset). ``--cleanbuild`` clears
+    ``src`` *before* a build, so after Pass 4a the tree is that pass's. None when
+    no tree with a ``build.ninja`` exists.
     """
-    required = [LLVM_BOLT_TOOL, PERF2BOLT_TOOL]
-    if need_perf:
-        required.append(PERF_TOOL)
-    missing = [t for t in required if shutil.which(t) is None]
-    return (not missing, missing)
+    from sysforge.primitives import pacman
+
+    builddir = pacman.get_builddir()
+    base = builddir / pkgbuild_path.parent.name if builddir else pkgbuild_path.parent
+    for tree in sorted((base / "src").glob("llvm-project-*/build")):
+        if (tree / "build.ninja").is_file():
+            return tree
+    return None
 
 
-# BLOCKED: a standalone llvm-bolt build can't link against a dylib-only LLVM.
-# Every BOLT tool is built with `DISABLE_LLVM_LINK_LLVM_DYLIB` (bolt/tools/*/
-# CMakeLists.txt), so it links the *per-component* static archives — libLLVMObject.a,
-# libLLVMMC.a, the X86 target libs, libLLVMTransformUtils.a, … — not libLLVM.so. A
-# dylib-only LLVM install (the PGO toolchain, and stock Arch `llvm`) ships libLLVM.so
-# plus only the handful of static libs that can't live in the dylib (Support/Demangle/
-# TableGen/…), so those component archives are absent and `ld.lld` reports
-# `unable to find library -lLLVMObject`. BOLT must be built *in-tree* with LLVM (where
-# the build tree still holds the archives); building it standalone against the installed
-# package is unviable. This probe lets an opt-in `[bolt] enabled` fail fast instead of
-# 100+ ninja steps deep.
-_LLVM_LIBDIR = Path("/usr/lib")
-# Probe archives that are present ONLY in a full static LLVM install. Support/Demangle
-# are always shipped static (useless as a probe); these are the first BOLT actually
-# needs that a dylib-only install omits.
-_STATIC_COMPONENT_PROBE = ("libLLVMObject.a", "libLLVMMC.a")
+def bolt_targets(build: Path, *, libllvm: bool) -> list[Path]:
+    """The real (non-symlink) versioned shared libraries to rewrite, in order."""
+    names = [_CLANG_LIB, *([_LLVM_LIB] if libllvm else [])]
+    out: list[Path] = []
+    for name in names:
+        out.extend(
+            p for p in sorted((build / "lib").glob(f"{name}.*"))
+            if _RE_VERSIONED.search(p.name) and p.is_file() and not p.is_symlink()
+        )
+    return out
 
 
-def standalone_build_viable(libdir: Path = _LLVM_LIBDIR) -> bool:
-    """True only if the installed LLVM ships the static component archives BOLT links.
+def tree_tool(build: Path, name: str) -> Path:
+    """Path of an in-tree BOLT tool or runtime (``bin/llvm-bolt``, ``lib/…``)."""
+    return build / ("lib" if name.endswith(".a") else "bin") / name
 
-    See the module note above: BOLT's tools force static LLVM linkage, so a standalone
-    build needs the per-component ``.a`` archives on disk. A dylib-only LLVM omits them,
-    making the standalone build BLOCKED. The toolchain stage calls this before Pass 4a
-    so an enabled-but-unviable BOLT pass skips with a clear reason rather than failing
-    mid-link.
+
+def has_relocations(lib: Path) -> bool:
+    """True when ``lib`` was linked with ``--emit-relocs`` (a ``.rela.text``)."""
+    result = run.probe(["readelf", "-SW", str(lib)], stdin=subprocess.DEVNULL)
+    return result.returncode == 0 and ".rela.text" in result.stdout
+
+
+def runtime_linkable(runtime: Path) -> bool:
+    """False when the instrumentation runtime carries GOT-relative calls.
+
+    BOLT links ``libbolt_rt_instr.a`` into the instrumented binary with JITLink,
+    which rejects ``R_X86_64_GOTPCRELX`` ("unsupported edge kind
+    RequestGOTAndTransformToPCRel32GOTLoadRelaxable"). GCC emits those for its
+    own ``memset`` calls under ``-fno-plt``; clang does not.
     """
-    return all((libdir / name).is_file() for name in _STATIC_COMPONENT_PROBE)
+    result = run.probe(["readelf", "-rW", str(runtime)], stdin=subprocess.DEVNULL)
+    return result.returncode == 0 and "GOTPCRELX" not in result.stdout
 
 
-def perf_record_cmd(perf_data: Path, workload_argv: list[str]) -> list[str]:
-    """The ``perf record`` command line that samples ``workload_argv``."""
+# ---------------------------------------------------------------------------
+# Command lines
+# ---------------------------------------------------------------------------
+
+def instrument_cmd(
+    llvm_bolt: Path, lib: Path, out: Path, fdata_prefix: Path, runtime: Path,
+) -> list[str]:
+    """``llvm-bolt -instrument``: each process that loads ``out`` writes
+    ``<fdata_prefix>.<pid>.fdata`` when it exits."""
     return [
-        PERF_TOOL, "record", *_PERF_EVENT, "-o", str(perf_data), "--", *workload_argv,
+        str(llvm_bolt), str(lib), "-instrument", "-o", str(out),
+        f"--instrumentation-file={fdata_prefix}",
+        "--instrumentation-file-append-pid",
+        f"--runtime-instrumentation-lib={runtime}",
     ]
 
 
-def perf2bolt_cmd(binary: Path, perf_data: Path, fdata: Path) -> list[str]:
-    """The ``perf2bolt`` command that converts ``perf.data`` → BOLT ``.fdata``."""
-    return [
-        PERF2BOLT_TOOL, str(binary), "-p", str(perf_data), "-o", str(fdata),
-    ]
+def merge_cmd(merge_fdata: Path, files: list[Path], out: Path) -> list[str]:
+    """``merge-fdata``: fold the per-process profiles into one."""
+    return [str(merge_fdata), *map(str, files), "-o", str(out)]
 
 
-def llvm_bolt_cmd(binary: Path, fdata: Path, out: Path) -> list[str]:
-    """The ``llvm-bolt`` command that rewrites ``binary`` → ``out`` using ``fdata``."""
-    return [
-        LLVM_BOLT_TOOL, str(binary), "-data", str(fdata), "-o", str(out),
-        *_BOLT_OPT_FLAGS,
-    ]
+def optimize_cmd(llvm_bolt: Path, lib: Path, fdata: Path, out: Path) -> list[str]:
+    """``llvm-bolt`` rewriting ``lib`` into ``out`` with the merged profile."""
+    return [str(llvm_bolt), str(lib), "-data", str(fdata), "-o", str(out), *_BOLT_OPT_FLAGS]
 
 
-def _run(argv: list[str], *, what: str) -> subprocess.CompletedProcess:
+def run_step(argv: list[str], *, what: str, env: dict | None = None,
+             cwd: Path | None = None) -> subprocess.CompletedProcess:
     """Run a BOLT-cycle subprocess, raising :class:`BoltError` on failure."""
     _log.info(f"{what}: {' '.join(argv)}")
-    result = run.probe(argv)
+    result = run.probe(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         raise BoltError(
             f"{what} failed (exit {result.returncode}): "
-            f"{result.stderr.strip() or result.stdout.strip()}"
+            f"{(result.stderr or result.stdout or '').strip()[-400:]}"
         )
     return result
 
 
-def collect_profile(
-    binary: Path, store: Path, workload_argv: list[str]
-) -> Path:
-    """Profile ``binary`` running ``workload_argv`` and convert to a BOLT ``.fdata``.
+# ---------------------------------------------------------------------------
+# Training workload
+# ---------------------------------------------------------------------------
 
-    Runs ``perf record`` over the workload, then ``perf2bolt`` against ``binary``.
-    Returns the ``.fdata`` path. Raises :class:`BoltError` if a tool is missing or
-    fails (e.g. ``perf_event_paranoid`` too restrictive). The store dir is
-    provisioned by the caller.
+def training_commands(
+    build: Path, clangxx: Path, out_dir: Path, *, target: str, limit: int,
+) -> list[list[str]]:
+    """Compile commands from the tree's own build, replayed with the new clang.
+
+    ``ninja -t commands <target>`` lists every command that builds ``target``.
+    The C/C++ compiles among them are rewritten to run ``clangxx``, with any
+    launcher dropped, the object written to ``out_dir``, and dependency-file
+    flags removed so nothing lands in the build tree. clang's own front-end
+    sources (``/clang/lib/``) come first: they are the template-heavy C++ that
+    dominates real compile time, and the code ``libclang-cpp`` exists to run.
+    An even sample of at most ``limit`` commands, run with ``cwd=build``.
     """
-    ok, missing = tools_available(need_perf=True)
-    if not ok:
-        raise BoltError(
-            f"BOLT collection needs {', '.join(missing)} on PATH "
-            "(llvm-bolt/perf2bolt ship with llvm; perf is the linux-tools package)."
-        )
-    perf_data = perf_data_path(store)
-    fdata = fdata_path(store)
-    _run(perf_record_cmd(perf_data, workload_argv), what="perf record")
-    _run(perf2bolt_cmd(binary, perf_data, fdata), what="perf2bolt")
-    if not fdata.is_file():
-        raise BoltError(f"perf2bolt produced no profile at {fdata}")
-    _log.info(f"Collected BOLT profile: {fdata} ({fdata.stat().st_size} bytes)")
-    return fdata
-
-
-def bolt_binary(binary: Path, fdata: Path, *, out: Path | None = None) -> Path:
-    """Rewrite ``binary`` with ``llvm-bolt`` using ``fdata``; return the output path.
-
-    ``out`` defaults to ``<binary>.bolt``. Does not move the result into place —
-    the caller decides whether to atomically replace ``binary`` (and is
-    responsible for the smoke-test + rollback that guards a system compiler).
-    Raises :class:`BoltError` on a missing tool or a non-zero ``llvm-bolt``.
-    """
-    ok, missing = tools_available(need_perf=False)
-    if not ok:
-        raise BoltError(f"BOLT optimization needs {', '.join(missing)} on PATH.")
-    if not fdata.is_file():
-        raise BoltError(
-            f"no BOLT profile at {fdata}: run the collection step first."
-        )
-    out = out if out is not None else binary.with_suffix(binary.suffix + ".bolt")
-    _run(llvm_bolt_cmd(binary, fdata, out), what="llvm-bolt")
-    if not out.is_file():
-        raise BoltError(f"llvm-bolt produced no output at {out}")
-    _log.info(f"BOLT-optimized {binary.name} → {out}")
+    result = run.probe(["ninja", "-C", str(build), "-t", "commands", target],
+                       stdin=subprocess.DEVNULL)
+    if result.returncode != 0:
+        return []
+    compiles: list[list[str]] = []
+    for line in result.stdout.splitlines():
+        try:
+            argv = shlex.split(line)
+        except ValueError:
+            continue
+        while argv and Path(argv[0]).name in _LAUNCHERS:
+            argv = argv[1:]
+        if not argv or "-c" not in argv or "-o" not in argv:
+            continue
+        if not argv[-1].endswith((".cpp", ".cc", ".c")):
+            continue
+        compiles.append(argv)
+    compiles.sort(key=lambda a: "/clang/lib/" not in a[-1])
+    if len(compiles) > limit:
+        step = len(compiles) / limit
+        compiles = [compiles[int(i * step)] for i in range(limit)]
+    out: list[list[str]] = []
+    for n, argv in enumerate(compiles):
+        rewritten = [str(clangxx)]
+        args = iter(argv[1:])
+        for a in args:
+            if a in _DEPFILE_FLAG:
+                continue
+            if a in _DEPFILE_ARG:
+                next(args, None)
+                continue
+            if a == "-o":
+                next(args, None)
+                rewritten += ["-o", str(out_dir / f"{n}.o")]
+                continue
+            rewritten.append(a)
+        out.append(rewritten)
     return out
 
 
-# A small but front-end-/optimizer-heavy C++ translation unit. Compiling it with
-# -O2 exercises clang's parser, template instantiation, the middle-end and
-# codegen — a representative "compile job" profile for BOLT without needing a
-# multi-minute build of real source. Used when [bolt] training_workload is unset.
+# A small but front-end-/optimizer-heavy C++ translation unit: the fallback
+# training input when the tree yields no compile commands and no
+# `[bolt] training_workload` is set. Kept distinct from the bench's built-in
+# workload, which must stay a held-out measurement.
 _DEFAULT_WORKLOAD_TU = """\
 #include <algorithm>
 #include <functional>
@@ -292,99 +321,29 @@ int main() {
 
 
 def write_default_workload(dest_dir: Path) -> Path:
-    """Write the default profiling translation unit into ``dest_dir`` and return it."""
+    """Write the fallback training translation unit into ``dest_dir``."""
     src = dest_dir / "bolt_workload.cpp"
     src.write_text(_DEFAULT_WORKLOAD_TU, encoding="utf-8")
     return src
 
 
-def compile_workload_argv(clang_cxx: str, source: Path, out_obj: Path) -> list[str]:
-    """The clang++ invocation that BOLT profiles (compile a TU at ``-O2``).
-
-    This is the ``workload_argv`` handed to :func:`perf_record_cmd`: a single
-    optimizing compile of ``source`` to an object file, exercising the whole
-    front-end → middle-end → codegen pipeline of the binary being profiled.
-    """
-    return [
-        clang_cxx, "-std=c++17", "-O2", "-c", str(source), "-o", str(out_obj),
-    ]
+def compile_workload_argv(clang_cxx: Path, source: Path, out_obj: Path) -> list[str]:
+    """One optimizing compile of ``source`` (a configured or fallback workload)."""
+    return [str(clang_cxx), "-std=c++17", "-O2", "-c", str(source), "-o", str(out_obj)]
 
 
 # ---------------------------------------------------------------------------
-# llvm-bolt package — sysforge builds the BOLT tools itself
-#
-# BOLT (llvm-bolt/perf2bolt/merge-fdata) is NOT in the official Arch repos and is
-# NOT built by the stock `llvm` package. But the `bolt/` subtree ships *inside*
-# the `llvm-project-$pkgver.src.tar.xz` monorepo tarball the toolchain's `llvm`
-# PKGBUILD already downloads, and BOLT supports a standalone build
-# (`bolt/CMakeLists.txt` sets `BOLT_BUILT_STANDALONE` and runs `find_package(LLVM)`)
-# — exactly like Arch builds `clang`/`lld` as separate packages from the same
-# tarball. So sysforge generates an `llvm-bolt` PKGBUILD modeled on those
-# components and builds it against the just-installed PGO libLLVM. This is the one
-# home for that PKGBUILD; it is version-locked to the LLVM it links (BOLT uses
-# libLLVM internals — a mismatch won't even configure). EXPERIMENTAL: there is no
-# official Arch package, so this is a sysforge-provided build.
+# Putting the result in place
 # ---------------------------------------------------------------------------
 
-PKG_NAME = "llvm-bolt"
+def replace_keep_mtime(new: Path, dest: Path) -> None:
+    """Copy ``new`` over ``dest`` and give it ``dest``'s old mtime.
 
-# `sha256sums=SKIP`: the tarball is byte-identical to (and shares makepkg's
-# SRCDEST cache with) the one the `llvm` build PGP-verified moments earlier, so we
-# don't re-pin a per-version checksum. {pkgver} is substituted by
-# materialize_pkgbuild from the installed llvm version.
-_PKGBUILD_TEMPLATE = """\
-# Generated by SysForge: BOLT post-link optimizer (experimental).
-# No official Arch package exists; built from the llvm-project monorepo tarball,
-# version-locked to the installed llvm. Do not edit: regenerated each run.
-pkgname=llvm-bolt
-pkgver={pkgver}
-pkgrel=1
-pkgdesc="LLVM BOLT post-link optimizer (sysforge-built; experimental)"
-arch=('x86_64')
-url="https://github.com/llvm/llvm-project/tree/main/bolt"
-license=('Apache-2.0 WITH LLVM-exception')
-depends=('llvm-libs')
-makedepends=("llvm=$pkgver" 'cmake' 'ninja' 'python')
-options=(!lto)
-_source_base=https://github.com/llvm/llvm-project/releases/download/llvmorg-$pkgver
-source=("$_source_base/llvm-project-$pkgver.src.tar.xz")
-sha256sums=('SKIP')
-
-build() {{
-  cd "llvm-project-$pkgver.src/bolt"
-  cmake -B build -G Ninja \\
-    -DCMAKE_BUILD_TYPE=Release \\
-    -DCMAKE_INSTALL_PREFIX=/usr \\
-    -DCMAKE_SKIP_RPATH=ON \\
-    -DLLVM_LINK_LLVM_DYLIB=ON \\
-    -DLLVM_ENABLE_RTTI=ON
-  ninja -C build
-}}
-
-package() {{
-  cd "llvm-project-$pkgver.src/bolt"
-  DESTDIR="$pkgdir" ninja -C build install
-  install -Dm644 ../llvm/LICENSE.TXT \\
-    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-}}
-"""
-
-
-def render_pkgbuild(llvm_pkgver: str) -> str:
-    """Render the ``llvm-bolt`` PKGBUILD text version-locked to ``llvm_pkgver``."""
-    return _PKGBUILD_TEMPLATE.format(pkgver=llvm_pkgver)
-
-
-def materialize_pkgbuild(pkgbuild_src_dir: Path, llvm_pkgver: str) -> Path:
-    """Write the version-locked ``llvm-bolt`` PKGBUILD into the source tree.
-
-    Returns the PKGBUILD path (``<pkgbuild_src_dir>/llvm-bolt/PKGBUILD``). The
-    dir is created if absent; the file is overwritten each run so the pkgver
-    always tracks the installed llvm. Caller builds it via the toolchain stage's
-    normal build path.
+    ninja records each output's mtime in ``.ninja_log`` and treats a changed one
+    as dirty, so ``package()``'s ``ninja install-…`` would relink the library
+    and quietly put the un-BOLTed one back. Keeping the mtime leaves the output
+    clean and the rewritten file in place.
     """
-    dest_dir = Path(pkgbuild_src_dir).expanduser() / PKG_NAME
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    pkgbuild = dest_dir / "PKGBUILD"
-    pkgbuild.write_text(render_pkgbuild(llvm_pkgver), encoding="utf-8")
-    return pkgbuild
+    st = dest.stat()
+    shutil.copy2(new, dest)
+    os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))

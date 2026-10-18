@@ -40,7 +40,7 @@ SysForge supports two families of profile collection:
 | Faster compiles for *everything* you build | Toolchain PGO | `sysforge run toolchain` with `compiler = "llvm"`, `pgo = true` | Yes, if you build a lot from source; costs hours once |
 | Faster kernel (syscalls, scheduling, I/O paths) | Kernel AutoFDO (+ Propeller) | `sysforge run kernel --autofdo=record\|capture\|use`, then optionally again with `--propeller` | Modest gains; two rounds, each spans a reboot |
 | Some other hot, long-lived library | Package PGO | `sysforge build <pkg> --pgo=…` | Rarely (SysForge warns unless you allow-list it) |
-| Post-link layout of clang | BOLT | `toolchain.toml [bolt]` | **Currently blocked:** leave disabled |
+| Post-link layout of clang | BOLT | `toolchain.toml [bolt]` | Experimental; adds time to the toolchain build |
 
 All of these require the **LLVM toolchain** (clang + `llvm-profdata`). Under `toolchain = gcc`
 the PGO commands refuse with a hint before doing any work.
@@ -220,6 +220,10 @@ Best practices:
   `--rebuild-profdata`.
 - **If a late package fails**, rerun with `--reuse-built` to skip re-optimizing the packages
   that already succeeded.
+- **Other LLVM packages are replaced too.** The repos build clang, lld, lldb, libclc and the
+  rest from one `llvm` package, so the toolchain build produces all of them. SysForge
+  installs the ones you configured plus any of the others you already have (lldb, for
+  example), so they all match the new libLLVM. Ones you never installed are left out.
 
 ### Did it help?
 
@@ -512,9 +516,22 @@ it starts, and removing kernels you no longer boot keeps that check passing.
 
 ## BOLT
 
-BOLT (post-link binary layout for clang) is wired in but **currently blocked** by how the
-LLVM packages are built. Keep `toolchain.toml [bolt] enabled = false`. SysForge skips it with
-a warning if enabled.
+BOLT rearranges clang's compiled code so the parts used together sit together, on top of
+PGO. It is **experimental**: it has not yet been through a full toolchain build. Turn it on
+in `toolchain.toml`:
+
+```toml
+[bolt]
+enabled = true
+```
+
+It runs during `sysforge run toolchain`, right after the optimized LLVM is built: SysForge
+compiles a sample of LLVM's own source with an instrumented copy of clang's libraries,
+rewrites them from that profile, checks the result still compiles, and packages it. If any
+step fails, you get a warning and the toolchain installs without BOLT. It rewrites
+`libclang-cpp`; add `libllvm = true` to rewrite `libLLVM` too, which every program that
+uses LLVM loads, so it is off by default. It needs the LLVM packages as the repos build
+them now (one `llvm` package), and it does not need `perf`.
 
 ---
 

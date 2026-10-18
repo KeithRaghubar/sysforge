@@ -296,6 +296,7 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
     # aur.py → log.py (fine), but keeping aur out of config's top-level
     # imports avoids pulling subprocess/urllib into every config load path.
     from sysforge.primitives.aur import aur_info, is_repo_package, pkgctl_checkout
+    from sysforge.primitives import pacman
     from sysforge.primitives.source_sync import SyncRequest, get_scheduler
 
     clone_timeout = load_sysforge_toml().get("git", {}).get("clone_timeout", 60)
@@ -327,7 +328,10 @@ def find_pkgbuild(pkg: str, config: dict | None = None) -> Path:
             # don't ENOENT on a fresh system where ~/src hasn't been created yet.
             pkgbuild_src_dir.mkdir(parents=True, exist_ok=True)
             clone_dest = pkgbuild_src_dir / pkg
-            if is_repo_package(pkg):
+            # A split repo pkgbase (linux-tools) is no sync-DB name; an
+            # installed member vouches for it (3.5.0-B17). pkgctl clones by
+            # pkgbase either way.
+            if is_repo_package(pkg) or pacman.is_installed_repo_pkgbase(pkg):
                 # raises RuntimeError on failure
                 pkgctl_checkout(pkg, clone_dest, timeout=clone_timeout)
                 if dir_candidate.exists():

@@ -844,3 +844,156 @@ def test_stddrift_libllvm_changed_under_consumer_keeps_rebuild_advice(
     )
     assert "inlined away" in f.message
     assert "sysforge build <consumer" in f.remediation
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B14: consumer discovery beyond the curated graphics globs
+# ---------------------------------------------------------------------------
+
+def test_libllvm_soname_consumers_counts_plain_llvm_libs_dependents(monkeypatch):
+    """Arch consumers depend on bare `llvm-libs`, never on the
+    `libLLVM.so=<mm>-64` soname it provides; the walk must still see them."""
+    _patch_pacman(
+        monkeypatch,
+        llvm_libs_files=["usr/lib/libLLVM.so.23.1"],
+        installed={"lldb": "1", "mesa": "1", "zlib": "1", "clang": "1"},
+        depends={
+            "lldb": ["llvm-libs", "clang"],
+            "mesa": ["llvm-libs>=23"],
+            "zlib": ["glibc"],
+            "clang": ["llvm-libs"],
+        },
+    )
+    out = ts.libllvm_soname_consumers("23.1", exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert out == ["lldb", "mesa"]
+
+
+def _consumer_tree(tmp_path, monkeypatch, files, imports):
+    """Fake installed consumers: `files` {pkg: [relpath]}, ELF ones get the
+    magic; `imports` {relpath: {(sym, ver)}} feeds the nm seam."""
+    monkeypatch.setattr(ts, "_ROOT", tmp_path)
+    for rels in files.values():
+        for rel in rels:
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(b"\x7fELF" if rel in imports else b"#!/bin/sh\n")
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_package_files", lambda name: files.get(name, []))
+    monkeypatch.setattr(
+        _AC + "_undefined_versioned",
+        lambda path: imports.get(str(path.relative_to(tmp_path)), set()),
+    )
+
+
+def test_consumer_required_targets_maps_backends_to_packages(tmp_path, monkeypatch):
+    _patch_pacman(
+        monkeypatch, llvm_libs_files=["usr/lib/libLLVM.so.23.1"],
+        installed={"lldb": "1", "bpf": "1", "clang": "1"},
+        depends={"lldb": ["llvm-libs"], "bpf": ["llvm-libs"], "clang": ["llvm-libs"]},
+    )
+    _consumer_tree(tmp_path, monkeypatch, files={
+        "lldb": ["usr/lib/liblldb.so.23.1", "usr/share/lldb/README"],
+        "bpf": ["usr/bin/bpftool"],
+        "clang": ["usr/lib/libclang-cpp.so.23.1"],
+    }, imports={
+        "usr/lib/liblldb.so.23.1": {
+            ("LLVMInitializeWebAssemblyAsmPrinter", "LLVM_23.1"),
+            ("LLVMInitializeHexagonTarget", "LLVM_23.1"),
+            ("LLVMInitializeX86TargetInfo", "LLVM_23.1"),
+            ("_ZNSt6vectorIiSaIiEE9push_backEOi", "LLVM_23.1"),  # not a target init
+            ("malloc", "GLIBC_2.2.5"),
+        },
+        "usr/bin/bpftool": {("LLVMInitializeWebAssemblyTarget", "LLVM_23.1")},
+        # lockstep suite member: rebuilt with the same targets, never a consumer
+        "usr/lib/libclang-cpp.so.23.1": {("LLVMInitializeSparcTarget", "LLVM_23.1")},
+    })
+    out = ts.consumer_required_targets(exclude=set(ts.LLVM_LOCKSTEP_SUITE))
+    assert out == {
+        "Hexagon": ["lldb"],
+        "WebAssembly": ["bpf", "lldb"],
+        "X86": ["lldb"],
+    }
+
+
+def test_consumer_required_targets_nothing_installed_is_empty():
+    # The autouse isolated pacman DB has no consumers.
+    assert ts.consumer_required_targets(exclude=set()) == {}
+
+
+def test_consumer_required_targets_excludes_by_pkgname_not_pkgbase(tmp_path, monkeypatch):
+    """lldb's pkgbase is `llvm` since upstream merged the suite, but the
+    toolchain does not rebuild lldb, so it is still a consumer."""
+    _patch_pacman(
+        monkeypatch, llvm_libs_files=["usr/lib/libLLVM.so.23.1"],
+        installed={"lldb": "1"}, depends={"lldb": ["llvm-libs"]},
+        pkgbase={"lldb": "llvm"},
+    )
+    _consumer_tree(tmp_path, monkeypatch, files={"lldb": ["usr/lib/liblldb.so.23.1"]},
+                   imports={"usr/lib/liblldb.so.23.1": {("LLVMInitializeBPFTarget", "LLVM_23.1")}})
+    assert ts.consumer_required_targets(exclude=set(ts.LLVM_LOCKSTEP_SUITE)) == {"BPF": ["lldb"]}
+
+
+def _gate_seams(monkeypatch, *, undefined, exported):
+    monkeypatch.setattr(_AC + "needed_sonames", lambda p: ["libLLVM.so.23.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: undefined)
+    monkeypatch.setattr(_AC + "_exported_versioned", lambda path, cache: exported)
+
+
+def test_diff_consumers_flags_discovered_non_graphics_consumer(tmp_path, monkeypatch):
+    """3.5.0-B14: lldb is no graphics glob, but it is a libLLVM consumer."""
+    usr_lib = tmp_path / "usr/lib"
+    lldb = _mk(usr_lib, "liblldb.so.23.1")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(ts, "libllvm_consumer_files", lambda *, exclude: {"lldb": [lldb]})
+    _gate_seams(monkeypatch,
+                undefined={("LLVMInitializeWebAssemblyTarget", "LLVM_23.1")},
+                exported={("LLVMInitializeX86Target", "LLVM_23.1")})
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/staging/usr/lib/libLLVM.so.23.1"), source_label="installed")
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.check_id == "libllvm_consumer_symbols"
+    assert not f.is_brick and not f.healable
+    assert "lldb" in f.message and "WebAssembly" in f.message
+    assert "desktop" not in f.message
+
+
+def test_diff_consumers_graphics_file_also_discovered_is_reported_once(tmp_path, monkeypatch):
+    usr_lib = tmp_path / "usr/lib"
+    gallium = _mk(usr_lib, "libgallium-26.2.4-arch1.1.so")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(ts, "libllvm_consumer_files", lambda *, exclude: {"mesa": [gallium]})
+    _gate_seams(monkeypatch,
+                undefined={("LLVMInitializeAMDGPUTarget", "LLVM_23.1")},
+                exported={("LLVMInitializeX86Target", "LLVM_23.1")})
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/staging/usr/lib/libLLVM.so.23.1"), source_label="installed")
+    assert len(findings) == 1 and findings[0].is_brick
+
+
+def test_diff_consumers_ignores_imports_another_needed_lib_exports(tmp_path, monkeypatch):
+    """libclang, libclang-cpp and liblldb export under ``LLVM_*`` nodes of their
+    own: doxygen's ``clang_createIndex@LLVM_13`` is libclang's, never owed by
+    libLLVM. Only what no other NEEDED lib provides is a libLLVM miss."""
+    usr_lib = tmp_path / "usr/lib"
+    doxygen = _mk(usr_lib, "doxygen")
+    monkeypatch.setattr(ts, "_USR_LIB", usr_lib)
+    monkeypatch.setattr(ts, "libllvm_consumer_files", lambda *, exclude: {"doxygen": [doxygen]})
+    monkeypatch.setattr(_AC + "needed_sonames",
+                        lambda p: ["libclang.so.23.1", "libLLVM.so.23.1"])
+    monkeypatch.setattr(_AC + "_undefined_versioned", lambda p: {
+        ("clang_createIndex", "LLVM_13"),
+        ("LLVMInitializeAMDGPUTarget", "LLVM_23.1"),
+    })
+    monkeypatch.setattr(_AC + "_build_ldconfig_map", lambda: {
+        ("libclang.so.23.1", "ELF64"): "/usr/lib/libclang.so.23.1"})
+    monkeypatch.setattr(_AC + "_elf_class", lambda p: "ELF64")
+    exports = {"/usr/lib/libclang.so.23.1": {("clang_createIndex", "LLVM_13")}}
+    monkeypatch.setattr(_AC + "_exported_versioned",
+                        lambda path, cache: exports.get(path, {("LLVMInitializeX86Target",
+                                                                "LLVM_23.1")}))
+    findings = ts._diff_consumers_against_libllvm(
+        Path("/staging/usr/lib/libLLVM.so.23.1"), source_label="installed")
+    assert len(findings) == 1
+    assert "AMDGPU" in findings[0].message
+    assert "clang_createIndex" not in findings[0].message

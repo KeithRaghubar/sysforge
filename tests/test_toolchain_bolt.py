@@ -3,173 +3,207 @@
 # SPDX-License-Identifier: MIT
 
 """
-toolchain/bolt.py — BOLT Pass 5 gating.
+toolchain/bolt.py — BOLT inside the llvm build (3.5.0-F3).
+
+The subprocess seams (``primitives.bolt.run_step``, the training runner) are
+faked; what is pinned here is the orchestration: when the step runs at all,
+what it refuses, that a success replaces the build-tree libraries keeping their
+mtime and repackages once, and that any failure leaves the tree as built.
 """
+import os
+from pathlib import Path
+
 import pytest
 
-from sysforge.pipeline.stages.toolchain.bolt import run_bolt
-from sysforge.pipeline.stages.toolchain.config import bolt_config
+from sysforge.pipeline.stages.toolchain import bolt as tc_bolt
+from sysforge.primitives import bolt as _bolt
 
 from tests.toolchain_helpers import (  # noqa: F401 — autouse fixture
-    toolchain_cfg,
     _bolt_opts,
     _toolchain_gates_clean,
+    toolchain_cfg,
 )
+
+MTIME = 1_000_000
+
+
+def _tree(tmp_path, monkeypatch, *, libs=("libclang-cpp.so.23.1",)):
+    """A Pass-4a build tree with the in-tree BOLT tools and the target libs."""
+    build = tmp_path / "builds/llvm/src/llvm-project-23.1.3.src/build"
+    for d in ("bin", "lib"):
+        (build / d).mkdir(parents=True)
+    (build / "build.ninja").write_text("")
+    for tool in ("llvm-bolt", "merge-fdata", "clang++"):
+        (build / "bin" / tool).write_text("")
+    (build / "lib" / "libbolt_rt_instr.a").write_text("")
+    for name in libs:
+        lib = build / "lib" / name
+        lib.write_bytes(b"ORIGINAL")
+        os.utime(lib, (MTIME, MTIME))
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path / "builds")
+    monkeypatch.setattr(_bolt, "has_relocations", lambda p: True)
+    monkeypatch.setattr(_bolt, "runtime_linkable", lambda p: True)
+    obj = str(tmp_path / "x.o")  # the fake smoke step writes its -o; keep it out of cwd
+    monkeypatch.setattr(_bolt, "training_commands",
+                        lambda *a, **k: [["clang++", "-c", "x.cpp", "-o", obj]] * 4)
+    monkeypatch.setattr(tc_bolt, "_store", lambda tcfg: tmp_path / "store")
+    return build
+
+
+def _fake_cycle(monkeypatch, *, train_ok=None, fail_step=None):
+    """Fake llvm-bolt/merge-fdata/smoke: each writes its -o file; training
+    drops one profile per instrumented library."""
+    prefixes = []
+
+    def run_step(argv, *, what, env=None, cwd=None):
+        if fail_step and fail_step in what:
+            raise _bolt.BoltError(f"{what} failed")
+        if "-instrument" in argv:
+            prefixes.append(next(a.split("=", 1)[1] for a in argv
+                                 if a.startswith("--instrumentation-file=")))
+        if "-o" in argv:
+            out = Path(argv[argv.index("-o") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"BOLTED" if "-data" in argv else b"x")
+
+    def run_training(cmds, *, env, cwd):
+        for p in prefixes:
+            Path(f"{p}.4242.fdata").write_text("profile")
+        prefixes.clear()  # one training round per optimize_in_build call
+        return len(cmds) if train_ok is None else train_ok
+
+    monkeypatch.setattr(_bolt, "run_step", run_step)
+    monkeypatch.setattr(tc_bolt, "_run_training", run_training)
+
+
+def _pgo_map(tmp_path):
+    pb = tmp_path / "src/llvm/PKGBUILD"
+    return {"llvm": pb, "llvm-libs": pb, "clang": pb}
+
+
+def _repack(calls, *, raises=None):
+    def repackage():
+        calls.append(1)
+        if raises:
+            raise raises
+    return repackage
+
+
+def test_disabled_is_a_noop(tmp_path):
+    calls = []
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(), _bolt_opts(), repackage=_repack(calls))
+    assert calls == []
+
+
+def test_dry_run_is_a_noop(tmp_path):
+    calls = []
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}),
+        _bolt_opts(dry_run=True), repackage=_repack(calls))
+    assert calls == []
+
+
+def test_needs_clang_from_the_pgo_pkgbuild(tmp_path, monkeypatch, capsys):
+    """The old per-package layout builds clang outside the pgo passes."""
+    from sysforge import log
+    monkeypatch.setattr(log, "_VERBOSITY", 1)
+    pb = tmp_path / "src/llvm/PKGBUILD"
+    assert not tc_bolt.optimize_in_build(
+        {"llvm": pb}, toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack([]))
+    out, err = capsys.readouterr()
+    assert "clang" in out + err
+
+
+def test_missing_build_tree_skips(tmp_path, monkeypatch):
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_builddir", lambda: tmp_path / "nothing")
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack([]))
+
+
+def test_unlinkable_runtime_skips_and_leaves_the_tree(tmp_path, monkeypatch):
+    build = _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(_bolt, "runtime_linkable", lambda p: False)
+    _fake_cycle(monkeypatch)
+    calls = []
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack(calls))
+    assert (build / "lib/libclang-cpp.so.23.1").read_bytes() == b"ORIGINAL"
+    assert calls == []
+
+
+def test_library_without_relocations_skips(tmp_path, monkeypatch):
+    _tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(_bolt, "has_relocations", lambda p: False)
+    _fake_cycle(monkeypatch)
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack([]))
+
+
+def test_success_replaces_keeping_mtime_and_repackages_once(tmp_path, monkeypatch):
+    build = _tree(tmp_path, monkeypatch)
+    _fake_cycle(monkeypatch)
+    calls = []
+    assert tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack(calls))
+    lib = build / "lib/libclang-cpp.so.23.1"
+    assert lib.read_bytes() == b"BOLTED"
+    assert lib.stat().st_mtime == MTIME  # ninja must not relink it in package()
+    assert calls == [1]
+
+
+def test_libllvm_only_when_opted_in(tmp_path, monkeypatch):
+    build = _tree(tmp_path, monkeypatch, libs=("libclang-cpp.so.23.1", "libLLVM.so.23.1"))
+    _fake_cycle(monkeypatch)
+    tc_bolt.optimize_in_build(_pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}),
+                              _bolt_opts(), repackage=_repack([]))
+    assert (build / "lib/libLLVM.so.23.1").read_bytes() == b"ORIGINAL"
+    tc_bolt.optimize_in_build(_pgo_map(tmp_path),
+                              toolchain_cfg(bolt={"enabled": True, "libllvm": True}),
+                              _bolt_opts(), repackage=_repack([]))
+    assert (build / "lib/libLLVM.so.23.1").read_bytes() == b"BOLTED"
+
+
+def test_mostly_failed_training_skips(tmp_path, monkeypatch):
+    build = _tree(tmp_path, monkeypatch)
+    _fake_cycle(monkeypatch, train_ok=1)  # 1 of 4 compiles succeeded
+    calls = []
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack(calls))
+    assert (build / "lib/libclang-cpp.so.23.1").read_bytes() == b"ORIGINAL"
+    assert calls == []
+
+
+def test_failed_smoke_test_leaves_the_tree(tmp_path, monkeypatch):
+    build = _tree(tmp_path, monkeypatch)
+    _fake_cycle(monkeypatch, fail_step="smoke")
+    assert not tc_bolt.optimize_in_build(
+        _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+        repackage=_repack([]))
+    assert (build / "lib/libclang-cpp.so.23.1").read_bytes() == b"ORIGINAL"
+
+
+def test_failed_repackage_restores_the_tree_and_stops_the_stage(tmp_path, monkeypatch):
+    """The 4a packages may be half-rewritten: nothing is installed yet, so stop
+    before install rather than ship them."""
+    build = _tree(tmp_path, monkeypatch)
+    _fake_cycle(monkeypatch)
+    with pytest.raises(RuntimeError, match="repackag"):
+        tc_bolt.optimize_in_build(
+            _pgo_map(tmp_path), toolchain_cfg(bolt={"enabled": True}), _bolt_opts(),
+            repackage=_repack([], raises=RuntimeError("makepkg -R failed")))
+    lib = build / "lib/libclang-cpp.so.23.1"
+    assert lib.read_bytes() == b"ORIGINAL" and lib.stat().st_mtime == MTIME
 
 
 def test_bolt_config_defaults():
-    assert bolt_config({}) == {
-        "enabled": False, "libllvm": False, "training_workload": "",
-    }
-
-def test_bolt_config_override():
-    cfg = bolt_config({"bolt": {
-        "enabled": True, "libllvm": True, "training_workload": "/t/w.cpp",
-    }})
-    assert cfg == {"enabled": True, "libllvm": True, "training_workload": "/t/w.cpp"}
-
-def test_bolt_disabled_is_noop(monkeypatch):
-    # [bolt] absent → returns before importing/calling any BOLT machinery.
-    called = []
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    run_bolt(toolchain_cfg(), {}, _bolt_opts(), "pgo_llvm")
-    assert called == []
-
-def test_bolt_dry_run_is_noop(monkeypatch):
-    called = []
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    run_bolt(toolchain_cfg(bolt={"enabled": True}), {}, _bolt_opts(dry_run=True), "pgo_llvm")
-    assert called == []
-
-def test_bolt_tool_build_fails_skips_rewrite(monkeypatch):
-    # Enabled but the BOLT tools can't be built (Pass 5a fails) → no rewrite, the
-    # verified PGO clang is left untouched (no privileged install).
-    called = []
-    # tools absent, and the build itself raises → build_bolt_tools returns False.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
-    )
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.verify.query_pacman_versions",
-        lambda names: {"llvm": "22.1.8-4"},
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.materialize_pkgbuild",
-        lambda d, v: __import__("pathlib").Path(d) / "llvm-bolt" / "PKGBUILD",
-    )
-    def _boom(*a, **k):
-        raise RuntimeError("build failed")
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.passes.build_pkg", _boom)
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision._run_priv",
-        lambda argv: called.append(argv),
-    )
-    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
-    run_bolt(toolchain_cfg(bolt={"enabled": True}), cfg, _bolt_opts(), "pgo_llvm")
-    assert called == []
-
-def test_bolt_no_pkgbuild_src_dir_skips(monkeypatch):
-    # Enabled, tools absent, but no pkgbuild_src_dir to materialize into → skip.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: True,  # past the dylib-only BLOCKED guard
-    )
-    built = []
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.passes.build_pkg",
-        lambda *a, **k: built.append(a),
-    )
-    run_bolt(toolchain_cfg(bolt={"enabled": True}), {"paths": {}}, _bolt_opts(), "pgo_llvm")
-    assert built == []  # never attempted a build without a source dir
-
-def test_bolt_store_resolves_from_toolchain_config(monkeypatch, tmp_path):
-    # Pass 5b resolves its profile store from the parsed ToolchainConfig. The
-    # resolver reads toolchain.toml keys (``profile_store``), so it must be handed
-    # the raw table: the frozen dataclass has no ``.get`` and raised
-    # AttributeError here once the tools and clang were present (3.2.0-F6).
-    class _Stop(Exception):
-        pass
-
-    seen = []
-
-    def _stop_at_store(path):
-        seen.append(path)
-        raise _Stop
-
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.bolt.build_bolt_tools",
-        lambda *a, **k: True,
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (True, []),
-    )
-    monkeypatch.setattr("pathlib.Path.exists", lambda self: True)
-    monkeypatch.setattr(
-        "sysforge.primitives.fs_provision.ensure_writable_dir", _stop_at_store,
-    )
-    tcfg = toolchain_cfg(bolt={"enabled": True}, profile_store=str(tmp_path))
-    with pytest.raises(_Stop):
-        run_bolt(tcfg, {}, _bolt_opts(), "pgo_llvm")
-    assert seen == [tmp_path / "bolt"]
-
-def test_bolt_dylib_only_llvm_is_blocked(monkeypatch):
-    # Enabled, tools absent, but the host LLVM is dylib-only → the BLOCKED guard
-    # short-circuits Pass 5 before materializing the PKGBUILD or building anything.
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.tools_available",
-        lambda need_perf=False: (False, ["llvm-bolt"]),
-    )
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.standalone_build_viable",
-        lambda *a, **k: False,  # no per-component static archives on disk
-    )
-    materialized = []
-    built = []
-    monkeypatch.setattr(
-        "sysforge.primitives.bolt.materialize_pkgbuild",
-        lambda d, v: materialized.append((d, v)),
-    )
-    monkeypatch.setattr(
-        "sysforge.pipeline.stages.toolchain.passes.build_pkg",
-        lambda *a, **k: built.append(a),
-    )
-    cfg = {"paths": {"pkgbuild_src_dir": "/tmp"}}
-    run_bolt(toolchain_cfg(bolt={"enabled": True}), cfg, _bolt_opts(), "pgo_llvm")
-    assert materialized == [] and built == []  # blocked before any work
-
-
-def test_bolt_pass5a_installs_through_sysforge_not_makepkg(monkeypatch, tmp_path):
-    """3.4.0-F1: makepkg builds llvm-bolt without --install; sysforge installs it."""
-    from sysforge.pipeline.stages.toolchain import bolt as tc_bolt
-    monkeypatch.setattr("sysforge.primitives.bolt.tools_available",
-                        lambda need_perf=False: (False, ["llvm-bolt"]))
-    monkeypatch.setattr("sysforge.primitives.bolt.standalone_build_viable", lambda *a, **k: True)
-    monkeypatch.setattr("sysforge.primitives.bolt.materialize_pkgbuild",
-                        lambda d, v: tmp_path / "llvm-bolt" / "PKGBUILD")
-    monkeypatch.setattr(tc_bolt.verify, "query_pacman_versions", lambda names: {"llvm": "22.1.8-1"})
-    events = []
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.passes.build_pkg",
-                        lambda *a, **k: events.append(("build", k.get("extra_flags"))))
-    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.passes.install_built_packages",
-                        lambda d, **k: events.append(("install", d, k)))
-    tc_bolt.build_bolt_tools(toolchain_cfg(bolt={"enabled": True}),
-                             {"paths": {"pkgbuild_src_dir": str(tmp_path)}},
-                             _bolt_opts(), "pgo_llvm")
-    assert events[0] == ("build", None)
-    assert events[1] == ("install", tmp_path / "llvm-bolt", {"noconfirm": True})
+    b = toolchain_cfg().bolt
+    assert (b.enabled, b.libllvm, b.training_workload) == (False, False, "")

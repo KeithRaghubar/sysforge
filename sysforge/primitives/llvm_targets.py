@@ -56,6 +56,8 @@ from sysforge.primitives.hardware_probe import (
     parse_gpu_vendors,
 )
 from sysforge.primitives.hardware_tables import SYSTEM_LIBLLVM_CONSUMER_TARGETS
+from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+from sysforge.primitives import toolchain_safety
 from sysforge.primitives import run
 
 _log = log.get_logger("LLVM")
@@ -133,7 +135,35 @@ def _ensure_system_consumer_targets(targets: list[str]) -> list[str]:
             "unconditionally; a reduced system libLLVM that drops them bricks "
             "the desktop"
         )
-    return result
+    return _ensure_installed_consumer_targets(result)
+
+
+def _ensure_installed_consumer_targets(targets: list[str]) -> list[str]:
+    """Append every backend an installed libLLVM consumer imports (3.5.0-B14).
+
+    The AMDGPU baseline above covers one known consumer. Any package that calls
+    ``InitializeAll*()`` (lldb, bpftool, opencl-mesa, faust) imports the init
+    symbols of *every* backend its libLLVM had, and fails to load against a
+    filtered one, so the filter has to keep them. Found by scanning the
+    installed consumers (``toolchain_safety.consumer_required_targets``) rather
+    than a list; the lockstep suite is excluded because it is rebuilt with the
+    new target list in the same pass. Warns naming each consumer, because it
+    overrides a target list the user may have written by hand.
+    """
+    required = toolchain_safety.consumer_required_targets(
+        exclude=set(LLVM_LOCKSTEP_SUITE),
+    )
+    added = {t: pkgs for t, pkgs in required.items() if t not in targets}
+    if not added:
+        return targets
+    named = "; ".join(f"{t} ({', '.join(pkgs)})" for t, pkgs in added.items())
+    _log.warn(
+        f"keeping {len(added)} LLVM target(s) installed packages need: {named}. "
+        "They import these backends' init symbols and would fail to load "
+        "against a libLLVM without them. Set [llvm] targets = [] to build all "
+        "targets, or remove those packages to filter further."
+    )
+    return [*targets, *added]
 
 
 def resolve_llvm_targets(

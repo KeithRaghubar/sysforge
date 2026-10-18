@@ -10,7 +10,10 @@ staging prefix, and what happens when a pass fails. Pass 1 builds instrumented
 llvm/llvm-libs into stage1; Pass 2 builds the non-PGO suite against stage1 so
 the two are ABI-coherent; Pass 3 is the training run whose side effect is
 profraw; Pass 4 rebuilds everything with -fprofile-use. The module docstring of
-``sysforge.pipeline.stages.toolchain`` has the full account.
+``sysforge.pipeline.stages.toolchain`` has the full account. Since upstream
+builds clang & co. from the llvm PKGBUILD (3.5.0-F2), the stage moves those
+names into the pgo map before calling in (``pkgbuilds.partition_by_pkgbuild``),
+so Pass 1 instruments clang too and Pass 2/4b build only separate pkgbases.
 
 The mechanisms these passes call live in ``profdata.py`` and ``passes.py``.
 ``PGOAborted`` is the module's own control-flow signal: the PGO sub-flow is
@@ -19,6 +22,7 @@ than leave staging prefixes behind.
 """
 from pathlib import Path
 import contextlib
+import copy
 import threading
 
 from sysforge.primitives import build_fingerprint
@@ -27,11 +31,12 @@ from sysforge.primitives import makepkg_pgo
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_lock import build_lock
 
-from sysforge.pipeline.stages.toolchain import constants, passes, profdata, reuse
+from sysforge.pipeline.stages.toolchain import bolt, constants, passes, profdata, reuse
 
 from sysforge.primitives import prompt
 from sysforge.primitives.makepkg_invoke import BuildAborted
 from sysforge.primitives import pacman
+from sysforge import build_core
 from sysforge import log
 from sysforge.ui import progress
 
@@ -165,7 +170,7 @@ def build_llvm_pgo_inner(
     config_digest: str = "",
     reuse_built: bool = False,
     corpus_map: dict[str, Path] | None = None,
-    bolt_relocs: bool = False,
+    tcfg=None,
 ) -> tuple[dict[str, Path], str, str, str, str]:
     """
     4-pass LLVM PGO build. Builds WITHOUT installing.
@@ -335,6 +340,13 @@ def build_llvm_pgo_inner(
     # timestamp entry (same parent PID) for all passes.
     if not options.dry_run:
         sudo_session.authenticate()
+        # What --syncdeps did, once for every PKGBUILD of the run (3.5.0-B15).
+        # Pass 1's own install covers only the pgo PKGBUILD and is skipped
+        # entirely on profdata reuse, and every later pass is --nodeps. Suite
+        # names are excluded: the stage prefixes provide those.
+        suite = {**pgo_map, **non_pgo_map, **lib32_map}
+        build_core.install_missing_repo_deps(
+            sorted(set(suite.values())), exclude=frozenset(suite))
     sudo_stack = contextlib.ExitStack()
     sudo_stack.enter_context(
         sudo_session.keepalive(tag="PGO", enabled=not options.dry_run)
@@ -716,12 +728,13 @@ def build_llvm_pgo_inner(
         build_pgo_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
         if using_staged_cc:
             build_pgo_env.update(profdata.stage_env(staging))
-        # BOLT Pass 5 (opt-in) rewrites the *finished* clang/libLLVM, which needs
-        # relocations retained at link time — so the binaries that ship from
-        # Pass 4a (libLLVM) and 4b (clang) link with -Wl,--emit-relocs. Off
-        # unless [bolt] enabled; lib32 (4c) is never BOLTed so it is untouched.
+        # BOLT (opt-in, 3.5.0-F3) rewrites libclang-cpp/libLLVM in the Pass-4a
+        # build tree, which needs relocations retained at link time, so 4a and
+        # 4b link with -Wl,--emit-relocs. Off unless [bolt] enabled; lib32 (4c)
+        # is never BOLTed so it is untouched.
         from sysforge.primitives import bolt as _bolt
-        _bolt_ldflag = _bolt.emit_relocs_ldflag() if bolt_relocs else None
+        bolt_on = bool(tcfg is not None and tcfg.bolt.enabled)
+        _bolt_ldflag = _bolt.emit_relocs_ldflag() if bolt_on else None
         # One counter for all of Pass 4 (4a pgo, 4b non-pgo, 4c lib32): the
         # operator reads the pass as one unit, so its item counter runs
         # 1..N across the sub-passes instead of restarting per call
@@ -747,6 +760,27 @@ def build_llvm_pgo_inner(
                 reuse_ctx=_mk_reuse_ctx("build-pgo", []),
                 tick=tick4,
             )
+
+            # BOLT the 4a build tree, then repackage it, before anything is
+            # staged or installed from those packages. The repackage reruns
+            # only package() with 4a's own settings; no source sync, since a
+            # re-pinned tree would not be the one that was just BOLTed.
+            if bolt_on:
+                def _repackage_4a() -> None:
+                    repack_options = copy.copy(options)
+                    repack_options.no_update = True
+                    passes.build_pkg(
+                        "llvm", pgo_map["clang"], repack_options,
+                        cc=pass3_cc, cxx=pass3_cxx,
+                        extra_flags=["--repackage", "--force"],
+                        compiler_flags_extra=profile_use,
+                        linker_flags_extra=_bolt_ldflag,
+                        pgo_build=True,
+                        pgo_env=build_pgo_env,
+                        toolchain_variant="pgo_llvm",
+                        owner_stage="toolchain",
+                    )
+                bolt.optimize_in_build(pgo_map, tcfg, options, repackage=_repackage_4a)
 
             # 4b's fingerprints feed 4c's Merkle chain; default empty so 4c is safe
             # when non_pgo_map is empty but lib32_map is not.

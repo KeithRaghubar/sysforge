@@ -8,6 +8,7 @@ toolchain/gates.py — Gate 1/2, soname consumers, snapshot rollback.
 from sysforge.pipeline.stages.toolchain.gates import gate_soname_consumers
 from sysforge.pipeline.stages.toolchain.gates import rebuild_soname_consumers
 from sysforge.pipeline.state import PipelineState
+from pathlib import Path
 import pytest
 
 from tests.toolchain_helpers import (  # noqa: F401 — autouse fixture
@@ -166,3 +167,41 @@ def test_rebuild_consumers_refusal_is_not_reported_as_rebuilt(tmp_path, monkeypa
     state = PipelineState(tmp_path / "state")
     with pytest.raises(RuntimeError, match="mesa"):
         rebuild_soname_consumers(["mesa"], {}, make_options(state_dir=tmp_path), state)
+
+
+def test_rebuild_consumers_marks_repo_consumers_trusted_for_review(tmp_path, monkeypatch):
+    """3.5.0-B16: a consumer cloned from its official packaging repo (doxygen,
+    or the split linux-tools) is source="repo", which the default
+    review_trusted_sources accepts without a prompt. Provenance is the clone's
+    origin, never the names a PKGBUILD declares: an AUR PKGBUILD listing a
+    repo pkgname (glibc) stays source=None and is still reviewed."""
+    from sysforge import build_core
+    from sysforge.build_core import BuildOutcome
+    from sysforge.primitives import aur
+
+    def pkgbuild(name, pkgnames):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "PKGBUILD").write_text(
+            f"pkgbase={name}\npkgname=({' '.join(pkgnames)})\npkgver=1\npkgrel=1\n")
+        return d / "PKGBUILD"
+
+    paths = {"doxygen": pkgbuild("doxygen", ["doxygen", "doxygen-docs"]),
+             "linux-tools": pkgbuild("linux-tools", ["bpftool", "perf"]),
+             "spoof": pkgbuild("spoof", ["spoof", "glibc"]),
+             "renamed": pkgbuild("renamed", ["renamed"])}
+    origin = {"doxygen": "doxygen", "linux-tools": "linux-tools",
+              "spoof": None, "renamed": "something-else"}
+    monkeypatch.setattr("sysforge.primitives.config.find_pkgbuild",
+                        lambda pkg, config: paths[pkg])
+    monkeypatch.setattr(aur, "repo_checkout_pkgbase", lambda d: origin[Path(d).name])
+    monkeypatch.setattr(aur, "is_repo_package", lambda n: True)  # never consulted
+    seen = {}
+    monkeypatch.setattr(build_core, "build_and_install",
+                        lambda targets, **k: (seen.update(t={t.pkgbase: t.source for t in targets}),
+                                              BuildOutcome(built_pkgs=list(paths)))[1])
+    monkeypatch.setattr("sysforge.pipeline.state.get_toolchain_variant", lambda s: "pgo_llvm")
+    rebuild_soname_consumers(list(paths), {}, make_options(state_dir=tmp_path),
+                             PipelineState(tmp_path / "state"))
+    assert seen["t"] == {"doxygen": "repo", "linux-tools": "repo",
+                         "spoof": None, "renamed": None}
