@@ -1462,3 +1462,37 @@ def test_plain_mode_steps_never_log_heartbeat_detail(monkeypatch):
         progress.heartbeat("[10/100] x")
         progress.plan_steps(["optimize", "audit"])   # repaints without an event
     assert all("ninja" not in ln for ln in lines), lines
+
+
+def test_step_timing_callback_runs_without_the_bar_lock(monkeypatch):
+    """on_done writes a file; _lock is never held across a blocking call."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    held = []
+
+    def on_done(_name, _secs):
+        # Another thread can take the lock only if this caller does not hold it.
+        import threading
+        res = []
+
+        def probe():
+            ok = progress._lock.acquire(timeout=0.5)
+            res.append(ok)
+            if ok:
+                progress._lock.release()
+        th = threading.Thread(target=probe)
+        th.start()
+        th.join()
+        held.append(not res[0])
+    with progress.steps("toolchain", ["a", "b"], on_done=on_done):
+        progress.step("a")
+        progress.step("b")
+    assert held == [False, False]
+
+
+def test_a_phase_change_forgets_ninja_totals(monkeypatch):
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    _detail_after("[9000/10023] x")
+    progress.phase("repackaging")
+    assert _detail_after("[10/400] y") == "ninja 2%"

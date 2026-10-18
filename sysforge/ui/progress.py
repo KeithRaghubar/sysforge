@@ -807,6 +807,7 @@ def phase(label: Optional[str]) -> None:
         _ensure_init()
         _bar.phase = label
         _bar.detail = None
+        _bar.ninja.clear()  # a new phase's builds count afresh
         _changed()
 
 
@@ -980,14 +981,22 @@ def tracker(total: int, prefix: str,
 # untouched, and they carry the stage's clock: elapsed since the stage began,
 # and an ETA summed from each remaining step's recorded duration.
 
-def _finish_step(s: _Steps, now: float) -> None:
-    """Report the current step's active duration to ``on_done``. Never raises."""
+def _finish_step(s: _Steps, now: float) -> Optional[Callable[[], None]]:
+    """The call reporting the current step's active duration to ``on_done``,
+    or ``None``. Caller holds ``_lock`` and runs the result after releasing
+    it: ``on_done`` writes a file, and ``_lock`` is never held across a
+    blocking call."""
     if s.on_done is None or not 0 <= s.index < len(s.names):
-        return
-    try:
-        s.on_done(s.names[s.index], _bar_active(_bar, now) - s.step_started)
-    except Exception as e:  # noqa: BLE001 — timing must never break the run
-        _log.debug(f"step timing not recorded: {e!r}")
+        return None
+    on_done, name = s.on_done, s.names[s.index]
+    secs = _bar_active(_bar, now) - s.step_started
+
+    def report() -> None:
+        try:
+            on_done(name, secs)
+        except Exception as e:  # noqa: BLE001 — timing must never break the run
+            _log.debug(f"step timing not recorded: {e!r}")
+    return report
 
 
 @contextlib.contextmanager
@@ -1005,24 +1014,25 @@ def steps(prefix: str, names: list[str], *,
     """
     with _lock:
         _ensure_init()
-        if _bar.steps is not None:
-            msg = f"steps '{prefix}' opened inside '{_bar.steps.prefix}'"
-            if _strict_nesting:
-                raise RuntimeError(msg)
-            _log.debug(msg)
-            outer = True
-        else:
-            outer = False
+        outer = _bar.steps
+        s: Optional[_Steps] = None
+        saved_phase = _bar.phase
+        if outer is None:
             now = _bar_active(_bar, _monotonic())
             s = _Steps(prefix=prefix, names=list(names), started=now,
                        step_started=now, expected=dict(expected or {}),
                        on_done=on_done)
             _bar.steps = s
-            saved_phase = _bar.phase
-    if outer:
+    if outer is not None:
+        msg = f"steps '{prefix}' opened inside '{outer.prefix}'"
+        if _strict_nesting:
+            raise RuntimeError(msg)
+        _log.debug(msg)
         yield
         return
+    assert s is not None  # noqa: S101 — set above whenever outer is None
     ok = False
+    report: Optional[Callable[[], None]] = None
     try:
         yield
         ok = True
@@ -1030,7 +1040,7 @@ def steps(prefix: str, names: list[str], *,
         with _lock:
             if _bar.steps is s:
                 if ok:
-                    _finish_step(s, _monotonic())
+                    report = _finish_step(s, _monotonic())
                 _bar.steps = None
                 _bar.phase = saved_phase
                 _bar.detail = None
@@ -1038,6 +1048,8 @@ def steps(prefix: str, names: list[str], *,
                     _bar.drawn = _compose(_bar, _monotonic())
                 else:
                     _draw()
+        if report is not None:
+            report()
 
 
 def step(name: str) -> None:
@@ -1055,7 +1067,7 @@ def step(name: str) -> None:
         now = _monotonic()
         if 0 <= s.index < len(s.names) and s.names[s.index] == name:
             return
-        _finish_step(s, now)
+        report = _finish_step(s, now)
         ahead = s.names[s.index + 1:]
         ahead = ahead[ahead.index(name):] if name in ahead else [name, *ahead]
         s.names = s.names[:s.index + 1] + ahead
@@ -1065,6 +1077,8 @@ def step(name: str) -> None:
         _bar.detail = None
         _bar.ninja.clear()
         _changed()
+    if report is not None:
+        report()
 
 
 def plan_steps(names: list[str]) -> None:
