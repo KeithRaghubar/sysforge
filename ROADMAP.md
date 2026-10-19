@@ -113,10 +113,14 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `3.5.0-B108` | a split AUR package whose pkgbase is not a package name never gets its RPC version | med | small | patch |
 | `3.5.0-B109` | lib32-* packages are built in a sandbox without the multilib toolchain | med | small | patch |
+| `3.5.0-B111` | the shipped optimized profile disables LTO under the default gcc toolchain | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
 | `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
+| `3.5.0-F12` | a per-package compiler swap switches the whole toolchain bundle | med | medium | minor |
+| `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
+| `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
 | `3.5.0-F10` | name the cause of build failures the sandbox and new compilers expose | low | small | minor |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
 | `3.5.0-DEV2` | raise test coverage where this review's bugs clustered | low | medium | patch |
@@ -153,6 +157,25 @@ canonical ordering.
   2026-10-19 `update --devel` run log. Tests: a recorded non-compiling build shows no flag drift
   after a profile flag change; a compiling one still does.
   *Priority: low · Effort: medium · Bump: minor* — wasted rebuilds on every flag change.
+
+---
+
+- **`3.5.0-F12` — a per-package compiler swap switches the whole toolchain bundle.** Five
+  surfaces choose a package's compiler: `[defaults] toolchain`, a rule-selected profile's
+  `toolchain`, a profile's explicit `CC`/`CXX`/`AR`/… keys, a `[package_compiler_overrides]` row,
+  and `sysforge build --cc/--cxx/--ld`. The row (written by the build-failure recovery menu's
+  swap) replaces only `CC`, `CXX` and the `-fuse-ld=` token after the profile resolves, so a gcc
+  swap on an `llvm` profile keeps `AR/NM/RANLIB/STRIP=llvm-*` and the clang-only flags, which the
+  gcc guards then rewrite or drop; a `[[rules]]` profile with `toolchain = "gcc"` switches the set
+  consistently. The row is also a second place to look for "which compiler builds X", and
+  `--cc` beats it silently (it rides `extra_env`). Let a row carry `toolchain = "gcc" | "llvm"`,
+  applied before `profile._expand_toolchain` so the bundle swaps as a unit; keep raw
+  `cc`/`cxx`/`ld` for exotic compilers only; have the recovery menu write the `toolchain` form;
+  log when `--cc/--cxx/--ld` overrides a row; and document the precedence in the table's comment
+  and §Flag/Profile. Existing raw rows keep working. Found in the 2026-10-19 shipped-config audit.
+  Tests: a `toolchain = "gcc"` row on an `llvm` profile yields the gcc bundle (no `llvm-*`
+  binutils, no `-flto=thin`); a raw row behaves as today; `--cc` over a row logs the override.
+  *Priority: med · Effort: medium · Bump: minor* — the swap the recovery menu offers is half a swap.
 
 ### Bugs
 
@@ -242,6 +265,55 @@ canonical ordering.
   `lib32-gcc-libs`). Tests: a `lib32-*` target's container deps include `multilib-devel`; a
   non-`lib32` target's do not.
   *Priority: med · Effort: small · Bump: patch* — every sandboxed lib32 build can fail.
+
+---
+
+- **`3.5.0-B110` — `[safety] llvm_preflight = false` has no effect.** `sysforge.toml` documents
+  `llvm_preflight` as the switch that suppresses the informational LLVM pre-flight table for
+  `fetch`, `update` and `build`, and ships it as `true`, but no code reads it: `fetch.cmd_fetch`,
+  `build_cmd` and `update._phase_llvm_preflight` check only `--no-llvm-preflight`. The design text
+  (§primitives-layer, the pre-flight wiring) also claims the key works. Resolve it through
+  `config.resolve_flag_default(args, "no_llvm_preflight", safety_cfg, …)` (inverted) at all three
+  sites, or remove the key; drop the comment's stale `converge` verb either way. Found in the
+  2026-10-19 shipped-config audit; confirmed in the code. Tests: `llvm_preflight = false`
+  suppresses the table on each verb; the CLI flag still wins.
+  *Priority: low · Effort: small · Bump: patch* — a documented setting silently does nothing.
+
+---
+
+- **`3.5.0-B111` — the shipped `optimized` profile disables LTO under the default gcc
+  toolchain.** `[profiles.optimized]` hardcodes `-fuse-ld=lld` in `LDFLAGS` while the shipped
+  `[defaults] toolchain` is `"gcc"`. gcc plus lld trips `emit_makepkg_conf`'s guard ("GCC LTO
+  bitcode is incompatible with lld"), which clears `LTOFLAGS` and flips `lto` to `!lto`, so every
+  package on the out-of-the-box `optimized` profile builds without LTO. The `llvm` toolchain
+  bundle (`profile._expand_toolchain`) already adds `-fuse-ld=lld` when no linker is declared, so
+  the hardcoded token gains nothing under llvm. Drop it (keep `--icf=all`, which the linker guard
+  strips when lld is not in use) in `etc/sysforge/profiles.toml` and the fixture. Found in the
+  2026-10-19 shipped-config audit; the run log showed the guard firing on every gcc package.
+  Tests: the shipped `optimized` profile under `toolchain = "gcc"` keeps LTO; under `"llvm"` it
+  still links with lld.
+  *Priority: med · Effort: small · Bump: patch* — the default optimized profile silently loses LTO.
+
+---
+
+- **`3.5.0-B112` — the shipped configs carry stale and dead guidance.** From the 2026-10-19
+  shipped-config audit, all confirmed in the code:
+  (1) `[profiles.batch]` and `[profiles.kernel]` `makepkg_flags` list `--syncdeps`/`--install`
+  (and `batch` `--rmdeps`), and the `profiles.toml` header lists them as common choices, though
+  every build strips `--syncdeps`/`--install` since `3.4.0-F1` (`BATCH_STRIP_FLAGS`/`SYNC_FLAGS`);
+  (2) `[profiles.kernel]` and its commented `[[rules]]` example are no longer needed: the kernel
+  stage stamps `owner_stage = "kernel"`, which turns on the kernel patchers, and never selects the
+  profile;
+  (3) `sysforge.toml` names a `converge` verb that no longer exists, and `sysforge.toml` and
+  `bootstrap.toml` say `sysforge reconfigure` for what is now `sysforge run reconfigure`;
+  (4) the header's example `CPPFLAGS = "-D_FORTIFY_SOURCE=2"` contradicts Arch's current
+  `-Wp,-D_FORTIFY_SOURCE=3` in `CFLAGS` (copying it defines the macro twice);
+  (5) the header calls `[defaults] profile` "(required)", but the resolver falls back to `bare`,
+  and it points at a hardcoded "line 220" that drifts with every edit.
+  Fix the text, drop the dead flags and decide whether `[profiles.kernel]` stays as an explicit
+  example or goes; keep the fixtures in parity. Tests: `make check-shipped`; a test that no
+  shipped profile's `makepkg_flags` contains a flag in `BATCH_STRIP_FLAGS`.
+  *Priority: low · Effort: small · Bump: patch* — misleading guidance in the files users edit.
 
 ### Developer tooling
 
