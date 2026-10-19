@@ -994,14 +994,15 @@ def test_em_dash_group_is_clean_on_the_real_repo():
 
 
 def test_em_dash_flags_readme_guides_man_and_completions(tmp_path):
-    for rel in ("README.md", "docs/guides/x.md", "man/sysforge.1.scd.in",
-                "man/sysforge.1", "completions/_sysforge"):
+    for rel in ("README.md", "docs/guides/x.md", "docs/concepts/x.md",
+                "man/sysforge.1.scd.in", "man/sysforge.1", "completions/_sysforge"):
         p = tmp_path / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("fine\nnot — fine\n", encoding="utf-8")
     found = _load_check_standards().check_em_dash(tmp_path)
     assert sorted(f.location for f in found) == [
-        "README.md:2", "completions/_sysforge:2", "docs/guides/x.md:2",
+        "README.md:2", "completions/_sysforge:2", "docs/concepts/x.md:2",
+        "docs/guides/x.md:2",
         "man/sysforge.1.scd.in:2", "man/sysforge.1:2",
     ], found
 

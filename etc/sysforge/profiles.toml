@@ -230,6 +230,8 @@ toolchain = "gcc"   # global package-compiler default: "gcc" | "llvm" (see heade
 # =============================================================================
 # Profiles
 # =============================================================================
+# What each flag below changes and costs (-O2/-O3, -march=native, LTO, the
+# linker options, the hardening flags): docs/concepts/compiler-optimization.md
 
 [profiles.bare]
 # Fallback — no flags injected

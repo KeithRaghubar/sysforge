@@ -112,6 +112,38 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DOC3` — a concept page on profile-guided and post-link optimization.** The guides say what to run; a new set of concept pages under `docs/concepts/` explains how the techniques behind them work, without assuming sysforge, and cites upstream sources rather than numbers measured on one machine. The README lists them beside the guides. This first one covers instrumented PGO, sampled profiles (AutoFDO), Propeller and BOLT: what each changes in a program, why the training workload decides the result, how profiles go stale, and when none of them pay off. The PGO guide's opening background moved here, leaving the guide the steps. The guide's toolchain section now quotes LLVM's own published compile-time figure instead of an unsourced range, and its BOLT section quotes the figure from LLVM's BOLT tutorial.
+
+---
+
+- **`3.5.0-DOC4` — a concept page on shared libraries and ABI.** Sonames, API versus ABI, why a library's soname change means rebuilding everything that uses it, symbol versioning, and how C++ standard-library functions can leak through another library's exports, with libLLVM as the worked case: two builds of the same version can export different symbols. The drift guide and the PGO guide's toolchain section link it.
+
+---
+
+- **`3.5.0-DOC5` — a concept page on how an Arch package is built.** PKGBUILD fields and arrays, makepkg and `makepkg.conf`, where builds and finished packages land (`BUILDDIR`, `PKGDEST`), pkgbase and split packages, `.SRCINFO`, `-git` packages and `pkgver()`, checksums and signatures, and clean-chroot builds.
+
+---
+
+- **`3.5.0-DOC6` — a concept page on compiler optimization basics.** What `-O2` and `-O3` change, what `-march=native` gains and the portability it gives up, full versus Thin LTO, the linker options in a typical profile (`-fno-plt`, `--as-needed`, full RELRO, `--icf=all`), and what each hardening flag buys and costs. The README and the profiles section of the shipped `profiles.toml` link it.
+
+---
+
+- **`3.5.0-DOC7` — a concept page on bootstrapping an optimized compiler.** Why a compiler is built in stages, what the instrumented, training and optimized builds each produce, how BOLT fits on top, and why an installed toolchain must only ever be replaced as a whole. The PGO guide's toolchain section links it.
+
+---
+
+- **`3.5.0-DOC8` — a concept page on kernel builds and boot basics.** The kernel config and `olddefconfig`, config fragments, `localmodconfig` and what it can miss, built-in versus module, the initramfs, systemd-boot entries and menu order, GRUB, and why a fallback kernel matters. The kernel and boot entries guides link it.
+
+---
+
+- **`3.5.0-DOC9` — a concept page on measuring performance honestly.** Why timings vary from run to run, warm versus cold caches, repeated and interleaved runs with the median and spread, what a before/after comparison has to hold fixed, and `perf stat` and `perf record` basics. The PGO guide's "Did it help?" section links it.
+
+---
+
+- **`3.5.0-DOC10` — a glossary.** One page defining the terms the guides and concept pages share (pkgbase, split package, `PKGDEST`, soname, LTO, profdata, training workload, pass, sentinel, drift and more), each linked to the page that covers it.
+
+---
+
 - **`3.5.0-F2` — `run toolchain` builds the LLVM toolchain from upstream's single `llvm` package.** The repos now build clang, lld, polly, compiler-rt and openmp, along with lldb, libclc and others, as part of the `llvm` package. With PGO on, the whole set now goes through the profiling build together, which also means clang's own code (`libclang-cpp`) is optimized with the profile for the first time; before, only libLLVM was. Building them separately would have meant building the entire llvm source tree two extra times. When it installs, the toolchain stage now also replaces the other packages that come from the same build and that you already have installed (for example lldb and libclc), so they match the new libLLVM, and the rollback covers them too. Packages from that build you never installed, such as the WebAssembly runtimes, are built but not installed. Your `[packages]` lists in `toolchain.toml` keep working unchanged.
 
 ---

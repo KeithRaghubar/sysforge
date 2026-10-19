@@ -5,7 +5,9 @@ unattended, how to control the kernel config, and the checks that keep a bad bui
 the machine unbootable.
 
 Related guides: [boot-entries.md](boot-entries.md) (the systemd-boot menu entries sysforge
-writes) and [pgo.md](pgo.md) (AutoFDO and Propeller for the kernel). For the internals see
+writes) and [pgo.md](pgo.md) (AutoFDO and Propeller for the kernel). For the background
+(Kconfig, modules, the initramfs, boot entries and fallback kernels) see
+[Kernel builds and boot basics](../concepts/kernel-and-boot.md). For the internals see
 [DESIGN.md](../../DESIGN.md) (§Kernel stage). This guide only describes how to use it.
 
 ---

@@ -5,7 +5,9 @@ and how to control which entry boots. This guide applies to `bootloader = "syste
 (the default). Under `grub`, `grub-mkconfig` discovers kernels by itself and none of this
 applies.
 
-For the internals see [DESIGN.md](../../DESIGN.md). This guide only describes how to use it.
+For how boot loaders, entries and fallback kernels work in general, see
+[Kernel builds and boot basics](../concepts/kernel-and-boot.md). For the internals see
+[DESIGN.md](../../DESIGN.md). This guide only describes how to use it.
 
 ---
 

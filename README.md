@@ -247,6 +247,18 @@ sources and PGP key fetches;
 and [docs/guides/kernel.md](docs/guides/kernel.md) walks through `sysforge run kernel`, from the
 config review to the boot-safety checks.
 
+The guides say what to run. The concept pages under [docs/concepts/](docs/concepts/) explain
+the techniques behind them, independent of sysforge:
+[how an Arch package is built](docs/concepts/arch-packages.md),
+[compiler optimization basics](docs/concepts/compiler-optimization.md) (what the flags in a
+profile such as `standard` or `optimized` change, and what they cost),
+[profile-guided and post-link optimization](docs/concepts/pgo-and-post-link.md),
+[bootstrapping an optimized compiler](docs/concepts/compiler-bootstrap.md),
+[shared libraries and ABI](docs/concepts/shared-libraries-and-abi.md),
+[kernel builds and boot basics](docs/concepts/kernel-and-boot.md) and
+[measuring performance honestly](docs/concepts/measuring-performance.md). The
+[glossary](docs/concepts/glossary.md) defines the terms they share.
+
 That is the everyday surface. For the rest (`--cleansrc`, `--install-only`,
 throttling, profiling/`--timings`, the `doctor` axes, `run <stage>`, and profile/rule
 semantics), see `sysforge --help`, the [man page](man/sysforge.1), and

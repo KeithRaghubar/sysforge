@@ -111,7 +111,8 @@ def _docstrings(tree):
 
 def _printed_doctor_commands():
     """Every `sysforge doctor ...` a user can be told to run: non-docstring
-    string literals under sysforge/, plus the README, guides and man source."""
+    string literals under sysforge/, plus the README, guides, concept pages
+    and man source."""
     found = []
     for py in sorted((REPO_ROOT / "sysforge").rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"))
@@ -122,7 +123,8 @@ def _printed_doctor_commands():
                 for m in _DOCTOR_CMD.finditer(node.value):
                     found.append((f"{py.relative_to(REPO_ROOT)}:{node.lineno}", m.group(1)))
     docs = [REPO_ROOT / "README.md", REPO_ROOT / "man/sysforge.1.scd.in",
-            *sorted((REPO_ROOT / "docs/guides").glob("*.md"))]
+            *sorted((REPO_ROOT / "docs/guides").glob("*.md")),
+            *sorted((REPO_ROOT / "docs/concepts").glob("*.md"))]
     for doc in docs:
         for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
             for m in _DOCTOR_CMD.finditer(line):

@@ -71,7 +71,8 @@ Groups:
                     comparison itself is --require-bump / --derive-bump, used by
                     tools/release.sh preflight, not a group.
     em_dash         User-facing prose (STD row 30): no U+2014 in README.md,
-                    docs/guides/, the man page source and output, completions,
+                    docs/guides/, docs/concepts/, the man page source and
+                    output, completions,
                     or any non-docstring string literal under sysforge/ (help
                     text, printed messages, generated-file headers). A literal
                     that is only the glyph is allowed. ROADMAP and release
@@ -1658,7 +1659,7 @@ _EM_DASH = "—"
 # Prose a user reads. ROADMAP and release notes are out of scope: their
 # ``- **`<ID>` — <title>.**`` lead is a lint-enforced format, not prose.
 _EM_DASH_FILES = ("README.md", "man/sysforge.1.scd.in", "man/sysforge.1")
-_EM_DASH_GLOBS = ("docs/guides/*.md", "completions/*")
+_EM_DASH_GLOBS = ("docs/guides/*.md", "docs/concepts/*.md", "completions/*")
 _EM_DASH_MSG = "em-dash (U+2014); use a comma, colon, period or parentheses"
 
 

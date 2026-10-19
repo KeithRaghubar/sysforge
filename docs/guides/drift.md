@@ -21,6 +21,7 @@ Version drift is the ordinary "there is an update" case and needs nothing from y
 two are reported on a single line at the end of the version check and left alone unless you
 ask for a rebuild. A third kind, **ABI drift** (an installed program linked against a library
 version the system no longer has), is the job of `sysforge doctor pkg --all`, not `update`.
+[Shared libraries and ABI](../concepts/shared-libraries-and-abi.md) explains how it happens.
 
 ---
 

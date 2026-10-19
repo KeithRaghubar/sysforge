@@ -8,27 +8,18 @@ For the internals (how flags are injected, how renames work, why each gate exist
 
 ---
 
-## The idea in one minute
+## How it works
 
-A compiler normally guesses which code is hot. Profile-guided optimization replaces the guess
-with measurements from your own machine:
+Every method here follows the same three steps: **record** (build or run something that
+collects data), **exercise** (use it the way you normally do; *this step is yours, and it
+decides the result*), and **use** (rebuild from what was collected). Packages and the LLVM
+toolchain use instrumentation, counters compiled into a special build; the kernel uses
+sampling with `perf`.
 
-1. **Record:** build a special version of the program that collects data while it runs.
-2. **Exercise:** use it the way you normally do. *This step is yours, and it decides the
-   result.*
-3. **Use:** rebuild the program, feeding the collected data to the compiler. It lays out
-   hot code together, inlines what you actually call, and moves cold code out of the way.
-
-The optimized build is only as good as step 2. A profile collected from a workload that
-doesn't resemble real use can make things *slower* in the paths you care about, because the
-compiler deprioritises code it never saw run.
-
-SysForge supports two families of profile collection:
-
-| Family | How data is collected | Overhead while recording | Used for |
-|---|---|---|---|
-| **Instrumentation** (PGO) | Counters compiled into the binary | Noticeable (often 10–50% slower) | Packages (mesa, …), the LLVM toolchain |
-| **Sampling** (AutoFDO, Propeller) | CPU hardware samples branches via `perf` | Low | The kernel |
+How the methods differ, what each changes in the program, why the workload matters so much,
+and when none of them pay off are explained in
+[Profile-guided and post-link optimization](../concepts/pgo-and-post-link.md). This guide
+covers what to run.
 
 ---
 
@@ -183,8 +174,11 @@ allow = ["mesa", "your-package"]
 
 ## Toolchain PGO (optimized clang)
 
-A PGO-optimized clang compiles everything faster, typically 10–20%. That benefits every
-package you build afterwards, including kernels and mesa.
+A PGO-optimized clang compiles everything faster. LLVM's own
+[PGO build guide](https://llvm.org/docs/HowToBuildWithPGO.html) says users report up to 20%
+less compile time; what you get depends on your machine and what you compile, which
+`sysforge bench toolchain` (below) measures. That benefits every package you build
+afterwards, including kernels and mesa.
 
 Enable it in `toolchain.toml`:
 
@@ -202,7 +196,9 @@ sysforge run toolchain
 
 Unlike package PGO, **the training workload is automatic**: SysForge builds an
 instrumented clang and uses it to compile LLVM itself (pass 3), then rebuilds the final
-toolchain from that profile (pass 4). You don't have to do anything in between.
+toolchain from that profile (pass 4). You don't have to do anything in between. Why a
+compiler is built in passes, and why the installed one is only ever replaced as a whole, is
+explained in [Bootstrapping an optimized compiler](../concepts/compiler-bootstrap.md).
 
 The progress line at the bottom of the terminal says where the run is, for example
 `toolchain 5/8 · optimize · llvm · ninja 74% · 1h34m · ~40m left`: the step out of the
@@ -212,6 +208,12 @@ time since the stage started and an estimate of what is left. The estimate comes
 long each step took on your earlier runs, so it appears from the second run on. Every line of
 the run log (`sysforge log`) also starts with the time it was written, so a finished run
 shows how long each step took.
+
+The pre-install audit checks the new libLLVM against the programs already using it, such as
+mesa's drivers. A symbol one of them needs and the new build no longer exports either stops
+the run before anything is installed or queues that program for a rebuild after the install.
+[Shared libraries and ABI](../concepts/shared-libraries-and-abi.md) explains how a
+rebuilt library can break its users without changing its version.
 
 Best practices:
 
@@ -248,7 +250,8 @@ sysforge bench toolchain --offline  # use the stock package only from the pacman
 ```
 
 The bench gives no pass or fail verdict, because what counts as a worthwhile gain depends
-on your machine and on what you compile. It installs nothing and needs no sudo: the stock
+on your machine and on what you compile. To judge a result, or to time something the bench
+doesn't cover, see [Measuring performance honestly](../concepts/measuring-performance.md). It installs nothing and needs no sudo: the stock
 clang is unpacked into a temporary directory. If the stock package isn't in the pacman
 cache, or the cached copy fails its checksum, it is downloaded as your user from your
 configured mirrors (trying each in turn, as pacman does) and checked against the sync
@@ -526,7 +529,11 @@ it starts, and removing kernels you no longer boot keeps that check passing.
 ## BOLT
 
 BOLT rearranges clang's compiled code so the parts used together sit together, on top of
-PGO. It is **experimental**: it has not yet been through a full toolchain build. Turn it on
+PGO. LLVM's [BOLT tutorial for clang](https://github.com/llvm/llvm-project/blob/main/bolt/docs/OptimizingClang.md)
+reports up to 15% faster compiles on top of PGO and LTO, for a clang binary with LLVM linked
+in. sysforge rewrites the shared libraries instead, so measure your own result with
+`sysforge bench toolchain`. It is **experimental**: it has not yet been through a full
+toolchain build. Turn it on
 in `toolchain.toml`:
 
 ```toml

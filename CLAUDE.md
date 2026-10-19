@@ -73,7 +73,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
 - **User guides track their feature** (`docs/guides/*.md`, linked from README): a change to a
   guided surface (e.g. `--pgo`, `run toolchain` PGO keys, `--autofdo`/`--propeller`, `state
   profiles`, profile store paths) updates its guide in the same change. Order: after README.
-- **`DOC` IDs are for user-facing docs only** (`docs/guides/`, README, man page) and file under
+  Concept pages (`docs/concepts/*.md`) explain the technique, not sysforge: no sysforge
+  vocabulary outside the closing "In sysforge" section, upstream sources cited, no numbers
+  measured on one machine; guides link them (and the glossary) rather than re-explaining.
+- **`DOC` IDs are for user-facing docs only** (`docs/guides/`, `docs/concepts/`, README, man page) and file under
   `## Changed` (patch; lint-enforced). Internal docs (design, CLAUDE.md, ROADMAP) get no ID;
   wrong `--help`/man output is a `B`, since it is CLI behaviour.
 - **`DEV` IDs are for contributor-only work** (only `tests/`, `tools/`, `Makefile`, `.claude/`,
