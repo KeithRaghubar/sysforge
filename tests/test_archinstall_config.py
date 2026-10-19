@@ -87,3 +87,17 @@ def test_zsh_adds_shell_packages():
     cfg = _build(c)
     assert "zsh" in cfg["packages"] and "zsh-completions" in cfg["packages"]
     assert any("chsh" in cc and "zsh" in cc for cc in cfg["custom_commands"])
+
+
+def test_root_ssh_login_is_off_by_default():
+    """3.5.0-B71: real hardware must not get root password logins over SSH."""
+    cmds = " ".join(_build(_vm_cfg())["custom_commands"])
+    assert "PermitRootLogin" not in cmds and "PasswordAuthentication" not in cmds
+    assert "console=ttyS0" in cmds  # the serial console line stays
+
+
+def test_root_ssh_login_when_opted_in():
+    import dataclasses
+    cfg = dataclasses.replace(_vm_cfg(), ssh_root_login=True)
+    cmds = " ".join(_build(cfg)["custom_commands"])
+    assert "PermitRootLogin yes" in cmds

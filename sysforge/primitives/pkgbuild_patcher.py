@@ -13,14 +13,12 @@ Public API:
     patch_pkgbuild_groups(pkgbuild_path, groups) -> Path
     extract_pkgbuild_profile(pkgmeta, pkgbuild_path) -> dict
     write_extracted_profile(profile, pkgbuild_path) -> Path
-    load_extracted_profile(pkgbuild_path) -> dict
     apply_patch_pkgbuild(pkgbuild_path, pkgmeta) -> Path
     cleanup_patch_artifacts(pkgbuild_path)
 """
 import re
 from sysforge import log
 _log = log.get_logger("PATCH")
-import tomllib
 from pathlib import Path
 from sysforge.primitives.hardware_tables import (
     MESA_MANDATORY_GALLIUM,
@@ -479,26 +477,6 @@ def write_extracted_profile(profile, pkgbuild_path):
     out_path.write_text("\n".join(lines) + "\n")
     _log.info(f"Wrote extracted profile: {out_path}")
     return out_path
-
-
-def load_extracted_profile(pkgbuild_path):
-    """
-    Load a previously written pkgbuild_extracted_profile.toml from the
-    PKGBUILD's directory, if it exists.
-
-    Returns the profile dict, or an empty dict if the file is absent.
-    Used to re-attach the extracted profile on retry after a failed build.
-    """
-    toml_path = Path(pkgbuild_path).parent / "pkgbuild_extracted_profile.toml"
-    if not toml_path.exists():
-        return {}
-
-    with toml_path.open("rb") as f:
-        data = tomllib.load(f)
-
-    profile = data.get("profiles", {}).get("pkgbuild_extracted", {})
-    _log.info(f"Loaded extracted profile from: {toml_path}")
-    return profile
 
 
 # ---------------------------------------------------------------------------
@@ -1673,27 +1651,58 @@ def _line_is_continued(line: str) -> bool:
 
 
 def _cmake_statement_end(text: str, search_from: int) -> int:
-    """Index of the newline that terminates the (possibly ``\\``-continued) cmake
-    statement beginning at/after ``search_from``.
+    """Index where the cmake command beginning at ``search_from`` ends: the
+    point a new ``\\``-continued arg is inserted.
 
     A cmake invocation may already span several lines via ``\\`` continuations —
     either in the upstream PKGBUILD or because an earlier injection appended an
     arg. Inserting a new ``-D`` arg at the *first* newline after ``cmake`` would
     splice it into the middle of that chain and orphan everything below it (bash
-    then runs the orphaned ``-D…`` as a command → "command not found"). So we walk
-    forward over continued lines and return the first newline whose line does
-    **not** continue — the true end of the statement, where a new continuation
-    appends cleanly. Returns ``len(text)`` when the statement runs to EOF.
+    then runs the orphaned ``-D…`` as a command → "command not found"). So this
+    walks the shell text, quote-aware, over continued lines to the end of the
+    command, which is the first of:
+
+    - a newline that is not a continuation;
+    - an unquoted ``#`` that begins a word: a comment, which also swallows a
+      trailing ``\\``, so an arg appended after it would be commented out;
+    - a command separator (``&&``, ``||``, ``;``, ``|``): in ``cmake .. && ninja``
+      an arg appended at the line end would go to ninja (3.5.0-B68).
+
+    Whitespace before a comment or separator is left after the insertion point,
+    so the remainder (``# note``, ``&& ninja``) follows the new arg's line.
+    Returns ``len(text)`` when the command runs to EOF.
     """
-    pos = search_from
-    while True:
-        nl = text.find("\n", pos)
-        if nl == -1:
-            return len(text)
-        if _line_is_continued(text[pos:nl]):
-            pos = nl + 1
+    i, n, quote = search_from, len(text), None
+
+    def _cut(at: int) -> int:
+        while at > search_from and text[at - 1] in " \t":
+            at -= 1
+        return at
+
+    while i < n:
+        c = text[i]
+        if quote is not None:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
             continue
-        return nl
+        if c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 2  # an escaped char, or a line continuation
+            continue
+        elif c == "\n":
+            return i
+        else:
+            comment = c == "#" and (i == 0 or text[i - 1] in " \t;&|()")
+            separator = c in ";|" or text.startswith("&&", i)
+            if comment or separator:
+                return _cut(i)
+        i += 1
+    return n
 
 
 def _find_cmake_configure_anchor(text: str):
@@ -2284,14 +2293,16 @@ def validate_patched_pkgbuild(original_path, patched_path, *, rename=None) -> No
                 _log.error(msg)
                 raise PkgbuildPatchError(msg)
 
-    # G2: join `\`-continuations so an injected arg shares its cmake's logical line.
+    # G2: join `\`-continuations so an injected arg shares its cmake's logical
+    # line, and require it before any comment or command separator on that
+    # line, where it would be commented out or passed to the next command
+    # (3.5.0-B68).
     joined = Path(patched_path).read_text(encoding="utf-8").replace("\\\n", " ")
     for line in joined.splitlines():
         stripped = line.strip()
-        if stripped.startswith("cmake"):
-            continue
+        command = stripped[:_cmake_statement_end(stripped, 0)]
         for token in _MANAGED_CMAKE_TOKENS:
-            if token in stripped:
+            if token in stripped and not (stripped.startswith("cmake") and token in command):
                 msg = (
                     f"injected cmake arg is not attached to a cmake command: "
                     f"{stripped[:80]!r}. Anchor/continuation bug in the injector."

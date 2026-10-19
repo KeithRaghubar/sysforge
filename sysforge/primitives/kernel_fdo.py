@@ -337,6 +337,24 @@ def kernel_major_minor(version: str | None) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
+def clear_round_profiles(store: Path, *, propeller: bool) -> list[Path]:
+    """Remove the profiles a new record round makes stale (3.5.0-B79).
+
+    A record round builds a new profiling kernel, so profiles captured from the
+    previous binary no longer match it: round 1 drops the AutoFDO store's
+    ``kernel.afdo`` (an old one also masks the version-drift warning), round 2
+    the Propeller cc/ld pair (its pinned AutoFDO copy is re-pinned). Returns
+    the files removed; a file that cannot be removed raises ``OSError``.
+    """
+    stale = list(_propeller_files(store)) if propeller else [autofdo_profile_path(store)]
+    removed = []
+    for path in stale:
+        if path.is_file():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
 def pin_autofdo_profile(pkgname, *, tcfg=None, dry_run=False) -> tuple[Path, str]:
     """Copy round 1's AutoFDO profile into the Propeller store (round 2).
 

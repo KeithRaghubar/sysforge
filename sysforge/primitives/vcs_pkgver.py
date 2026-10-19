@@ -301,14 +301,34 @@ def peek_upstream_commit(
     return None
 
 
-def read_built_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 10) -> str | None:
+def _srcdir_candidates(pkgbuild_dir: Path, meta: dict, build_root: Path | None) -> list[Path]:
+    """Where makepkg's ``srcdir`` can be, most specific first."""
+    from sysforge.primitives.pacman import get_builddir
+    out = [] if build_root is None else [Path(build_root) / "src"]
+    builddir = get_builddir()
+    if builddir is not None:
+        globals_ = meta.get("globals", {})
+        pkgbase = globals_.get("pkgbase") or globals_.get("pkgname") or pkgbuild_dir.name
+        if isinstance(pkgbase, list):
+            pkgbase = pkgbase[0] if pkgbase else pkgbuild_dir.name
+        out.append(Path(builddir) / pkgbase / "src")
+    out.append(pkgbuild_dir / "src")
+    return out
+
+
+def read_built_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 10,
+                               build_root: Path | None = None) -> str | None:
     """Read the just-built upstream commit SHA from ``srcdir/<clone>/HEAD``.
 
     Called from the build pipeline immediately after a successful
     ``makepkg`` so the SHA can be persisted in ``build_state.toml`` for the
     next ``--devel`` short-circuit. Returns None for non-single-git-source
-    PKGBUILDs, missing clone dir (e.g. SRCDEST elsewhere), or rev-parse
-    failures.
+    PKGBUILDs, missing clone dir, or rev-parse failures.
+
+    The srcdir is ``<build root>/src``: ``build_root`` (the ``$BUILDDIR/<pkgbase>``
+    the build used, ``makepkg_env.build_root``) first, then
+    ``pacman.get_builddir()/<pkgbase>``, then the PKGBUILD dir, where makepkg
+    builds when ``BUILDDIR`` is unset (3.5.0-B84).
     """
     pkgbuild_dir = Path(pkgbuild_dir)
     pkgbuild_path = pkgbuild_dir / "PKGBUILD"
@@ -322,9 +342,11 @@ def read_built_upstream_commit(pkgbuild_dir: Path, *, timeout: int = 10) -> str 
     if src is None:
         return None
     clone_name, _, _ = src
-    src_dir = pkgbuild_dir / "src" / clone_name
-    if not src_dir.is_dir():
+    src_dir = next((d for d in _srcdir_candidates(pkgbuild_dir, meta, build_root)
+                    if (d / clone_name).is_dir()), None)
+    if src_dir is None:
         return None
+    src_dir = src_dir / clone_name
     try:
         result = run.probe(["git", "-C", str(src_dir), "rev-parse", "HEAD"], timeout=timeout)
     except subprocess.TimeoutExpired:

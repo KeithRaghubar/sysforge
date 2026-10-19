@@ -47,7 +47,8 @@ code to trust:
 - checking out an official-repo package's PKGBUILD (`pkgctl repo clone`);
 - fetching new commits into an existing checkout during source sync;
 - probing a `-git` (or other VCS) package's upstream for a newer version (`--devel`);
-- fetching a PGP key from a keyserver (see [PGP keys](#pgp-keys) below).
+- fetching a PGP key from a keyserver (see [PGP keys](#pgp-keys) below);
+- downloading meson subprojects or git submodules to repair a failed build.
 
 Checkouts already on disk still build. A package whose source would need a download is not
 built. The run carries on with the rest, then lists the refused packages and exits non-zero:

@@ -53,6 +53,7 @@ Public API:
                             passes are dropped; an unplanned one is inserted)
     plan_steps(names)       replace the steps planned after the current one
     heartbeat(detail)       live detail appended to the line; does not paint.
+    build_started()         forget the previous build's ninja totals.
                             A ninja '[x/y] …' status shows as 'ninja 74%'
     yield_terminal(kind)    hand the terminal to a "prompt" (blank the row,
                             keep the region) or a "child" (release it); the
@@ -72,7 +73,8 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Iterator, Optional, Protocol
+from collections.abc import Generator
+from typing import Callable, Optional, Protocol
 
 from sysforge import log
 from sysforge.primitives import progress_hooks as _progress_hooks
@@ -623,7 +625,7 @@ def refresh() -> None:
 
 
 @contextlib.contextmanager
-def forwarding_output() -> Iterator[None]:
+def forwarding_output() -> Generator[None, None, None]:
     """Mark a raw byte stream as being forwarded; the ticker stands down."""
     with _lock:
         _bar.forwarding += 1
@@ -681,7 +683,7 @@ def paused_seconds() -> float:
 
 
 @contextlib.contextmanager
-def yield_terminal(kind: str = "prompt") -> Iterator[None]:
+def yield_terminal(kind: str = "prompt") -> Generator[None, None, None]:
     """Hand the terminal to someone else for the body, then take it back.
 
     ``"prompt"`` blanks the bar row in place and keeps the scroll region, so
@@ -771,7 +773,7 @@ def shutdown() -> None:
 
 
 @contextlib.contextmanager
-def session() -> Iterator[None]:
+def session() -> Generator[None, None, None]:
     """The run's lifetime: the terminal is released however the body exits."""
     try:
         yield
@@ -825,6 +827,19 @@ def heartbeat(detail: str) -> None:
     with _lock:
         _ensure_init()
         _bar.detail = _heartbeat_text(detail) if detail else None
+
+
+def build_started() -> None:
+    """Forget the ninja totals a previous build left (3.5.0-B91).
+
+    Totals are otherwise cleared on tick, tracker entry/exit and step or phase
+    changes; a second build inside one step with none of those (the
+    ``--bolt-only`` repackage) was measured against the largest earlier total.
+    ``makepkg_invoke`` calls this as each makepkg run starts.
+    """
+    with _lock:
+        _ensure_init()
+        _bar.ninja.clear()
 
 
 # ninja's status line: '[7412/10023] Building CXX object lib/…/Foo.cpp.o'.
@@ -914,7 +929,7 @@ class _TrackerTick:
 
 @contextlib.contextmanager
 def tracker(total: int, prefix: str,
-            expected: Optional[list[Optional[int]]] = None) -> Iterator[Tick]:
+            expected: Optional[list[Optional[int]]] = None) -> Generator[Tick, None, None]:
     """Yield a tick(label) callable counting *total* items.
 
         with progress.tracker(len(items), "building") as tick:
@@ -1002,7 +1017,7 @@ def _finish_step(s: _Steps, now: float) -> Optional[Callable[[], None]]:
 @contextlib.contextmanager
 def steps(prefix: str, names: list[str], *,
           expected: Optional[dict[str, int]] = None,
-          on_done: Optional[Callable[[str, float], None]] = None) -> Iterator[None]:
+          on_done: Optional[Callable[[str, float], None]] = None) -> Generator[None, None, None]:
     """Count a stage's own *names* in order; advance with :func:`step`.
 
     ``expected`` maps a step name to its usual length in seconds (the stage's

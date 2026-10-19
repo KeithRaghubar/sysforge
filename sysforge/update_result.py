@@ -32,6 +32,9 @@ class _UpdateResult:
     # makepkg ``-f`` — a drift rebuild runs at an unchanged pkgver, so the
     # matching artifact is still in PKGDEST and makepkg would skip the build.
     force_rebuild: bool = False
+    # 3.5.0-B63: the stage that owns the package (``--include-stage-owned``),
+    # threaded into the build so it is recorded as that stage records it.
+    owner_stage: str | None = None
     # 3.2.0-B31: split-pkgbase membership, filled by
     # ``update_split.annotate_split_members`` after the version check.
     # ``via`` lists the tracked members driving the pkgbase when the pkgbase's

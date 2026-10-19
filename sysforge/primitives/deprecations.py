@@ -86,11 +86,6 @@ _BY_SURFACE = {d.surface: d for d in _REGISTRY}
 _warned: set[str] = set()
 
 
-def all_deprecations() -> tuple[Deprecation, ...]:
-    """Every registered surface, in declaration order."""
-    return _REGISTRY
-
-
 def get(surface: str) -> Deprecation | None:
     """The record for `surface`, or None if it is not registered."""
     return _BY_SURFACE.get(surface)

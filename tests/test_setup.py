@@ -270,7 +270,7 @@ def test_cmd_setup_permission_denied(tmp_path, capsys):
         cmd_setup(args)
 
     err = capsys.readouterr().err
-    assert "permission denied" in err.lower()
+    assert "could not write" in err.lower()
     assert "sudo sysforge setup" in err
 
 
@@ -278,14 +278,34 @@ def test_cmd_setup_permission_denied(tmp_path, capsys):
 # cmd_setup — conf file not found
 # ---------------------------------------------------------------------------
 
-def test_cmd_setup_conf_not_found(tmp_path, capsys):
+def test_cmd_setup_conf_not_found(tmp_path, capsys, monkeypatch):
     args = MagicMock()
     args.pacman_conf = str(tmp_path / "nonexistent.conf")
+    args.preset = "secure"
+    ran = []
+    monkeypatch.setattr(setup_cmd, "_setup_preset", lambda name: ran.append(name))
 
     cmd_setup(args)
 
     err = capsys.readouterr().err
     assert "not found" in err
+    assert ran == ["secure"]  # an explicit --preset still applies (3.5.0-B106)
+
+
+def test_write_conf_goes_through_replace_file(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(setup_cmd.atomic_write, "replace_file",
+                        lambda path, text, tag: calls.append((path, text)))
+    conf = tmp_path / "pacman.conf"
+    assert setup_cmd._write_conf(conf, "x") is True
+    assert calls == [(conf, "x")]
+
+
+def test_write_conf_failure_returns_false(tmp_path, monkeypatch):
+    def _boom(*a, **k):
+        raise OSError("sudo refused: pacman.conf unchanged")
+    monkeypatch.setattr(setup_cmd.atomic_write, "replace_file", _boom)
+    assert setup_cmd._write_conf(tmp_path / "pacman.conf", "x") is False
 
 
 # ---------------------------------------------------------------------------
@@ -693,5 +713,72 @@ def test_sudo_preset_targets_and_checks_the_users_file(sudo_user_profiles, monke
     monkeypatch.setattr(config, "load_config", _load)
     monkeypatch.setattr(setup_cmd, "resolve_packages_path", lambda cfg: Path("/x/packages.toml"))
     assert setup_cmd._preset_paths()["profiles"] == sudo_user_profiles
-    assert "optimized" in setup_cmd._resolved_profiles(sudo_user_profiles)
+    assert "optimized" in setup_cmd._resolved_config(sudo_user_profiles)["profiles"]
     assert seen[-1][0] == sudo_user_profiles  # the user's file is read first
+
+
+# --- 3.5.0-B101..B106 -------------------------------------------------------
+
+def test_preset_old_value_comes_from_the_merged_profiles_view(preset_env, monkeypatch, capsys):
+    """An extends_system user file without [defaults] shows the system value."""
+    writes, _, paths = preset_env
+    paths["profiles"].write_text("extends_system = true\n[profiles.optimized]\n")
+    from sysforge.primitives import config
+    monkeypatch.setattr(config, "load_config", lambda *a, **k: {
+        "defaults": {"profile": "optimized", "toolchain": "gcc"},
+        "profiles": {"optimized": {}}})
+    setup_cmd._setup_preset("performance")
+    out = capsys.readouterr().out
+    assert "[defaults] profile:" not in out  # already optimized via the system file
+    assert writes == [("profiles.toml", "defaults", "toolchain", "llvm")]
+
+
+def test_preset_unset_profile_shows_the_resolver_fallback(preset_env, monkeypatch, capsys):
+    _writes, _, paths = preset_env
+    from sysforge.primitives import config
+    monkeypatch.setattr(config, "load_config",
+                        lambda *a, **k: {"profiles": {"optimized": {}}})
+    setup_cmd._setup_preset("performance")
+    assert '[defaults] profile: "bare"' in capsys.readouterr().out
+
+
+def test_hardened_note_names_the_checked_path_neutrally(preset_env, capsys):
+    _writes, _, paths = preset_env
+    paths["profiles"].write_text("[defaults]\nprofile = \"standard\"\n")
+    setup_cmd._setup_preset("secure")
+    out = capsys.readouterr().out
+    assert f"The profiles.toml your builds read ({paths['profiles']})" in out
+    assert "replaces" not in out
+
+
+def test_low_friction_leaves_an_enabled_sandbox_on(preset_env):
+    writes, tmp_path, paths = preset_env
+    paths["sysforge"].write_text(
+        f'[security]\nsandbox_builds = true\nsandbox_chroot_dir = "{tmp_path / "chroot"}"\n')
+    setup_cmd._setup_preset("low-friction")
+    assert "sandbox_builds" not in _written_keys(writes)
+
+
+def test_non_table_section_counts_as_unset(preset_env, capsys):
+    writes, _, paths = preset_env
+    paths["packages"].write_text('build = "x"\n')
+    setup_cmd._setup_preset("low-friction")
+    assert ("packages.toml", "build", "confirm_plan", False) in writes
+
+
+def test_list_valued_live_key_is_displayed_not_raised(preset_env, capsys):
+    writes, _, paths = preset_env
+    paths["packages"].write_text("[build]\nreview = [1, 2]\n")
+    setup_cmd._setup_preset("low-friction")
+    assert "review: [1, 2]" in capsys.readouterr().out
+    assert ("packages.toml", "build", "review", False) in writes
+
+
+def test_preset_config_load_failure_prints_a_line(preset_env, monkeypatch, capsys):
+    writes, *_ = preset_env
+    def _boom():
+        raise FileNotFoundError("[CONFIG] No profiles.toml found.")
+    monkeypatch.setattr(setup_cmd, "_preset_paths", _boom)
+    setup_cmd._setup_preset("secure")
+    assert writes == []
+    assert "preset secure not applied: could not load the config" in capsys.readouterr().err

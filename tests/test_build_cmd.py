@@ -474,3 +474,16 @@ def test_pre_check_refuses_aur_package_when_aur_disabled(tmp_path, monkeypatch):
         net_policy.reset_policy()
     assert pre.exit_code == 2
     assert "is an AUR package and [aur] enabled = false" in (pre.blocker or "")
+
+
+def test_first_repo_optin_writes_header_and_build_section(tmp_path, monkeypatch):
+    """3.5.0-B48: the drop ran first and created an empty file, so the header
+    branch never ran and the manifest lacked [build]."""
+    import tomllib
+    from sysforge.primitives import paths
+    p = tmp_path / "packages.toml"
+    monkeypatch.setattr(paths, "resolve_packages_path", lambda cfg: p)
+    assert build_cmd._write_repo_optin("mesa", {}) is True
+    data = tomllib.loads(p.read_text())
+    assert data["build"]["pkgbuild_src_dir"] == "~/src"
+    assert data["package"] == [{"name": "mesa", "enable_build_from_source": True}]

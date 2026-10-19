@@ -541,8 +541,10 @@ class KernelStage(Stage):
         # whole build → audit → install window. Authenticating *before* starting
         # the daemon is load-bearing: the refresh inherits stdio, so with no
         # cached timestamp it would prompt from a background thread.
-        if not options.dry_run:
-            sudo_session.authenticate()
+        if not options.dry_run and not sudo_session.authenticate():
+            raise RuntimeError(
+                "[KERNEL] sudo was not authorized, so nothing was built; "
+                "rerun: sysforge run kernel")
         _sudo = sudo_session.keepalive(tag="KERNEL", enabled=not options.dry_run)
 
         with _lock, _sudo:

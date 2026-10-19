@@ -110,3 +110,14 @@ def test_top_level_empty_text():
 def test_toml_location():
     assert config.toml_location("build", "review") == "[build] review"
     assert config.toml_location(None, "hardening") == "hardening"
+
+
+def test_set_toml_key_refuses_a_write_that_would_not_parse(tmp_path, monkeypatch):
+    """3.5.0-B105: a top-level write lands inside a multi-line array of arrays."""
+    from sysforge.primitives import atomic_write
+    monkeypatch.setattr(atomic_write, "replace_file",
+                        lambda *a, **k: pytest.fail("wrote an invalid file"))
+    p = tmp_path / "toolchain.toml"
+    p.write_text("a = [\n  [1, 2],\n]\n")
+    with pytest.raises(ValueError, match="not written"):
+        config.set_toml_key(p, None, "hardening", True)

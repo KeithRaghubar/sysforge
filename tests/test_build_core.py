@@ -237,6 +237,23 @@ def test_build_resolved_deps_installs_an_already_built_dependency(tmp_path):
     assert installs == [dep_dir]
 
 
+def test_build_resolved_deps_builds_split_members_once(tmp_path):
+    """3.5.0-B85: two members of one pkgbase share a PKGBUILD."""
+    from sysforge.build import aur_deps as aur_deps_mod
+    dep_dir = tmp_path / "foo-git"
+    dep_dir.mkdir()
+    (dep_dir / "PKGBUILD").write_text("pkgbase=foo-git\n")
+    deps = [SimpleNamespace(name=n, source="aur", pkgbuild_path=dep_dir / "PKGBUILD",
+                            required_by=["app"]) for n in ("foo-git", "foo-libs-git")]
+    builds, installs = [], []
+    with patch("sysforge.build.makepkg_wrapper.run",
+               side_effect=lambda pb, options=None: builds.append(pb)), \
+         patch("sysforge.build.makepkg_wrapper.install_built_packages",
+               side_effect=lambda d, **k: installs.append(d)):
+        assert aur_deps_mod.build_resolved_deps(deps) == ["foo-git", "foo-libs-git"]
+    assert len(builds) == 1 and installs == [dep_dir]
+
+
 def test_prepare_deps_excludes_aur_makedeps_from_pacman(tmp_path):
     """Regression for the proton-cachyos exit-8 failure: AUR-only makedeps must
     never be passed to ``pacman -S`` — mixing them in makes pacman abort the
@@ -1792,6 +1809,46 @@ def test_already_built_without_force_still_reuses_artifact(tmp_path):
     assert outcome.failed_pkgs == []
 
 
+def test_already_built_renamed_artifact_is_found_by_its_manifest(tmp_path, monkeypatch):
+    """3.5.0-B60: a renamed build's artifacts are named by the manifest; the
+    stock-named leftover of the same version is not installed."""
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_pkgdest", lambda: None)
+    target = _make_target(tmp_path, pkgbase="foo")
+    target.pkgbuild_ver = "1-1"
+    d = target.pkgbuild_path.parent
+    (d / "foo-1-1-x86_64.pkg.tar.zst").touch()          # stock leftover
+    renamed = d / "foo-sysforge-1-1-x86_64.pkg.tar.zst"
+    renamed.touch()
+    (d / ".sysforge-built.list").write_text(renamed.name + "\n")
+
+    def boom():
+        raise AlreadyBuilt(target.pkgbuild_path)
+
+    _opts, outcome = _run_one(target, run_side_effect=boom)
+    assert outcome.built_pkgs == ["foo"]
+    assert [p.name for p in outcome.built_pkg_files] == [renamed.name]
+
+
+def test_already_built_manifest_naming_missing_files_does_not_fall_back(tmp_path, monkeypatch):
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_pkgdest", lambda: None)
+    target = _make_target(tmp_path, pkgbase="foo")
+    target.pkgbuild_ver = "1-1"
+    d = target.pkgbuild_path.parent
+    (d / "foo-1-1-x86_64.pkg.tar.zst").touch()
+    (d / ".sysforge-built.list").write_text("foo-sysforge-1-1-x86_64.pkg.tar.zst\n")
+
+    def boom():
+        raise AlreadyBuilt(target.pkgbuild_path)
+
+    with patch("sysforge.build_core._record_build_failure"):
+        _opts, outcome = _run_one(target, run_side_effect=boom)
+    assert outcome.failed_pkgs == ["foo"]
+
+
 # ---------------------------------------------------------------------------
 # Intra-batch exact-pin breakage (3.1.0-B14)
 # ---------------------------------------------------------------------------
@@ -2332,3 +2389,16 @@ def test_record_build_failure_without_state_dir_uses_the_resolved_one(state_dir)
     target = SimpleNamespace(pkgbase="linux-tools", pkgbuild_ver="7.2.11-1")
     build_core._record_build_failure(None, target, RuntimeError("makepkg failed"))
     assert "linux-tools" in BuildState(state_dir).all_failures()
+
+
+def test_stage_owned_target_builds_under_its_owner(tmp_path):
+    """3.5.0-B63: an `update --include-stage-owned` rebuild records the owner,
+    so drift replays it the way it was built."""
+    target = _make_target(tmp_path, pkgbase="linux-custom")
+    target.owner_stage = "kernel"
+    opts, _outcome = _run_one(target)
+    assert opts.owner_stage == "kernel"
+    (tmp_path / "p").mkdir()
+    plain = _make_target(tmp_path / "p", pkgbase="foo")
+    opts, _outcome = _run_one(plain)
+    assert opts.owner_stage is None

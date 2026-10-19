@@ -40,7 +40,6 @@ from sysforge.primitives.build_throttle import (
     wrapper_argv,
 )
 from sysforge.primitives.editor import editor_usable, resolve_editor, run_tty_argv
-from sysforge.primitives.makepkg_artifacts import _find_built_packages
 from sysforge.primitives.makepkg_env import (
     _effective_build_dir,
     _logdest_tail,
@@ -601,7 +600,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # piped (e.g. `sysforge update | tee log.txt`), byte forwarding is also
     # suppressed so captured logs stay free of \r/ANSI garbage.
     verbose_log = log.get_verbosity() >= 3
-    failed_stage = None
+    # Appended to by _on_line, a closure: a plain `failed_stage = None` reads
+    # as None at the checks below to a type checker (3.5.0-B95).
+    failed_stages: list[str] = []
     missing_deps: list[str] = []
     toolchain_mismatch = False
     already_built = False
@@ -610,7 +611,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     from sysforge.primitives import mesa_pgo as _mesa_pgo
 
     def _on_line(stripped: str) -> None:
-        nonlocal failed_stage, toolchain_mismatch, already_built
+        nonlocal toolchain_mismatch, already_built
         # The pty makes the child think it has a terminal, so compilers embed
         # color/erase/OSC-8-hyperlink escapes *inside* diagnostic tokens (GCC
         # hyperlinks the quoted option name). Strip them before any substring
@@ -621,11 +622,11 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # 3.2.0-F9: count IR-PGO hash mismatches (a no-op unless the wrapper armed it).
         _mesa_pgo.observe_line(stripped)
         if "A failure occurred in prepare()." in stripped:
-            failed_stage = "prepare"
+            failed_stages.append("prepare")
         elif "A failure occurred in build()." in stripped:
-            failed_stage = "build"
+            failed_stages.append("build")
         elif "A failure occurred in package()." in stripped:
-            failed_stage = "package"
+            failed_stages.append("package")
         elif "target not found:" in stripped:
             missing_deps.append(stripped.strip())
         elif "A package has already been built" in stripped:
@@ -672,6 +673,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # to the region above the bar and never collapses output onto the bar row —
     # the bar stays permanently visible during the build.
     from sysforge.primitives import progress_hooks
+    progress_hooks.hooks().build_started()  # a fresh build's ninja totals
     try:
         returncode = run_with_pty(
             cmd, cwd=build_dir, env=env,
@@ -712,6 +714,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             raise AlreadyBuilt(pkgbuild_path)
         # Exit code 8 = E_INSTALL_FAILED (pacman failed to install deps).
         # Also triggered when we collected explicit "target not found" lines.
+        failed_stage = failed_stages[-1] if failed_stages else None
         if returncode == 8 or missing_deps:
             _makepkg_log.error("Dependency resolution failed.")
             for dep in missing_deps:
@@ -1019,6 +1022,28 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
             continue
 
 
+def _this_builds_artifacts(pkgbuild_path) -> list:
+    """The ``.pkg.tar*`` this PKGBUILD's static version produced, from PKGDEST
+    or (when unset) the PKGBUILD dir. Empty when the version cannot be read."""
+    from sysforge.primitives.makepkg_artifacts import find_artifacts
+    from sysforge.primitives.pacman import get_pkgdest
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    from sysforge.primitives.version import format_version
+
+    pkgbuild_path = Path(pkgbuild_path)
+    try:
+        globals_ = parse_pkgbuild(pkgbuild_path).get("globals", {})
+    except Exception:  # noqa: BLE001 — unreadable PKGBUILD: offer nothing
+        return []
+    pkgnames = globals_.get("pkgname") or []
+    if isinstance(pkgnames, str):
+        pkgnames = [pkgnames]
+    if not pkgnames or not globals_.get("pkgver"):
+        return []
+    search_dir = get_pkgdest() or pkgbuild_path.resolve().parent
+    return find_artifacts(search_dir, list(pkgnames), exact_ver=format_version(globals_))
+
+
 def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                        extra_env=None, extra_flags=None, interactive=False,
                        strip_flags=None, *, reemit_conf=None, pkgbase=None):
@@ -1057,11 +1082,14 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                 _makepkg_log.error(f"Build failed ({label}): {e}")
                 _makepkg_log.info(f"PKGBUILD location: {pkgbuild_path}")
 
-                installing = extra_flags and any(f in INSTALL_FLAGS for f in extra_flags)
-                built_pkgs = (
-                    _find_built_packages(Path(pkgbuild_path).resolve().parent)
-                    if installing else []
-                )
+                # Only when makepkg actually ran with --install (the flags
+                # after the strip), and only this build's own artifacts: a bare
+                # glob offered every older version in the dir, or nothing at
+                # all with PKGDEST set (3.5.0-B61).
+                effective = [f for f in (extra_flags or ())
+                             if f not in (strip_flags or ())]
+                installing = any(f in INSTALL_FLAGS for f in effective)
+                built_pkgs = _this_builds_artifacts(pkgbuild_path) if installing else []
                 if built_pkgs:
                     _makepkg_log.ui(
                             "Built packages found; build likely succeeded but "

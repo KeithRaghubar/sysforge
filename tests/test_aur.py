@@ -329,7 +329,7 @@ def test_is_repo_package_calls_pacman_si():
     with patch("subprocess.run", side_effect=fake_run):
         is_repo_package("htop")
 
-    assert captured[0][:3] == ["pacman", "-Si", "htop"]
+    assert captured[0][:4] == ["pacman", "-Si", "--", "htop"]  # 3.5.0-B53
 
 
 # ---------------------------------------------------------------------------
@@ -389,8 +389,8 @@ def test_repo_packages_single_invocation():
         repo_packages(["htop", "gcc", "vim"])
 
     assert len(captured) == 1
-    assert captured[0][:2] == ["pacman", "-Si"]
-    assert set(captured[0][2:]) == {"htop", "gcc", "vim"}
+    assert captured[0][:3] == ["pacman", "-Si", "--"]  # 3.5.0-B53
+    assert set(captured[0][3:]) == {"htop", "gcc", "vim"}
 
 
 # ---------------------------------------------------------------------------
@@ -2083,3 +2083,39 @@ def test_repo_checkout_pkgbase_without_a_checkout(tmp_path):
     assert repo_checkout_pkgbase(tmp_path / "missing") is None
     (tmp_path / "plain").mkdir()
     assert repo_checkout_pkgbase(tmp_path / "plain") is None
+
+
+def test_classify_applied_patch_with_foreign_author_is_the_users(tmp_path):
+    """3.5.0-B69: `git am` keeps the patch's author; the user's committer
+    email still makes it local work, so the auto-reset must not discard it."""
+    import os
+    local = _seed_upstream_and_local(tmp_path, rewrite_upstream=True)
+    (local / "fix.patch.txt").write_text("fix")
+    _git("add", "fix.patch.txt", cwd=local)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "someone",
+           "GIT_AUTHOR_EMAIL": "aur-commenter@example.test"}
+    subprocess.run(["git", "-C", str(local), "commit", "-m", "apply AUR comment fix"],
+                   check=True, capture_output=True, env=env)
+    state, _n_local, _n_upstream = classify_head_vs_upstream(local)
+    assert state == "diverged_user"
+    assert git_is_dirty(local) is True
+
+
+def test_aur_rpc_429_sets_the_shared_penalty(monkeypatch):
+    """3.5.0-B83: a throttled RPC defers the git fetches that follow."""
+    import email.message
+    import urllib.error
+    from sysforge.primitives import aur
+    from sysforge.primitives.rate_limit import RateLimiter
+    headers = email.message.Message()
+    headers["Retry-After"] = "120"
+
+    def _throttled(url, timeout=None):
+        raise urllib.error.HTTPError(url, 429, "Too Many Requests", headers, None)
+    monkeypatch.setattr(aur.urllib.request, "urlopen", _throttled)
+    monkeypatch.setattr(aur, "_aur_lookups_allowed", lambda: True)
+    clock = [1000.0]
+    limiter = RateLimiter(_now=lambda: clock[0],
+                          _sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+    assert aur.aur_info(["foo"], limiter=limiter) == {}
+    assert limiter.remaining_penalty_s() >= 119

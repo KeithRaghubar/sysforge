@@ -86,6 +86,7 @@ def test_plan_pacman_marker_is_skip(tmp_path):
 
 
 import argparse
+import pytest
 from unittest.mock import patch
 
 
@@ -163,7 +164,8 @@ def test_execute_noninteractive_without_force_aborts(tmp_path, monkeypatch):
 
 
 def test_execute_derename_reinstall_failure_stops_and_skips_forget(tmp_path, monkeypatch):
-    # coexist derename: remove succeeds, reinstall FAILS → "left without" warning.
+    # coexist derename: remove succeeds, reinstall FAILS → "left without",
+    # raised so the verb's sentinel keeps its recovery (3.5.0-B93).
     import subprocess
 
     verb = revert_cmd.RevertToStockVerb()
@@ -177,13 +179,31 @@ def test_execute_derename_reinstall_failure_stops_and_skips_forget(tmp_path, mon
                        side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
          patch.object(revert_cmd.pacman, "remove_pkgs") as remove, \
          patch.object(revert_cmd, "forget_packages") as forget, \
-         patch.object(revert_cmd, "_log") as mock_log:
+         pytest.raises(RuntimeError, match="left without"):
         pre = verb.pre_check(_args(packages=["linux-sysforge"]))
-        res = verb.execute(_args(packages=["linux-sysforge"]), pre)
+        verb.execute(_args(packages=["linux-sysforge"]), pre)
     remove.assert_called_once_with(["linux-sysforge"])
     forget.assert_not_called()
-    assert res.exit_code == 1
-    assert any("left without" in str(c) for c in mock_log.error.call_args_list)
+    assert verb.sentinel_recovery(None, pre).display().endswith("linux")
+
+
+def test_failed_derename_keeps_the_sentinel(tmp_path, monkeypatch):
+    """3.5.0-B93: through the runner, the failure must leave the sentinel."""
+    import subprocess
+    from sysforge.primitives.stage_sentinel import StageSentinel
+    from sysforge.verbs import runner
+    monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
+    monkeypatch.setattr(runner, "_resolve_state_dir", lambda args: tmp_path)
+    bs = BuildState(tmp_path)
+    bs._data["linux-sysforge"] = {"build_mode": "autofdo_kernel",
+                                  "pkgbase": "linux-sysforge", "origin_pkgbase": "linux"}
+    bs.save()
+    args = _args(packages=["linux-sysforge"], force=True)
+    with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs",
+                      side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
+         patch.object(revert_cmd.pacman, "remove_pkgs"):
+        assert runner.run_verb(revert_cmd.RevertToStockVerb(), args) == 1
+    assert StageSentinel(tmp_path).get_active() is not None
 
 
 def test_execute_derename_remove_failure_reports_nothing_changed(tmp_path, monkeypatch):
@@ -308,3 +328,44 @@ def test_plan_bolted_llvm_member_reinstalls_its_stock_name(tmp_path):
     (plan,) = revert_cmd.plan_revert(bs, ["clang"])
     assert plan.action == "reinstall"
     assert plan.pkgname == "clang"
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B62: split members revert as themselves
+# ---------------------------------------------------------------------------
+
+def _split_state(tmp_path, *, renamed=False):
+    bs = BuildState(tmp_path)
+    for n in ("mesa", "vulkan-radeon", "lib32-x"):
+        key = f"{n}-sysforge" if renamed else n
+        e = {"build_mode": "pgo_use" if renamed else "source_built",
+             "pkgbase": "mesa-sysforge" if renamed else "mesa"}
+        if renamed:
+            e["origin_pkgbase"] = "mesa"
+        bs._data[key] = e
+    bs.save()
+    return BuildState(tmp_path)
+
+
+def test_plain_split_member_reinstalls_itself_not_the_pkgbase(tmp_path):
+    bs = _split_state(tmp_path)
+    [plan] = revert_cmd.plan_revert(bs, ["vulkan-radeon"], installed=set())
+    assert plan.action == "reinstall"
+    assert [n for n, _ in plan.members] == ["vulkan-radeon"]
+
+
+def test_plain_pkgbase_reverts_every_installed_member(tmp_path):
+    bs = _split_state(tmp_path)
+    [plan] = revert_cmd.plan_revert(bs, ["mesa"], installed={"mesa", "vulkan-radeon"})
+    assert [n for n, _ in plan.members] == ["mesa", "vulkan-radeon"]
+
+
+def test_renamed_member_stock_name_resolves(tmp_path, monkeypatch):
+    from sysforge.primitives import profile
+    monkeypatch.setattr(profile, "is_optimized_build_mode", lambda m: m == "pgo_use")
+    monkeypatch.setattr(profile, "rename_mode_for_build_mode", lambda m: "conflict")
+    bs = _split_state(tmp_path, renamed=True)
+    [plan] = revert_cmd.plan_revert(bs, ["vulkan-radeon"],
+                                    installed={"vulkan-radeon-sysforge"})
+    assert plan.action == "replace"
+    assert plan.members == [("vulkan-radeon-sysforge", "vulkan-radeon")]

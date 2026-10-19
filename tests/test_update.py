@@ -1287,6 +1287,45 @@ def test_devel_short_circuits_when_upstream_unmoved(update_scenario):
     assert not any("--packagelist" in c for c in update_scenario.fake_run.commands)
 
 
+def test_devel_recorded_but_uninstalled_build_is_rebuilt(update_scenario):
+    """3.5.0-B56: build_state recorded the new commit, but the install never
+    happened, so the old version is still installed: no short-circuit."""
+    sha = "f00dbabe" + "0" * 32
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r5678.g9999999\npkgrel=1\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r5678.g9999999", "1",
+                           built_upstream_commit=sha)
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.g9999999-1")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
+
+
+def test_devel_pkgrel_only_bump_is_rebuilt(update_scenario):
+    """3.5.0-B56: a pkgrel bump with no upstream commit (a soname rebuild)."""
+    sha = "f00dbabe" + "0" * 32
+    update_scenario.add_pkg(
+        "neovim-git",
+        "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=2\n"
+        f'source=("neovim::git+https://example.invalid/n.git#commit={sha}")\n',
+    )
+    update_scenario.record("neovim-git", "r1234.gabcdef", "1",
+                           built_upstream_commit=sha)
+    update_scenario.fake_vcs_pkgver("neovim-git", "r1234.gabcdef-2")
+    builds = update_scenario.run(
+        _make_args(devel=True),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
+
+
 def test_devel_full_resolve_on_lsremote_miss(update_scenario):
     """--devel + cached SHA differs from the source's commit= pin → the peek
     short-circuit misses, so the full evaluate_vcs_pkgver pass runs and a newer
@@ -1618,6 +1657,23 @@ def test_cleansrc_refusal_exits_nonzero(update_scenario, capsys):
         foreign={"htop": "0.9.0-1", "neovim": "0.9.0-1"},
     )
     capsys.readouterr()
+    assert update_scenario.exit_code == 1
+
+
+def test_lone_cleansrc_refusal_exits_nonzero(update_scenario, capsys):
+    """3.5.0-B51: with the refused package the only candidate, the run took the
+    "Nothing to rebuild." exit and reported success."""
+    from sysforge.primitives.source_sync import STATUS_PURGE_REFUSED
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=0.9.0\npkgrel=1\n")
+    update_scenario.fake_sync(
+        {"htop": (STATUS_PURGE_REFUSED, "refused to purge untracked files")}
+    )
+    update_scenario.run(
+        _make_args(offline=False),
+        installed={"htop": "0.9.0-1"}, foreign={"htop": "0.9.0-1"},
+    )
+    out = "".join(capsys.readouterr())
+    assert "Nothing to rebuild" not in out
     assert update_scenario.exit_code == 1
 
 
@@ -3306,3 +3362,30 @@ def test_aur_name_cache_warm_only_when_tracking_aur(update_scenario, monkeypatch
     update_scenario.record("htop", "3.4.1", "1", source="aur")
     update_scenario.run(_make_args(offline=False, dry_run=True), **args)
     assert calls == [1]
+
+
+def test_include_stage_owned_rebuild_builds_under_its_owner(update_scenario):
+    """3.5.0-B63: recorded as an ordinary build, it drifted on every axis."""
+    update_scenario.add_pkg("linux-custom", "pkgname=linux-custom\npkgver=7.2\npkgrel=1\n")
+    update_scenario.record("linux-custom", "7.1", "1", owner_stage="kernel")
+    builds = update_scenario.run(
+        _make_args(include_stage_owned=True),
+        installed={"linux-custom": "7.1-1"}, foreign={"linux-custom": "7.1-1"},
+    )
+    assert len(builds) == 1
+    _a, k = builds[0]
+    assert k["options"].owner_stage == "kernel"
+
+
+def test_dry_run_leaves_build_state_byte_identical(update_scenario):
+    """3.5.0-B97: a preview neither syncs nor demotes into build_state.toml."""
+    update_scenario.add_pkg("htop", "pkgname=htop\npkgver=3.4.1\npkgrel=1\n")
+    update_scenario.record("htop", "3.3.0", "1")
+    bs_path = update_scenario.state_dir / "build_state.toml"
+    before = bs_path.read_bytes()
+    update_scenario.run(
+        _make_args(dry_run=True),
+        installed={"htop": "3.3.0-1", "bash": "5.2-1", "glibc": "2.40-1"},
+        foreign={"htop": "3.3.0-1"},
+    )
+    assert bs_path.read_bytes() == before

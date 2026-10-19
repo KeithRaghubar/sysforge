@@ -389,11 +389,16 @@ def test_step5_lib32_scrubs_bare_icf_token_from_system_ldflags():
     assert "--as-needed" in ld_line
 
 
-def test_step5_non_lib32_keeps_icf_in_system_ldflags():
-    """Default is_lib32=False must leave system LDFLAGS (incl. --icf) untouched."""
+def test_step5_non_lib32_keeps_icf_in_system_ldflags(monkeypatch):
+    """Default is_lib32=False must leave system LDFLAGS (incl. --icf) untouched.
+
+    lld is the effective linker here: with any other linker the linker-gated
+    strip removes a system ``--icf`` too (3.5.0-B89), which is not this guard."""
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
-        system_conf = _write_system_conf_ld(tmp, "-Wl,--as-needed,--icf=all")
+        system_conf = _write_system_conf_ld(tmp, "-fuse-ld=lld -Wl,--as-needed,--icf=all")
         resolved = {"BUILDDIR": "$HOME/builds"}
         with emit_makepkg_conf(
             resolved, frozenset({"makepkg", "env"}),

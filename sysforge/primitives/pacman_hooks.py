@@ -150,12 +150,6 @@ def diff_status() -> list[tuple[HookArtifact, str]]:
     return [(art, _state_for(art)) for art in shipped_sources()]
 
 
-def needs_provision(status: list[tuple[HookArtifact, str]] | None = None) -> bool:
-    """True when any artifact is missing or stale."""
-    rows = status if status is not None else diff_status()
-    return any(state != STATE_OK for _, state in rows)
-
-
 # ---------------------------------------------------------------------------
 # Provisioning (privileged write via fs_provision._run_priv)
 # ---------------------------------------------------------------------------

@@ -11,8 +11,7 @@ Covers:
   _extract_conditional_blocks — block with extractable key, block without,
                                  nested blocks, no conditionals
   extract_pkgbuild_profile  — real complex2.PKGBUILD function bodies
-  write_extracted_profile   — TOML written, roundtrip via load_extracted_profile
-  load_extracted_profile    — missing file returns {}
+  write_extracted_profile   — TOML written and parsed back
   apply_patch_pkgbuild      — flag lines removed, conditional blocks removed,
                                original untouched, groups line preserved
   cleanup_patch_artifacts   — removes both artifacts, missing files non-fatal
@@ -35,7 +34,6 @@ from sysforge.primitives.pkgbuild_patcher import (
     _extract_conditional_blocks,
     extract_pkgbuild_profile,
     write_extracted_profile,
-    load_extracted_profile,
     apply_patch_pkgbuild,
     cleanup_patch_artifacts,
     warn_artifacts_left,
@@ -287,7 +285,7 @@ def test_extract_empty_pkgbuild():
 
 
 # ---------------------------------------------------------------------------
-# write_extracted_profile / load_extracted_profile
+# write_extracted_profile
 # ---------------------------------------------------------------------------
 
 def test_write_and_load_roundtrip():
@@ -297,15 +295,11 @@ def test_write_and_load_roundtrip():
         pkgbuild_path.touch()
         out = write_extracted_profile(profile, pkgbuild_path)
         assert out.exists()
-        loaded = load_extracted_profile(pkgbuild_path)
+        import tomllib
+        loaded = tomllib.loads(out.read_text())["profiles"]["pkgbuild_extracted"]
     assert loaded["CFLAGS"] == "-fno-stack-protector -m32"
     assert loaded["LDFLAGS"] == "-Wl,--gc-sections"
 
-def test_load_missing_returns_empty():
-    with tempfile.TemporaryDirectory() as d:
-        pkgbuild_path = Path(d) / "PKGBUILD"
-        result = load_extracted_profile(pkgbuild_path)
-    assert result == {}
 
 def test_write_profile_toml_format():
     """Verify TOML file has the expected section header."""

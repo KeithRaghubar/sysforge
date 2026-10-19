@@ -10,6 +10,7 @@ BootstrapConfig dataclass used by the install, hardware, and configure
 stages (and the archinstall config builder they feed).
 """
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from sysforge.primitives.pkg_catalog import valid_desktops
 _log = log.get_logger("BOOTSTRAP")
 
 _VALID_ROOT_FS = {"ext4", "btrfs"}
+# useradd(8)'s portable name rule, without the trailing `$`.
+_USERNAME_RE = re.compile(r"[a-z_][a-z0-9_-]*")
 _VALID_SHELLS  = {"bash", "zsh"}
 _ZONEINFO_DIR  = Path("/usr/share/zoneinfo")
 
@@ -89,6 +92,26 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
     makepkg_packager = makepkg_tbl.get("packager") or None
     makepkg_makeflags = makepkg_tbl.get("makeflags") or None
 
+    # configure joins both into paths it removes and a `bash -lc` it runs as
+    # the user, so neither may carry `/`, `..` or shell syntax, and a relative
+    # or empty target would resolve against the working directory (3.5.0-B72).
+    if not _USERNAME_RE.fullmatch(username):
+        raise RuntimeError(
+            f"bootstrap.toml: invalid [system].username {username!r}: use lowercase "
+            "letters, digits, '_' and '-', starting with a letter or '_'.")
+    if not target or not Path(target).is_absolute() or Path(target) == Path("/"):
+        raise RuntimeError(
+            f"bootstrap.toml: target must be an absolute mount point other than /, "
+            f"got {target!r}.")
+
+    ssh_root_login = system.get("ssh_root_login", False)
+    if not isinstance(ssh_root_login, bool):
+        raise RuntimeError("bootstrap.toml: [system].ssh_root_login must be true or false.")
+    if ssh_root_login and not root_password:
+        raise RuntimeError(
+            "bootstrap.toml: [system].ssh_root_login = true needs a root_password: "
+            "without one, root could log in over SSH with an empty password.")
+
     if root_fs not in _VALID_ROOT_FS:
         raise RuntimeError(
             f"bootstrap.toml: invalid root_fs {root_fs!r}. "
@@ -140,4 +163,5 @@ def load_bootstrap(path: Path | None = None) -> BootstrapConfig:
         desktop=desktop,
         makepkg_packager=makepkg_packager,
         makepkg_makeflags=makepkg_makeflags,
+        ssh_root_login=ssh_root_login,
     )

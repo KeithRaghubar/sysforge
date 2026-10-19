@@ -106,6 +106,15 @@ def serialize_effective_flags(resolved_profile, *, kernel_build: bool = False,
     return serialize_flags(merged)
 
 
+def _effective_flag_value(key, profile_overrides, system_assignments) -> str:
+    """``key``'s effective value: the profile override, else the unquoted
+    system-conf value, else ``""``."""
+    if key in profile_overrides:
+        return profile_overrides[key]
+    raw = (system_assignments.get(key) or "").strip()
+    return raw[1:-1] if (len(raw) >= 2 and raw[0] == raw[-1] == '"') else raw
+
+
 @contextlib.contextmanager
 def emit_makepkg_conf(resolved_profile, active_consumes=None,
                       system_conf_path=None,
@@ -339,12 +348,12 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
                 "treating effective linker as 'ld'"
             )
 
-        # Only strip lld-only flags from LDFLAGS we own (profile_overrides). The
-        # system conf is read-only here; if its LDFLAGS contains lld-only flags
-        # and the effective linker isn't lld, the GCC+lld disable branch below
-        # (or the explicit override branch) is what writes a corrected value.
-        if effective_linker != "lld" and _ldflags_source == "profile":
-            cleaned, stripped_tokens = _strip_lld_flags(profile_overrides["LDFLAGS"])
+        # Strip lld-only flags from the effective LDFLAGS, the profile's or
+        # the system conf's: a system `--icf=` reaches a non-lld linker just
+        # the same (3.5.0-B89). A system value is written back as an override.
+        if effective_linker != "lld":
+            cleaned, stripped_tokens = _strip_lld_flags(
+                _effective_flag_value("LDFLAGS", profile_overrides, system_assignments))
             if stripped_tokens:
                 _conf_log.warn(
                     f"Effective linker is '{effective_linker}' (not lld): "
@@ -447,8 +456,11 @@ def emit_makepkg_conf(resolved_profile, active_consumes=None,
     # lld's ThinLTO backend when PGO profile data is applied). Disable entirely.
     if strip_full_lto:
         for key in ("CFLAGS", "CXXFLAGS", "LDFLAGS"):
-            if key in profile_overrides:
-                cleaned, stripped_toks = _strip_full_lto(profile_overrides[key])
+            # The effective value: a system-conf -flto reaches the PGO pass
+            # too when the profile sets no flags (3.5.0-B89).
+            if key in profile_overrides or key in system_assignments:
+                cleaned, stripped_toks = _strip_full_lto(
+                    _effective_flag_value(key, profile_overrides, system_assignments))
                 if stripped_toks:
                     _conf_log.warn(
                               f"Stripped full-LTO flag(s) from {key} (incompatible with IR PGO): "

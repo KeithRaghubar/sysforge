@@ -19,7 +19,6 @@ primitives, no layering issue) so the lockstep set has one source of truth.
 
 Capabilities:
   - detect_suite_skew              — installed-suite pkgver disagreement
-  - check_link_resolution          — clang/lld resolve libLLVM under /usr/lib
   - smoke_test_compilers           — clang/lld present + actually run
   - scan_abi_hazards               — _ZNSt*@LLVM_* C++-stdlib-in-LLVM-ns symbols
   - check_system_consumer_symbols  — built libLLVM drops a target an installed
@@ -175,70 +174,6 @@ def detect_suite_skew(
 # ---------------------------------------------------------------------------
 # Link resolution — installed clang/lld must load libLLVM from /usr/lib
 # ---------------------------------------------------------------------------
-
-def check_link_resolution() -> list[ToolchainFinding]:
-    """Verify installed LLVM binaries resolve libLLVM only under /usr/lib.
-
-    A staging prefix (``/var/tmp/sysforge-llvm-stage*``) in an installed
-    binary's ``ldd`` output means Pass 3 packaged a bad RPATH or the install is
-    incomplete — the live toolchain is about to lose its libLLVM when /var/tmp
-    is cleaned. A resolution outside /usr/lib means a sibling libLLVM is
-    shadowing the package-managed one. Both are brick-class. Returns [] when
-    clean or when ldd / the binaries are unavailable.
-    """
-    findings: list[ToolchainFinding] = []
-    usr_lib = str(_USR_LIB)
-    clang = _USR_BIN_CLANG
-    lld = clang.parent / "lld"
-    for bin_path, label in ((clang, "clang"), (lld, "lld")):
-        if not bin_path.exists():
-            continue
-        proc = _run(["ldd", str(bin_path)])
-        if proc is None:
-            findings.append(ToolchainFinding(
-                SEV_WARN, "link_resolution:ldd_missing",
-                "ldd not available: could not verify libLLVM link resolution",
-                is_brick=False,
-            ))
-            return findings
-        if proc.returncode != 0:
-            findings.append(ToolchainFinding(
-                SEV_WARN, f"link_resolution:{label}",
-                f"ldd {bin_path}: exit {proc.returncode}",
-                is_brick=False,
-            ))
-            continue
-        for line in proc.stdout.splitlines():
-            stripped = line.strip()
-            if "libLLVM" not in stripped:
-                continue
-            parts = stripped.split("=>")
-            if len(parts) < 2:
-                continue
-            tail = parts[1].strip().split()
-            if not tail or tail[0] in ("not", "(0x0)"):
-                continue
-            resolved = tail[0]
-            if _STAGING_PREFIX_MARKER in resolved:
-                findings.append(ToolchainFinding(
-                    SEV_ERROR, f"link_resolution:{label}:staging",
-                    f"{label} resolves libLLVM from a staging prefix: "
-                    f"{resolved}; Pass 3 packaged a bad RPATH or the install "
-                    "is incomplete",
-                    "Rebuild the toolchain; the live clang/lld must load "
-                    "libLLVM from /usr/lib, not /var/tmp.",
-                    is_brick=True,
-                ))
-            elif not resolved.startswith(usr_lib):
-                findings.append(ToolchainFinding(
-                    SEV_ERROR, f"link_resolution:{label}:shadow",
-                    f"{label} resolves libLLVM outside /usr/lib: {resolved}; "
-                    "a sibling libLLVM is shadowing the package-managed one",
-                    "Remove the shadowing library or fix LD_LIBRARY_PATH so "
-                    "the package-managed /usr/lib/libLLVM wins.",
-                    is_brick=True,
-                ))
-    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +542,25 @@ def check_system_consumer_symbols(
         )
 
 
+def so_version(path: Path) -> tuple[int, ...]:
+    """Numeric version tuple parsed from a ``lib*.so.<ver>`` filename (() if none).
+
+    ``libLLVM.so.22.1`` → ``(22, 1)``; stops at the first non-numeric component
+    so a plain ``lib*.so`` symlink yields ``()``. Used to compare sonames
+    numerically rather than lexically (``.21.1`` must not sort ahead of ``.9``).
+    """
+    marker = ".so."
+    idx = path.name.rfind(marker)
+    if idx == -1:
+        return ()
+    out: list[int] = []
+    for part in path.name[idx + len(marker):].split("."):
+        if not part.isdigit():
+            break
+        out.append(int(part))
+    return tuple(out)
+
+
 def check_installed_consumer_symbols(
     *, exclude: Collection[str] = (),
 ) -> list[ToolchainFinding]:
@@ -616,15 +570,13 @@ def check_installed_consumer_symbols(
     the packages the stage just installed alongside libLLVM (3.5.0-B20).
     Returns [] when no versioned ``/usr/lib/libLLVM.so.*`` ELF is present.
     """
-    libllvm = next(
-        (
-            p for p in sorted(_USR_LIB.glob("libLLVM.so.*"))
-            if p.is_file() and not p.is_symlink()
-        ),
-        None,
-    )
-    if libllvm is None:
+    # The newest soname, not the lexically first: with a compat package such
+    # as llvm21-libs installed, that would be the old library (3.5.0-B58).
+    cands = [p for p in _USR_LIB.glob("libLLVM.so.*")
+             if p.is_file() and not p.is_symlink()]
+    if not cands:
         return []
+    libllvm = max(cands, key=so_version)
     return _diff_consumers_against_libllvm(
         libllvm, source_label="installed", exclude=exclude,
     )

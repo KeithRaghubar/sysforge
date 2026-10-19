@@ -48,7 +48,7 @@ def propagate_default_toolchain(compiler: str, options) -> None:
         return
     try:
         prim_config.set_default_toolchain(compiler)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _log.warn(f"Could not update profiles.toml [defaults] toolchain: {exc}")
 
 # ---------------------------------------------------------------------------

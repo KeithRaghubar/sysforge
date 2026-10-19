@@ -1471,3 +1471,62 @@ def test_declining_a_standalone_run_names_no_pipeline_resume(monkeypatch, capsys
     with pytest.raises(RuntimeError, match="resume command"):
         pkgbuilds.confirm_or_abort(None)
     assert "sysforge run pipeline --resume" in "".join(capsys.readouterr())
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B74 / B75: no sentinel for a dry run or an unauthorized repo install
+# ---------------------------------------------------------------------------
+
+def test_dry_run_writes_no_install_sentinel(tmp_path, monkeypatch):
+    toml_path, state, config, _options = _single_pass_setup(tmp_path)
+    options = make_options(dry_run=True, state_dir=tmp_path / "state")
+    import sysforge.pipeline.stages.toolchain.stage as stage_mod
+    monkeypatch.setattr(stage_mod, "sentinel_scope",
+                        lambda *a, **k: pytest.fail("dry run entered the sentinel"))
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"):
+        ToolchainStage().run(config, state, options)
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+def test_repo_install_unauthorized_sudo_leaves_no_sentinel(tmp_path, monkeypatch):
+    from sysforge.primitives import sudo_session
+    toml_path = tmp_path / "toolchain.toml"
+    toml_path.write_text('enabled = true\ncompiler = "llvm"\npgo = false\n')
+    state = PipelineState(tmp_path / "state")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path / "empty")},
+              "packages_file": _write_packages_repo_mode(tmp_path, "pacman")}
+    options = make_options(dry_run=False, state_dir=str(tmp_path / "sdir"))
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: False)
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs",
+               side_effect=AssertionError("installed")), \
+         pytest.raises(RuntimeError, match="sudo was not authorized"):
+        ToolchainStage().run(config, state, options)
+    assert not _sentinel_exists(tmp_path / "sdir")
+
+
+def test_gate1_bootstrap_install_unauthorized_sudo_leaves_no_sentinel(tmp_path, monkeypatch):
+    from sysforge.primitives import sudo_session
+    from sysforge.primitives import toolchain_safety as _ts
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    options.state_dir = tmp_path / "state"
+    monkeypatch.setattr(_ts, "smoke_test_compilers",
+                        lambda: _bootstrap_missing("smoke:clang_missing"))
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: False)
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.primitives.pacman.install_repo_pkgs",
+               side_effect=AssertionError("installed")), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sys.stdin.isatty", return_value=False), \
+         pytest.raises(RuntimeError, match="sudo was not authorized"):
+        ToolchainStage().run(config, state, options)
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+def test_healable_drift_line_names_the_manual_rebuild_when_nothing_is_queued():
+    """3.5.0-B98: rebuild_soname_consumers = off queues nothing."""
+    from sysforge.pipeline.stages.toolchain.stage import healable_drift_line
+    assert "queued consumer rebuild" in healable_drift_line("m", queued=True)
+    off = healable_drift_line("m", queued=False)
+    assert "no consumer rebuild is queued" in off and "sysforge build" in off

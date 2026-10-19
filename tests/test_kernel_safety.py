@@ -611,3 +611,38 @@ def test_diff_kconfig_is_sorted_and_empty_when_identical():
     assert diff_kconfig({"CONFIG_A": "y"}, {"CONFIG_A": "y"}) == []
     changes = diff_kconfig({}, {"CONFIG_Z": "y", "CONFIG_A": "y"})
     assert [c.option for c in changes] == ["CONFIG_A", "CONFIG_Z"]
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B50: stacked roots (glyph-prefixed parent rows)
+# ---------------------------------------------------------------------------
+
+def _stack_env(tmp_path, monkeypatch, source, lsblk_out):
+    mounts = tmp_path / "mounts"
+    mounts.write_text(f"{source} / ext4 rw 0 0\n")
+    monkeypatch.setattr(ks, "_PROC_MOUNTS", mounts)
+    monkeypatch.setattr(ks, "_CRYPTTAB", tmp_path / "none")
+    monkeypatch.setattr(ks, "_MDSTAT", tmp_path / "none")
+    seen = []
+
+    def _fake(cmd):
+        seen.append(cmd)
+        return _completed(lsblk_out) if cmd[0] == "lsblk" else None
+    monkeypatch.setattr(ks, "_run", _fake)
+    return seen
+
+
+def test_detect_topology_crypt_over_nvme(tmp_path, monkeypatch):
+    # Real `lsblk -nso NAME,TYPE` shape: parent rows carry tree glyphs.
+    seen = _stack_env(tmp_path, monkeypatch, "/dev/mapper/root",
+                      "root        crypt\n└─nvme0n1p2 part\n  └─nvme0n1 disk\n")
+    topo = ks.detect_root_topology()
+    assert topo.uses_crypt and topo.transports == ("nvme",)
+    assert seen[0][:2] == ["lsblk", "-nsro"]  # raw mode: no tree glyphs
+
+
+def test_detect_topology_lvm_over_sata(tmp_path, monkeypatch):
+    _stack_env(tmp_path, monkeypatch, "/dev/mapper/vg-root",
+               "vg-root lvm\nsda2 part\nsda disk\n")
+    topo = ks.detect_root_topology()
+    assert topo.uses_lvm and topo.transports == ("ahci",)

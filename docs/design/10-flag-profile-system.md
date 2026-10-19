@@ -182,7 +182,10 @@ lib32 and musl-static guards, so their scrubs see the final token set — via
 
 Only tokens the system conf actually sets are ever restored — the table never invents a flag, so a
 distro whose conf omits a token stays as it is (§Distro portability). A pure shell reference
-(`CXXFLAGS = "$CFLAGS"`) is left untouched and inherits by expansion. Kernel builds never reach the
+(`CXXFLAGS = "$CFLAGS"`) inherits the referenced key's tokens by expansion; `apply_preserved_system_tokens`
+appends only what this key's own system value adds beyond them, measured against the referenced
+key's merged value, so Arch's C++-only `-Wp,-D_GLIBCXX_ASSERTIONS` (in the shipped `CXXFLAGS` set,
+never `CFLAGS`) survives as `$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS` (`3.5.0-B100`). Kernel builds never reach the
 pass: `KERNEL_CLEAN_KEYS` keeps flag keys out of `profile_overrides` entirely, so the system values
 pass through verbatim. For the same reason `serialize_effective_flags(kernel_build=True)` drops
 those keys from the recorded string, and `flag_drift` drops them from a stored kernel record before
@@ -330,7 +333,7 @@ anywhere else.
 
 4. **GCC + lld LTO disabling** — GCC LTO produces `.gnu.lto_*` bitcode that only GNU ld/gold can process; lld cannot read it. When GCC is in effect and the effective linker is lld, LTO is disabled entirely: LTOFLAGS cleared, `-flto*` stripped from flag keys, and `lto` flipped to `!lto` in OPTIONS (prevents makepkg's `${LTOFLAGS:--flto}` fallback).
 
-5. **Full LTO stripping** (PGO only) — strips `-flto`/`-flto=full` from CFLAGS/CXXFLAGS/LDFLAGS and clears LTOFLAGS during PGO passes.
+5. **Full LTO stripping** (PGO only) — strips `-flto`/`-flto=full` from the effective CFLAGS/CXXFLAGS/LDFLAGS (profile override, else the system conf's, `3.5.0-B89`) and clears LTOFLAGS during PGO passes.
 
 6. **lib32 march scrub** — when `invoke_makepkg` detects a `lib32-*` build (`pkgbuild_path.parent.name.startswith("lib32-")`), `emit_makepkg_conf` strips host-CPU-specific or 64-bit-only `-march=` tokens from CFLAGS and CXXFLAGS in both profile overrides and system-conf passthrough. Stripped values: `-march=native` (resolves to the host's amd64 microarch — `znver3` on Zen 3), `-march=x86-64`, `-march=x86-64-v2`, `-march=x86-64-v3`, `-march=x86-64-v4` (microarch levels defined only for 64-bit code). Other `-march=` values (e.g. `-march=i686`) and all non-`-march` flags are preserved. Without this guard a `[profiles.bare]` lib32-* build inherits the system conf's `-march=native` unchanged, and multilib GCC then refuses the compile with a confusing "unrecognized target arch" error rather than a clear "host flag stripped for lib32" log line.
 

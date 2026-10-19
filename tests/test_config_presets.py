@@ -67,3 +67,9 @@ def test_completions_list_exactly_the_preset_names():
     want = " ".join(cp.PRESET_NAMES)
     assert f"preset:({want})" in (root / "_sysforge").read_text()
     assert f'compgen -W "{want}"' in (root / "sysforge.bash").read_text()
+
+
+def test_low_friction_does_not_touch_the_sandbox():
+    """The sandbox adds no prompts, so "fewest prompts" leaves it alone (3.5.0-B103)."""
+    keys = {r.key for r in cp.PRESETS["low-friction"].rows}
+    assert "sandbox_builds" not in keys

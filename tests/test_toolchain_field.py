@@ -6,7 +6,7 @@ Covers:
   - profile._expand_toolchain / resolve_profile: gcc + llvm bundle expansion,
     explicit-key override precedence, [defaults] fallback, lld injection (and
     preservation of an explicit -fuse-ld=), unknown-value no-op.
-  - config._rewrite_profiles_default_toolchain / set_default_toolchain: replace,
+  - config._rewrite_toml_key([defaults] toolchain) / set_default_toolchain: replace,
     uncomment, insert-under-header, append-section, comment preservation.
   - toolchain stage._propagate_default_toolchain: gcc/llvm parity, dry-run no-op.
 """
@@ -14,7 +14,6 @@ import os
 import sys
 import types
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -120,12 +119,12 @@ def test_resolve_profile_child_toolchain_overrides_default():
 
 
 # ---------------------------------------------------------------------------
-# _rewrite_profiles_default_toolchain (pure)
+# [defaults] toolchain through _rewrite_toml_key (pure)
 # ---------------------------------------------------------------------------
 
 def test_rewrite_replaces_existing_key():
     text = '[defaults]\nprofile = "standard"\ntoolchain = "gcc"\n'
-    out = config._rewrite_profiles_default_toolchain(text, "llvm")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "llvm")
     assert 'toolchain = "llvm"' in out
     assert 'toolchain = "gcc"' not in out
     assert 'profile = "standard"' in out
@@ -133,14 +132,14 @@ def test_rewrite_replaces_existing_key():
 
 def test_rewrite_uncomments_commented_key():
     text = '[defaults]\nprofile = "standard"\n# toolchain = "gcc"\n'
-    out = config._rewrite_profiles_default_toolchain(text, "llvm")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "llvm")
     assert 'toolchain = "llvm"' in out
     assert out.count("toolchain") == 1
 
 
 def test_rewrite_inserts_when_absent_in_defaults():
     text = '[paths]\nx = 1\n\n[defaults]\nprofile = "standard"\n\n[profiles.bare]\n'
-    out = config._rewrite_profiles_default_toolchain(text, "gcc")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "gcc")
     lines = out.splitlines()
     di = lines.index("[defaults]")
     # inserted immediately after the header, inside the section.
@@ -150,7 +149,7 @@ def test_rewrite_inserts_when_absent_in_defaults():
 
 def test_rewrite_appends_section_when_no_defaults():
     text = '[paths]\nx = 1\n'
-    out = config._rewrite_profiles_default_toolchain(text, "llvm")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "llvm")
     assert "[defaults]" in out
     assert 'toolchain = "llvm"' in out
     assert "[paths]" in out
@@ -162,7 +161,7 @@ def test_rewrite_preserves_comments_and_other_sections():
         '# a note\nprofile = "standard"\ntoolchain = "gcc"\n'
         '\n[profiles.bare]\nBUILDDIR = "x"\n'
     )
-    out = config._rewrite_profiles_default_toolchain(text, "llvm")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "llvm")
     assert "# header comment" in out
     assert "# a note" in out
     assert 'BUILDDIR = "x"' in out
@@ -175,7 +174,7 @@ def test_rewrite_only_touches_first_defaults_table():
         '[defaults]\ntoolchain = "gcc"\n'
         '\n[profiles.x]\ntoolchain = "llvm"\n'
     )
-    out = config._rewrite_profiles_default_toolchain(text, "llvm")
+    out = config._rewrite_toml_key(text, "defaults", "toolchain", "llvm")
     # defaults flipped, profile key untouched.
     assert out.index('toolchain = "llvm"\n\n[profiles.x]') >= 0
     assert out.count('toolchain = "llvm"') == 2
@@ -272,7 +271,7 @@ def test_non_optimized_build_modes_do_not_qualify():
 
 
 # ---------------------------------------------------------------------------
-# is_llvm_toolchain / requires_llvm_toolchain — optimization LLVM gate
+# is_llvm_toolchain — optimization LLVM gate
 # ---------------------------------------------------------------------------
 
 def test_is_llvm_toolchain_recognizes_llvm_and_clang():
@@ -287,13 +286,3 @@ def test_is_llvm_toolchain_rejects_gcc_and_empty():
         assert is_llvm_toolchain(val) is False, val
 
 
-def test_requires_llvm_toolchain_passes_for_llvm():
-    from sysforge.primitives.profile import requires_llvm_toolchain
-    # No exception → returns None for an LLVM toolchain.
-    assert requires_llvm_toolchain("llvm", feature="kernel AutoFDO") is None
-
-
-def test_requires_llvm_toolchain_raises_for_gcc():
-    from sysforge.primitives.profile import requires_llvm_toolchain
-    with pytest.raises(ValueError, match="requires the LLVM toolchain"):
-        requires_llvm_toolchain("gcc", feature="kernel AutoFDO")

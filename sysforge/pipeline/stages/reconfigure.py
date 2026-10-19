@@ -78,6 +78,7 @@ from sysforge.primitives.pkg_catalog import (
 )
 from sysforge.primitives import storage_probe
 from sysforge.primitives import atomic_write
+from sysforge.primitives import config as prim_config
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.provides_lookup import files_db_present, sync_files_db
 from sysforge.primitives.prompt import (
@@ -837,8 +838,6 @@ def _validate_flag_profiles(path: Path) -> tuple[bool, str]:
         return False, f"TOML parse error: {e}"
     try:
         cfg = load_config(config_paths=[path])
-        if cfg is None:
-            return False, "load_config returned None"
         conflict_groups = load_conflict_groups()
         from sysforge.primitives.profile import merge_extends
         profiles = cfg.get("profiles", {})
@@ -994,42 +993,12 @@ def _step_config(config, state, options, editor: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _set_repo_mode(pkg_path: Path, mode: str) -> None:
+    """Write ``[build] repo_mode`` to packages.toml in place, comments kept.
+
+    Goes through ``config.set_toml_key``, the one runtime TOML key writer, so
+    the write is atomic and escalates for a root-owned file (3.5.0-B47).
     """
-    Write repo_mode to the [build] section of packages.toml in-place,
-    preserving all other content and comments.
-
-    Search order:
-    1. Replace existing repo_mode = "..." line.
-    2. Insert after [build] header if not found.
-    3. Append a new [build] section if none exists.
-    """
-    text = pkg_path.read_text(encoding="utf-8")
-
-    new_text, n = re.subn(
-        r'^(repo_mode\s*=\s*)"[^"]*"',
-        f'\\1"{mode}"',
-        text,
-        flags=re.MULTILINE,
-    )
-    if n:
-        pkg_path.write_text(new_text, encoding="utf-8")
-        return
-
-    # Insert immediately after [build] header
-    new_text = re.sub(
-        r'(\[build\][^\n]*\n)',
-        f'\\1repo_mode = "{mode}"\n',
-        text,
-        count=1,
-    )
-    if new_text != text:
-        pkg_path.write_text(new_text, encoding="utf-8")
-        return
-
-    # No [build] section — append one
-    pkg_path.write_text(
-        text.rstrip("\n") + f'\n\n[build]\nrepo_mode = "{mode}"\n', encoding="utf-8"
-    )
+    prim_config.set_toml_key(pkg_path, "build", "repo_mode", mode)
 
 
 def _step_build_mode(config, state, options, editor: str) -> str:

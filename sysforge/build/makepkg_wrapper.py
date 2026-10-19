@@ -272,6 +272,21 @@ def _read_built_manifest(pkgbuild_dir) -> set[str]:
         return set()
 
 
+def built_manifest_artifacts(pkgbuild_dir) -> list | None:
+    """This build's artifacts as its manifest names them, or ``None`` without one.
+
+    For an ``AlreadyBuilt`` reuse of a renamed build (``-sysforge``, kernel
+    local rename) the stock pkgnames match the wrong files or none at all, so
+    the manifest is the answer (3.5.0-B60). An empty list means the manifest
+    names artifacts that are not on disk: the caller must not fall back to a
+    stock-named lookup.
+    """
+    wanted = _read_built_manifest(pkgbuild_dir)
+    if not wanted:
+        return None
+    return [p for p in _find_artifacts(pkgbuild_dir) if p.name in wanted]
+
+
 def built_manifest_version(pkgbuild_dir, pkgname: str) -> str | None:
     """``pkgver-pkgrel`` of ``pkgname`` as this build's manifest recorded it.
 
@@ -1010,9 +1025,13 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                 # scenario is at-most-once-per-build (tracked in
                 # _repaired_scenarios) so a misdetection can't loop.
                 _captured = getattr(e, "captured_output", None) or []
+                # makepkg's srcdir: under $BUILDDIR/<pkgbase> when BUILDDIR
+                # is set, else in the PKGBUILD dir (3.5.0-B67).
+                _root = build_root(resolved_profile,
+                                   _built_pkgbase(pkgmeta, rename, pkgbuild_path))
                 _accum = _ar.BuildOutputAccumulator(
                     lines=list(_captured),
-                    srcdir=pkgbuild_path.parent / "src",
+                    srcdir=(_root or pkgbuild_path.parent) / "src",
                 )
                 _result = _ar.apply_first_match(
                     _ar.REGISTRY,
@@ -1032,22 +1051,28 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                 # invoke_makepkg.
                 continue
 
-        # Post-build cache delta
+        # Post-build cache delta. A sandboxed build never reaches the host's
+        # caches (the container drops ccache/sccache), so its delta would be a
+        # meaningless 0/0: it is recorded as not measured (3.5.0-B99).
         pkgname = _pkgname_from_meta(pkgmeta)
-        after_cc = probe_ccache()
-        after_sc = probe_sccache()
-        cc_delta = (
-            diff_ccache(before_cc, after_cc)
-            if before_cc is not None and after_cc is not None
-            else None
-        )
-        sc_delta = (
-            diff_sccache(before_sc, after_sc)
-            if before_sc is not None and after_sc is not None
-            else None
-        )
-        emit_build_stats(pkgname, cc_delta, sc_delta)
-        record_build_result(pkgname, cc_delta, sc_delta)
+        sandboxed = build_sandbox.peek_provenance() is not None
+        if sandboxed:
+            cc_delta = sc_delta = None
+        else:
+            after_cc = probe_ccache()
+            after_sc = probe_sccache()
+            cc_delta = (
+                diff_ccache(before_cc, after_cc)
+                if before_cc is not None and after_cc is not None
+                else None
+            )
+            sc_delta = (
+                diff_sccache(before_sc, after_sc)
+                if before_sc is not None and after_sc is not None
+                else None
+            )
+        emit_build_stats(pkgname, cc_delta, sc_delta, sandboxed=sandboxed)
+        record_build_result(pkgname, cc_delta, sc_delta, sandboxed=sandboxed)
 
         success = True
         # B9/B3: record the exact emitted basenames while the patched PKGBUILD
@@ -1075,6 +1100,11 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
         already_built = True
         if extracted_profile is not None or rename or local_rename:
             _capture_built_manifest(pkgbuild_path)
+        else:
+            # A manifest left by an earlier renamed build whose install never
+            # ran would otherwise name this reuse's artifacts (3.5.0-B60).
+            with suppress(OSError):
+                (pkgbuild_path.parent / _BUILT_MANIFEST_NAME).unlink(missing_ok=True)
         # The tree the reused package was built in, by the same rule a fresh
         # build reports (profile BUILDDIR, post-rename pkgbase), so the kernel
         # gates can find it instead of guessing (3.3.0-B11). Whether it still
@@ -1298,7 +1328,10 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
             )
             return
 
-        upstream_commit = read_built_upstream_commit(pkgbuild_path.parent)
+        upstream_commit = read_built_upstream_commit(
+            pkgbuild_path.parent,
+            build_root=build_root(resolved_profile or {},
+                                  _built_pkgbase(pkgmeta, rename, pkgbuild_path)))
 
         # Prefer pkgver/pkgrel/epoch from the built .pkg.tar.* filenames
         # over the static PKGBUILD parse. The parser intentionally leaves

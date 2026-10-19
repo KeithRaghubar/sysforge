@@ -855,6 +855,20 @@ def test_ignorelist_load_prunes_missing_file(tmp_path):
     assert ig.load() == {present: "a" * 64}
 
 
+def test_ignorelist_keeps_entries_on_an_absent_filesystem(tmp_path):
+    """3.5.0-B92: an unmounted path is not a deleted file; its decline survives
+    a load-and-save."""
+    ig = _ignore(tmp_path)
+    mnt = tmp_path / "mnt" / "data"
+    mnt.mkdir(parents=True)                 # the empty mount point
+    at_root = mnt / "tool.sh"               # file at the filesystem's root
+    deeper = mnt / "bin" / "run.sh"         # file in a directory that is gone
+    ig.save({at_root: "a" * 64, deeper: "b" * 64})
+    loaded = ig.load()
+    ig.save(loaded)
+    assert ig.load() == {at_root: "a" * 64, deeper: "b" * 64}
+
+
 def test_ignorelist_corrupt_raises(tmp_path):
     ig = _ignore(tmp_path)
     ig.path.parent.mkdir(parents=True, exist_ok=True)

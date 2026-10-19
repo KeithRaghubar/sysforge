@@ -266,7 +266,8 @@ def classify_head_vs_upstream(
       (operator has unpushed commits).
     * ``"diverged_user"``      — HEAD and upstream share a common ancestor
       but neither is descendant of the other, **and** at least one of the
-      ``@{u}..HEAD`` commits is authored by ``git config user.email``.
+      ``@{u}..HEAD`` commits is authored or committed by ``git config
+      user.email``.
     * ``"diverged_upstream"``  — same divergent shape, but no commits in
       ``@{u}..HEAD`` are authored by the local user. Most likely the
       upstream rewrote history (force-push); the local clone is logically
@@ -321,9 +322,12 @@ def classify_head_vs_upstream(
         # treat any divergent commit as the operator's work.
         return "diverged_user", n_local, n_upstream
 
+    # Author *or committer*: a patch applied with `git am` or cherry-picked
+    # from an AUR comment keeps its original author, but the user committed
+    # it, so it is the user's work and must block the reset (3.5.0-B69).
     r = run.probe(
         ["git", "-C", str(pkgbuild_dir), "log",
-         "--format=%ae", "@{u}..HEAD"],
+         "--format=%ae%n%ce", "@{u}..HEAD"],
     )
     if r.returncode != 0:
         return "diverged_user", n_local, n_upstream

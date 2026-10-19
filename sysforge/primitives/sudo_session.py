@@ -34,7 +34,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from sysforge import log
@@ -77,7 +77,12 @@ def _keepalive_daemon(stop_event: threading.Event, tag: str) -> None:
     continues rather than raising into a thread nobody is joining for results.
     """
     while not stop_event.wait(SUDO_KEEPALIVE_INTERVAL):
-        if subprocess.run(["sudo", "-v"], preexec_fn=lift_for_child).returncode != 0:
+        # -n: refresh only, never prompt. A background thread's prompt would
+        # land under the progress bar, and the stage's exit join would wait on
+        # it (3.5.0-B55); an expired credential just warns.
+        if subprocess.run(["sudo", "-v", "-n"], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          preexec_fn=lift_for_child).returncode != 0:
             log.warn(
                 f"[{tag}]",
                 "sudo keepalive failed: install step may prompt "
@@ -86,7 +91,7 @@ def _keepalive_daemon(stop_event: threading.Event, tag: str) -> None:
 
 
 @contextmanager
-def keepalive(*, tag: str, enabled: bool = True) -> Iterator[None]:
+def keepalive(*, tag: str, enabled: bool = True) -> Generator[None, None, None]:
     """Refresh sudo credentials for the duration of the block.
 
     *tag* is the bare log tag of the owning stage (e.g. ``"PGO"``,

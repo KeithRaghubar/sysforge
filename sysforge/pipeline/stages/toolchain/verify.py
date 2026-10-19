@@ -124,23 +124,7 @@ def _nm_dynsyms(so: Path, *, undefined: bool) -> list[str]:
     return [parts[-1] for parts in (ln.split() for ln in proc.stdout.splitlines()) if parts]
 
 
-def _so_ver(path: Path) -> tuple[int, ...]:
-    """Numeric version tuple parsed from a ``lib*.so.<ver>`` filename (() if none).
-
-    ``libLLVM.so.22.1`` → ``(22, 1)``; stops at the first non-numeric component
-    so a plain ``lib*.so`` symlink yields ``()``. Used to compare sonames
-    numerically rather than lexically (``.21.1`` must not sort ahead of ``.9``).
-    """
-    marker = ".so."
-    idx = path.name.rfind(marker)
-    if idx == -1:
-        return ()
-    out: list[int] = []
-    for part in path.name[idx + len(marker):].split("."):
-        if not part.isdigit():
-            break
-        out.append(int(part))
-    return tuple(out)
+_so_ver = toolchain_safety.so_version  # one home: primitives/toolchain_safety.py
 
 
 def _newest_so(base: Path, name_glob: str) -> Path | None:
@@ -281,7 +265,8 @@ def verify_llvm_install(
 
     1. ``pacman -Q`` versions across :data:`_LLVM_VERSION_MATCH_SET` all
        match. A mismatch is the canonical interrupted-install symptom.
-    2. ``clang --version`` and ``ld.lld --version`` run without crashing.
+    2. ``clang --version`` and ``ld.lld --version`` run without crashing,
+       and clang compiles and links (with lld) a trivial program.
     3. ``llvm-config --targets-built`` is a superset of
        ``expected_targets`` (skipped when ``expected_targets`` is None or
        empty — i.e. no LLVM_TARGETS filtering was configured).
@@ -318,6 +303,20 @@ def verify_llvm_install(
             issues.append(
                 f"{label}: exit {proc.returncode}; {proc.stderr.strip()[:200]}"
             )
+
+    # A real compile and lld link, as Gate 1 does: --version returns before
+    # libclang-cpp's symbols are bound, so it misses symbol breakage
+    # (3.5.0-B58). A missing clang was reported above.
+    proc = run.capture(
+        ["clang", "-x", "c", "-", "-fuse-ld=lld", "-o", "/dev/null"],
+        input="int main(void){return 0;}\n",
+    )
+    if proc is not None and (proc.returncode != 0
+                             or "symbol lookup error" in (proc.stderr or "")):
+        issues.append(
+            f"clang compile and lld link: exit {proc.returncode}; "
+            f"{(proc.stderr or '').strip()[:200]}"
+        )
 
     if expected_targets:
         proc = run.capture(["llvm-config", "--targets-built"])

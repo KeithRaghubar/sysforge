@@ -80,13 +80,6 @@ def db_path(state_dir) -> Path:
     return repo_dir(state_dir) / f"{REPO_NAME}.db.tar.gz"
 
 
-def _split_pkgfile(fname: str) -> tuple[str, str]:
-    m = _PKGFILE_RE.match(fname)
-    if not m:
-        raise ValueError(f"not a package filename: {fname}")
-    return m.group("name"), m.group("ver")
-
-
 def _read_db(path: Path) -> dict[str, tuple[str, str]]:
     """{name: (version, filename)} straight from the repo db — the one truth."""
     if not path.exists():

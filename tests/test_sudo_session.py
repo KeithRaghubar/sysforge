@@ -9,6 +9,7 @@ in primitives/privilege.py and is not exercised here.
 Every test patches os.geteuid, because the module short-circuits to a no-op when
 already root and the suite must not depend on who runs it.
 """
+import subprocess
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -72,12 +73,14 @@ def test_authenticate_is_a_noop_when_already_root():
 # ---------------------------------------------------------------------------
 
 def test_keepalive_daemon_calls_sudo_v():
-    """Daemon refreshes at least once before stop_event fires."""
+    """Daemon refreshes at least once before stop_event fires, without ever
+    prompting (3.5.0-B55): -n, and no terminal stdin."""
     stop_event = threading.Event()
     calls = []
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        assert kwargs.get("stdin") == subprocess.DEVNULL
         return _run_result(0)
 
     with patch("sysforge.primitives.sudo_session.SUDO_KEEPALIVE_INTERVAL", 0), \
@@ -89,7 +92,7 @@ def test_keepalive_daemon_calls_sudo_v():
         stop_event.set()
         t.join(timeout=1)
 
-    assert any(cmd == ["sudo", "-v"] for cmd in calls)
+    assert any(cmd == ["sudo", "-v", "-n"] for cmd in calls)
 
 
 def test_keepalive_daemon_stops_immediately():

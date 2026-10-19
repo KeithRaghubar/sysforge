@@ -83,10 +83,13 @@ from sysforge.primitives.git_ops import (
     purge_srcdest,
 )
 from sysforge.primitives.net_policy import (
+    KIND_AUR_CLONE,
+    KIND_REPO_CHECKOUT,
     NetworkFrozen,
     get_policy,
 )
 from sysforge.primitives.pacman import get_repo_candidate_version, get_srcdest
+from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
 from sysforge.primitives.rate_limit import RateLimiter
 from sysforge.primitives.source_meta import SourceMetaCache, _now_iso
 from sysforge.primitives import run
@@ -122,10 +125,15 @@ _VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
 def is_vcs_pkgbase(pkgbase: str) -> bool:
     """True for VCS packaging repos (``-git``/``-svn``/``-hg``/``-bzr``).
 
-    Public because the VCS-aware dirty-tree question is asked outside this
-    module too (``llvm_state``); ``_VCS_SUFFIXES`` stays the single home for
-    the suffix list.
+    A ``-sysforge`` optimization rename is stripped first, so a renamed
+    ``foo-git-sysforge`` is still VCS (3.5.0-B78). Public because the VCS
+    question is asked outside this module too (``llvm_state``,
+    ``update_common``); ``_VCS_SUFFIXES`` stays the single home for the
+    suffix list.
     """
+    rename = f"-{RENAME_SUFFIX}"
+    if pkgbase.endswith(rename):
+        pkgbase = pkgbase[: -len(rename)]
     return any(pkgbase.endswith(s) for s in _VCS_SUFFIXES)
 
 
@@ -258,8 +266,7 @@ class SourceSyncScheduler:
             return
 
         try:
-            self.limiter.wait_before_rpc()
-            results = aur_info(pending)
+            results = aur_info(pending, limiter=self.limiter)
         except Exception as e:  # noqa: BLE001 — urllib raises a sprawling tree
             _log.warn(f"AUR RPC batch failed: {e}; falling back to fetch-all")
             return
@@ -294,7 +301,10 @@ class SourceSyncScheduler:
                 )
             return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_LOCAL)
 
-        if (req.source or "aur") == "aur" and not get_policy().aur_enabled \
+        # The origin decides, not the label: `source = "git"` checkouts clone
+        # and fetch from the AUR too (3.5.0-B66). A repo package's pkgctl
+        # checkout never does.
+        if req.source != "repo" and not get_policy().aur_enabled \
                 and is_aur_checkout(pkgbuild_dir):
             # 3.1.0-F3: never contact the AUR. Not a failure: the user chose it.
             return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_AUR_DISABLED,
@@ -305,7 +315,13 @@ class SourceSyncScheduler:
                               error="rate-limit abort window active")
 
         # --- cleansrc: purge before any other work ---
+        # Only when the checkout can be re-cloned: offline, or under a freeze
+        # that denies the clone, the purge would leave the package unbuildable
+        # (3.5.0-B65).
         if self.cleansrc and pkgbuild_dir.exists():
+            blocked = self._reclone_blocked(pkgbase, req.source)
+            if blocked is not None:
+                return blocked
             try:
                 purge_src(
                     pkgbuild_dir,
@@ -379,6 +395,20 @@ class SourceSyncScheduler:
             pkgbase, pkgbuild_dir, rpc_entry, source=req.source,
             sync_db_name=req.sync_db_name,
         )
+
+    def _reclone_blocked(self, pkgbase: str, source: str | None) -> SyncResult | None:
+        """The result to return instead of purging, when a re-clone cannot run."""
+        if self.offline:
+            _log.warn(f"--cleansrc {pkgbase}: offline, so the checkout is kept "
+                      "(it could not be cloned again)")
+            return SyncResult(pkgbase=pkgbase, status=STATUS_SKIPPED_OFFLINE)
+        kind = KIND_REPO_CHECKOUT if source == "repo" else KIND_AUR_CLONE
+        try:
+            get_policy().check(kind, pkgbase)
+        except NetworkFrozen as e:
+            return SyncResult(pkgbase=pkgbase, status=STATUS_FROZEN,
+                              error=f"--cleansrc kept the checkout: {e}")
+        return None
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,

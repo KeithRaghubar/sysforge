@@ -1040,3 +1040,22 @@ def test_planned_steps_end_with_bench_only_when_it_runs():
     tcfg = toolchain_cfg(compiler="llvm", pgo=False, bench={"after_build": True})
     assert planned_steps(tcfg, make_options(dry_run=False), None)[-1] == "bench"
     assert planned_steps(tcfg, make_options(dry_run=True), None)[-1] == "verify"
+
+
+def test_bolt_only_failed_authenticate_stops_before_the_bolt(tmp_path, monkeypatch):
+    """3.5.0-B55: a declined prompt must not start the keepalive."""
+    from sysforge.pipeline.stages.toolchain import pgo
+    from sysforge.primitives import sudo_session
+    from tests.toolchain_helpers import toolchain_cfg
+    import pytest
+    llvm = make_pkgbuild(tmp_path / "builds", "llvm")
+    monkeypatch.setattr(sudo_session, "authenticate", lambda: False)
+    monkeypatch.setattr(sudo_session, "keepalive",
+                        lambda **k: pytest.fail("keepalive started"))
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "bolt.check_bolt_only_tree", return_value=None), \
+         patch(T + "bolt.optimize_in_build", side_effect=AssertionError("bolted")), \
+         pytest.raises(RuntimeError, match="sudo was not authorized"):
+        pgo.bolt_only({"llvm": llvm, "clang": llvm}, {}, {}, tmp_path / "store",
+                      options, tcfg=toolchain_cfg())

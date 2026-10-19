@@ -15,7 +15,7 @@ single :class:`Finding`.
 ``sysforge doctor`` is the user-facing front-end: it runs a set of *axes*
 (each a callable returning ``list[Finding]``) and renders + exit-codes through
 this module. The probes keep their own dataclasses and are converted at the
-boundary by the ``adapt`` / ``from_*`` helpers, so no probe is rewritten and
+boundary by the ``adapt`` helpers, so no probe is rewritten and
 the layering rule (``primitives`` never imports the ``pipeline`` layer) holds:
 pipeline-layer checks are adapted by their *callers*, never imported here.
 
@@ -23,7 +23,6 @@ Public API:
     SEV_ERROR / SEV_WARN / SEV_INFO, normalize_severity, severity_rank
     Finding
     adapt(category, obj) / adapt_many(category, objs)
-    from_toolchain_check(check, *, category) / from_fix_suggestion(s, *, category)
     error_count(findings)
     Skip, Roster, AxisResult, record(roster, check_id, result)
     Axis, run_axis(ax), run_axes(axes)
@@ -207,39 +206,6 @@ def adapt(category: str, obj) -> Finding:
 
 def adapt_many(category: str, objs: Iterable) -> list[Finding]:
     return [adapt(category, o) for o in objs]
-
-
-def from_toolchain_check(check, *, category: str = "toolchain") -> Finding:
-    """Adapt a ``toolchain_preflight.ToolchainCheck`` (``ok``/``name``/``detail``/
-    ``fix_cmd``/``auto_remediable``). A passing check is INFO; a failing one is
-    ERROR and carries its (possibly auto-remediable) fix.
-    """
-    ok = bool(getattr(check, "ok", True))
-    fix_cmd = getattr(check, "fix_cmd", None)
-    return Finding(
-        category=category,
-        severity=SEV_INFO if ok else SEV_ERROR,
-        check_id=getattr(check, "name", ""),
-        message=getattr(check, "detail", ""),
-        remediation=fix_cmd or "",
-        fix_cmd=fix_cmd,
-        auto_remediable=bool(getattr(check, "auto_remediable", False)),
-    )
-
-
-def from_fix_suggestion(suggestion, *, category: str = "build") -> Finding:
-    """Adapt a ``build_diag.FixSuggestion`` (``signature``/``message``/``fix_cmd``).
-    Build-failure diagnoses surface as warnings carrying their fix command.
-    """
-    fix_cmd = getattr(suggestion, "fix_cmd", None)
-    return Finding(
-        category=category,
-        severity=SEV_WARN,
-        check_id=getattr(suggestion, "signature", ""),
-        message=getattr(suggestion, "message", ""),
-        remediation=fix_cmd or "",
-        fix_cmd=fix_cmd,
-    )
 
 
 # ---------------------------------------------------------------------------

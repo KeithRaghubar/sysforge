@@ -318,6 +318,7 @@ CXXFLAGS = [
   "-fstack-protector-strong",
   "-fstack-clash-protection",
   "-fcf-protection",
+  "-Wp,-D_GLIBCXX_ASSERTIONS",   # libstdc++ bounds/precondition checks; C++ only
 ]
 
 # =============================================================================

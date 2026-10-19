@@ -26,6 +26,7 @@ from sysforge.pipeline.stages.toolchain import config, profdata, verify
 
 from sysforge.primitives import prompt
 from sysforge.primitives import pacman
+from sysforge.primitives import sudo_session
 from sysforge.primitives import config as prim_config
 from sysforge.primitives import aur
 from sysforge.primitives.pkgbuild_review import resolve_review_policy
@@ -104,6 +105,11 @@ def install_bootstrap_compilers(findings, options, tcfg: "config.ToolchainConfig
         f"Gate 1: installing {len(pkgs)} missing bootstrap compiler "
         f"package(s) from repo: {' '.join(pkgs)}",
     )
+    # sudo must be usable before the sentinel goes down (3.5.0-B75).
+    if not sudo_session.authenticate():
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 1: sudo was not authorized, so the bootstrap "
+            "compiler was not installed; rerun: sysforge run toolchain")
     # Install is a mutation window — sentinel it so an interrupted install
     # blocks the next run with a recovery command (parity with the repo-mode
     # install path below). Sequential with, never nested in, the build sentinel.
@@ -620,13 +626,19 @@ def snapshot_suite(
     None when not installed / not in the cache). Used as the offline-undo
     source: on Gate-3 failure the stage reinstalls the present paths in one
     ``pacman -U`` transaction to put the prior-good toolchain back.
+
+    Only names installed now are kept: a new subpackage or lib32 member has
+    nothing to restore, and its ``None`` would read as a missing archive and
+    refuse the whole rollback (3.5.0-B76). A ``None`` left in the result is a
+    package that is installed but not cached.
     """
     names = set(_SNAPSHOT_SUITE)
     for path in built_map.values():
         names.add(path.parent.name)  # pkgbase dir name; harmless if not a pkg
     names.update(built_map.keys())
     names.update(extra_names)
-    return pacman.cached_pkg_files_for(sorted(names))
+    installed = [n for n in sorted(names) if pacman.get_installed_version(n) is not None]
+    return pacman.cached_pkg_files_for(installed)
 
 
 def rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:

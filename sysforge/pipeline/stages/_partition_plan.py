@@ -10,7 +10,9 @@ plus the existing-partition-table probe. Single home for this logic so it
 isn't duplicated across partition-touching stages/tools.
 """
 
+import stat
 import unicodedata
+from pathlib import Path
 
 from sysforge import log
 from sysforge.pipeline.stages._bootstrap import BootstrapConfig
@@ -38,6 +40,37 @@ def probe_disk_size_bytes(device: str) -> int | None:
     if not text or not text[0].strip().isdigit():
         return None
     return int(text[0].strip())
+
+
+def refuse_unsafe_device(device: str) -> None:
+    """Raise unless ``device`` is a block device with nothing mounted from it.
+
+    The y/N prompt was the only guard against a typo in ``device``. A disk
+    holding ``/``, the live ISO's boot medium, swap or any other mounted
+    partition is the running system or in use, and a path that is not a
+    block device is a mistake; each is refused before the prompt
+    (3.5.0-B96). ``lsblk -nro NAME,MOUNTPOINTS`` lists the device and its
+    partitions; any row with a mount point is in use.
+    """
+    try:
+        mode = Path(device).stat().st_mode
+    except OSError as e:
+        raise RuntimeError(f"[INSTALL] {device}: {e}") from e
+    if not stat.S_ISBLK(mode):
+        raise RuntimeError(f"[INSTALL] {device} is not a block device")
+    result = run.probe(["lsblk", "--noheadings", "--raw", "--output",
+                        "NAME,MOUNTPOINTS", device])
+    if result.returncode != 0:
+        raise RuntimeError(f"[INSTALL] could not list the partitions of {device}")
+    mounted = []
+    for line in result.stdout.splitlines():
+        name, _, mounts = line.strip().partition(" ")
+        if mounts.strip():
+            mounted.append(f"{name} on {mounts.strip()}")
+    if mounted:
+        raise RuntimeError(
+            f"[INSTALL] refusing to wipe {device}: it is in use ({'; '.join(mounted)}). "
+            "Check [partition] device in bootstrap.toml.")
 
 
 def _has_existing_partitions(device: str) -> bool:

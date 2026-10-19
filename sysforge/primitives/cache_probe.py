@@ -177,8 +177,15 @@ def diff_sccache(before: dict, after: dict) -> dict:
 # Emit per-build cache stats
 # ---------------------------------------------------------------------------
 
-def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None) -> None:
+_SANDBOXED_NOTE = "n/a (sandboxed, host cache not used)"
+
+
+def emit_build_stats(pkgname: str, cc_delta: dict | None, sc_delta: dict | None,
+                     *, sandboxed: bool = False) -> None:
     """Emit [CACHE] INFO lines for a single package build's cache usage."""
+    if sandboxed:
+        _log.info(f"{pkgname}: compiler cache {_SANDBOXED_NOTE}")
+        return
     if cc_delta is not None:
         hits = cc_delta["direct_hits"] + cc_delta["preprocessed_hits"]
         misses = cc_delta["misses"]
@@ -443,12 +450,19 @@ def reset_session() -> None:
     _SESSION_RECORDS.clear()
 
 
-def record_build_result(pkgname: str, cc_delta: dict | None, sc_delta: dict | None) -> None:
-    """Accumulate per-build cache stats for the end-of-run report."""
+def record_build_result(pkgname: str, cc_delta: dict | None, sc_delta: dict | None,
+                        *, sandboxed: bool = False) -> None:
+    """Accumulate per-build cache stats for the end-of-run report.
+
+    A ``sandboxed`` build is recorded as not measured: the container never
+    reaches the host's caches, so it is listed with a note and left out of
+    the totals (3.5.0-B99).
+    """
     _SESSION_RECORDS.append({
         "pkgname": pkgname,
-        "ccache": cc_delta,
-        "sccache": sc_delta,
+        "ccache": None if sandboxed else cc_delta,
+        "sccache": None if sandboxed else sc_delta,
+        "sandboxed": sandboxed,
     })
 
 
@@ -474,6 +488,9 @@ def emit_session_report() -> None:
 
     for rec in _SESSION_RECORDS:
         pkgname = rec["pkgname"]
+        if rec.get("sandboxed"):
+            _log.ui(f"  {pkgname}: {_SANDBOXED_NOTE}")
+            continue
         cc = rec["ccache"]
         sc = rec["sccache"]
 
@@ -515,6 +532,9 @@ def emit_session_report() -> None:
         _log.ui(f"  sccache total: {total_sc_hits}/{total} hits ({pct})")
 
     if not has_cc and not has_sc:
-        _log.ui("  ccache and sccache not installed.")
+        if all(rec.get("sandboxed") for rec in _SESSION_RECORDS):
+            _log.ui("  every build ran in the sandbox: host caches not used.")
+        else:
+            _log.ui("  ccache and sccache not installed.")
 
     _log.ui(divider)

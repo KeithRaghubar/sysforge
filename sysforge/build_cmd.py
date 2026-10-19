@@ -189,16 +189,9 @@ def _write_repo_optin(name: str, config) -> bool:
         path = resolve_packages_path(config)
         entry = {"name": name, PKG_KEY_BUILD_FROM_SOURCE: True}
         block = "\n" + entry_toml_block(entry) + "\n"
-        # Replace any existing entry for this name, then append the new one.
-        rewrite_packages_toml(path, drop_name=name)
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                "# packages.toml: managed by sysforge packages\n"
-                "\n[build]\n"
-                'pkgbuild_src_dir = "~/src"\n'
-            )
-        rewrite_packages_toml(path, append=block)
+        # Replace any existing entry for this name in one write; a missing
+        # file starts from the standard header (3.5.0-B48).
+        rewrite_packages_toml(path, append=block, drop_name=name)
         _log.ui(f"{name}: recorded enable_build_from_source = true in {path}")
         return True
     except Exception as e:
@@ -249,7 +242,8 @@ class BuildVerb(Verb):
             help="Override linker for this build, e.g. --ld lld.")
         p.add_argument("--cache-report", action="store_true", dest="cache_report",
             help="Print a structured cache summary (ccache/sccache hit rates) after the build. "
-                 "Also settable via [build] cache_report = true in packages.toml.")
+                 "Also settable via [build] cache_report = true in packages.toml. Builds run "
+                 "in the build sandbox show n/a: they never use the host caches.")
         p.add_argument("--abi-check", action="store_true", dest="abi_check",
             help="Run a post-build ABI compatibility check on built shared libraries. "
                  "Also settable via [build] abi_check = true in packages.toml.")

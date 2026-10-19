@@ -460,7 +460,10 @@ hasn't changed. If neither the profile nor the kernel changed, there is nothing 
 an unattended run reinstalls the package it already built, and an interactive run asks first,
 offering to install it as built, rebuild it, or abort. Install as built is the usual answer;
 choose rebuild only if you want to review the kernel config again (a changed profile already
-forces a rebuild, so you never need it for that). Every `--autofdo=record` always builds fresh.
+forces a rebuild, so you never need it for that). Every `--autofdo=record` always builds fresh,
+and first deletes the profile the previous round captured (round 1's `kernel.afdo`, or round
+2's Propeller pair), because it came from a different kernel binary: until you run `capture`
+and its commands again, `use` refuses rather than apply it.
 
 While `mode` is set, every plain `sysforge run kernel` is a `use` build, so it never rebuilds
 the plain `<name>` kernel you keep as a fallback. To rebuild the plain kernel, set

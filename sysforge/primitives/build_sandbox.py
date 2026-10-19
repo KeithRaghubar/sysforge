@@ -1606,6 +1606,11 @@ def set_provenance(p: SandboxProvenance) -> None:
     _provenance = p
 
 
+def peek_provenance() -> SandboxProvenance | None:
+    """The pending provenance, left in place for the record site to take."""
+    return _provenance
+
+
 def take_provenance() -> SandboxProvenance | None:
     """Return the pending provenance and clear it — one build, one record."""
     global _provenance

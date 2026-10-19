@@ -725,3 +725,30 @@ def test_emit_profile_ldflags_no_fuse_ld_shadows_system_lld(tmp_path):
         "lld-only flag --icf=all should have been stripped when profile "
         "LDFLAGS has no -fuse-ld= (effective linker is 'ld', not 'lld')"
     )
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B89: scrubs resolve the effective value, system conf included
+# ---------------------------------------------------------------------------
+
+def _conf_with(tmp_path, **lines):
+    text = _FIXTURE_CONF.read_text()
+    for key, val in lines.items():
+        text += f'\n{key}="{val}"\n'
+    p = tmp_path / "makepkg.conf"
+    p.write_text(text)
+    return p
+
+
+def test_pgo_pass_scrubs_a_system_conf_flto(tmp_path):
+    conf = _conf_with(tmp_path, CFLAGS="-O2 -pipe -flto")
+    with emit_makepkg_conf({}, system_conf_path=conf, strip_full_lto=True) as out:
+        vals = read_conf(out)
+    assert "-flto" not in vals["CFLAGS"].split()
+
+
+def test_non_lld_linker_scrubs_a_system_conf_icf(tmp_path):
+    conf = _conf_with(tmp_path, LDFLAGS="-Wl,-O1 -Wl,--icf=all")
+    with emit_makepkg_conf({}, system_conf_path=conf) as out:
+        vals = read_conf(out)
+    assert "--icf" not in vals["LDFLAGS"]

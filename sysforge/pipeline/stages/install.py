@@ -14,7 +14,11 @@ destructive-operation confirmation before handing off.
 from sysforge import log
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.stages._bootstrap import load_bootstrap
-from sysforge.pipeline.stages._partition_plan import _confirm, probe_disk_size_bytes
+from sysforge.pipeline.stages._partition_plan import (
+    _confirm,
+    probe_disk_size_bytes,
+    refuse_unsafe_device,
+)
 from sysforge.primitives.archinstall_config import build_archinstall_config
 from sysforge.primitives.archinstall_invoke import TARGET_ROOT, run_archinstall
 
@@ -57,6 +61,7 @@ class InstallStage(Stage):
         cfg_dict = build_archinstall_config(cfg, disk_size_bytes=disk_size_bytes)
 
         if not options.dry_run:
+            refuse_unsafe_device(cfg.device)  # before the prompt (3.5.0-B96)
             _confirm(cfg)  # destructive-op gate; raises to abort
 
         run_archinstall(cfg_dict, dry_run=options.dry_run)

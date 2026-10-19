@@ -121,6 +121,10 @@ def resolve_installed_name(bs, name: str) -> str:
       * exact tracked key            -> returned unchanged
       * some entry's origin_pkgbase  -> that entry's key (lowest key, so the
                                         result is deterministic across dict order)
+      * ``<name>-sysforge`` tracked  -> that key: a renamed split *member*'s
+                                        stock name (``vulkan-radeon``) records
+                                        the pkgbase as origin, not itself
+                                        (3.5.0-B62)
       * otherwise (untracked / repo) -> returned unchanged
 
     Single home for this reverse lookup -- both ``revert_cmd`` and
@@ -132,6 +136,10 @@ def resolve_installed_name(bs, name: str) -> str:
     for key in sorted(entries):
         if entries[key].get("origin_pkgbase") == name:
             return key
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+    renamed = f"{name}-{RENAME_SUFFIX}"
+    if renamed in entries:
+        return renamed
     return name
 
 

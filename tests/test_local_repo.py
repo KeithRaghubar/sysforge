@@ -43,7 +43,8 @@ class FakeRepoTools:
         entries = lr._read_db(Path(db))
         if tool.endswith("repo-add"):
             for f in rest:
-                name, ver = lr._split_pkgfile(Path(f).name)
+                m = lr._PKGFILE_RE.match(Path(f).name)
+                name, ver = m.group("name"), m.group("ver")
                 old = entries.get(name)
                 if old and "-R" in argv:
                     (Path(db).parent / old[1]).unlink(missing_ok=True)

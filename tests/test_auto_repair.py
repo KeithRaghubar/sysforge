@@ -69,6 +69,34 @@ class TestVendoredDeps:
             operation="meson subprojects download", capture=False, cwd=str(project),
         )
 
+    def test_repair_meson_uses_the_srcdir_under_builddir(self, tmp_path):
+        """3.5.0-B67: with BUILDDIR set, srcdir is not <pkgbuild_dir>/src."""
+        project = tmp_path / "builds" / "foo" / "src" / "myproj"
+        project.mkdir(parents=True)
+        (project / "meson.build").write_text("project('x')\n")
+        a = _accum("Automatic wrap-based subproject downloading is disabled\n",
+                   srcdir=tmp_path / "builds" / "foo" / "src")
+        info = ar.VENDORED_DEPS.detect(a)
+        with patch("sysforge.primitives.auto_repair.shutil.which",
+                   return_value="/usr/bin/meson"), \
+             patch("sysforge.primitives.auto_repair.run_or_raise") as run:
+            ar._repair_vendored_deps(tmp_path / "checkout", info)
+        assert run.call_args.kwargs["cwd"] == str(project)
+
+    def test_repair_is_refused_under_the_source_freeze(self, tmp_path):
+        """3.5.0-B67: subproject/submodule downloads are code ingress."""
+        from sysforge.primitives import net_policy
+        (tmp_path / "PKGBUILD").write_text("pkgname=foo\n")
+        info = ar.MatchInfo(detail={"kind": "git_submodule", "project_root": str(tmp_path)})
+        net_policy.set_policy(net_policy.NetPolicy(frozen=True, thawed=frozenset()))
+        try:
+            with patch("sysforge.primitives.auto_repair.run_or_raise",
+                       side_effect=AssertionError("downloaded")), \
+                 pytest.raises(net_policy.NetworkFrozen, match="subproject_fetch"):
+                ar._repair_vendored_deps(tmp_path, info)
+        finally:
+            net_policy.reset_policy()
+
     def test_repair_meson_raises_without_project(self, tmp_path):
         # No meson.build under srcdir → RuntimeError (line 166).
         (tmp_path / "src").mkdir()
@@ -121,18 +149,29 @@ class TestVendoredDeps:
 # ---------------------------------------------------------------------------
 
 class TestPgpKey:
-    def test_detects_with_keyid(self):
+    def test_detects_keyid_from_makepkgs_failed_line(self):
+        """makepkg sends gpg's stderr to /dev/null and names the key itself."""
         a = _accum(
-            "Verifying source files with PGP signatures...\n"
+            "==> Verifying source file signatures with gpg...\n"
             "    foo-1.0.tar.gz ... FAILED (unknown public key 1234ABCD5678EF90)\n"
             "==> ERROR: One or more PGP signatures could not be verified!\n"
-            "gpg: Signature made Mon 01 Jan 2024\n"
-            "gpg:                using RSA key 1234ABCD5678EF90DEAD\n"
-            "gpg: Can't check signature: No public key 1234ABCD5678EF90DEAD\n"
         )
         info = ar.PGP_KEY.detect(a)
         assert info is not None
-        assert info.detail["keyid"] == "1234ABCD5678EF90DEAD"
+        assert info.detail["keyid"] == "1234ABCD5678EF90"
+
+    def test_detects_keyid_from_gpgs_using_line_not_a_later_hash(self):
+        """3.5.0-B86: gpg prints the key before "No public key"; the first
+        hex run after it is something else (here a commit hash)."""
+        a = _accum(
+            "gpg: Signature made Mon 01 Jan 2024 12:00:00 UTC\n"
+            "gpg:                using RSA key 4AEE18F83AFDEB23\n"
+            "gpg: Can't check signature: No public key\n"
+            "Cloning into 'foo'... HEAD is now at 0123456789abcdef0123456789abcdef01234567\n"
+        )
+        info = ar.PGP_KEY.detect(a)
+        assert info is not None
+        assert info.detail["keyid"] == "4AEE18F83AFDEB23"
 
     def test_no_detection_without_pattern(self):
         a = _accum("nothing to see here\n")

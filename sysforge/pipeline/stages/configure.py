@@ -49,7 +49,9 @@ Use --start-from reconfigure to skip bootstrap stages on an already-configured
 system.
 """
 
+import contextlib
 import json
+import os
 import shutil
 import subprocess
 import re
@@ -511,12 +513,21 @@ def _copy_config_files(cfg: BootstrapConfig) -> None:
     src = Path("/etc/sysforge")
     dst = Path(cfg.target) / "etc/sysforge"
     dst.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, dirs_exist_ok=True)
-    # bootstrap.toml holds plaintext root/user passwords; copytree preserves
-    # the source mode (often 0644 from the ISO heredoc), so re-tighten here.
-    bootstrap = dst / "bootstrap.toml"
-    if bootstrap.exists():
-        bootstrap.chmod(0o600)
+    # bootstrap.toml holds plaintext root/user passwords. copytree would keep
+    # the source's mode (often 0644 from the ISO heredoc) until a chmod after
+    # it, so it is left out of the copy and created 0600 from the start; the
+    # ISO-side original is tightened too (3.5.0-B88).
+    shutil.copytree(src, dst, dirs_exist_ok=True,
+                    ignore=lambda d, names: ["bootstrap.toml"] if Path(d) == src else [])
+    src_bootstrap = src / "bootstrap.toml"
+    if src_bootstrap.is_file():
+        with contextlib.suppress(OSError):
+            src_bootstrap.chmod(0o600)
+        bootstrap = dst / "bootstrap.toml"
+        bootstrap.unlink(missing_ok=True)
+        fd = os.open(bootstrap, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(src_bootstrap.read_bytes())
     _log.info("Config files copied to target /etc/sysforge/")
 
 
@@ -654,6 +665,13 @@ class ConfigureStage(Stage):
             else:
                 _log.ui("[dry-run] would prompt for a desktop environment (interactive only)")
             return
+
+        # Every step below writes or removes under the target: an unmounted
+        # one would land on the live ISO's root (3.5.0-B72).
+        if not os.path.ismount(cfg.target):
+            raise RuntimeError(
+                f"[CONFIGURE] target {cfg.target} is not a mount point: run the "
+                "install stage first, or mount the new system there")
 
         _set_pacman_parallel_downloads(cfg)
         _set_makepkg_conf(cfg)

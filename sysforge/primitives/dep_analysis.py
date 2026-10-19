@@ -362,7 +362,9 @@ def _probe_libguestfs(pkgname, config, run_fn):
         for s in (e.stdout, e.stderr):
             if isinstance(s, bytes):
                 parts.append(s.decode(errors="replace"))
-            elif isinstance(s, str):
+            # typeshed says bytes | None, but subprocess.run(text=True) re-reads
+            # the output with communicate() after a timeout, so it is str here.
+            elif isinstance(s, str):  # pyright: ignore[reportUnnecessaryIsInstance]
                 parts.append(s)
         combined = "".join(parts)
     except FileNotFoundError:

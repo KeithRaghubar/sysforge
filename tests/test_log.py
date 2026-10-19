@@ -966,3 +966,25 @@ def test_first_or_changed_is_true_once_then_on_change():
     assert not log.first_or_changed("k", 1)
     assert log.first_or_changed("k", 2)
     assert log.first_or_changed("other", 1)
+
+
+def test_concurrent_writes_during_close_leave_a_clean_cleared_file(tmp_path):
+    """3.5.0-B87: a worker thread's line lands before the close or not at all,
+    never between the truncate and the cleared marker."""
+    import threading
+    from sysforge import log
+    path = tmp_path / "run.log"
+    log.open_unified_log(path, purge=True)
+    stop = threading.Event()
+
+    def spam():
+        while not stop.is_set():
+            log._write_to_files("[INFO] worker line\n")
+    t = threading.Thread(target=spam)
+    t.start()
+    try:
+        log.close_unified_log(success=True)
+    finally:
+        stop.set()
+        t.join()
+    assert path.read_text() == log._CLEARED_MARKER

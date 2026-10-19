@@ -914,7 +914,9 @@ def set_toml_key(path, section: str | None, key: str, value) -> str:
 
     Writes through :func:`atomic_write.replace_file`, which keeps the file's
     mode and owner and escalates for root-owned ``/etc/sysforge``. Returns the
-    new text.
+    new text. Raises ``ValueError`` without writing when the rewritten text
+    does not parse (the line-based rewrite can land inside a multi-line array
+    or string, 3.5.0-B105), so callers print the manual edit instead.
     """
     from sysforge.primitives import atomic_write
     path = Path(path)
@@ -923,17 +925,15 @@ def set_toml_key(path, section: str | None, key: str, value) -> str:
     except FileNotFoundError:
         text = ""
     new_text = _rewrite_toml_key(text, section, key, value)
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(
+            f"setting {toml_location(section, key)} would leave {path} invalid ({e}); "
+            "not written") from e
     atomic_write.replace_file(path, new_text, tag="CONFIG")
     _log.info(f"Set {toml_location(section, key)} = {toml_literal(value)} in {path}")
     return new_text
-
-
-def _rewrite_profiles_default_toolchain(text: str, compiler: str) -> str:
-    """Return ``text`` with ``[defaults] toolchain`` set to ``compiler``.
-
-    Thin wrapper over :func:`_rewrite_toml_key`.
-    """
-    return _rewrite_toml_key(text, "defaults", "toolchain", compiler)
 
 
 def _active_profiles_path() -> Path:

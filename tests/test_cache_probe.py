@@ -616,3 +616,28 @@ def test_readiness_sccache_zero_size_env_is_misconfigured(monkeypatch, tmp_path)
     row = _readiness_for("sccache", check_cache_readiness())
     assert row["state"] == "misconfigured"
     assert row["remediation"] is not None
+
+
+# --- 3.5.0-B99: sandboxed builds are not measured -----------------------------
+
+def test_sandboxed_build_is_reported_as_not_measured_and_left_out_of_totals(capsys):
+    reset_session()
+    host = {"direct_hits": 3, "preprocessed_hits": 0, "misses": 1,
+            "files": 10, "size_bytes": 1024}
+    zero = {"direct_hits": 0, "preprocessed_hits": 0, "misses": 0,
+            "files": 10, "size_bytes": 5 * 1024**3}
+    record_build_result("host-pkg", host, None)
+    record_build_result("boxed-pkg", zero, None, sandboxed=True)
+    emit_session_report()
+    err = capsys.readouterr().err
+    assert "boxed-pkg: n/a (sandboxed, host cache not used)" in err
+    assert "boxed-pkg: ccache" not in err
+    assert "ccache total: 3/4" in err
+
+
+def test_all_sandboxed_says_so_rather_than_not_installed(capsys):
+    reset_session()
+    record_build_result("a", None, None, sandboxed=True)
+    emit_session_report()
+    err = capsys.readouterr().err
+    assert "host caches not used" in err and "not installed" not in err

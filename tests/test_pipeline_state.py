@@ -304,3 +304,15 @@ def test_init_package_list_leaves_failed_and_skipped_alone(state):
     p = state.get_package_progress()
     assert p["remaining"] == ["c"]
     assert p["failed"] == ["a"] and p["skipped"] == ["b"]
+
+
+def test_package_added_between_runs_is_queued_on_resume(tmp_path):
+    """The case filed as 3.5.0-B73: a manifest entry added after the first run
+    is in no bucket, so the 3.5.0-B40 requeue puts it in ``remaining``."""
+    from sysforge.primitives.pipeline_state import PipelineState
+    s = PipelineState(tmp_path)
+    s.init_package_list(["a", "b"])
+    s.mark_package_building("a")
+    s.mark_package_built("a")
+    s.init_package_list(["a", "b", "c"])
+    assert s._progress()["remaining"] == ["b", "c"]

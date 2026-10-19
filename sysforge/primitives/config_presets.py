@@ -69,7 +69,6 @@ PRESETS = {
         rows=(
             PresetRow("packages", "build", "confirm_plan", False, True),
             PresetRow("packages", "build", "review", False, True),
-            PresetRow("sysforge", "security", "sandbox_builds", False, False),
             PresetRow("sysforge", "security", "auto_fetch_pgp_keys", True, False),
             PresetRow("toolchain", None, "reuse_unchanged", True, False),
         ),

@@ -231,11 +231,12 @@ def run_stage_standalone(stage, config, options):
                 _checkpoint()
             _log.info(f"{stage.name}: complete")
         success = True
-    except RuntimeError as e:
+    except Exception as e:  # noqa: BLE001 — every stage failure gets the same handling (3.5.0-B70)
+        detail = str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
         if tracks_status:
-            state.mark_failed(stage.name, str(e))
+            state.mark_failed(stage.name, detail)
             _checkpoint()
-        _log.fatal(f"{stage.name}: FAILED; {e}")
+        _log.fatal(f"{stage.name}: FAILED; {detail}")
     finally:
         if unified_log_active:
             log.close_unified_log(success=success, persist=True)
@@ -404,10 +405,15 @@ def run_pipeline(config, options, stages=None):
                 _log.ui("  sysforge run pipeline --resume")
                 sys.exit(0)
 
-            except RuntimeError as e:
-                state.mark_failed(stage.name, str(e))
+            except Exception as e:  # noqa: BLE001 — every stage failure gets the same handling
+                # Not only RuntimeError: a CalledProcessError from a
+                # subprocess.run(check=True) or an OSError from a copy would
+                # otherwise end in a traceback with the stage left `running`
+                # and no --resume guidance (3.5.0-B70).
+                detail = str(e) if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
+                state.mark_failed(stage.name, detail)
                 state.save()
-                _log.error(f"{stage.name}: FAILED; {e}")
+                _log.error(f"{stage.name}: FAILED; {detail}")
                 _log.fatal("State saved. Run with --resume to continue after fixing the issue.")
 
         if not options.dry_run:

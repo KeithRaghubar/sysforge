@@ -117,22 +117,42 @@ def _block_entry(lines: list[str], start: int, end: int) -> dict:
     return pkgs[0] if pkgs else {}
 
 
+# Written when packages.toml does not exist yet, so the first writer leaves a
+# self-documenting file with its [build] section (3.5.0-B48).
+PACKAGES_TOML_HEADER = (
+    "# packages.toml: managed by sysforge packages\n"
+    "\n[build]\n"
+    'pkgbuild_src_dir = "~/src"\n'
+)
+
+
 def rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | None = None) -> None:
     """Apply changes to packages.toml at the line level, preserving comments.
 
     - `append`: text to append (typically a new [[package]] block, with
       its own leading newline).
-    - `drop_name`: if set, remove the [[package]] block whose `name` matches.
+    - `drop_name`: if set, remove the existing [[package]] block whose `name`
+      matches (never the appended one, so drop + append replaces an entry in
+      one write).
     - Always: auto-prune any [[package]] block that contains no
       behavior-changing override field (see OVERRIDE_FIELDS).
+
+    A missing file starts from :data:`PACKAGES_TOML_HEADER`. The result is
+    written once, through ``atomic_write.replace_file`` (atomic; escalates for
+    the root-owned default ``/etc/sysforge``, 3.5.0-B47).
     """
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    from sysforge.primitives import atomic_write
+
+    text = path.read_text(encoding="utf-8") if path.exists() else PACKAGES_TOML_HEADER
     lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] = lines[-1] + "\n"
+    appended_from = len(lines)
 
     if append:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] = lines[-1] + "\n"
-        lines.append(append if append.startswith("\n") else "\n" + append)
+        # Split into lines so the block finder sees the appended header.
+        block = append if append.startswith("\n") else "\n" + append
+        lines.extend(block.splitlines(keepends=True))
         if not lines[-1].endswith("\n"):
             lines[-1] = lines[-1] + "\n"
 
@@ -158,7 +178,9 @@ def rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | None
     for start, end in blocks:
         entry = _block_entry(lines, start, end)
         name = entry.get("name", "")
-        if (drop_name is not None and name == drop_name) or entry_is_inert(entry):
+        dropped_by_name = (drop_name is not None and name == drop_name
+                           and start < appended_from)
+        if dropped_by_name or entry_is_inert(entry):
             drop_ranges.append((start, end))
 
     # Build the kept-line list, also peeling a leading blank-line run before
@@ -179,8 +201,7 @@ def rewrite_packages_toml(path: Path, *, append: str = "", drop_name: str | None
     if keep_lines:
         keep_lines.append("\n") if not keep_lines[-1].endswith("\n") else None
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(keep_lines), encoding="utf-8")
+    atomic_write.replace_file(path, "".join(keep_lines), tag="PACKAGES")
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +257,12 @@ def forget_packages(state_dir, pkgnames: list[str], *,
                 forgotten.append(pn)
 
     if forgotten:
-        bs.save()
+        # Opt-out first: it is idempotent, so a failure or Ctrl-C between the
+        # two writes leaves the package still tracked (retry the command)
+        # rather than forgotten but adoptable by the next update (3.5.0-B57).
         if opt_out:
             _record_opt_out(state_dir, {pn: all_pkgs[pn] for pn in forgotten}, opt_out)
+        bs.save()
     return forgotten, missing
 
 
@@ -276,8 +300,8 @@ def profile_store_names(state_dir, pkgnames) -> list[str]:
     names: list[str] = []
     for name in pkgnames:
         entry = bs.get(name) or {}
-        names += [name, entry.get("pkgbase"), entry.get("origin_pkgbase")]
-    return [n for n in dict.fromkeys(names) if n]
+        names += [n for n in (name, entry.get("pkgbase"), entry.get("origin_pkgbase")) if n]
+    return list(dict.fromkeys(names))
 
 
 def emit_orphaned_profiles(names, emit) -> None:

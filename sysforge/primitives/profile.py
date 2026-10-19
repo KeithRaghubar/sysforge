@@ -30,7 +30,6 @@ Public API:
     get_build_mode(matched_rules, config)                    -> str | None
     is_optimized_build_mode(build_mode)                      -> bool
     is_llvm_toolchain(toolchain)                             -> bool
-    requires_llvm_toolchain(toolchain, *, feature)           -> None
 """
 import fnmatch
 import pprint
@@ -415,20 +414,47 @@ def apply_preserved_system_tokens(values, system_assignments,
         return merged, {}
 
     restored_by_key: dict[str, list[str]] = {}
-    for key, tokens in preserved_system_tokens.items():
+    # Plain values first, so a pure reference (``CXXFLAGS = "$CFLAGS"``) is
+    # measured against the merged value it expands to.
+    refs = {key: _pure_shell_ref(merged.get(key)) for key in preserved_system_tokens}
+    for key in sorted(preserved_system_tokens, key=lambda k: refs[k] is not None):
+        tokens = preserved_system_tokens[key]
         if key not in merged or key not in system_assignments:
             continue
         if not isinstance(merged[key], str):
             continue
-        new_val, restored = merge_preserved_tokens(
-            merged[key], unquote_conf_value(system_assignments[key]), tokens,
-            conflict_groups=conflict_groups,
-        )
+        system_val = unquote_conf_value(system_assignments[key])
+        ref = refs[key]
+        if ref is not None:
+            # The reference brings the referenced key's tokens; only what this
+            # key's own system value adds beyond them (Arch's CXXFLAGS adds
+            # -Wp,-D_GLIBCXX_ASSERTIONS to $CFLAGS) is restored, appended to
+            # the reference (3.5.0-B100).
+            base = merged.get(ref)
+            if not isinstance(base, str):
+                base = unquote_conf_value(system_assignments.get(ref, ""))
+            _expanded, restored = merge_preserved_tokens(
+                base, system_val, tokens, conflict_groups=conflict_groups)
+            new_val = f"{merged[key]} {' '.join(restored)}" if restored else merged[key]
+        else:
+            new_val, restored = merge_preserved_tokens(
+                merged[key], system_val, tokens, conflict_groups=conflict_groups,
+            )
         if restored:
             merged[key] = new_val
             restored_by_key[key] = restored
     return merged, restored_by_key
 
+
+_SHELL_REF_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+
+
+def _pure_shell_ref(value) -> str | None:
+    """The key a value that is only ``$KEY`` / ``${KEY}`` names, else None."""
+    if not isinstance(value, str):
+        return None
+    m = _SHELL_REF_RE.fullmatch(value.strip())
+    return m.group(1) if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -1059,13 +1085,3 @@ def is_llvm_toolchain(toolchain: str | None) -> bool:
     return name == "llvm" or name.startswith("clang")
 
 
-def requires_llvm_toolchain(toolchain: str | None, *, feature: str) -> None:
-    """Raise ``ValueError`` (a clean ``pre_check`` abort) unless LLVM is active.
-
-    The single home for the "optimization needs LLVM" gate: optimization verbs
-    call this from ``pre_check`` so the abort lands before any build work, with
-    the authoritative ``LLVM_REQUIRED_HINT`` wording. ``feature`` names the thing
-    being refused (e.g. ``"kernel AutoFDO"``) for the leading sentence.
-    """
-    if not is_llvm_toolchain(toolchain):
-        raise ValueError(f"{feature} requires the LLVM toolchain. {LLVM_REQUIRED_HINT}")

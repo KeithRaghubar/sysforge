@@ -26,7 +26,6 @@ Public API:
     read_pkg_replaces_from_file(path) → set
     pkg_supersedes_installed(path, installed) → set
     filter_pkgs_to_installed(paths, installed) → (keep, dropped)
-    collect_makedeps(pkgbuild_paths) → list
     collect_builddeps(pkgbuild_paths) → list
     filter_missing_deps(deps)       → list
     batch_install_makedeps(deps)    → None
@@ -543,7 +542,7 @@ _BREAKS_DEP_RE = re.compile(
 )
 
 
-def deps_broken_by_install(pkg_paths: list) -> dict:
+def deps_broken_by_install(pkg_paths: list, *, answers: "list[str] | tuple" = ()) -> dict:
     """Dry-run the install; report whose dependencies it would break.
 
     Returns ``{installed-pkgname: {dep-spec, ...}}`` — empty when the
@@ -560,9 +559,14 @@ def deps_broken_by_install(pkg_paths: list) -> dict:
     Any unexpected failure returns ``{}`` — "no *known* breakage". The caller
     treats that as "do not relax dependency checking", so a probe that cannot
     speak never widens what the real transaction is allowed to do.
+
+    ``answers`` are the prompt answers the real install passes (``--ask=4``
+    for a drop-in replacement): without them the probe stops at the conflict
+    the install would auto-confirm and never reaches the dependency check
+    (3.5.0-B90).
     """
     result = run.probe(
-        ["pacman", "-U", "--print"] + [str(p) for p in pkg_paths],
+        ["pacman", "-U", "--print", *answers] + [str(p) for p in pkg_paths],
         stderr=subprocess.PIPE,
         stdout=subprocess.PIPE,
     )
@@ -669,7 +673,8 @@ def batch_install_pkgs(
             )
             argv.append("--ask=4")
     if allow_break_deps:
-        broken = deps_broken_by_install(pkg_paths)
+        broken = deps_broken_by_install(
+            pkg_paths, answers=[a for a in argv if a.startswith("--ask=")])
         if broken and set(broken).issubset(set(allow_break_deps)):
             _log.info(
                 "Relaxing dependency checks (--nodeps): this install breaks the "
@@ -773,6 +778,10 @@ def run_logged_transaction(argv: list[str]) -> tuple[int, list[str]]:
 # them, so every one must already be present or the build aborts (exit 8).
 _BUILD_DEP_KEYS = ("depends", "makedepends", "checkdepends")
 
+# PKGBUILD(5) pkgname grammar: alphanumerics and @._+-, not starting with a
+# hyphen or a dot.
+_PKGNAME_RE = re.compile(r"[A-Za-z0-9@_+][A-Za-z0-9@._+-]*")
+
 
 def _collect_dep_names(pkgbuild_paths: list, keys, *, strict: bool = False) -> list:
     """Parse PKGBUILDs and return a sorted unique list of names from ``keys``.
@@ -798,17 +807,20 @@ def _collect_dep_names(pkgbuild_paths: list, keys, *, strict: bool = False) -> l
                 for dep in raw:
                     if _looks_unresolved(dep):
                         continue
-                    deps.add(_strip_version(dep))
+                    name = _strip_version(dep)
+                    if not _PKGNAME_RE.fullmatch(name):
+                        # A name pacman's grammar rejects (a leading `-` would
+                        # parse as an option to a root pacman) never reaches
+                        # a transaction (3.5.0-B53).
+                        _log.warn(f"{Path(path).parent.name}: ignoring invalid "
+                                  f"dependency name {name!r}")
+                        continue
+                    deps.add(name)
         except (OSError, KeyError, ValueError) as e:
             if strict:
                 raise
             _log.warn(f"deps parse error ({Path(path).parent.name}): {e}")
     return sorted(deps)
-
-
-def collect_makedeps(pkgbuild_paths: list) -> list:
-    """Parse PKGBUILDs and return a sorted unique list of their makedepends."""
-    return _collect_dep_names(pkgbuild_paths, ("makedepends",))
 
 
 def collect_builddeps(pkgbuild_paths: list, *, strict: bool = False) -> list:
@@ -835,7 +847,7 @@ def filter_missing_deps(deps: list) -> list:
             ]
         except _alpm().error:
             pass
-    result = run.probe(["pacman", "-T"] + deps)
+    result = run.probe(["pacman", "-T", "--", *deps])
     # pacman -T exits 0 if all satisfied, 127 if any are missing.
     # The missing deps are printed to stdout.
     return result.stdout.split()
@@ -845,7 +857,7 @@ def batch_install_makedeps(deps: list) -> None:
     _log.info(f"Batch-installing {len(deps)} missing makedep(s): {deps}")
     ensure_credentials()
     result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + deps,
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm", "--", *deps]),
         preexec_fn=lift_for_child,
     )
     if result.returncode != 0:
@@ -861,7 +873,7 @@ def install_repo_pkgs(names: list) -> None:
     _log.info(f"Installing {len(names)} repo package(s): {names}")
     ensure_credentials()
     result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-S", "--needed", "--noconfirm"]) + list(names),
+        privileged_argv(["pacman", "-S", "--needed", "--noconfirm", "--", *names]),
         preexec_fn=lift_for_child,
     )
     if result.returncode != 0:
@@ -1254,7 +1266,6 @@ def get_sync_pkgbase(pkgname: str) -> str | None:
         if name == pkgname and base:
             return base
     return None
-
 
 
 def is_installed_repo_pkgbase(pkgbase: str) -> bool:

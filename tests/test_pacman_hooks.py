@@ -44,7 +44,6 @@ def test_shipped_sources_from_repo_checkout():
 def test_diff_status_all_missing(fake_dest):
     rows = pacman_hooks.diff_status()
     assert {state for _, state in rows} == {pacman_hooks.STATE_MISSING}
-    assert pacman_hooks.needs_provision(rows)
 
 
 def test_diff_status_ok_and_stale(fake_dest):
@@ -81,7 +80,7 @@ def test_provision_writes_missing_and_stale(fake_dest, monkeypatch):
     written = pacman_hooks.provision()
     assert len(written) == len(pacman_hooks.shipped_sources())
     # After provisioning everything matches → no drift.
-    assert not pacman_hooks.needs_provision()
+    assert {state for _, state in pacman_hooks.diff_status()} == {pacman_hooks.STATE_OK}
     # Helper landed executable.
     helper = next(a for a in pacman_hooks.shipped_sources()
                   if a.name == pacman_hooks.HELPER_NAME)

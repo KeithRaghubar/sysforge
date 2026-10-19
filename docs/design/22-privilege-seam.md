@@ -130,7 +130,9 @@ Two entry points:
   the sudoers default `timestamp_timeout` of 5 minutes) for the duration of the
   block, and always stops and joins it on exit including on exception.
   `enabled=False` makes the whole thing a no-op so a dry-run keeps one code path
-  at the call site.
+  at the call site. The refresh is `sudo -v -n` with stdin from `/dev/null`: it
+  never prompts, so an expired credential warns instead of putting a password
+  prompt under the progress bar and hanging the exit join on it (`3.5.0-B55`).
 
 Why it exists: a stage that builds for hours and then installs with
 `sudo pacman -U` from the same process authenticates at stage entry and finds its
@@ -155,10 +157,12 @@ runs. The daemon began life private to
 the toolchain stage; a second copy in the kernel stage is exactly the drift the
 one-home invariants exist to prevent.
 
-**Callers must `authenticate()` before entering `keepalive()`.** The refresh
-inherits stdio, so with no cached timestamp it would prompt from a background
-thread, interleaving with build output. Authenticating first also puts the one
-unavoidable prompt at stage entry, while the operator is still present.
+**Callers must `authenticate()` before entering `keepalive()`, and stop when it
+returns `False`.** The refresh cannot prompt, so with no cached timestamp it
+would only warn every minute while a build runs that can never install.
+Authenticating first also puts the one unavoidable prompt at stage entry, while
+the operator is still present. The kernel stage, the PGO sequence and `--bolt-only`
+each raise before building on a refused or timed-out prompt (`3.5.0-B55`).
 
 The kernel and toolchain stages additionally probe *before* entering
 `sentinel_scope`. By the sentinel contract any exception inside the scope leaves

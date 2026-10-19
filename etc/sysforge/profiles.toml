@@ -265,6 +265,11 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--cleanbuild"]
 #   PAM/NSS module built with it from loading. Chosen by
 #   `sysforge setup --preset secure`. Kernel builds never use profile flags;
 #   see kernel.toml `hardening`.
+#   Legacy C caveat: with -fstrict-flex-arrays=3 and the preserved
+#   -D_FORTIFY_SOURCE=3, fortified string functions treat an old-style [0] or
+#   [1] trailing array as its declared size, so code that writes past one
+#   aborts at run time. Opt such a package out with a [[rules]] entry naming a
+#   profile without the flag (for example profile = "standard").
 [profiles.hardened]
 extends  = "standard"
 CFLAGS   = "-march=native -O2 -pipe -ftrivial-auto-var-init=zero -fstrict-flex-arrays=3"
@@ -382,6 +387,7 @@ CXXFLAGS = [
   "-fstack-protector-strong",
   "-fstack-clash-protection",
   "-fcf-protection",
+  "-Wp,-D_GLIBCXX_ASSERTIONS",   # libstdc++ bounds/precondition checks; C++ only
 ]
 
 # =============================================================================

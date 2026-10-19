@@ -615,9 +615,16 @@ def test_run_update_sync_honors_source(tmp_path, monkeypatch, opt_source, expect
 # _invoke_with_retry — sudo timeout recovery
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_host_pkgdest(monkeypatch):
+    """The recovery's artifact lookup reads PKGDEST; never the host's."""
+    from sysforge.primitives import pacman
+    monkeypatch.setattr(pacman, "get_pkgdest", lambda: None)
+
+
 def _make_pkgbuild(tmp_path):
     pkgbuild = tmp_path / "PKGBUILD"
-    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    pkgbuild.write_text("pkgname=foo\npkgver=1.0\npkgrel=1\n")
     return pkgbuild
 
 
@@ -732,6 +739,62 @@ def test_invoke_retry_batch_mode_ignores_packages(tmp_path):
         pytest.raises(RuntimeError, match="build_failed"),
     ):
         _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {"batch": True})
+
+
+def test_invoke_retry_offers_only_this_builds_version(tmp_path):
+    """3.5.0-B61: an older version left in the dir is not installed."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    current = tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst"
+    current.touch()
+    (tmp_path / "foo-0.9-1-x86_64.pkg.tar.zst").touch()
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    calls = []
+    with (
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.ensure_credentials"),
+        patch("sysforge.primitives.makepkg_invoke.subprocess.run",
+              side_effect=lambda argv, **k: calls.append(argv) or MagicMock(returncode=0)),
+        patch("builtins.input", return_value="s"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
+    assert [a for a in calls[0] if a.endswith(".pkg.tar.zst")] == [str(current)]
+
+
+def test_invoke_retry_finds_this_builds_artifact_in_pkgdest(tmp_path, monkeypatch):
+    """3.5.0-B61: with PKGDEST set, the build dir glob found nothing."""
+    from sysforge.primitives import pacman
+    pkgdest = tmp_path / "pkgdest"
+    pkgdest.mkdir()
+    art = pkgdest / "foo-1.0-1-x86_64.pkg.tar.zst"
+    art.touch()
+    monkeypatch.setattr(pacman, "get_pkgdest", lambda: pkgdest)
+    pkgbuild = _make_pkgbuild(tmp_path)
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    calls = []
+    with (
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", side_effect=fail),
+        patch("sysforge.primitives.makepkg_invoke.ensure_credentials"),
+        patch("sysforge.primitives.makepkg_invoke.subprocess.run",
+              side_effect=lambda argv, **k: calls.append(argv) or MagicMock(returncode=0)),
+        patch("builtins.input", return_value="s"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
+    assert str(art) in calls[0]
+
+
+def test_invoke_retry_stripped_install_flag_offers_no_install(tmp_path):
+    """3.5.0-B61: makepkg never ran --install when it was stripped."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    (tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst").touch()
+    fail = subprocess.CalledProcessError(1, "makepkg")
+    invoke = MagicMock(side_effect=[fail, None])
+    with (
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg", invoke),
+        patch("builtins.input", return_value="") as mock_input,
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"],
+                           strip_flags=frozenset({"--install", "-i"}))
+    assert "re-auth and install" not in mock_input.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------

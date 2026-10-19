@@ -179,16 +179,6 @@ def _stage_verb(owner_stage: str) -> str:
     return f"run {owner_stage}"
 
 
-def _arrow() -> str:
-    """Back-compat alias for :func:`sysforge.primitives.render.arrow` (2.6.1-F9).
-
-    The glyph gate now lives in the shared renderer alongside the version-pair
-    and gutter helpers; this name is kept because it is part of this module's
-    established test surface.
-    """
-    return render.arrow()
-
-
 @dataclass
 class ResultSummary:
     built_pkgs: list[str] = field(default_factory=list)

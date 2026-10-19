@@ -152,7 +152,6 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
-
 - **`3.4.0-B14` — `update --explain-drift` no longer syncs sources before it reports.** Its help promised an informational report with no source sync, but the report ran only after `update`'s normal source sync, so a plain `sysforge update --explain-drift` cloned and fetched every package in scope first, and only `--offline` avoided that. `--explain-drift` now implies `--offline`: both drift checks compare your local PKGBUILDs, config and toolchain against what `build_state.toml` recorded, so the report needs nothing from the network and makes no network request at all. The drift guide no longer tells you to add `--offline`.
 
 ---
@@ -365,11 +364,234 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B46` — other commands no longer erase the record of an interrupted install.** sysforge offered to recover an interrupted install only before `build`, `update`, `run` and `setup`. Other commands that change the system, such as `uninstall`, `revert-to-stock`, `state repair` and the artifact commands, replaced the record with their own and deleted it when they finished. After an interrupted toolchain install, `sysforge uninstall foo` erased the only sign that the toolchain was half-installed, and the next `update` went ahead without offering recovery. Those commands now offer the same recovery first, and refuse to start, leaving the record in place, if you decline or it fails.
 
-## Security
+---
 
+- **`3.5.0-B47` — `packages.toml` and `pacman.conf` are replaced atomically.** `packages add`, `packages remove`, `packages add-group`, the configure and reconfigure desktop steps, reconfigure's build-mode step and `setup`'s `IgnoreGroup` write all rewrote the file in place, so a crash or a full disk part way through could leave it empty, and an empty `pacman.conf` breaks pacman for the whole system. On the default layout, where `/etc/sysforge` belongs to root, `packages add`, `remove` and `add-group` stopped with a `PermissionError` traceback, and reconfigure's build-mode step failed with a warning shown only at `-v`. They now write a temporary copy next to the file and rename it into place, keeping the file's owner and mode and asking for sudo when the file is root's. `packages add` replacing an existing entry now writes the file once instead of twice.
+
+---
+
+- **`3.5.0-B48` — the first `build` opt-in creates a complete `packages.toml`.** When `packages.toml` did not exist, answering yes to `build`'s offer to build a repo package from source wrote a file holding only that package's entry, without the header comment and the `[build]` section with `pkgbuild_src_dir`. It now starts the file with both, as `packages add` does.
+
+---
+
+- **`3.5.0-B49` — the toolchain build without PGO always builds.** With `pgo = false` and `repo_mode = "build_from_source"`, `run toolchain` ran makepkg without `--force`, so a package of the same version already in PKGDEST, left by an earlier PGO run or a build with different `[llvm] targets`, made makepkg skip the build and sysforge installed that leftover package as the new build. The single-pass build now passes `--force`, as the PGO passes do.
+
+---
+
+- **`3.5.0-B50` — the kernel's boot check finds the disk under an encrypted, LVM or RAID root.** Before installing a custom kernel, sysforge checks that its config keeps the driver for the disk your root filesystem is on. It read the storage stack from `lsblk`, which prefixes every parent row with tree characters (`└─nvme0n1`), so when root sat on LUKS, LVM or RAID the disk row was never recognised and no driver was required. A config without NVMe support could then pass the check on a machine whose encrypted root is on an NVMe drive. sysforge now reads `lsblk`'s plain output and finds the disk through any of these layers.
+
+---
+
+- **`3.5.0-B51` — `update` exits non-zero when its only package was refused a `--cleansrc` purge.** When `--cleansrc` refused to delete a checkout holding your changes and that was the only package to rebuild, `update` printed "Nothing to rebuild." and exited 0, so a script saw success. The run now lists the refusal and exits 1, as it already did when other packages were rebuilt alongside.
+
+---
+
+- **`3.5.0-B52` — removing every kernel config entry removes them from the build.** When the kernel stage had no entries to merge (no `[[kconfig]]`, no hardening set, no hardware or device entries), it left the previous run's `sysforge.config` fragment in place, and the kernel's `prepare()` still merged it. Options you had removed kept applying, and because the stage thought there was no fragment, the checks that read it, such as the guard against forcing module signatures with DKMS modules installed, were skipped. The old fragment is now deleted, as it already was with `kconfig_merge = false`.
+
+---
+
+- **`3.5.0-B55` — a declined sudo prompt stops the kernel and toolchain builds before they start.** The kernel stage, the PGO toolchain build and `run toolchain --bolt-only` asked for your sudo password up front but carried on when it was refused or timed out. A background thread then retried `sudo -v` every minute, which could put a password prompt under the progress bar and make the stage hang at the end until it was answered. These now stop at once, with nothing built, when sudo is not authorized, and the background refresh never asks for a password: if the credential expires, it warns instead.
+
+---
+
+- **`3.5.0-B56` — `update --devel` rebuilds a VCS package whose last build was never installed.** For `-git` and other VCS packages, `update --devel` skips the version check when the upstream commit matches the one recorded at the last build. That commit was recorded when the build finished, before the install, so a build whose install never happened (a sudo timeout, an abort, a crash) made the package look current while the old version stayed installed, indefinitely. The same shortcut also missed a `pkgrel` or `epoch` bump that came with no new upstream commit, such as a rebuild for a library change. The shortcut now applies only when the recorded build is the installed one and the PKGBUILD's `pkgrel` and `epoch` match it.
+
+---
+
+- **`3.5.0-B57` — an interrupted `revert-to-stock` or `state forget` cannot be undone by the next update.** Both commands removed the package's build record first and wrote the "do not re-adopt" record second. If the second write failed or was interrupted, the package was forgotten but not opted out, so the next `update` could take it back and rebuild it from source. The opt-out is now written first; if it fails, the package stays tracked and you can run the command again.
+
+---
+
+- **`3.5.0-B58` — the toolchain's post-install check uses the new libLLVM and runs a real compile.** After installing a toolchain, sysforge checks that installed programs linked against libLLVM still find what they need. It checked against the alphabetically first `libLLVM.so.*`, which, with a compat package such as `llvm21-libs` installed, is the old library, so a missing backend that should have triggered a rollback could pass. It now checks the newest one. The check also ran only `clang --version` and `ld.lld --version`, which return before most of the compiler is loaded; it now also compiles and links a small program with clang and lld, as the check before the build does.
+
+---
+
+- **`3.5.0-B60` — reusing an already-built renamed package installs the right files.** When makepkg found a package of the same version already built and skipped the build, sysforge looked for it under its stock name. For a build renamed to `<name>-sysforge` (a `--pgo=use` build, a renamed kernel), a leftover stock build of the same version was installed instead, or the package failed with "no matching .pkg.tar" although the right files were there. sysforge now uses the list of files the build itself recorded, and never falls back to a stock-named leftover for a renamed build.
+
+---
+
+- **`3.5.0-B61` — the "build succeeded but install failed" recovery offers only this build's packages.** After a failed build, sysforge could offer to install the packages it found in the PKGBUILD's directory with `pacman -U`, which included any older version left there (a downgrade) and unrelated split members, while with makepkg's `PKGDEST` set (the usual setup) it found nothing. It now offers only the packages of the version being built, from wherever makepkg puts them, and only when makepkg actually ran with `--install`.
+
+---
+
+- **`3.5.0-B62` — `revert-to-stock` on one member of a split package reverts that member.** `sysforge revert-to-stock vulkan-radeon` reinstalled `mesa`, the package's base, leaving the source-built `vulkan-radeon` installed and no longer tracked. A renamed split set with only one member installed was replaced by the base's stock package instead of that member's, and a member's stock name did not find its `-sysforge` build at all. Reverting a member now reinstalls that member; naming the base reverts every installed member; and `vulkan-radeon` finds `vulkan-radeon-sysforge`.
+
+---
+
+- **`3.5.0-B63` — packages owned by `run kernel` or `run toolchain` stop drifting after an `update --include-stage-owned` rebuild.** `update` rebuilt such a package as an ordinary one, recording a different build setup from the one the owning stage uses, so every later drift check reported it changed and `--rebuild-on-flag-drift` rebuilt it on every run. The rebuild now runs and is recorded as the owning stage's build.
+
+---
+
+- **`3.5.0-B65` — `--cleansrc` no longer deletes a checkout it cannot download again.** `update --offline --cleansrc` deleted every clean checkout and then skipped the packages because it was offline, and under a source freeze `--cleansrc` deleted a checkout before the freeze refused to clone it again, leaving the package unbuildable either way. `--cleansrc` now keeps the checkout when it is offline or the freeze would refuse the new clone, and says why.
+
+---
+
+- **`3.5.0-B66` — turning the AUR off also covers checkouts labelled `git`.** With `[aur] enabled = false`, sysforge skipped AUR checkouts labelled `source = "aur"` but still fetched from aur.archlinux.org for ones labelled `source = "git"`, which sysforge treats the same way. It now decides from where the checkout's `origin` points, whatever the label, so no AUR checkout is fetched while the AUR is off.
+
+---
+
+- **`3.5.0-B68` — injected cmake options stay on the cmake command.** sysforge adds options such as `-DLLVM_TARGETS_TO_BUILD` to a PKGBUILD's cmake call by appending them after the call. When that line ended in a comment, the added option landed inside the comment, so the build ran without it or ran it as a separate command; in `cmake .. && ninja` it went to ninja. The option is now inserted before a trailing comment or a following command, and the check that runs after patching refuses a PKGBUILD where an added option is not part of the cmake call.
+
+---
+
+- **`3.5.0-B69` — the automatic reset of a diverged checkout keeps patches you applied.** When a package's upstream rewrote its history, sysforge resets a checkout that holds no work of yours, and it judged that by each extra commit's author. A fix you applied with `git am` or cherry-picked from an AUR comment keeps its original author, so it counted as upstream's and was reset away, recoverable only from git's reflog. A commit you made yourself now counts as your work whoever wrote it, and blocks the reset.
+
+---
+
+- **`3.5.0-B70` — every kind of stage failure is recorded and offers `--resume`.** The pipeline handled only some errors at a stage boundary. A failed command in the configure stage, or a failed file copy or removal, ended in a Python traceback with the stage still marked as running and no hint on how to continue. Any error in a stage now marks it failed, names the error and prints the `--resume` hint.
+
+---
+
+- **`3.5.0-B74` — `run toolchain --dry-run` takes no lock and leaves no install record.** A dry run wrote the interrupted-install record and took its lock as if it were about to install, so it refused to start while a real run was installing, and an interrupted dry run left a record that made the next run offer a recovery for an install that never began. A dry run now does neither.
+
+---
+
+- **`3.5.0-B75` — the toolchain's repo installs check sudo before recording an install.** Installing the stock LLVM packages (`pgo = false` with `repo_mode = "pacman"`) and installing a missing bootstrap `clang` or `lld` both recorded an interrupted install before asking for the sudo password. A declined or timed-out password then left a record whose recovery offered to replace the toolchain although nothing had been installed. Both now stop before recording anything when sudo is not authorized, as the from-source install already did.
+
+---
+
+- **`3.5.0-B76` — a failed toolchain check can roll back when the build adds a package.** Before installing a toolchain, sysforge notes the cached package files of what is installed, so it can put the old toolchain back if the post-install check fails. A package the build added for the first time, such as a new subpackage or `lib32` member, had no cached file because it was never installed, and that made sysforge refuse the whole rollback and leave the install record for manual recovery. It now notes only packages that were installed before the run.
+
+---
+
+- **`3.5.0-B78` — a renamed `-git` package keeps updating.** A `-git` package built with an optimization that renames it to `<name>-git-sysforge` was no longer recognised as a VCS package, so `update --devel` compared the PKGBUILD's placeholder version with the installed one, reported a downgrade and never rebuilt it. The `-sysforge` suffix is now ignored when deciding whether a package is VCS.
+
+---
+
+- **`3.5.0-B79` — a new kernel profiling round discards the previous round's profile.** `run kernel --autofdo=record` builds a new profiling kernel, but kept the profile captured from the previous one: in round 2 a `--autofdo=use --propeller` without a fresh capture then applied a Propeller profile recorded on another binary, and in round 1 an old `kernel.afdo` hid the warning that the profile came from a different kernel version. `record` now deletes the stale profile first, so `use` refuses until you capture again.
+
+---
+
+- **`3.5.0-B80` — numeric `[[kconfig]]` values apply.** A `kernel.toml` entry such as `CONFIG_NR_CPUS` with value `64` was written to the config fragment as `CONFIG_NR_CPUS="64"`, which the kernel's config tool rejects for number options, so the entry was silently dropped and only a drift warning mentioned it. Decimal and `0x` hexadecimal values are now written without quotes; other strings stay quoted.
+
+---
+
+- **`3.5.0-B82` — `sysforge fetch` names packages by their PKGBUILD and reports refusals.** `fetch` identified each package by its checkout's directory name, so a checkout in a renamed directory did not match `--thaw <pkg>` and was not recognised as a VCS package. It also exited 0 when the source freeze refused a fetch or `--cleansrc` refused to delete a checkout. It now uses the PKGBUILD's package base and exits 1 when a fetch is refused or fails.
+
+---
+
+- **`3.5.0-B83` — sysforge waits when the AUR asks it to slow down.** When the AUR's lookup service answered "too many requests", sysforge treated it as an ordinary failure and went straight on to fetch every package's checkout from the same server. A `Retry-After` from the lookup now pauses the fetches that follow too, as one from a fetch already did.
+
+---
+
+- **`3.5.0-B84` — `update --devel`'s shortcut works with makepkg's `BUILDDIR` set.** After a VCS build, sysforge records the upstream commit it built so the next `update --devel` can skip a full version check when nothing changed upstream. It looked for the source tree in the PKGBUILD's directory, but with `BUILDDIR` set (as in many setups) makepkg builds under `$BUILDDIR/<pkgbase>`, so no commit was ever recorded and every `--devel` run did the full check. It now looks where makepkg built.
+
+---
+
+- **`3.5.0-B85` — two packages from one split AUR package build once.** When a build needed two members of the same AUR package (for example `foo-git` and `foo-libs-git`), sysforge built the package for the first, then tried again for the second, found it already built and installed it a second time. Dependencies that share a PKGBUILD are now built and installed once.
+
+---
+
+- **`3.5.0-B86` — the missing PGP key repair offers the right key.** When a source signature could not be checked because its key was missing, sysforge offered to fetch a key, but took the first long hex string after the error message, which could be a commit or checksum from a later line. It now reads the key ID from makepkg's `FAILED (unknown public key …)` line, or from gpg's `using … key …` line, which name the key that signed the file. As before, nothing is imported without your consent.
+
+---
+
+- **`3.5.0-B87` — run logs keep lines written by background threads.** The sudo refresh and the PGO profile merge log from their own threads. A line written while the log was being closed could be lost, or land between the clearing of a successful run's log and its "log cleared" marker, and two lines could race the date marker added at midnight. Writes to the log files are now made one at a time.
+
+---
+
+- **`3.5.0-B89` — two flag clean-ups also apply to flags from your system `makepkg.conf`.** A PGO build removes `-flto` from the compiler flags, and a build linked with something other than lld removes lld-only options such as `--icf=`. Both looked only at flags your profile set, so an `-flto` or `--icf=` coming from `/etc/makepkg.conf` alone reached the build. Both now act on the flags the build actually gets, wherever they come from.
+
+---
+
+- **`3.5.0-B90` — a replacement package held by an exact-version sibling installs during a batch.** When one package in a batch replaces an installed one and another member pins it to an exact version, sysforge checks in advance whether the install may skip version checks for that pin. The check ran without the answer the real install gives to the replacement question, so it stopped at that question, found no pin, and the install then failed on it. The check now answers as the install does.
+
+---
+
+- **`3.5.0-B91` — the progress bar's build percentage restarts with each build.** The bar shows a ninja build's progress as a percentage and forgets the old totals when the step or item changes. A second build within one step, such as the repackaging in `run toolchain --bolt-only`, was measured against the larger total of the build before it and showed far too low a percentage. The totals now reset whenever a build starts.
+
+---
+
+- **`3.5.0-B92` — a declined artifact on an unmounted drive stays declined.** `sysforge artifact review` remembers the files you chose to ignore, and forgets one once the file is gone, so a recreated file is offered again. A file on a drive that was simply not mounted looked gone too, so its decline was dropped and the file was offered again once the drive returned. A missing file now keeps its decline unless its directory is there with other files in it.
+
+---
+
+- **`3.5.0-B93` — a failed revert of a renamed kernel leaves a recovery for the next run.** Reverting an AutoFDO or Propeller kernel removes the renamed package and then installs the stock one. If that install failed, sysforge printed the command to recover with but finished as if nothing were wrong, so the next run did not offer to recover, with the kernel package removed. It now stops with an error and keeps the interrupted-run record, so the next run offers to reinstall the stock package.
+
+---
+
+- **`3.5.0-B94` — unused internal helpers removed.** Twelve functions that nothing in sysforge called, and an unused shallow-clone option of the AUR clone that contradicted its full-history rule, were removed. Nothing you run changes. The AUR lookup's rate-limit helper, listed among them, is now used instead (`3.5.0-B83`).
+
+---
+
+- **`3.5.0-B95` — type-checking clean-ups.** Context managers carry the current return annotation, and checks the types show can never fire were removed, except two whose values can differ from their declared type at run time, which are kept and documented. Nothing you run changes.
+
+---
+
+- **`3.5.0-B97` — `update --dry-run` and the update reports no longer change the build record.** `--dry-run`, `--explain-drift` and `--versions` saved `build_state.toml`: they added a record for every newly installed package and moved packages you had reinstalled from the repos back to repo tracking, and they cleared the record of those reinstalls that the next real run needs. They now work out the same changes for their output without saving anything.
+
+---
+
+- **`3.5.0-B98` — the toolchain only promises a rebuild it will run.** After installing a toolchain, a C++ library mismatch in a program that uses libLLVM was reported as "healable by the queued consumer rebuild" even with `rebuild_soname_consumers = off` or the rebuild declined, when nothing was queued. The message now says no rebuild is queued and to rebuild the program with `sysforge build <pkg>`.
+
+---
+
+- **`3.5.0-B99` — `--cache-report` no longer shows `0/0 hits` for sandboxed builds.** A build in the build sandbox never uses your ccache or sccache, but the report measured the host's caches around it anyway and printed `ccache 0/0 hits (n/a) cache=5.0 GiB` for every package, which read as a cache that went unused. A sandboxed build is now listed as `n/a (sandboxed, host cache not used)` and left out of the totals. The `--cache-report` help says so.
+
+---
+
+- **`3.5.0-B101` — `setup`'s preset shows the profile you have now.** The `key: old → new` lines read only your own `profiles.toml`. With `extends_system = true`, a key your file leaves unset showed the shipped default instead of the system file's value, and a config with no `[defaults] profile` anywhere showed `"standard"` when builds actually use `bare`. The lines now show the merged value that builds use.
+
+---
+
+- **`3.5.0-B102` — the `secure` preset's paste-in note names the file it checked.** When the profiles your builds read have no `[profiles.hardened]`, `setup --preset secure` printed a block to paste and said your own `profiles.toml` was hiding the system one, also when there was no such file and the system `profiles.toml` was simply older than the profile (an upgrade saved as `.pacnew`). The note now says that the file your builds read does not define the profile, and gives its path.
+
+---
+
+- **`3.5.0-B103` — the `low-friction` preset no longer turns off the build sandbox.** `setup --preset low-friction` set `[security] sandbox_builds = false`, although the sandbox asks no questions and the preset's description, the README and its release note mentioned only plan confirmation and source review. The preset now leaves the sandbox as it is. If you applied it and want the sandbox back, run `sysforge setup` and answer yes to building in a clean chroot.
+
+---
+
+- **`3.5.0-B104` — `setup`'s preset step no longer crashes on an unexpected value.** A section written as a plain value (`build = "x"`) or a key holding a number or a list stopped `sysforge setup` with a traceback. Such a section now counts as unset, and an unusual value is shown as it is.
+
+---
+
+- **`3.5.0-B105` — sysforge never writes a config file it cannot read back.** `setup` and the toolchain stage change single keys in your config files line by line, and a top-level key could be placed inside a multi-line array or string, leaving a file that no longer parsed. The new text is now checked before it is written; if it would not parse, the file is left alone and `setup` prints the line to add by hand. None of the shipped files trigger this.
+
+---
+
+- **`3.5.0-B106` — `setup --preset` works without `/etc/pacman.conf` and reports a broken config.** Without a `pacman.conf`, `setup` printed "nothing to configure" and stopped, silently ignoring an explicit `--preset`. It now skips only the `IgnoreGroup` step and carries on with the hooks, the preset and the preferences. A config that fails to load, such as a missing `profiles.toml`, now prints one line naming the problem instead of a traceback.
+
+---
+
+- **`3.5.0-B107` — the `hardened` profile warns about old C code.** The comment above `[profiles.hardened]` in the shipped `profiles.toml` now explains that `-fstrict-flex-arrays=3`, together with the `-D_FORTIFY_SOURCE=3` sysforge keeps from your system `makepkg.conf`, makes the fortified string functions treat an old-style `[0]` or `[1]` trailing array as its declared size, so a program that writes past one aborts at run time, and that a `[[rules]]` entry choosing another profile opts such a package out.
+
+## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.
 
 ---
 
 - **`3.5.0-B43` — the interrupted-install recovery no longer runs a command read from a shared file.** When an install-bearing run is interrupted, sysforge leaves a record in its state directory, and the next run offers to run the recovery command stored in it, often under `sudo`. Any member of the `sysforge` group can write that directory, so one member could plant a record and choose the command another member's next `update` or `build` offered to run. The record now holds only the kind of recovery and its package names or cached package files, and sysforge builds the command itself from a fixed form for each kind: reinstall packages, reinstall cached packages, or regenerate the initramfs. A package name must be a valid pacman name, and a cached package must be a root-owned file in pacman's package cache. A record owned by anyone but you or root, or one that is a symlink, is refused without a prompt. A record left by an older sysforge still shows its command, but only offers to clear the record; run the command yourself if it is right.
+
+---
+
+- **`3.5.0-B53` — a PKGBUILD's dependency names can no longer pass options to pacman.** sysforge installs a package's missing dependencies with `sudo pacman -S`, and checks them with `pacman -T` and `pacman -Si`, passing the names from the PKGBUILD as they were. A dependency written to start with `-` in a malicious PKGBUILD was read by the root pacman as an option. Names that do not follow the package-name rules are now ignored with a warning, and every pacman command marks where its options end before the package names.
+
+---
+
+- **`3.5.0-B67` — the source freeze covers the build-failure repair that downloads subprojects.** When a build failed because meson subprojects or git submodules were missing, sysforge downloaded them with `meson subprojects download` or `git submodule update` and retried, even with the source freeze on, so a frozen run could pull new code unattended. The freeze now refuses that download, and `--thaw <pkg>` lifts it for one package as for any other. The repair also looked for the source tree in the PKGBUILD's directory, so with makepkg's `BUILDDIR` set it never found the project; it now looks where makepkg built.
+
+---
+
+- **`3.5.0-B71` — the bootstrap install no longer opens root SSH login with a password.** Every install from `bootstrap.toml` set `PermitRootLogin yes` and `PasswordAuthentication yes` and enabled `sshd`, settings meant for the test VMs, so a real machine installed without passwords in `bootstrap.toml` was reachable over SSH as root. Root password login is now set only with `[system] ssh_root_login = true`, which also requires a `root_password`; otherwise sshd keeps its default, which refuses root password logins. The shipped `bootstrap.toml` documents the key.
+
+---
+
+- **`3.5.0-B72` — `bootstrap.toml`'s `username` and `target` are checked.** The configure stage builds paths it deletes, and a shell command it runs as the new user, from these two values without checking them, so a user name with `/`, `..` or shell characters pointed the deletion elsewhere or ran extra commands, and an empty or relative `target` made the deletions relative to the current directory. `username` must now use lowercase letters, digits, `_` and `-`, starting with a letter or `_`; `target` must be an absolute path other than `/`, and configure refuses to run until it is mounted.
+
+---
+
+- **`3.5.0-B77` — sysforge no longer uses sudo on a symlink planted in its shared state directory.** When a sysforge directory was not writable, sysforge created and fixed it with `sudo install -d`, `chgrp` and `chmod`, all of which follow symbolic links. Any member of the `sysforge` group could replace a directory in the shared state tree with a link, and another user's next run then changed the group and permissions of the link's target as root. sysforge now refuses before using sudo when the directory, or a parent of it inside a directory others can write to, is a symbolic link.
+
+---
+
+- **`3.5.0-B88` — `bootstrap.toml` is never readable by others in the new system.** The configure stage copied the configuration directory into the new system with each file's original permissions and made `bootstrap.toml`, which holds the install passwords in plain text, readable only by root afterwards, so for a moment it was readable by any user. It is now created readable only by root from the start, and the live ISO's copy is restricted too.
+
+---
+
+- **`3.5.0-B96` — the install stage refuses to wipe a disk that is in use.** The install stage asked for confirmation before partitioning `[partition] device`, but did not check what the device was, so a typo relied on that one prompt to avoid wiping the disk the live system runs from. It now refuses, before asking, a path that is not a block device or a disk with anything mounted from it, such as `/`, the ISO's boot medium or swap.
+
+---
+
+- **`3.5.0-B100` — C++ builds keep Arch's libstdc++ assertions.** Arch's `makepkg.conf` adds `-Wp,-D_GLIBCXX_ASSERTIONS` to `CXXFLAGS`, which turns on libstdc++'s bounds and precondition checks. Every shipped profile replaces `CXXFLAGS` with `$CFLAGS`, and the flag was not among those sysforge restores, so C++ packages built with the `standard` or `optimized` profile lost those checks. The flag is now restored for C++ only (in the shipped `profiles.toml`'s `[preserved_system_tokens]`), also when `CXXFLAGS` is just `$CFLAGS`. Because this changes the flags C++ packages build with, your next `update` reports flag drift for packages built before this release; `--rebuild-on-flag-drift` rebuilds them. A live `profiles.toml` gains the flag with `make sync-config` or by adding it to `[preserved_system_tokens] CXXFLAGS`.

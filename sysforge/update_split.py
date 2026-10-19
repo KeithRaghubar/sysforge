@@ -28,7 +28,7 @@ from pathlib import Path
 from sysforge import log
 from sysforge.primitives.build_state import is_source_build_mode
 from sysforge.primitives.pkgbuild_meta import member_relations, parse_pkgbuild
-from sysforge.update_common import _VCS_SUFFIXES
+from sysforge.primitives.source_sync import _VCS_SUFFIXES
 from sysforge.update_result import _UpdateResult
 
 _log = log.get_logger("UPDATE")

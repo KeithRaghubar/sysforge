@@ -127,7 +127,7 @@ _MESON_WRAP_PATTERN = re.compile(
 
 def _detect_vendored_deps(accum: BuildOutputAccumulator) -> MatchInfo | None:
     if _MESON_WRAP_PATTERN.search(accum.text):
-        return MatchInfo(detail={"kind": "meson"})
+        return MatchInfo(detail={"kind": "meson", "srcdir": accum.srcdir})
     if accum.srcdir is None:
         return None
     # Empty-submodule heuristic: a .gitmodules file present but at least one
@@ -155,14 +155,31 @@ def _detect_vendored_deps(accum: BuildOutputAccumulator) -> MatchInfo | None:
     return None
 
 
+def _pkgbase_of(pkgbuild_dir: Path) -> str | None:
+    """The PKGBUILD's authoritative pkgbase (for the freeze's --thaw match)."""
+    from sysforge.primitives import build_prep
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    try:
+        globals_ = parse_pkgbuild(Path(pkgbuild_dir) / "PKGBUILD").get("globals", {})
+    except Exception:  # noqa: BLE001 — pkgbase is for the freeze + echo only
+        globals_ = {}
+    return build_prep.pkgbase_from_globals(globals_)
+
+
 def _repair_vendored_deps(pkgbuild_dir: Path, info: MatchInfo) -> None:
+    # Downloading subprojects or submodules is code ingress: the source freeze
+    # covers it like every other fetch (3.5.0-B67). NetworkFrozen is a
+    # RuntimeError, so a denial is reported as a failed repair.
+    from sysforge.primitives.net_policy import KIND_SUBPROJECT_FETCH, get_policy
+    get_policy().check(KIND_SUBPROJECT_FETCH, _pkgbase_of(pkgbuild_dir))
     kind = info.detail.get("kind")
     if kind == "meson":
-        # Run from the project root inside ${srcdir}. Without srcdir we
+        # Run from the project root inside ${srcdir}, which the wrapper
+        # resolves (under $BUILDDIR/<pkgbase> when set). Without srcdir we
         # bail; the wrapper will fall through to the manual-correction path.
         # The most common shape: srcdir/<topdir>/meson.build — search
         # cheaply for the meson.build closest to ${srcdir}.
-        srcdir = pkgbuild_dir / "src"
+        srcdir = Path(info.detail.get("srcdir") or Path(pkgbuild_dir) / "src")
         targets = sorted(srcdir.glob("*/meson.build"))
         if not targets:
             raise RuntimeError("vendored_deps_missing repair: no meson project under srcdir")
@@ -200,33 +217,41 @@ VENDORED_DEPS = RepairScenario(
 # Scenario 2: pgp_key_missing
 # ---------------------------------------------------------------------------
 
-_PGP_KEY_RE = re.compile(
-    r"gpg:\s+Can't check signature: No public key.*?([0-9A-Fa-f]{16,40})",
-    re.DOTALL,
-)
+# The key ID comes from a line that names it, never from the first hex run
+# after the failure, which is a later commit or checksum (3.5.0-B86):
+#   makepkg (gpg's own stderr goes to /dev/null):
+#     foo-1.0.tar.gz ... FAILED (unknown public key 4AEE18F83AFDEB23)
+#   gpg run directly, where the key is on the line *before* "No public key":
+#     gpg:                using RSA key 4AEE18F83AFDEB23
+#     gpg: Can't check signature: No public key
+_MAKEPKG_UNKNOWN_KEY_RE = re.compile(r"\(unknown public key ([0-9A-Fa-f]{16,40})\)")
+_PGP_NO_KEY_RE = re.compile(r"gpg:\s+Can't check signature: No public key")
+_PGP_USING_KEY_RE = re.compile(r"gpg:\s+using \S+ key ([0-9A-Fa-f]{16,40})\b")
 
 
 def _detect_pgp_key(accum: BuildOutputAccumulator) -> MatchInfo | None:
-    m = _PGP_KEY_RE.search(accum.text)
-    if not m:
-        return None
-    return MatchInfo(detail={"keyid": m.group(1).upper()})
+    m = _MAKEPKG_UNKNOWN_KEY_RE.search(accum.text)
+    if m:
+        return MatchInfo(detail={"keyid": m.group(1).upper()})
+    lines = accum.lines
+    for i, line in enumerate(lines):
+        if not _PGP_NO_KEY_RE.search(line):
+            continue
+        for prev in reversed(lines[max(0, i - 5):i]):
+            m = _PGP_USING_KEY_RE.search(prev)
+            if m:
+                return MatchInfo(detail={"keyid": m.group(1).upper()})
+    return None
 
 
 def _repair_pgp_key(pkgbuild_dir: Path, info: MatchInfo) -> None:
     # Through the one consent-gated keyserver home (3.1.0-F8) — never a second,
     # unattended `gpg --recv-keys` around it.
     from sysforge.primitives import build_prep
-    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
     keyid = info.detail["keyid"]
-    try:
-        globals_ = parse_pkgbuild(Path(pkgbuild_dir) / "PKGBUILD").get("globals", {})
-    except Exception:  # noqa: BLE001 — pkgbase is for the freeze + echo only
-        globals_ = {}
     _log.info(f"repair: fetching PGP key {keyid}")
-    pkgbase = build_prep.pkgbase_from_globals(globals_)
-    if not build_prep.fetch_pgp_keys([keyid], pkgbase=pkgbase):
+    if not build_prep.fetch_pgp_keys([keyid], pkgbase=_pkgbase_of(pkgbuild_dir)):
         raise RuntimeError(f"pgp_key_missing repair: key {keyid} not imported")
 
 

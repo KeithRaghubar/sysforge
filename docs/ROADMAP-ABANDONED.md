@@ -30,6 +30,15 @@ checking against.
 
 ---
 
+- **`3.5.0-B73` — packages added to `packages.toml` after a pipeline's first run are skipped on
+  resume — closed as a duplicate 2026-10-19.** Filed in the 2026-10-18 whole-repo review against
+  `PipelineState.init_package_list`, which seeded `remaining` only on a first run. `3.5.0-B40`,
+  shipped the same cycle, already requeues every listed package that is in no bucket on resume,
+  which covers a package added between runs as well as one interrupted mid-build. A regression
+  test pins the added-between-runs case (`tests/test_pipeline_state.py`). Nothing reopens it.
+
+---
+
 - **`3.3.0-F4` — pause the progress bar on a sudo prompt inside forwarded build output — decided
   against 2026-10-07.** Proposed setting a `SUDO_PROMPT` sentinel in makepkg's environment and
   detecting it in `pty_runner`'s partial-line buffer, pausing the tracker clock until the child's

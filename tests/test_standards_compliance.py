@@ -704,7 +704,7 @@ def test_deprecations_registry_parse_finds_every_record():
         import check_standards as cs
     finally:
         sys.path.pop(0)
-    assert len(cs._parse_registry(repo)) == len(dep.all_deprecations())
+    assert len(cs._parse_registry(repo)) == len(dep._REGISTRY)
 
 
 def test_deprecations_group_flags_unregistered_warn_used(tmp_path):

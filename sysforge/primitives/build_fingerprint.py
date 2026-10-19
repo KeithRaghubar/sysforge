@@ -141,7 +141,7 @@ def clang_identity(cc) -> str:
     first = compiler_version_line(cc)
     if first:
         parts.append(first)
-    return "|".join(p for p in parts if isinstance(p, str))
+    return "|".join(parts)
 
 
 def resolve_libllvm(cc):

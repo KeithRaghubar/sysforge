@@ -13,15 +13,13 @@ to avoid a facade-import-order cycle. ``update.py`` re-exports them so existing
 
 from sysforge.primitives.source_sync import (
     STATUS_FAILED, STATUS_FROZEN, STATUS_PURGE_REFUSED, STATUS_RATE_LIMITED,
-    STATUS_SKIPPED_AUR_DISABLED,
+    STATUS_SKIPPED_AUR_DISABLED, is_vcs_pkgbase,
 )
 
 
-_VCS_SUFFIXES = ("-git", "-svn", "-hg", "-bzr")
-
-
 def _is_vcs(pkgbase: str) -> bool:
-    return any(pkgbase.endswith(s) for s in _VCS_SUFFIXES)
+    """The one VCS predicate (``source_sync.is_vcs_pkgbase``), rename-aware."""
+    return is_vcs_pkgbase(pkgbase)
 
 
 # Sync statuses that block the package from proceeding to build, and the

@@ -207,7 +207,14 @@ def test_format_kconfig_string():
             == 'CONFIG_LOCALVERSION="-sysforge"')
 
 def test_format_kconfig_integer_string():
-    assert format_kconfig_line("CONFIG_HZ", "1000") == 'CONFIG_HZ="1000"'
+    """3.5.0-B80: kconfig rejects a quoted int or hex value."""
+    assert format_kconfig_line("CONFIG_HZ", "1000") == "CONFIG_HZ=1000"
+    assert format_kconfig_line("CONFIG_NR_CPUS", "64") == "CONFIG_NR_CPUS=64"
+    assert format_kconfig_line("CONFIG_X", "0x1000") == "CONFIG_X=0x1000"
+
+def test_format_kconfig_non_numeric_string_stays_quoted():
+    assert format_kconfig_line("CONFIG_DEFAULT_HOSTNAME", "64bit") == \
+        'CONFIG_DEFAULT_HOSTNAME="64bit"'
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +597,18 @@ def test_write_kconfig_fragment_no_entries_is_noop(tmp_path):
     result, _, _, _, _ = write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
     assert result is None
     assert not (builds / "linux-git" / "sysforge.config").exists()
+
+def test_write_kconfig_fragment_no_entries_removes_a_stale_fragment(tmp_path):
+    """3.5.0-B52: prepare() merges any fragment it finds, so a stale one
+    would keep applying ungated."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    stale = builds / "linux-git" / "sysforge.config"
+    stale.write_text("CONFIG_MODULE_SIG_FORCE=y\n")
+    kernel_cfg = kcfg({"pkgname": "linux-git", "pkgbuild_src_dir": str(builds)})
+    result, _, _, _, _ = write_kconfig_fragment(kernel_cfg, {}, dry_run=False)
+    assert result is None
+    assert not stale.exists()
 
 def test_write_kconfig_fragment_hardware_only(tmp_path):
     builds = tmp_path / "builds"
@@ -4357,6 +4376,31 @@ def test_plan_record_round2_pins_and_applies(fdo_stores):
     assert p.round_store == prop and p.eff_pkgname == "linux-sysforge-profiling"
 
 
+def test_plan_record_round1_removes_the_previous_profile(fdo_stores):
+    """3.5.0-B79: an old kernel.afdo came from another binary."""
+    afdo, _ = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"old")
+    kfdo.plan_fdo_build("record", False, "linux-sysforge", explicit=True,
+                        building_pkgver="7.2.7.arch1-1")
+    assert not (afdo / "kernel.afdo").exists()
+
+
+def test_plan_record_round2_removes_the_previous_pair_and_use_refuses(fdo_stores):
+    """3.5.0-B79: a stale cc/ld pair let `use --propeller` pass without a
+    fresh capture; round 1's AutoFDO profile is the input and stays."""
+    afdo, prop = fdo_stores
+    afdo.mkdir(parents=True)
+    (afdo / "kernel.afdo").write_bytes(b"A")
+    _ready_round2(prop)
+    kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
+                        building_pkgver="7.2.7.arch1-1")
+    assert (afdo / "kernel.afdo").exists()
+    assert not (prop / "propeller_cc_profile.txt").exists()
+    with pytest.raises(kernel_fdo.KernelFdoError, match="incomplete"):
+        kernel_fdo.require_profile(prop, propeller=True)
+
+
 def test_plan_record_round2_without_round1_refuses(fdo_stores):
     with pytest.raises(RuntimeError, match="round 1"):
         kfdo.plan_fdo_build("record", True, "linux-sysforge", explicit=True,
@@ -5526,3 +5570,17 @@ def test_inherited_compiler_is_named_as_the_last_toolchain_run(tmp_path):
             for c in m.call_args_list]
     assert any("compiler:" in m and "last `run toolchain`" in m for m in said), said
     assert not [m for m in said if "pipeline" in m.lower()]
+
+
+def test_kernel_stage_failed_entry_authenticate_stops_before_building(tmp_path):
+    """3.5.0-B55: the entry warm-up's result was ignored, so the keepalive ran
+    without credentials and the build went ahead."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, side_effect=AssertionError("built")), \
+         patch.object(_km.stage.sudo_session, "authenticate", lambda: False), \
+         pytest.raises(RuntimeError, match="nothing was built"):
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))

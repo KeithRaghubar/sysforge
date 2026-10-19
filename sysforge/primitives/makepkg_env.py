@@ -69,7 +69,7 @@ def resolve_build_python(cfg: dict | None = None) -> Path | None:
         else:
             # Bare interpreter name (e.g. "python3.12") — resolve under /usr/bin.
             candidate = Path("/usr/bin") / raw
-        if candidate is not None and not _is_exec(candidate):
+        if not _is_exec(candidate):
             _env_log.warn(
                 f"[build] python = {setting!r} did not resolve to an "
                 f"executable ({candidate}); falling back to the system python"

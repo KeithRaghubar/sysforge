@@ -129,13 +129,18 @@ def _aur_lookups_allowed() -> bool:
     return True
 
 
-def aur_info(names: list[str]) -> dict[str, dict]:
+def aur_info(names: list[str], *, limiter=None) -> dict[str, dict]:
     """
     Batch query AUR RPC v5 for the given package names.
 
     Returns a dict mapping found package names to their AUR result dicts.
     Returns an empty dict on network error, timeout, or if names is empty.
     Silent on failure — callers treat an empty result as "not found".
+
+    With ``limiter`` (the source-sync scheduler's), the request goes through
+    ``rate_limit.http_get_with_rate_limit``: it waits out the shared penalty
+    window, and a 429/503 sets it from ``Retry-After``, so the git fetches that
+    follow wait too instead of hammering the same host (3.5.0-B83).
     """
     if not names:
         return {}
@@ -147,9 +152,17 @@ def aur_info(names: list[str]) -> dict[str, dict]:
     query = "&".join(f"arg[]={urllib.parse.quote(n)}" for n in names)
     url = f"{AUR_RPC_URL}?{query}"
 
+    from sysforge.primitives.rate_limit import RateLimited, http_get_with_rate_limit
     try:
-        with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR RPC endpoint, scheme not user-controlled
-            data = json.loads(resp.read().decode())
+        if limiter is not None:
+            body = http_get_with_rate_limit(url, limiter, timeout=_REQUEST_TIMEOUT)
+        else:
+            with urllib.request.urlopen(url, timeout=_REQUEST_TIMEOUT) as resp:  # noqa: S310 — fixed https AUR RPC endpoint, scheme not user-controlled
+                body = resp.read()
+        data = json.loads(body.decode())
+    except RateLimited as e:
+        _log.warn(f"AUR RPC rate-limited ({e}); later AUR requests wait it out")
+        return {}
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         _log.warn(f"AUR RPC query failed: {e}")
         return {}
@@ -225,7 +238,7 @@ def repo_packages(names: list[str]) -> set[str]:
     """
     if not names:
         return set()
-    result = run.probe(["pacman", "-Si", *names])
+    result = run.probe(["pacman", "-Si", "--", *names])
     found: set[str] = set()
     for line in result.stdout.splitlines():
         m = _re.match(r"^Name\s*:\s*(\S+)", line)
@@ -236,7 +249,7 @@ def repo_packages(names: list[str]) -> set[str]:
 
 def is_repo_package(name: str) -> bool:
     """Return True if name exists in any pacman sync DB."""
-    result = run.probe(["pacman", "-Si", name], text=False)
+    result = run.probe(["pacman", "-Si", "--", name], text=False)
     return result.returncode == 0
 
 
@@ -307,7 +320,6 @@ def aur_clone(
     *,
     timeout: int | None = 60,
     ref: str | None = None,
-    depth: int | None = None,
 ) -> None:
     """
     Clone an AUR package repository into dest via git.
@@ -318,8 +330,8 @@ def aur_clone(
     fails, or immediately on non-transient errors (e.g. repository not found).
 
     ``ref`` restricts the clone to a specific branch or tag (``--branch``).
-    ``depth`` passes ``--depth`` for a shallow clone; useful when the caller
-    only needs the current PKGBUILD, not full history.
+    The clone is always full-history: the source sync compares and resets
+    against it (3.5.0-B94 removed an unused ``depth`` parameter).
     """
     # Source freeze (3.0.0-F2) and the AUR posture (3.1.0-F3, AurDisabled):
     # refuse before any process is spawned. Raising here (rather than
@@ -329,8 +341,6 @@ def aur_clone(
     timeout = timeout or None  # 0 → disable
     url = f"{AUR_GIT_BASE}/{name}.git"
     extra: list[str] = []
-    if depth is not None and depth > 0:
-        extra += ["--depth", str(depth)]
     if ref:
         extra += ["--branch", ref]
 

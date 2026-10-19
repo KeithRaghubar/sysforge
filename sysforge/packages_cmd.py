@@ -161,20 +161,9 @@ def cmd_packages_add(args):
 
     block_text = "\n" + entry_toml_block(new_entry) + "\n"
 
-    # Drop the old entry first (if any), then append. We do two writes to
-    # keep the line-level helper simple — it accepts at most one drop_name
-    # plus an append, but auto-prune runs on every call anyway.
-    if drop_name is not None:
-        rewrite_packages_toml(path, drop_name=drop_name)
-    if not path.exists():
-        # Fresh file: write the standard header so the file is self-documenting.
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "# packages.toml: managed by sysforge packages\n"
-            "\n[build]\n"
-            'pkgbuild_src_dir = "~/src"\n'
-        )
-    rewrite_packages_toml(path, append=block_text)
+    # One write: drop the old entry (if any) and append the new one; a fresh
+    # file starts from the standard header.
+    rewrite_packages_toml(path, append=block_text, drop_name=drop_name)
 
     overrides_str = ", ".join(
         f"{k}={v!r}" for k, v in new_entry.items() if k != "name"
@@ -270,7 +259,7 @@ class PackagesAddVerb(Verb):
 
     No sentinel: packages.toml is a config file, not the live install
     set. An interrupted write reverts to the previous file via the
-    atomic write-then-rename in :func:`_rewrite_packages_toml`.
+    atomic write-then-rename in :func:`rewrite_packages_toml`.
     """
 
     name = "packages-add"

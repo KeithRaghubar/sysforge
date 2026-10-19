@@ -18,23 +18,23 @@ def _clean_dedup():
 
 
 def test_registry_is_not_empty():
-    assert dep.all_deprecations(), "registry must not be empty"
+    assert dep._REGISTRY, "registry must not be empty"
 
 
 def test_surfaces_are_unique():
-    surfaces = [d.surface for d in dep.all_deprecations()]
+    surfaces = [d.surface for d in dep._REGISTRY]
     assert len(surfaces) == len(set(surfaces))
 
 
 def test_compat_removals_are_major_only():
-    for d in dep.all_deprecations():
+    for d in dep._REGISTRY:
         if d.function == dep.COMPAT:
             assert d.removed_in.endswith(".0.0"), \
                 f"{d.surface}: compat removal {d.removed_in} is not a major"
 
 
 def test_shim_has_anchor_and_compat_does_not():
-    for d in dep.all_deprecations():
+    for d in dep._REGISTRY:
         if d.function == dep.SHIM:
             assert d.anchor, f"{d.surface}: shim needs an anchor"
         else:
@@ -43,7 +43,7 @@ def test_shim_has_anchor_and_compat_does_not():
 
 def test_kinds_and_functions_are_in_vocabulary():
     kinds = {dep.CONFIG_KEY, dep.STATE_TOKEN, dep.CLI_FLAG, dep.PATH_DIR}
-    for d in dep.all_deprecations():
+    for d in dep._REGISTRY:
         assert d.kind in kinds, f"{d.surface}: bad kind {d.kind!r}"
         assert d.function in {dep.COMPAT, dep.SHIM}, \
             f"{d.surface}: bad function {d.function!r}"

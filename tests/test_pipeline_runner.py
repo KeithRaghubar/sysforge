@@ -689,3 +689,33 @@ def test_standalone_log_names_its_command_and_failure_its_stage(tmp_path, monkey
     assert "# sysforge run toolchain:" in body
     assert "[PIPELINE]" not in body and "sysforge pipeline" not in body
     assert "[TOOLCHAIN] toolchain: FAILED" in body
+
+
+class CalledProcessFailStage(Stage):
+    """configure's _chroot uses subprocess.run(check=True) (3.5.0-B70)."""
+    def __init__(self, name):
+        self.name = name
+        self.description = "cpe"
+        self.depends_on = []
+
+    def run(self, config, state, options):
+        import subprocess
+        raise subprocess.CalledProcessError(1, ["arch-chroot", "/mnt"])
+
+
+def test_called_process_error_marks_the_stage_failed_and_hints_resume(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        run_pipeline({}, make_options(state_dir=tmp_path),
+                     stages=[CalledProcessFailStage("configure")])
+    assert PipelineState(tmp_path).stage_status("configure") == "failed"
+    out, err = capsys.readouterr()
+    assert "--resume" in out + err
+
+
+def test_standalone_os_error_records_failed(tmp_path, monkeypatch):
+    class OsFail(OkStage):
+        def run(self, config, state, options):
+            raise OSError("No space left on device")
+    with pytest.raises(SystemExit):
+        _standalone(OsFail("toolchain"), tmp_path, monkeypatch)
+    assert PipelineState(tmp_path).stage_status("toolchain") == "failed"

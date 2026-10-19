@@ -72,68 +72,6 @@ def test_detect_suite_skew_pkgver_split_across_pkgbases_is_brick():
 
 
 # ---------------------------------------------------------------------------
-# check_link_resolution
-# ---------------------------------------------------------------------------
-
-def _fake_ldd(mapping):
-    """side_effect: returns ldd-style output for clang/lld, success otherwise."""
-    def run(cmd, **kwargs):
-        if cmd and cmd[0] == "ldd":
-            binary = cmd[1]
-            return MagicMock(returncode=0, stdout=mapping.get(binary, ""), stderr="")
-        return MagicMock(returncode=0, stdout="", stderr="")
-    return run
-
-
-def test_check_link_resolution_clean(tmp_path, monkeypatch):
-    clang = tmp_path / "clang"
-    clang.touch()
-    monkeypatch.setattr(ts, "_USR_BIN_CLANG", clang)
-    monkeypatch.setattr(ts, "_USR_LIB", Path("/usr/lib"))
-    monkeypatch.setattr(ts, "_run", _fake_ldd({
-        str(clang): "\tlibLLVM-22.so => /usr/lib/libLLVM-22.so (0x7f01)\n",
-    }))
-    assert ts.check_link_resolution() == []
-
-
-def test_check_link_resolution_staging_prefix_is_brick(tmp_path, monkeypatch):
-    clang = tmp_path / "clang"
-    clang.touch()
-    monkeypatch.setattr(ts, "_USR_BIN_CLANG", clang)
-    monkeypatch.setattr(ts, "_run", _fake_ldd({
-        str(clang):
-            "\tlibLLVM-22.so => /var/tmp/sysforge-llvm-stage2/usr/lib/libLLVM-22.so (0x7f01)\n",
-    }))
-    findings = ts.check_link_resolution()
-    assert len(findings) == 1
-    assert findings[0].is_brick
-    assert "staging prefix" in findings[0].message
-
-
-def test_check_link_resolution_shadow_outside_usrlib_is_brick(tmp_path, monkeypatch):
-    clang = tmp_path / "clang"
-    clang.touch()
-    monkeypatch.setattr(ts, "_USR_BIN_CLANG", clang)
-    monkeypatch.setattr(ts, "_run", _fake_ldd({
-        str(clang): "\tlibLLVM-22.so => /home/u/.local/lib/libLLVM-22.so (0x7f01)\n",
-    }))
-    findings = ts.check_link_resolution()
-    assert len(findings) == 1
-    assert findings[0].is_brick
-    assert "outside /usr/lib" in findings[0].message
-
-
-def test_check_link_resolution_ldd_missing_warns(tmp_path, monkeypatch):
-    clang = tmp_path / "clang"
-    clang.touch()
-    monkeypatch.setattr(ts, "_USR_BIN_CLANG", clang)
-    monkeypatch.setattr(ts, "_run", lambda cmd, **k: None)  # ldd absent
-    findings = ts.check_link_resolution()
-    assert len(findings) == 1
-    assert not findings[0].is_brick
-
-
-# ---------------------------------------------------------------------------
 # smoke_test_compilers
 # ---------------------------------------------------------------------------
 
@@ -1194,3 +1132,20 @@ def test_check_std_export_parity_failure_is_a_skip(tmp_path, monkeypatch):
 def test_check_std_export_parity_no_libllvm_is_a_skip(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "_extract_system_libllvm", lambda pkg_files, dest: None)
     assert ts.check_std_export_parity([tmp_path / "foo.pkg.tar.zst"]).gap is None
+
+
+def test_installed_consumer_check_uses_the_newest_libllvm(tmp_path, monkeypatch):
+    """3.5.0-B58: with a compat package such as llvm21-libs installed, the
+    lexically first soname is the old library; the newest one is checked."""
+    for name in ("libLLVM.so.21.1", "libLLVM.so.22.1"):
+        (tmp_path / name).write_bytes(b"\x7fELF")
+    monkeypatch.setattr(ts, "_USR_LIB", tmp_path)
+    seen = []
+    monkeypatch.setattr(ts, "_diff_consumers_against_libllvm",
+                        lambda lib, **k: seen.append(lib.name) or [])
+    ts.check_installed_consumer_symbols()
+    assert seen == ["libLLVM.so.22.1"]
+
+
+def test_so_version_is_numeric():
+    assert ts.so_version(Path("libLLVM.so.9.0")) < ts.so_version(Path("libLLVM.so.21.1"))

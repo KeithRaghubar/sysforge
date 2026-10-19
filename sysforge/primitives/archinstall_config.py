@@ -38,6 +38,9 @@ class BootstrapConfig:
     desktop: str | None = None
     makepkg_packager: str | None = None
     makepkg_makeflags: str | None = None
+    # Root SSH login with a password: a VM-fixture convenience, off unless
+    # `[system] ssh_root_login = true` (3.5.0-B71).
+    ssh_root_login: bool = False
 
 
 ARCHINSTALL_SCHEMA_VERSION = "3.0.15"
@@ -81,9 +84,14 @@ _BASE_PACKAGES = [
     "uv",
 ]
 
-_SSHD_CUSTOM_COMMANDS = [
+# Only with `ssh_root_login = true` (the VM fixtures); a real install keeps
+# sshd's defaults, which refuse root password logins (3.5.0-B71).
+_SSHD_ROOT_LOGIN_COMMANDS = [
     "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config",
     "sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+]
+
+_SERIAL_CONSOLE_COMMANDS = [
     "sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' "
     "/boot/loader/entries/*.conf",
 ]
@@ -143,7 +151,8 @@ def build_archinstall_config(cfg: BootstrapConfig, disk_size_bytes: int) -> dict
     ``_partition_plan.probe_disk_size_bytes``.
     """
     packages = list(_BASE_PACKAGES)
-    custom = list(_SSHD_CUSTOM_COMMANDS)
+    custom = [*(_SSHD_ROOT_LOGIN_COMMANDS if cfg.ssh_root_login else []),
+              *_SERIAL_CONSOLE_COMMANDS]
     if cfg.shell == "zsh":
         packages += ["zsh", "zsh-completions"]
         custom.append(f"chsh -s /usr/bin/zsh {cfg.username}")

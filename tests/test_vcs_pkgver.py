@@ -308,3 +308,20 @@ def test_read_built_upstream_commit_none_for_multi_git_source(tmp_path):
     with patch("sysforge.primitives.vcs_pkgver.subprocess.run") as run:
         assert read_built_upstream_commit(pkg_dir) is None
         run.assert_not_called()
+
+
+def test_read_built_upstream_commit_reads_the_srcdir_under_builddir(tmp_path, monkeypatch):
+    """3.5.0-B84: with BUILDDIR set, srcdir is $BUILDDIR/<pkgbase>/src."""
+    from sysforge.primitives import pacman
+    pkg_dir = _write_pkgbuild(
+        tmp_path / "checkout",
+        "source=('git+https://example.com/foo.git')",
+    )
+    builddir = tmp_path / "builds"
+    src_dir = builddir / "foo-git" / "src" / "foo"
+    src_dir.mkdir(parents=True)
+    monkeypatch.setattr(pacman, "get_builddir", lambda: builddir)
+    with patch("sysforge.primitives.vcs_pkgver.subprocess.run") as run:
+        run.return_value = _result(0, stdout=f"{_BUILT_SHA}\n")
+        assert read_built_upstream_commit(pkg_dir) == _BUILT_SHA
+    assert run.call_args[0][0][:3] == ["git", "-C", str(src_dir)]

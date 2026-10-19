@@ -1,5 +1,5 @@
 """
-test_pacman.py — tests for pacman.py: collect_makedeps, filter_missing_deps,
+test_pacman.py — tests for pacman.py: collect_builddeps, filter_missing_deps,
 get_installed_version, snapshot_pkg_dir.
 """
 from pathlib import Path
@@ -13,7 +13,6 @@ from sysforge.primitives.pacman import (
     cached_pkg_files_for,
     cached_repo_pkg_file,
     collect_builddeps,
-    collect_makedeps,
     detect_orphan_artifacts,
     filter_missing_deps,
     filter_pkgs_to_installed,
@@ -39,10 +38,10 @@ def _force_non_root(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# collect_makedeps
+# collect_builddeps over makedepends (version stripping, dedup, bad files)
 # ---------------------------------------------------------------------------
 
-class TestCollectMakedeps:
+class TestCollectBuilddepsMakedepends:
 
     def _write_pkgbuild(self, tmp_path, name, makedepends):
         d = tmp_path / name
@@ -56,11 +55,11 @@ class TestCollectMakedeps:
         return p
 
     def test_empty_input(self):
-        assert collect_makedeps([]) == []
+        assert collect_builddeps([]) == []
 
     def test_strips_version_constraints(self, tmp_path):
         p = self._write_pkgbuild(tmp_path, "foo", ["cmake>=3.16", "python>3.10", "git"])
-        result = collect_makedeps([p])
+        result = collect_builddeps([p])
         assert "cmake" in result
         assert "python" in result
         assert "git" in result
@@ -70,7 +69,7 @@ class TestCollectMakedeps:
     def test_sorted_unique(self, tmp_path):
         p1 = self._write_pkgbuild(tmp_path, "a", ["cmake", "git"])
         p2 = self._write_pkgbuild(tmp_path, "b", ["cmake", "python"])
-        result = collect_makedeps([p1, p2])
+        result = collect_builddeps([p1, p2])
         assert result == sorted(set(result))
         assert result.count("cmake") == 1
 
@@ -78,7 +77,7 @@ class TestCollectMakedeps:
         bad = tmp_path / "bad" / "PKGBUILD"
         bad.parent.mkdir()
         bad.write_text("this is not valid\n")
-        result = collect_makedeps([bad])
+        result = collect_builddeps([bad])
         assert result == []
 
 
@@ -116,11 +115,10 @@ class TestCollectBuilddeps:
         assert set(result) == {"pyside6", "glibc", "cmake", "python-pytest"}
 
     def test_includes_runtime_depends_unlike_makedeps(self, tmp_path):
-        """The whole point of the pyside6 fix: a repo runtime dep is collected
-        by collect_builddeps even though collect_makedeps never sees it."""
+        """The whole point of the pyside6 fix: a repo runtime dep is collected,
+        not only makedepends."""
         p = self._write(tmp_path, "foo", depends=["pyside6"], makedepends=["cmake"])
         assert "pyside6" in collect_builddeps([p])
-        assert "pyside6" not in collect_makedeps([p])
 
     def test_unreadable_pkgbuild_warns_and_is_skipped_by_default(self, tmp_path):
         assert collect_builddeps([tmp_path / "gone" / "PKGBUILD"]) == []
@@ -1345,6 +1343,59 @@ class TestBatchInstallBreaksIntraBatchPin:
         batch_install_pkgs([self._make_pkg(tmp_path)])
         mock_broken.assert_not_called()
         assert "--nodeps" not in mock_run.call_args_list[0].args[0]
+
+
+class TestNodepsProbeAnswersLikeTheInstall:
+    """3.5.0-B90: a superseding batch's probe must pass --ask=4 too, or it
+    fails on the conflict and never reports the pin it would break."""
+
+    @patch("sysforge.primitives.pacman.deps_broken_by_install",
+           return_value={"lib32-x-git": {"x-git=1"}})
+    @patch("sysforge.primitives.pacman.pkg_supersedes_installed", return_value={"x"})
+    @patch("sysforge.primitives.pacman.get_all_installed_packages", return_value={"x": "1"})
+    @patch("sysforge.primitives.pacman.read_pkgname_from_file", return_value="x-git")
+    @patch("sysforge.primitives.install_reconcile.record_self_install")
+    @patch("sysforge.primitives.pacman.subprocess.run")
+    def test_superseding_batch_probe_gets_ask4_and_nodeps(
+        self, mock_run, _rec, _rd, _inst, _sup, mock_broken, tmp_path
+    ):
+        pkg = tmp_path / "x-git-1-1-x86_64.pkg.tar.zst"
+        pkg.write_bytes(b"")
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        batch_install_pkgs([pkg], allow_break_deps=frozenset({"lib32-x-git"}))
+        assert mock_broken.call_args.kwargs["answers"] == ["--ask=4"]
+        argv = mock_run.call_args_list[0].args[0]
+        assert "--ask=4" in argv and "--nodeps" in argv
+
+
+def test_deps_broken_probe_passes_answers(tmp_path):
+    with patch("sysforge.primitives.run.probe",
+               return_value=MagicMock(returncode=0, stdout="", stderr="")) as probe:
+        deps_broken_by_install([tmp_path / "a.pkg.tar.zst"], answers=["--ask=4"])
+    assert probe.call_args.args[0][:4] == ["pacman", "-U", "--print", "--ask=4"]
+
+
+class TestDependencyNamesNeverBecomeOptions:
+    """3.5.0-B53: a PKGBUILD dependency starting with `-` must not reach a
+    root pacman as an option."""
+
+    def test_invalid_name_is_dropped(self, tmp_path):
+        from sysforge.primitives.pacman import collect_builddeps
+        pb = tmp_path / "PKGBUILD"
+        pb.write_text("pkgname=x\npkgver=1\npkgrel=1\n"
+                      "depends=('glibc' '--overwrite=*' 'libfoo.so=1-64')\n")
+        assert collect_builddeps([pb]) == ["glibc", "libfoo.so"]
+
+    def test_install_argvs_end_options_before_names(self):
+        from sysforge.primitives.pacman import batch_install_makedeps, install_repo_pkgs
+        with patch("sysforge.primitives.pacman.ensure_credentials"), \
+             patch("sysforge.primitives.pacman.subprocess.run",
+                   return_value=MagicMock(returncode=0)) as run_:
+            batch_install_makedeps(["a"])
+            install_repo_pkgs(["b"])
+        for c in run_.call_args_list:
+            argv = c.args[0]
+            assert argv[argv.index("--") + 1:] in (["a"], ["b"])
 
 
 class TestBatchInstallFailureIsDiagnosable:

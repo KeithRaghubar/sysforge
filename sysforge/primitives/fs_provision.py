@@ -135,6 +135,29 @@ def _heal_owned_dir_group(path: Path, group: str, mode: int) -> None:
         pass
 
 
+def _refuse_planted_symlink(path: Path) -> None:
+    """Refuse to escalate over a symlink another user could have planted.
+
+    ``install -d``, ``chgrp`` and ``chmod`` all follow symlinks, so a group
+    member who swapped a provisioned directory under the shared, group-writable
+    state tree for a symlink would get another user's sudo applied to its
+    target (3.5.0-B77). The path itself must not be a symlink, nor may any
+    ancestor that sits in a group- or world-writable directory; a system
+    symlink such as ``/home`` (in ``/``, writable by root only) is fine.
+    """
+    for p in (path, *path.parents):
+        try:
+            if not p.is_symlink():
+                continue
+            parent_mode = p.parent.lstat().st_mode
+        except OSError:
+            continue
+        if p == path or parent_mode & 0o022:
+            raise FsProvisionError(
+                f"refusing to provision {path} with sudo: {p} is a symlink "
+                f"in a directory others can write to")
+
+
 def ensure_writable_dir(
     path: Path | str,
     *,
@@ -181,6 +204,8 @@ def ensure_writable_dir(
         raise FsProvisionError(
             f"{path} is not writable and sudo provisioning is disabled"
         )
+
+    _refuse_planted_symlink(path)
 
     user = build_user()
     _log.info(

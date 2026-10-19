@@ -59,10 +59,16 @@ def build_resolved_deps(
     # Opens the "AUR dep" tracker; refuse before any build (3.3.0-F2).
     progress_hooks.hooks().require_no_tracker("build_resolved_deps")
 
-    aur_deps = [
-        (d, d.pkgbuild_path) for d in deps
-        if d.source == "aur" and d.pkgbuild_path is not None
-    ]
+    # One build per PKGBUILD: two members of one split pkgbase resolve to two
+    # deps sharing a checkout, and the second build hit AlreadyBuilt and
+    # installed the set again (3.5.0-B85). The first occurrence keeps its
+    # topological place; the others ride along by name.
+    by_path: dict[Path, list[ResolvedDep]] = {}
+    for d in deps:
+        if d.source == "aur" and d.pkgbuild_path is not None:
+            by_path.setdefault(Path(d.pkgbuild_path), []).append(d)
+    aur_deps = [(members[0], path, [m.name for m in members])
+                for path, members in by_path.items()]
     if not aur_deps:
         return []
 
@@ -70,10 +76,11 @@ def build_resolved_deps(
 
     built: list[str] = []
     with progress_hooks.hooks().tracker(len(aur_deps), "AUR dep") as _tick:
-        for i, (dep, dep_pkgbuild) in enumerate(aur_deps):
+        for i, (dep, dep_pkgbuild, names) in enumerate(aur_deps):
             req = ", ".join(dep.required_by)
-            _tick(dep.name)
-            _log.ui(f"  [{i + 1}/{len(aur_deps)}] {dep.name} (required by {req})")
+            label = ", ".join(names)
+            _tick(label)
+            _log.ui(f"  [{i + 1}/{len(aur_deps)}] {label} (required by {req})")
 
             opts = makepkg_wrapper.BuildOptions(
                 profile_conf=profile_conf,
@@ -94,7 +101,7 @@ def build_resolved_deps(
             makepkg_wrapper.install_built_packages(
                 dep_pkgbuild.parent, noconfirm=not interactive)
             _tick.resume()
-            built.append(dep.name)
+            built.extend(names)
             # Under the build sandbox a dep installed on the host is invisible
             # to the next container; register its artifacts so the seam can
             # hand them back in as ``-I``. Inert while the sandbox is off.

@@ -207,3 +207,14 @@ class TestWriteDesktopGroup:
             write_desktop_group(path, "gnome")
             write_desktop_group(path, "kde")
         assert "\n\n\n" not in path.read_text()
+
+
+def test_write_desktop_group_goes_through_replace_file(tmp_path, monkeypatch):
+    """3.5.0-B47: atomic and escalating, not a bare write_text."""
+    from sysforge.primitives import atomic_write
+    calls = []
+    monkeypatch.setattr(atomic_write, "replace_file",
+                        lambda path, text, tag: calls.append(path))
+    p = tmp_path / "packages.toml"
+    pkg_catalog.write_desktop_group(p, next(iter(pkg_catalog.DESKTOP_CATALOG)))
+    assert calls == [p]

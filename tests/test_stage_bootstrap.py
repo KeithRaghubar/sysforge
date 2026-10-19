@@ -5,6 +5,7 @@ Covers pure-logic functions. Subprocess calls (sgdisk, mkfs, pacstrap,
 arch-chroot, etc.) are mocked — nothing real runs.
 """
 import textwrap
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -851,7 +852,7 @@ class TestConfigureStageSysforgeTuningOnly:
         options = make_options()
 
         calls: list[str] = []
-        with patch.multiple(
+        with patch("os.path.ismount", return_value=True), patch.multiple(
             "sysforge.pipeline.stages.configure",
             **{name: DEFAULT for name in self._RETAINED_STEP_FUNCS},
             load_bootstrap=MagicMock(return_value=make_cfg(target=str(tmp_path))),
@@ -891,7 +892,7 @@ class TestConfigureStageStepOrder:
         from unittest.mock import DEFAULT
 
         order: list[str] = []
-        with patch.multiple(
+        with patch("os.path.ismount", return_value=True), patch.multiple(
             "sysforge.pipeline.stages.configure",
             **{name: DEFAULT for name in self._STEP_FUNCS},
             load_bootstrap=MagicMock(return_value=make_cfg(target=str(tmp_path))),
@@ -968,3 +969,88 @@ class TestConfirmOverwrite:
             _confirm(cfg)
         # Plain confirm keeps the strict "yes" choice set, not the y/N overwrite form.
         assert mock_prompt.call_args.kwargs["choices"] == ("yes",)
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B71 / B72: SSH posture, username and target validation
+# ---------------------------------------------------------------------------
+
+_MIN = """\
+target = {target}
+[partition]
+device = "/dev/sda"
+[system]
+hostname = "h"
+locale   = "en_US.UTF-8"
+timezone = "UTC"
+"""
+
+
+def _load(tmp_path, extra="", target='"/mnt"'):
+    f = tmp_path / "bootstrap.toml"
+    f.write_text(_MIN.format(target=target) + extra)
+    return load_bootstrap(f)
+
+
+@pytest.mark.parametrize("name", ["../root", "a/b", "x;rm -rf ~", "Bad", "-x"])
+def test_invalid_username_is_refused(tmp_path, name):
+    with pytest.raises(RuntimeError, match="username"):
+        _load(tmp_path, f'username = "{name}"\n')
+
+
+@pytest.mark.parametrize("target", ['""', '"mnt"', '"/"'])
+def test_relative_empty_or_root_target_is_refused(tmp_path, target):
+    with pytest.raises(RuntimeError, match="target"):
+        _load(tmp_path, target=target)
+
+
+def test_ssh_root_login_defaults_off(tmp_path):
+    assert _load(tmp_path).ssh_root_login is False
+
+
+def test_ssh_root_login_without_root_password_is_refused(tmp_path):
+    with pytest.raises(RuntimeError, match="root_password"):
+        _load(tmp_path, "ssh_root_login = true\n")
+
+
+def test_ssh_root_login_with_password_is_accepted(tmp_path):
+    cfg = _load(tmp_path, 'ssh_root_login = true\nroot_password = "x"\n')
+    assert cfg.ssh_root_login is True
+
+
+
+def test_configure_refuses_an_unmounted_target(tmp_path):
+    """3.5.0-B72: every step writes under the target."""
+    stage = ConfigureStage()
+    with patch("sysforge.pipeline.stages.configure.load_bootstrap",
+               return_value=make_cfg(target=str(tmp_path))), \
+         patch("sysforge.pipeline.stages.configure._set_pacman_parallel_downloads",
+               side_effect=AssertionError("wrote")), \
+         pytest.raises(RuntimeError, match="not a mount point"):
+        stage.run({}, MagicMock(), make_options())
+
+
+def test_copied_bootstrap_toml_is_never_world_readable(tmp_path, monkeypatch):
+    """3.5.0-B88: created 0600, never copied at the source's 0644 first."""
+    import os
+    import shutil
+    from sysforge.pipeline.stages import configure
+    src = tmp_path / "iso-etc"
+    src.mkdir()
+    (src / "bootstrap.toml").write_text('root_password = "x"\n')
+    (src / "bootstrap.toml").chmod(0o644)
+    (src / "packages.toml").write_text("")
+    real_copytree = shutil.copytree
+
+    def _copytree(s, d, **k):
+        real_copytree(s, d, **k)
+        assert not (Path(d) / "bootstrap.toml").exists()  # never copied as-is
+    monkeypatch.setattr(configure.shutil, "copytree", _copytree)
+    real_path = configure.Path
+    monkeypatch.setattr(configure, "Path",
+                        lambda p, *a: src if str(p) == "/etc/sysforge" else real_path(p, *a))
+    configure._copy_config_files(make_cfg(target=str(tmp_path / "mnt")))
+    dst = tmp_path / "mnt" / "etc/sysforge" / "bootstrap.toml"
+    assert os.stat(dst).st_mode & 0o777 == 0o600
+    assert (src / "bootstrap.toml").stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "mnt" / "etc/sysforge" / "packages.toml").exists()

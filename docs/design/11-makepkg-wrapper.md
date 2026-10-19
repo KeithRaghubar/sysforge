@@ -132,8 +132,8 @@ Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fa
 
 Repair modes:
 
-- **Vendored deps missing** — meson wraps and git submodules collapse to one primitive (both are "PKGBUILD failed to fetch declared subprojects before configure"). Detection: `Automatic wrap-based subproject downloading is disabled` (meson) or `.gitmodules` present in `${srcdir}/<top>` with empty submodule paths. Repair: `meson subprojects download` for wraps, `git submodule update --init --recursive` for submodules, run from the project root. Safe — fetches only what the project itself declares; no PKGBUILD mutation, no `source=()` change.
-- **PGP key missing** — complements the proactive `import_pgp_keys` invoked before makepkg. Catches the case where signature validation fails mid-build because upstream rotated keys after the proactive import or `prepare()` pulled in newly signed sources. Detection: `gpg: Can't check signature: No public key` with an extractable key ID. Repair: fetch the surfaced ID through `build_prep.fetch_pgp_keys` (echo + consent + freeze, `3.1.0-F8`), retry once; a key the user does not accept fails the repair. Same trust model as the proactive path — never a second, unattended keyserver path around it.
+- **Vendored deps missing** — meson wraps and git submodules collapse to one primitive (both are "PKGBUILD failed to fetch declared subprojects before configure"). Detection: `Automatic wrap-based subproject downloading is disabled` (meson) or `.gitmodules` present in `${srcdir}/<top>` with empty submodule paths. Repair: `meson subprojects download` for wraps, `git submodule update --init --recursive` for submodules, run from the project root. Safe — fetches only what the project itself declares; no PKGBUILD mutation, no `source=()` change. Still code ingress, so the repair is gated by the source freeze under its own `KIND_SUBPROJECT_FETCH`, keyed on the PKGBUILD's pkgbase; a denial fails the repair. `${srcdir}` is the build's real one, `makepkg_env.build_root(...)/src` (under `$BUILDDIR/<pkgbase>` when set), not `<pkgbuild_dir>/src` (`3.5.0-B67`).
+- **PGP key missing** — complements the proactive `import_pgp_keys` invoked before makepkg. Catches the case where signature validation fails mid-build because upstream rotated keys after the proactive import or `prepare()` pulled in newly signed sources. Detection: makepkg's own `FAILED (unknown public key <id>)` line (makepkg sends gpg's stderr to `/dev/null`), or, for raw gpg output, the `using <algo> key <id>` line just before `Can't check signature: No public key`, never the first hex run after it, which is a later commit or checksum (`3.5.0-B86`). Repair: fetch the surfaced ID through `build_prep.fetch_pgp_keys` (echo + consent + freeze, `3.1.0-F8`), retry once; a key the user does not accept fails the repair. Same trust model as the proactive path — never a second, unattended keyserver path around it.
 - **`.SRCINFO` drift** — sysforge parses PKGBUILD directly, so its own pipeline never reads `.SRCINFO`, but drift breaks AUR push and clean-chroot consumers. Detection: `makepkg --printsrcinfo` output diffs against the committed `.SRCINFO`. Repair: regenerate, with a `[WARN]` log line. Default is `auto_repair_with_warning` rather than silent because drift usually signals upstream PKGBUILD churn the user should see.
 - **Checksum mismatch** — **not silent.** Default `prompt_user`: sysforge surfaces old vs. new sums and the source URL, then requires explicit consent before invoking `updpkgsums`. Silent auto-fix would mask supply-chain compromise — an attacker who replaces an upstream tarball would have sysforge "fix" the checksum and proceed. The user-prompt requirement is the load-bearing security distinction between this mode and the others; do not relax it without an equivalent compensating control.
 
@@ -150,8 +150,11 @@ On success, all patch artifacts are cleaned up in both modes.
 ### Interactive recovery menu
 
 When `_invoke_with_retry` is not in batch mode and a build fails with no
-built `.pkg.tar*` artifacts found (the "install-only failure" branch above
-doesn't apply), it hands off to `makepkg_invoke._run_recovery_menu` — the
+built `.pkg.tar*` artifacts found (the "install-only failure" branch doesn't
+apply: it is offered only when makepkg actually ran with `-i`/`--install`
+after the strip flags, and only for this build's own artifacts, the
+PKGBUILD's exact version from PKGDEST or, when unset, the PKGBUILD dir,
+`_this_builds_artifacts`, `3.5.0-B61`), it hands off to `makepkg_invoke._run_recovery_menu` — the
 **one home** for interactive build-failure recovery. This replaces the old
 bare "fix the PKGBUILD and press Enter" prompt with a small menu:
 

@@ -66,31 +66,6 @@ def test_adapt_carries_is_brick_and_folds_warning():
     assert f.is_brick
 
 
-def test_from_toolchain_check_failing_is_error_with_fix():
-    chk = SimpleNamespace(name="cc:clang", ok=False, detail="clang cannot run",
-                          fix_cmd="sudo pacman -S clang", auto_remediable=False)
-    f = diag.from_toolchain_check(chk)
-    assert f.severity == diag.SEV_ERROR
-    assert f.check_id == "cc:clang"
-    assert f.fix_cmd == "sudo pacman -S clang"
-    assert f.remediation == "sudo pacman -S clang"
-
-
-def test_from_toolchain_check_passing_is_info():
-    chk = SimpleNamespace(name="cmake", ok=True, detail="ok",
-                          fix_cmd=None, auto_remediable=False)
-    assert diag.from_toolchain_check(chk).severity == diag.SEV_INFO
-
-
-def test_from_fix_suggestion_is_warn_with_fix():
-    s = SimpleNamespace(signature="rust:E0463", message="missing std",
-                        fix_cmd="rustup target add ...")
-    f = diag.from_fix_suggestion(s)
-    assert f.severity == diag.SEV_WARN
-    assert f.check_id == "rust:E0463"
-    assert f.fix_cmd == "rustup target add ..."
-
-
 # ---------------------------------------------------------------------------
 # Reductions
 # ---------------------------------------------------------------------------

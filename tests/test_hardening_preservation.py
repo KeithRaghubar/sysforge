@@ -145,6 +145,9 @@ def test_shipped_config_declares_the_hardening_set():
         for flag in ("-Wp,-D_FORTIFY_SOURCE=3", "-fstack-protector-strong",
                      "-Werror=format-security"):
             assert flag in tokens[key]
+    # C++ only (3.5.0-B100): libstdc++'s assertions never belong in CFLAGS.
+    assert "-Wp,-D_GLIBCXX_ASSERTIONS" in tokens["CXXFLAGS"]
+    assert "-Wp,-D_GLIBCXX_ASSERTIONS" not in tokens["CFLAGS"]
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +171,10 @@ def test_emitted_conf_keeps_hardening_under_a_profile_override(sys_conf_path):
     assert "-Wp,-D_FORTIFY_SOURCE=3" in vals["CFLAGS"]
     assert "-fstack-protector-strong" in vals["CFLAGS"]
     assert "-Werror=format-security" in vals["CFLAGS"]
-    # CXXFLAGS inherits by shell expansion, not by injection.
-    assert vals["CXXFLAGS"] == "$CFLAGS"
+    # CXXFLAGS inherits CFLAGS' tokens by shell expansion; only the C++-only
+    # system token is appended to the reference (3.5.0-B100).
+    assert vals["CXXFLAGS"] == "$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
+    assert "-Wp,-D_GLIBCXX_ASSERTIONS" not in vals["CFLAGS"]
 
 
 def test_emitted_conf_honours_profile_optout_key(sys_conf_path):
@@ -262,3 +267,19 @@ def test_cc_override_is_not_attributed_to_the_cli(sys_conf_path, monkeypatch, ca
     err = capsys.readouterr().err
     assert "via --cc" not in err and "via --cxx" not in err
     assert "CC overridden: /usr/bin/clang" in err
+
+
+
+def test_reference_without_a_cflags_override_still_gets_the_cxx_token(sys_conf_path):
+    """3.5.0-B100: a profile that only rewrites CXXFLAGS as "$CFLAGS"."""
+    profile = {"CXXFLAGS": "${CFLAGS}"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf:
+        vals = read_conf(conf)
+    assert vals["CXXFLAGS"] == "${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
+
+
+def test_explicit_cxxflags_keeps_the_cxx_token(sys_conf_path):
+    profile = {"CFLAGS": "-O2", "CXXFLAGS": "-O2 -pipe"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf:
+        vals = read_conf(conf)
+    assert "-Wp,-D_GLIBCXX_ASSERTIONS" in vals["CXXFLAGS"].split()

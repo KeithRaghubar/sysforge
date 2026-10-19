@@ -1750,3 +1750,13 @@ def test_persist_sysforge_target_uses_the_existing_toml_writer(monkeypatch):
     ) as save:
         _offer_persist_editor("nvim")
     save.assert_called_once_with("editor", "nvim")
+
+
+def test_set_repo_mode_goes_through_set_toml_key(tmp_path, monkeypatch):
+    """3.5.0-B47: atomic and escalating, not a bare write_text."""
+    from sysforge.primitives import config
+    calls = []
+    monkeypatch.setattr(config, "set_toml_key", lambda *a: calls.append(a))
+    p = tmp_path / "packages.toml"
+    _set_repo_mode(p, "pacman")
+    assert calls == [(p, "build", "repo_mode", "pacman")]

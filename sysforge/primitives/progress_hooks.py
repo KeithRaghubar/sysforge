@@ -34,7 +34,8 @@ import — so a later ``register`` (and any test patching of the underlying
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Iterator, Protocol, runtime_checkable
+from collections.abc import Generator
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -47,6 +48,10 @@ class ProgressHooks(Protocol):
 
     def heartbeat(self, detail: str) -> None:
         """Report liveness detail from a long, quiet operation."""
+        ...
+
+    def build_started(self) -> None:
+        """A new build begins: forget the previous build's ninja totals."""
         ...
 
     def tracker(
@@ -108,20 +113,23 @@ class _NoOpHooks:
     def heartbeat(self, detail: str) -> None:
         pass
 
+    def build_started(self) -> None:
+        pass
+
     @contextlib.contextmanager
     def tracker(self, total: int, prefix: str,
-                expected: list[int | None] | None = None) -> Iterator[_NoOpTick]:
+                expected: list[int | None] | None = None) -> Generator[_NoOpTick, None, None]:
         yield _NoOpTick()
 
     @contextlib.contextmanager
-    def yield_terminal(self, kind: str = "prompt") -> Iterator[None]:
+    def yield_terminal(self, kind: str = "prompt") -> Generator[None, None, None]:
         yield
 
     def refresh(self) -> None:
         pass
 
     @contextlib.contextmanager
-    def forwarding_output(self) -> Iterator[None]:
+    def forwarding_output(self) -> Generator[None, None, None]:
         yield
 
     def require_no_tracker(self, owner: str) -> None:

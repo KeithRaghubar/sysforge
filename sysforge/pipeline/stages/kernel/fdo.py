@@ -229,6 +229,16 @@ def _plan_record(propeller, pkgname, *, dry_run, tcfg) -> FdoPlan:
         except fs_provision.FsProvisionError as e:
             _log.warn(f"FDO store {store} could not be group-provisioned ({e}); "
                       "the round record may be unwritable there")
+        # Profiles from the previous profiling kernel no longer match the one
+        # this round builds: a `use` without a fresh capture must refuse.
+        try:
+            removed = kernel_fdo.clear_round_profiles(store, propeller=propeller)
+        except OSError as e:
+            raise RuntimeError(
+                f"[KERNEL] cannot remove the previous round's profiles from {store}: {e}"
+            ) from e
+        for path in removed:
+            _log.info(f"removed the previous round's profile: {path}")
     if propeller:
         try:
             pinned, sha = kernel_fdo.pin_autofdo_profile(

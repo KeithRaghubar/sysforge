@@ -304,8 +304,12 @@ def _root_fstype() -> str | None:
     return None
 
 
+# Tree glyphs ``lsblk`` prints before a parent row when not in raw mode.
+_LSBLK_TREE_GLYPHS = "└├─│`|- "
+
+
 def _transport_from_name(name: str) -> str | None:
-    base = name.rsplit("/", 1)[-1]
+    base = name.rsplit("/", 1)[-1].lstrip(_LSBLK_TREE_GLYPHS)
     if base.startswith("nvme"):
         return "nvme"
     if base.startswith("vd"):
@@ -333,9 +337,11 @@ def detect_root_topology() -> RootTopology:
     uses_crypt = uses_lvm = uses_raid = False
 
     # `lsblk -s` walks from the device up through its parents, giving the
-    # full stack (crypt → lvm → part → disk) with one TYPE per line.
+    # full stack (crypt → lvm → part → disk) with one TYPE per line. `-r`
+    # (raw) drops the tree glyphs (`└─nvme0n1`) that otherwise prefix every
+    # parent row and hid the disk under LUKS/LVM/RAID (3.5.0-B50).
     if source:
-        r = _run(["lsblk", "-nso", "NAME,TYPE", source])
+        r = _run(["lsblk", "-nsro", "NAME,TYPE", source])
         if r and r.returncode == 0:
             for line in r.stdout.splitlines():
                 parts = line.split()

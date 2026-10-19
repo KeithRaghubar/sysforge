@@ -48,6 +48,19 @@ _log = log.get_logger("TOOLCHAIN")
 # ---------------------------------------------------------------------------
 
 
+def healable_drift_line(message: str, *, queued: bool) -> str:
+    """Gate 3's line for a healable std:: re-export drift.
+
+    Only promises the consumer rebuild when one is queued: with
+    ``rebuild_soname_consumers = off`` (or the rebuild declined) nothing is,
+    so the line points at the manual rebuild (3.5.0-B98).
+    """
+    if queued:
+        return f"Gate 3: std:: re-export drift (healable by the queued consumer rebuild): {message}"
+    return ("Gate 3: std:: re-export drift, and no consumer rebuild is queued; "
+            f"rebuild the consumer yourself with `sysforge build <pkg>`: {message}")
+
+
 class ToolchainStage(Stage):
     name = "toolchain"
     description = "LLVM/GCC toolchain build"
@@ -178,6 +191,13 @@ class ToolchainStage(Stage):
                     f"[dry-run] would install from repo: {' '.join(suite)}"
                 )
             else:
+                # sudo must be usable before the sentinel goes down, or a
+                # declined prompt leaves a recovery for an install that never
+                # ran (3.5.0-B75, as 3.5.0-B30 for the from-source install).
+                if not sudo_session.authenticate():
+                    raise RuntimeError(
+                        "[TOOLCHAIN] sudo was not authorized, so nothing was "
+                        "installed; rerun: sysforge run toolchain")
                 # Install is the mutation window — wrap in the sentinel so an
                 # interrupted/failed install blocks the next run with a recovery
                 # command.
@@ -443,14 +463,21 @@ class ToolchainStage(Stage):
             # run with a recovery command. CleanExitRequested → RuntimeError
             # translation (with retry_cmd + the recovery) happens inside
             # sentinel_scope. See primitives/stage_sentinel.py.
-            with sentinel_scope(
-                options.state_dir,
-                "toolchain",
-                recovery=gates.snapshot_recovery(snapshot),
-                retry_cmd=retry,
-                compiler=compiler,
-                pgo=pgo_enabled,
-            ) as sentinel:
+            # A dry run takes no lock and writes no sentinel (3.5.0-B74), as
+            # the PGO lock above.
+            install_scope = (
+                contextlib.nullcontext()
+                if options.dry_run
+                else sentinel_scope(
+                    options.state_dir,
+                    "toolchain",
+                    recovery=gates.snapshot_recovery(snapshot),
+                    retry_cmd=retry,
+                    compiler=compiler,
+                    pgo=pgo_enabled,
+                )
+            )
+            with install_scope as sentinel:
                 if options.dry_run:
                     _log.ui("[dry-run] would install built toolchain and verify")
                 else:
@@ -517,10 +544,9 @@ class ToolchainStage(Stage):
                         exclude=shipped,
                     ):
                         if f.healable:
-                            _log.ui(
-                                "Gate 3: std:: re-export drift (healable by the "
-                                f"queued consumer rebuild): {f.message}"
-                            )
+                            _log.ui(healable_drift_line(
+                                f.message,
+                                queued=bool(soname_consumers or abi_consumers)))
                         else:
                             issues.append(f.message)
                     if issues:
@@ -539,7 +565,8 @@ class ToolchainStage(Stage):
                         if gates.rollback_to_snapshot(snapshot):
                             # Live /usr restored — the system is whole, so clear
                             # the sentinel and raise (nothing to recover at next run).
-                            sentinel.clear()
+                            if sentinel is not None:  # None only under --dry-run
+                                sentinel.clear()
                             raise RuntimeError(
                                 "[TOOLCHAIN] Built toolchain failed Gate-3 verification; "
                                 "the prior toolchain was restored from the pacman cache. "
@@ -574,9 +601,7 @@ class ToolchainStage(Stage):
         # Write compiler paths + variant to pipeline state for downstream
         # stages. ``variant`` is the canonical signal consumers read via
         # ``state.get_toolchain_variant`` — do not derive it from the cc path.
-        result = {"cc": cc, "cxx": cxx, "variant": variant}
-        if ld is not None:
-            result["ld"] = ld
+        result = {"cc": cc, "cxx": cxx, "variant": variant, "ld": ld}
         state.set_stage_result("toolchain", result)
         try:
             state.save()

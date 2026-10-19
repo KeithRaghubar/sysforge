@@ -51,7 +51,7 @@ import tomllib
 from pathlib import Path
 
 from sysforge.primitives import config as _config
-from sysforge.primitives import config_presets, pacman_hooks
+from sysforge.primitives import atomic_write, config_presets, pacman_hooks
 from sysforge.primitives.fs_provision import FsProvisionError
 from sysforge.primitives.paths import (
     CONFIG_PATHS,
@@ -132,13 +132,15 @@ def _patch_conf_text(conf_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _write_conf(path: Path, text: str) -> bool:
-    """
-    Write text to path. Returns True on success, False on PermissionError.
+    """Atomically replace ``path`` with ``text`` (escalating when root-owned).
+
+    Returns False when the write fails, leaving the file unchanged: a
+    truncated pacman.conf breaks pacman system-wide (3.5.0-B47).
     """
     try:
-        path.write_text(text, encoding="utf-8")
+        atomic_write.replace_file(path, text, tag="SETUP")
         return True
-    except PermissionError:
+    except OSError:
         return False
 
 
@@ -160,7 +162,7 @@ _RISK_WARNING = """\
 """
 
 _MANUAL_INSTRUCTION = """\
-[SYSFORGE] Could not write {path} (permission denied).
+[SYSFORGE] Could not write {path}.
 
   To apply the setting manually, add the following line to the
   [options] section of {path}:
@@ -185,14 +187,21 @@ _HOOK_MANUAL_INSTRUCTION = """\
 def cmd_setup(args) -> None:
     """Entry point for 'sysforge setup'."""
     conf_path = Path(getattr(args, "pacman_conf", None) or PACMAN_CONF)
+    if conf_path.exists():
+        _setup_ignore_group(conf_path)
+    else:
+        # The hooks, preset and preferences don't need pacman.conf, and an
+        # explicit --preset must not be dropped silently (3.5.0-B106).
+        print(f"[SYSFORGE] {conf_path} not found: IgnoreGroup step skipped.",
+              file=sys.stderr)
 
-    if not conf_path.exists():
-        print(
-            f"[SYSFORGE] {conf_path} not found: nothing to configure.",
-            file=sys.stderr,
-        )
-        return
+    _setup_pacman_hooks()
+    _setup_preset(getattr(args, "preset", None))
+    _setup_preferences()
 
+
+def _setup_ignore_group(conf_path: Path) -> None:
+    """Offer to add ``IgnoreGroup = sf-build`` to ``conf_path``."""
     conf_text = conf_path.read_text(encoding="utf-8")
 
     if _check_ignore_group(conf_text):
@@ -222,10 +231,6 @@ def cmd_setup(args) -> None:
                 print(f"[SYSFORGE] Added 'IgnoreGroup = {_IGNORE_GROUP}' to {conf_path}.")
             else:
                 print(_MANUAL_INSTRUCTION.format(path=conf_path), file=sys.stderr)
-
-    _setup_pacman_hooks()
-    _setup_preset(getattr(args, "preset", None))
-    _setup_preferences()
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +281,12 @@ def _setup_preferences() -> None:
         return
     from sysforge.primitives.build_sandbox import resolve_sandbox
 
-    packages_path = resolve_packages_path(_config.load_config() or {})
+    try:
+        packages_path = resolve_packages_path(_config.load_config() or {})
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as e:
+        print(f"[SYSFORGE] preferences: skipped, could not load the config ({e}).",
+              file=sys.stderr)
+        return
     build_cfg = _read_table(packages_path, "build")
     sysforge_cfg = _config.load_sysforge_toml()
     aur_cfg = sysforge_cfg.get("aur", {}) or {}
@@ -355,8 +365,8 @@ def _write_rows(writes) -> None:
 # ---------------------------------------------------------------------------
 
 _HARDENED_BLOCK = """\
-  Your profiles.toml does not see the shipped [profiles.hardened] (it replaces
-  the system file). Add this to it, then re-run `sysforge setup --preset secure`:
+  The profiles.toml your builds read ({path}) does not define
+  [profiles.hardened]. Add this to it, then re-run `sysforge setup --preset secure`:
 
   [profiles.hardened]
   extends  = "standard"
@@ -391,14 +401,18 @@ def _invoking_user_profiles() -> Path | None:
     return path if path.exists() else None
 
 
-def _resolved_profiles(user_file: Path | None) -> dict:
-    """The profiles the user's builds resolve (``user_file`` first, then system)."""
+def _resolved_config(user_file: Path | None) -> dict:
+    """The profiles config the user's builds resolve (``user_file`` first, then
+    system, merged under ``extends_system``)."""
     paths = [user_file, Path(CONFIG_PATHS[-1])] if user_file else None
     try:
-        cfg = _config.load_config(paths) or {}
+        return _config.load_config(paths) or {}
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return {}
-    return cfg.get("profiles", {}) or {}
+
+
+# The resolver's own fallback when ``[defaults] profile`` is unset everywhere.
+_RESOLVER_DEFAULT_PROFILE = "bare"
 
 
 def _preset_paths() -> dict:
@@ -412,15 +426,39 @@ def _preset_paths() -> dict:
     }
 
 
-def _live_value(path, row):
-    """The row's current value in ``path``; the shipped default when unset."""
+def _live_value(path, row, resolved_profiles_cfg: dict | None = None):
+    """The row's current value; the shipped default when unset.
+
+    A ``profiles`` row reads ``resolved_profiles_cfg`` (the merged view the
+    resolver builds, so an ``extends_system`` user file shows the system value
+    for a key it leaves unset, 3.5.0-B101); other rows read ``path``. A
+    section that is not a table counts as unset (3.5.0-B104).
+    """
+    if row.target == "profiles" and resolved_profiles_cfg is not None:
+        data = resolved_profiles_cfg
+        if (row.section, row.key) == ("defaults", "profile"):
+            row_default = _RESOLVER_DEFAULT_PROFILE
+        else:
+            row_default = row.default
+    else:
+        row_default = row.default
+        try:
+            with Path(path).open("rb") as f:
+                data = tomllib.load(f)
+        except (OSError, tomllib.TOMLDecodeError):
+            return row.default
+    table = data if row.section is None else data.get(row.section)
+    if not isinstance(table, dict):
+        return row_default
+    return table.get(row.key, row_default)
+
+
+def _display(value) -> str:
+    """A live value as TOML when it is a bool or string, else its ``repr``."""
     try:
-        with Path(path).open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return row.default
-    table = data if row.section is None else (data.get(row.section) or {})
-    return table.get(row.key, row.default)
+        return _config.toml_literal(value)
+    except TypeError:
+        return repr(value)
 
 
 def _choose_preset() -> str:
@@ -451,24 +489,31 @@ def _setup_preset(name: str | None) -> None:
     if not preset.rows:
         return
     from sysforge.primitives.build_sandbox import resolve_sandbox
-    paths = _preset_paths()
+    try:
+        paths = _preset_paths()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as e:
+        print(f"[SYSFORGE] preset {name} not applied: could not load the config ({e}).",
+              file=sys.stderr)
+        return
     sandbox = resolve_sandbox(_config.load_sysforge_toml().get("security", {}) or {})
-    profiles = _resolved_profiles(_invoking_user_profiles())
+    resolved_cfg = _resolved_config(_invoking_user_profiles())
+    profiles = resolved_cfg.get("profiles", {}) or {}
     plan, notes = [], list(preset.notes)
     for row in preset.rows:
         path = paths[row.target]
-        old = _live_value(path, row)
+        old = _live_value(path, row, resolved_cfg)
         if old == row.value:
             continue
         if row.key == "profile" and row.value not in profiles:
-            notes.append(_HARDENED_BLOCK if row.value == "hardened" else
+            notes.append(_HARDENED_BLOCK.format(path=paths["profiles"])
+                         if row.value == "hardened" else
                          f"  profile {row.value!r} is not in your profiles.toml; skipped.")
             continue
         if row.key == "sandbox_builds" and row.value is True and not _sandbox_ready(sandbox):
             notes.append(_sandbox_hint(sandbox))
             continue
         plan.append((row, path, old))
-    if name == "low-friction":  # the sandbox is off once it applies
+    if name == "low-friction":  # review is off; the sandbox is what is left
         notes.append(_ACCEPT_SANDBOX_NOTE)
     if name == "performance":
         tc = _read_table(paths["toolchain"], None)
@@ -480,7 +525,7 @@ def _setup_preset(name: str | None) -> None:
     print(f"\n  Preset {name}:")
     for row, path, old in plan:
         print(f"    {_config.toml_location(row.section, row.key)}: "
-              f"{_config.toml_literal(old)} {arrow()} {_config.toml_literal(row.value)}"
+              f"{_display(old)} {arrow()} {_config.toml_literal(row.value)}"
               f"  ({path.name})")
     if not plan:
         print("    nothing to change")

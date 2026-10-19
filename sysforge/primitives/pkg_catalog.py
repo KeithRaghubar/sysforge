@@ -363,5 +363,6 @@ def write_desktop_group(path: Path, de_key: str) -> None:
         new_text += "\n"
     new_text += "\n" + block
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(new_text)
+    # Atomic and escalating for the root-owned default layout (3.5.0-B47).
+    from sysforge.primitives import atomic_write
+    atomic_write.replace_file(path, new_text, tag="PACKAGES")

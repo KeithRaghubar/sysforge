@@ -265,7 +265,7 @@ Override linker for this build, e.\&g.\& \-\-ld lld.\&
 .RE
 \fB\-\-cache\-report\fR
 .RS 4
-Print a structured cache summary (ccache/sccache hit rates) after the build.\& Also settable via [build] cache_report = true in packages.\&toml.\&
+Print a structured cache summary (ccache/sccache hit rates) after the build.\& Also settable via [build] cache_report = true in packages.\&toml.\& Builds run in the build sandbox show n/a: they never use the host caches.\&
 .PP
 .RE
 \fB\-\-abi\-check\fR
@@ -380,7 +380,7 @@ Path to a profiles.\&toml to use instead of the default.\&
 .RE
 \fB\-\-cache\-report\fR
 .RS 4
-Print a structured cache summary after the run.\&
+Print a structured cache summary after the run.\& Builds run in the build sandbox show n/a: they never use the host caches.\&
 .PP
 .RE
 \fB\-\-no\-pkg\-log\fR

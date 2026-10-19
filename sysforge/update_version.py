@@ -90,6 +90,15 @@ def _produced_pkgnames(pkgbuild_path: Path, pkgnames: list[str]) -> list[str]:
     return produced or pkgnames
 
 
+def _recorded_ver(entry: dict) -> str | None:
+    """The ``[epoch:]pkgver-pkgrel`` build_state recorded, or None."""
+    pkgver, pkgrel = entry.get("pkgver"), entry.get("pkgrel")
+    if pkgver is None or pkgrel is None:
+        return None
+    epoch = entry.get("epoch", "0")
+    return f"{epoch}:{pkgver}-{pkgrel}" if epoch and epoch != "0" else f"{pkgver}-{pkgrel}"
+
+
 def _check_one_pkgbase(
     pkgbase: str,
     pkgnames: list[str],
@@ -251,7 +260,14 @@ def _check_one_pkgbase(
         # ``makepkg -od --nobuild`` resolve. peek_upstream_commit returns
         # None for multi-git-source / unparseable PKGBUILDs / network errors,
         # and we fall through to the canonical path in that case.
-        if built_upstream_commit is not None:
+        # Only when the recorded build is what is installed (a build that
+        # never got installed is still pending, 3.5.0-B56) and the PKGBUILD
+        # carries the recorded pkgrel/epoch (a soname rebuild bumps those
+        # without an upstream commit).
+        if (built_upstream_commit is not None
+                and _recorded_ver(entry) == installed_ver
+                and (str(globals_.get("pkgrel", "")), str(globals_.get("epoch", "0") or "0"))
+                == (str(entry.get("pkgrel", "")), str(entry.get("epoch", "0") or "0"))):
             current_commit = peek_upstream_commit(pkgbuild_dir, pkgbase=pkgbase)
             if current_commit is not None and current_commit == built_upstream_commit:
                 return _UpdateResult(
@@ -309,17 +325,12 @@ def _check_one_pkgbase(
     # built last time but the on-disk PKGBUILD now describes a different
     # version, surface that upstream PKGBUILD has moved. The action is still
     # whatever vercmp says — this is purely informational (-v only).
-    bs_pkgver = entry.get("pkgver")
-    bs_pkgrel = entry.get("pkgrel")
-    bs_epoch = entry.get("epoch", "0")
-    if bs_pkgver is not None and bs_pkgrel is not None:
-        bs_ver = f"{bs_epoch}:{bs_pkgver}-{bs_pkgrel}" if bs_epoch and bs_epoch != "0" \
-            else f"{bs_pkgver}-{bs_pkgrel}"
-        if installed_ver == bs_ver and pkgbuild_ver != bs_ver:
-            _log.info(
-                f"{pkgbase}: PKGBUILD on disk ({pkgbuild_ver}) differs from "
-                f"last built ({bs_ver}); upstream PKGBUILD has moved"
-            )
+    bs_ver = _recorded_ver(entry)
+    if bs_ver is not None and installed_ver == bs_ver and pkgbuild_ver != bs_ver:
+        _log.info(
+            f"{pkgbase}: PKGBUILD on disk ({pkgbuild_ver}) differs from "
+            f"last built ({bs_ver}); upstream PKGBUILD has moved"
+        )
 
     if cmp > 0:
         action = "NEEDS_REBUILD"

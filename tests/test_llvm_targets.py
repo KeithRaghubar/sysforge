@@ -898,3 +898,67 @@ def test_resolve_consumer_backends_warn_once_in_short_form(tmp_path, monkeypatch
     text = out + err
     assert text.count("keeping 2 LLVM target(s)") == 1
     assert text.count("lldb") == 1
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B68: a trailing comment or a chained command
+# ---------------------------------------------------------------------------
+
+def _run_build(pkgbuild_text):
+    """Source the PKGBUILD with stub cmake/ninja and return what each got."""
+    import subprocess
+    script = ('cmake() { printf "cmake:%s\\n" "$*"; }\n'
+              'ninja() { printf "ninja:%s\\n" "$*"; }\n'
+              f"{pkgbuild_text}\nsrcdir=/tmp\nbuild\n")
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    return r.stdout
+
+
+_COMMENT = """\
+pkgname=llvm
+build() {
+  cmake -B build -S . \\
+      -DCMAKE_BUILD_TYPE=Release # keep release; "quoted # not a comment"
+  ninja -C build
+}
+"""
+
+_CHAINED = """\
+pkgname=llvm
+build() {
+  cmake -B build -S . -DLLVM_ENABLE_X="a;b" && ninja -C build
+}
+"""
+
+
+@pytest.mark.parametrize("text", [_COMMENT, _CHAINED])
+def test_injected_arg_reaches_cmake(tmp_path, text):
+    from sysforge.primitives.pkgbuild_patcher import validate_patched_pkgbuild
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(text)
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(text)
+    assert patch_llvm_targets(p, ["X86"]) is True
+    out = _run_build(p.read_text())
+    cmake_line = next(line for line in out.splitlines() if line.startswith("cmake:"))
+    assert '-DLLVM_TARGETS_TO_BUILD=X86' in cmake_line
+    assert "ninja:-C build" in out
+    validate_patched_pkgbuild(orig, p)  # G2 accepts it
+    once = p.read_text()
+    assert "# keep release" in once or "&& ninja" in once  # remainder kept
+    assert once.endswith("\n")
+    patch_llvm_targets(p, ["X86"])
+    assert p.read_text() == once  # idempotent
+
+
+def test_g2_refuses_an_arg_behind_a_separator(tmp_path):
+    from sysforge.primitives.pkgbuild_patcher import (
+        PkgbuildPatchError, validate_patched_pkgbuild,
+    )
+    orig = tmp_path / "PKGBUILD"
+    orig.write_text(_CHAINED)
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_CHAINED.replace("ninja -C build",
+                                  'ninja -C build -DLLVM_TARGETS_TO_BUILD="X86"'))
+    with pytest.raises(PkgbuildPatchError):
+        validate_patched_pkgbuild(orig, p)

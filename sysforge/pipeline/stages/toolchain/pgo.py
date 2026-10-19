@@ -230,8 +230,10 @@ def bolt_only(
     # BOLT takes minutes and the caller's install sudo follows it: authorize
     # now, while the operator is at the confirmation, and keep it warm across
     # the BOLT, as the full build does (3.5.0-B30).
-    if not options.dry_run:
-        sudo_session.authenticate()
+    if not options.dry_run and not sudo_session.authenticate():
+        raise RuntimeError(
+            "[TOOLCHAIN] sudo was not authorized, so BOLT did not run; "
+            "rerun: sysforge run toolchain --bolt-only")
     with sudo_session.keepalive(tag="BOLT", enabled=not options.dry_run):
         bolt.optimize_in_build(
             pgo_map, forced, options, repackage=_repackage, build_root=root, strict=True)
@@ -459,7 +461,10 @@ def build_llvm_pgo_inner(
     # directly from sysforge, so the keepalive's `sudo -v` refreshes the correct
     # timestamp entry (same parent PID) for all passes.
     if not options.dry_run:
-        sudo_session.authenticate()
+        if not sudo_session.authenticate():
+            raise RuntimeError(
+                "[TOOLCHAIN] sudo was not authorized, so nothing was built; "
+                "rerun: sysforge run toolchain")
         # What --syncdeps did, once for every PKGBUILD of the run (3.5.0-B15).
         # Pass 1's own install covers only the pgo PKGBUILD and is skipped
         # entirely on profdata reuse, and every later pass is --nodeps. Suite

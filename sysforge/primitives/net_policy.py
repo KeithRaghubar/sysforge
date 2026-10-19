@@ -60,6 +60,9 @@ KIND_VCS_RESOLVE = "vcs_resolve"
 # is not code ingress but it decides which signer makepkg will accept, so the
 # freeze must cover it and a future policy may treat it separately.
 KIND_KEY_FETCH = "key_fetch"
+# Auto-repair's `meson subprojects download` and `git submodule update` after a
+# build failure (3.5.0-B67): code ingress outside makepkg's verified sources.
+KIND_SUBPROJECT_FETCH = "subproject_fetch"
 # AUR RPC lookups, search and the package-name list (3.1.0-F3). Not code
 # ingress, so the freeze never covered it; only the AUR posture denies it.
 KIND_AUR_RPC = "aur_rpc"

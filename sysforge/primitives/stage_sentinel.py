@@ -74,7 +74,7 @@ import re
 import shlex
 import subprocess
 import tomllib
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -543,7 +543,7 @@ def sentinel_scope(
     recovery: Recovery | None = None,
     retry_cmd: str | None = None,
     **metadata,
-) -> Iterator["StageSentinel"]:
+) -> Generator["StageSentinel", None, None]:
     """Install a stage sentinel for the duration of the block.
 
     Wraps the body in an :class:`InterruptScope` so the first Ctrl-C inside

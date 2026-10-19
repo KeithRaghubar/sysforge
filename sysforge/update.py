@@ -459,7 +459,7 @@ def _consume_artifact_sentinel(silent: bool = False) -> None:
         path.unlink()
 
 
-def _reconcile_external_demotions(bs: BuildState) -> None:
+def _reconcile_external_demotions(bs: BuildState, *, read_only: bool = False) -> None:
     """Demote source-built packages reinstalled externally via ``pacman -S``.
 
     Reads the buildstate + self-install sentinels (the diff is the set of
@@ -467,6 +467,10 @@ def _reconcile_external_demotions(bs: BuildState) -> None:
     build_state entry to a ``pacman`` marker, saves if anything changed, then
     unlinks both sentinels. Best-effort — a sentinel/IO error never aborts the
     update. Stage-owned packages are exempt (handled in BuildState).
+
+    ``read_only`` (``--dry-run`` and the reports) demotes in memory only, so
+    the preview matches what a real run would do, and neither saves nor
+    unlinks the sentinels the real run still needs (3.5.0-B97).
     """
     from sysforge.primitives.install_reconcile import (
         clear_reconcile_sentinels,
@@ -492,7 +496,7 @@ def _reconcile_external_demotions(bs: BuildState) -> None:
             }
         if external:
             demoted = bs.reconcile_external_installs(external)
-            if demoted:
+            if demoted and not read_only:
                 bs.save()
                 _log.info(
                     "demoted "
@@ -502,7 +506,8 @@ def _reconcile_external_demotions(bs: BuildState) -> None:
     except Exception as e:
         _log.info(f"external-install reconcile skipped (non-fatal): {e}")
     finally:
-        clear_reconcile_sentinels(_SENTINEL_DIR)
+        if not read_only:
+            clear_reconcile_sentinels(_SENTINEL_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +906,7 @@ def _phase_init(run: UpdateRun) -> int | None:
     # repo via `pacman -S` (buildstate hook target, minus sysforge's own
     # pacman -U self-install targets) is demoted back to a plain pacman marker
     # so this run doesn't rebuild it from source and undo the user's switch.
-    _reconcile_external_demotions(run.bs)
+    _reconcile_external_demotions(run.bs, read_only=_read_only_run(run.args))
 
     # Active toolchain variant — stamped onto every rebuild via BuildOptions
     # and used below to surface drift between installed packages' recorded
@@ -926,11 +931,12 @@ def _phase_init(run: UpdateRun) -> int | None:
     except OSError as e:
         _log.warn(f"build_state sync failed: {e}")
     else:
-        if isinstance(sync_result, tuple) and len(sync_result) == 2:
-            added, removed = sync_result
-            if added or removed:
-                run.bs.save()
-                _log.info(f"build_state sync: +{added} pacman-mode, -{removed} stale")
+        added, removed = sync_result
+        # A preview never rewrites build_state (3.5.0-B97); the in-memory
+        # sync still feeds its plan.
+        if (added or removed) and not _read_only_run(run.args):
+            run.bs.save()
+            _log.info(f"build_state sync: +{added} pacman-mode, -{removed} stale")
 
     # Unified log — always on, always truncate.
     run.unified_log_active = not getattr(run.args, "dry_run", False)
@@ -1504,6 +1510,13 @@ def _phase_plan(run: UpdateRun) -> int | None:
     # NEEDS_REBUILD filter here therefore picks up genuinely-stale -git
     # packages and excludes up-to-date ones.
     run.to_build = [r for r in run.results if r.action == "NEEDS_REBUILD"]
+    # A stage-owned package rebuilt here (--include-stage-owned) builds and
+    # records under its owner, or drift replays it differently forever
+    # (3.5.0-B63).
+    recorded = run.bs.all_packages()
+    for r in run.to_build:
+        r.owner_stage = next((recorded[n]["owner_stage"] for n in r.pkgnames
+                              if (recorded.get(n) or {}).get("owner_stage")), None)
     run.pending_pacman_upgrade = [
         r for r in run.results if r.action == "NEEDS_PACMAN_UPGRADE"
     ]
@@ -1574,8 +1587,10 @@ def _phase_confirm(run: UpdateRun) -> int | None:
 
 def _phase_build(run: UpdateRun) -> int | None:
     """Phase 5: Build."""
+    # A purge refusal is a failure like a freeze denial: fall through to the
+    # summary and its non-zero exit rather than report success (3.5.0-B51).
     if (not run.to_build and not run.pending_pacman_upgrade and not run.frozen_sync_pkgs
-            and not run.sysupgrade_pending):
+            and not run.cleansrc_failures and not run.sysupgrade_pending):
         _ui_progress.phase(None)
         print("[SYSFORGE] Nothing to rebuild.")
         _emit_timings(run.timer, run.args)
@@ -2008,7 +2023,8 @@ class UpdateVerb(Verb):
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
             help="Path to a profiles.toml to use instead of the default.")
         p.add_argument("--cache-report", action="store_true", dest="cache_report",
-            help="Print a structured cache summary after the run.")
+            help="Print a structured cache summary after the run. Builds run in the "
+                 "build sandbox show n/a: they never use the host caches.")
         p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
             help="Disable per-package log files.")
         p.add_argument("--persist-log", action="store_true", dest="persist_log",

@@ -115,3 +115,44 @@ def test_rewrite_preserves_comments_and_prunes_inert_entries(tmp_path):
     assert '"inert"' not in text      # auto-pruned: no override field
     assert '"keeper"' in text
     assert '"added"' in text
+
+
+def test_rewrite_writes_once_through_replace_file(tmp_path, monkeypatch):
+    """3.5.0-B47: atomic (and escalating) instead of a bare write_text."""
+    from sysforge.primitives import atomic_write
+    calls = []
+    monkeypatch.setattr(atomic_write, "replace_file",
+                        lambda path, text, tag: calls.append((path, text)))
+    p = tmp_path / "packages.toml"
+    p.write_text('[[package]]\nname = "a"\ncache = false\n')
+    rewrite_packages_toml(p, drop_name="a",
+                          append='\n[[package]]\nname = "a"\nenable_build_from_source = true\n')
+    assert len(calls) == 1
+    text = calls[0][1]
+    assert text.count('name = "a"') == 1 and "enable_build_from_source = true" in text
+
+
+def test_rewrite_on_missing_file_starts_from_the_header(tmp_path):
+    """3.5.0-B48: a first opt-in keeps the header and [build] section."""
+    p = tmp_path / "packages.toml"
+    rewrite_packages_toml(p, drop_name="mesa",
+                          append='\n[[package]]\nname = "mesa"\nenable_build_from_source = true\n')
+    import tomllib
+    data = tomllib.loads(p.read_text())
+    assert data["build"]["pkgbuild_src_dir"] == "~/src"
+    assert data["package"] == [{"name": "mesa", "enable_build_from_source": True}]
+
+
+def test_forget_opt_out_failure_leaves_build_state_untouched(tmp_path, monkeypatch):
+    """3.5.0-B57: the opt-out is written before build_state is saved."""
+    import pytest
+    from sysforge.primitives import opt_out
+    _seed(tmp_path, "mesa", "mesa")
+    before = (tmp_path / "build_state.toml").read_bytes()
+
+    def _boom(*a, **k):
+        raise opt_out.OptOutError("opted-out.toml is corrupt")
+    monkeypatch.setattr(opt_out.OptOutList, "add", _boom)
+    with pytest.raises(opt_out.OptOutError):
+        forget_packages(tmp_path, ["mesa"], opt_out=opt_out.VIA_REVERT)
+    assert (tmp_path / "build_state.toml").read_bytes() == before

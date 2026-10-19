@@ -208,7 +208,10 @@ def build_pass(
     # always stripped. A sudo inside the build's forwarded output could not
     # pause or hide the progress bar; sysforge does both steps itself below,
     # through the privilege seam.
-    extra = ["--cleanbuild", "--force"] if pgo_build else []
+    # --force on every pass: without it a same-version package already in
+    # PKGDEST (a PGO pass, other [llvm] targets) makes makepkg exit 13 and is
+    # installed as this build, unfingerprinted (3.5.0-B49).
+    extra = ["--cleanbuild", "--force"] if pgo_build else ["--force"]
     strip_flags = SYNC_FLAGS
     if staged_deps:
         extra = extra + ["--nodeps"]

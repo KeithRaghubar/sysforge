@@ -403,3 +403,19 @@ def test_build_pass_collects_each_dirs_build_root(tmp_path):
         build_pass("4a", {"llvm": pb, "clang": pb}, options, staged_deps=True,
                    build_roots=roots)
     assert roots == {pb.parent: tmp_path / "builds/llvm"}
+
+
+def test_build_llvm_single_forces_a_rebuild(tmp_path):
+    """3.5.0-B49: without --force a same-version package in PKGDEST makes
+    makepkg exit 13 and is installed as this build, unfingerprinted."""
+    pb = make_pkgbuild(tmp_path / "builds", "llvm")
+    options = make_options(dry_run=False, makepkg_flags=[], state_dir=tmp_path / "state")
+    captured = []
+
+    def fake_run(pkgbuild_path, options=None):
+        captured.append(list(options.extra_flags or []))
+
+    with patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run", side_effect=fake_run):
+        build_llvm_single({"llvm": pb}, {}, {}, options)
+
+    assert "--force" in captured[0]

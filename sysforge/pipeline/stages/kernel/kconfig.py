@@ -427,12 +427,19 @@ def load_hardware_kconfig(sysforge_config, state_dir=None):
     return kconfig, device_kconfig
 
 
+# A decimal or hex value, written bare: kconfig rejects a quoted value for an
+# int or hex symbol (3.5.0-B80).
+_NUMERIC_KCONFIG_VALUE = _re.compile(r"-?[0-9]+|0[xX][0-9a-fA-F]+")
+
+
 def format_kconfig_line(option, value):
     """Format a single option=value pair as a kernel .config line."""
     if value in ("y", "m"):
         return f"{option}={value}"
     if value == "n":
         return f"# {option} is not set"
+    if _NUMERIC_KCONFIG_VALUE.fullmatch(str(value)):
+        return f"{option}={value}"
     return f'{option}="{value}"'
 
 
@@ -481,6 +488,19 @@ def write_hotplug_fragment(kernel_cfg, options, dry_run):
         f"Wrote hotplug fragment ({len(HOTPLUG_KCONFIG)} modules): {fragment_path}"
     )
     return fragment_path
+
+
+def _remove_stale_fragment(kernel_cfg, dry_run):
+    """Remove a prior run's ``sysforge.config`` so no fragment means none merged."""
+    if dry_run:
+        return
+    stale = config.pkgbuild_path(kernel_cfg).parent / "sysforge.config"
+    if stale.exists():
+        try:
+            stale.unlink()
+            _log.info(f"Removed stale kconfig fragment: {stale}")
+        except OSError as exc:
+            _log.warn(f"Could not remove stale kconfig fragment {stale}: {exc}")
 
 
 def write_kconfig_fragment(
@@ -534,14 +554,7 @@ def write_kconfig_fragment(
     # PKGBUILD — "off" must mean off.
     if not kernel_cfg.kconfig_merge:
         _log.info("kconfig_merge = false: skipping kconfig fragment merge")
-        if not dry_run:
-            stale = config.pkgbuild_path(kernel_cfg).parent / "sysforge.config"
-            if stale.exists():
-                try:
-                    stale.unlink()
-                    _log.info(f"Removed stale kconfig fragment: {stale}")
-                except OSError as exc:
-                    _log.warn(f"Could not remove stale kconfig fragment {stale}: {exc}")
+        _remove_stale_fragment(kernel_cfg, dry_run)
         return None, 0, 0, 0, 0
 
     # Load and validate the sources
@@ -586,7 +599,10 @@ def write_kconfig_fragment(
               **extra_kconfig, **manual_kconfig}
 
     if not merged:
+        # prepare() merges any sysforge.config it finds, so a fragment left
+        # from a run that had entries would keep applying, ungated (3.5.0-B52).
         _log.info("No kconfig entries from any source: skipping fragment")
+        _remove_stale_fragment(kernel_cfg, dry_run)
         return None, 0, 0, 0, 0
 
     pkgbuild = config.pkgbuild_path(kernel_cfg)

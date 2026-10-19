@@ -255,3 +255,46 @@ def test_empty_dir_contents_removes_symlink_without_following(tmp_path):
 
     assert list(pgo_store.iterdir()) == []
     assert (outside / "keep").exists()  # link target untouched
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B77: no sudo over a planted symlink
+# ---------------------------------------------------------------------------
+
+def _shared_tree(tmp_path):
+    shared = tmp_path / "state"
+    shared.mkdir()
+    shared.chmod(0o2775)  # group-writable, like the provisioned state tree
+    elsewhere = tmp_path / "victim"
+    elsewhere.mkdir()
+    return shared, elsewhere
+
+
+def test_symlinked_target_is_refused_before_any_sudo(tmp_path):
+    shared, elsewhere = _shared_tree(tmp_path)
+    link = shared / "pgo-store"
+    link.symlink_to(elsewhere)
+    with patch.object(fs_provision.os, "access", return_value=False), \
+         patch.object(fs_provision, "_run_priv", side_effect=AssertionError("sudo ran")), \
+         patch.object(fs_provision, "_group_exists", side_effect=AssertionError("probed")):
+        with pytest.raises(FsProvisionError, match="symlink"):
+            ensure_writable_dir(link)
+
+
+def test_symlinked_ancestor_in_a_shared_dir_is_refused(tmp_path):
+    shared, elsewhere = _shared_tree(tmp_path)
+    (shared / "a").symlink_to(elsewhere)
+    with patch("pathlib.Path.mkdir", side_effect=PermissionError(13, "nope")), \
+         patch.object(fs_provision, "_run_priv", side_effect=AssertionError("sudo ran")):
+        with pytest.raises(FsProvisionError, match="symlink"):
+            ensure_writable_dir(shared / "a" / "b")
+
+
+def test_symlinked_ancestor_in_a_root_only_dir_is_fine(tmp_path):
+    sysdir = tmp_path / "sys"
+    sysdir.mkdir()
+    sysdir.chmod(0o755)
+    real = tmp_path / "real"
+    real.mkdir()
+    (sysdir / "home").symlink_to(real)
+    fs_provision._refuse_planted_symlink(sysdir / "home" / "x" / "y")  # no raise

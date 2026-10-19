@@ -534,7 +534,10 @@ def _toolchain_built_packages() -> set[str]:
         return {
             name
             for name, entry in bs.all_packages().items()
-            if isinstance(entry, dict) and entry.get("owner_stage") == "toolchain"
+            # Typed dict, but build_state.toml is hand-editable: a scalar entry
+            # must skip itself, not empty the whole set via the except below.
+            if isinstance(entry, dict)  # pyright: ignore[reportUnnecessaryIsInstance]
+            and entry.get("owner_stage") == "toolchain"
         }
     except Exception as e:  # noqa: BLE001 — advisory; absent state is fine
         _log.debug(f"toolchain build_state read skipped: {e}")

@@ -21,5 +21,6 @@ timezone             = "UTC"
 keymap               = "us"
 parallel_downloads   = 5
 root_password        = "sysforge"
+ssh_root_login       = true
 username             = "builder"
 user_password        = "sysforge"

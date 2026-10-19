@@ -205,3 +205,19 @@ def test_rebuild_consumers_marks_repo_consumers_trusted_for_review(tmp_path, mon
                              PipelineState(tmp_path / "state"))
     assert seen["t"] == {"doxygen": "repo", "linux-tools": "repo",
                          "spoof": None, "renamed": None}
+
+
+def test_snapshot_skips_names_that_were_never_installed(tmp_path, monkeypatch):
+    """3.5.0-B76: a new subpackage's None read as a missing archive and
+    refused the whole rollback."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import pacman
+    installed = {"llvm": "21.1.0-1", "clang": "21.1.0-1"}
+    monkeypatch.setattr(gates, "_SNAPSHOT_SUITE", ("llvm", "clang", "lib32-new"))
+    monkeypatch.setattr(pacman, "get_installed_version", installed.get)
+    monkeypatch.setattr(pacman, "cached_pkg_files_for",
+                        lambda names: {n: tmp_path / f"{n}.pkg.tar.zst" for n in names})
+    snap = gates.snapshot_suite({"llvm-new-sub": tmp_path / "llvm" / "PKGBUILD"})
+    assert set(snap) == {"llvm", "clang"}
+    monkeypatch.setattr(pacman, "batch_install_pkgs", lambda files: True)
+    assert gates.rollback_to_snapshot(snap) is True

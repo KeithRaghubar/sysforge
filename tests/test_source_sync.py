@@ -1006,3 +1006,63 @@ def test_aur_disabled_still_syncs_non_aur_origin(tmp_path):
         net_policy.reset_policy()
     assert result.status != STATUS_SKIPPED_AUR_DISABLED
     fetch.assert_called_once()
+
+
+def test_aur_disabled_skips_git_labelled_aur_checkout(tmp_path):
+    """3.5.0-B66: `source = "git"` means the AUR too; the origin decides."""
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_AUR_DISABLED
+    pkg = _make_repo(tmp_path, "foo")
+    subprocess.run(["git", "init", "-q", str(pkg)], check=True)
+    subprocess.run(["git", "-C", str(pkg), "remote", "add", "origin",
+                    "https://aur.archlinux.org/foo.git"], check=True)
+    sched = _scheduler(tmp_path)
+    _aur_off()
+    try:
+        with patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+                   side_effect=AssertionError("fetched from the AUR")):
+            result = sched.request(SyncRequest(pkgbase="foo", pkgbuild_dir=pkg, source="git"))
+    finally:
+        net_policy.reset_policy()
+    assert result.status == STATUS_SKIPPED_AUR_DISABLED
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B65: --cleansrc keeps a checkout it could not clone again
+# ---------------------------------------------------------------------------
+
+def test_cleansrc_offline_keeps_the_checkout(tmp_path):
+    from sysforge.primitives.source_sync import STATUS_SKIPPED_OFFLINE
+    pkg = _make_repo(tmp_path, "htop")
+    sched = _scheduler(tmp_path, cleansrc=True)
+    sched.offline = True
+    with patch("sysforge.primitives.source_sync.purge_src",
+               side_effect=AssertionError("purged")):
+        result = sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
+    assert result.status == STATUS_SKIPPED_OFFLINE
+    assert (pkg / "PKGBUILD").exists()
+
+
+def test_cleansrc_under_freeze_keeps_the_checkout(tmp_path):
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_FROZEN
+    pkg = _make_repo(tmp_path, "htop")
+    sched = _scheduler(tmp_path, cleansrc=True)
+    net_policy.set_policy(net_policy.NetPolicy(frozen=True, thawed=frozenset()))
+    try:
+        with patch("sysforge.primitives.source_sync.purge_src",
+                   side_effect=AssertionError("purged")):
+            result = sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg))
+    finally:
+        net_policy.reset_policy()
+    assert result.status == STATUS_FROZEN
+    assert "--cleansrc kept the checkout" in result.error
+
+
+def test_renamed_vcs_pkgbase_is_still_vcs():
+    """3.5.0-B78: `foo-git-sysforge` must take the --devel pkgver() path."""
+    from sysforge.primitives.source_sync import is_vcs_pkgbase
+    from sysforge.update_common import _is_vcs
+    assert is_vcs_pkgbase("foo-git-sysforge") and _is_vcs("foo-git-sysforge")
+    assert not is_vcs_pkgbase("mesa-sysforge")
+    assert is_vcs_pkgbase("foo-git")

@@ -389,3 +389,25 @@ def test_check_llvm_link_resolution_detects_non_usr_lib():
          patch("sysforge.pipeline.stages.toolchain.verify.Path.exists", return_value=True):
         issues = check_llvm_link_resolution()
     assert any("outside /usr/lib" in i for i in issues)
+
+
+def test_verify_llvm_install_compiles_and_links_with_lld():
+    """3.5.0-B58: --version misses symbol breakage a real compile exposes."""
+    from sysforge.pipeline.stages.toolchain import verify_llvm_install
+    pacman_output = "\n".join(f"{n} 22.0.1-1" for n in
+                              ("llvm", "llvm-libs", "clang", "lld", "compiler-rt"))
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[:2] == ["clang", "-x"]:
+            return MagicMock(returncode=127, stdout="",
+                             stderr="clang: symbol lookup error: libclang-cpp.so")
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.primitives.run.capture", side_effect=fake_run):
+        issues = verify_llvm_install()
+    assert any("-fuse-ld=lld" in c for c in seen)
+    assert any("clang compile and lld link" in i for i in issues)

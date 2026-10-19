@@ -208,14 +208,16 @@ Mechanism lives in the cited §DESIGN section.
   and install deps (`build_core.install_missing_repo_deps`) and artifacts
   (`install_built_packages`) through the privilege seam — sudo's prompt goes to
   `/dev/tty`, where a forwarded child's prompt can't be seen or kept off the bar.
-  **Always `authenticate()` before entering `keepalive()`** — the refresh inherits
-  stdio and would otherwise prompt from a background thread. The kernel stage also
+  **Always `authenticate()` before entering `keepalive()`, and stop on `False`** — the
+  refresh is `sudo -v -n` and cannot prompt, so without credentials it only warns while
+  a build that cannot install runs (`3.5.0-B55`). The kernel stage also
   probes *before* `sentinel_scope` so a stale prompt can't strand a recovery
   sentinel for a mutation that never began. §22.
-- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at six
+- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at seven
   seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, both `vcs_pkgver.py`
-  probes, and `build_prep.fetch_pgp_keys` (`KIND_KEY_FETCH`, the one keyserver home — consent-gated,
-  `auto_repair` routes through it) — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
+  probes, `build_prep.fetch_pgp_keys` (`KIND_KEY_FETCH`, the one keyserver home — consent-gated,
+  `auto_repair` routes through it), and `auto_repair`'s subproject/submodule download
+  (`KIND_SUBPROJECT_FETCH`) — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
   on the **authoritative pkgbase**, threaded explicitly (never the checkout dir name — a rename
   breaks it). A new code-ingress seam gets its own `KIND_*`, never a reuse. `update.py`'s single
   `_raise_if_frozen` is the one home for the non-zero exit. `[aur] enabled = false` is a `NetPolicy`

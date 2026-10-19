@@ -44,6 +44,7 @@ from sysforge.primitives import install_reconcile, journal, pacman, profile, pro
 from sysforge.primitives.build_state import BuildState, is_source_build_mode
 from sysforge.primitives.opt_out import VIA_REVERT
 from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+from sysforge.primitives.stage_sentinel import Recovery
 from sysforge.verbs.shared import (
     emit_orphaned_profiles,
     forget_packages,
@@ -129,7 +130,10 @@ def plan_revert(bs: BuildState, targets: list, installed: set | None = None) -> 
                 # whole installed set in (no pre-remove — that would break
                 # reverse deps depending on the provided stock names).
                 members = _conflict_members(entries, target_name, installed)
-                if len(members) == 1:  # not split: origin_pkgbase is authoritative
+                if not _is_split(entries, target_name):
+                    # Not split: origin_pkgbase is authoritative. A lone
+                    # *installed* member of a split set keeps its own stock
+                    # name, never the pkgbase (3.5.0-B62).
                     members = [(target_name, stock)]
                 # Name the member whose stock name is the pkgbase (mesa-sysforge),
                 # not whichever sibling the reverse lookup happened to land on.
@@ -145,10 +149,24 @@ def plan_revert(bs: BuildState, targets: list, installed: set | None = None) -> 
                     target, "derename", target_name, stock,
                     f"remove renamed {target_name}, reinstall stock {stock}"))
         else:  # plain source_built — installed under the stock name
-            plans.append(RevertPlan(target, "reinstall", target_name,
-                                    entry.get("pkgbase") or target_name,
-                                    f"reinstall repo {target_name}"))
+            # Reinstall the member itself, never its pkgbase: `pacman -S mesa`
+            # leaves a source-built vulkan-radeon in place (3.5.0-B62). Naming
+            # the pkgbase reverts every installed member, as forget does.
+            if target_name == entry.get("pkgbase") and _is_split(entries, target_name):
+                members = _conflict_members(entries, target_name, installed)
+            else:
+                members = [(target_name, target_name)]
+            names = [n for n, _ in members]
+            plans.append(RevertPlan(target, "reinstall", target_name, target_name,
+                                    f"reinstall repo {', '.join(names)}", members))
     return plans
+
+
+def _is_split(entries: dict, key: str) -> bool:
+    """Whether ``key`` shares its recorded pkgbase with another entry."""
+    pkgbase = entries[key].get("pkgbase")
+    return bool(pkgbase) and sum(1 for e in entries.values()
+                                 if e.get("pkgbase") == pkgbase) > 1
 
 
 class RevertToStockVerb(Verb):
@@ -178,6 +196,15 @@ class RevertToStockVerb(Verb):
 
     def journal_target(self, args) -> str | None:
         return journal.pkg_target(args.packages)
+
+    def sentinel_recovery(self, args, pre: PreCheckResult) -> "Recovery | None":
+        """Reinstall every stock package the revert was putting back: an
+        interrupted or failed derename leaves the package removed (3.5.0-B93)."""
+        del args
+        stocks = sorted({st for p in pre.ctx.get("plans", []) if p.action != "skip"
+                         for st in ([st for _, st in p.members] or [p.stock_pkg])
+                         if st})
+        return Recovery.pacman_sync(stocks) if stocks else None
 
     def pre_check(self, args) -> PreCheckResult:
         state_dir, _source = resolve_state_dir(getattr(args, "state_dir", None))
@@ -229,13 +256,14 @@ class RevertToStockVerb(Verb):
                 try:
                     pacman.reinstall_repo_pkgs([p.stock_pkg])
                 except subprocess.CalledProcessError as exc:
-                    _log.error(
+                    # Raise, not return: the package is gone, so the sentinel
+                    # must keep its recovery for the next run (3.5.0-B93).
+                    raise RuntimeError(
                         f"[revert] {p.target}: removed {p.pkgname} but stock "
                         f"reinstall of {p.stock_pkg} FAILED ({exc}); system "
                         f"left without this package; run "
-                        f"`sudo pacman -S {p.stock_pkg}` to recover")
-                    _log.error("[revert] stopping: remaining targets not processed")
-                    return ExecResult(exit_code=1)
+                        f"`sudo pacman -S {p.stock_pkg}` to recover. Remaining "
+                        "targets not processed") from exc
             elif p.action == "replace":
                 # Conflict-mode: one atomic `pacman -S` over every installed
                 # member; on failure nothing changed.
@@ -253,14 +281,17 @@ class RevertToStockVerb(Verb):
                 continue
             else:  # "reinstall" (plain) — one atomic `pacman -S`; on failure
                    # nothing changed.
+                names = [n for n, _ in p.members] or [p.stock_pkg]
                 try:
-                    pacman.reinstall_repo_pkgs([p.stock_pkg])
+                    pacman.reinstall_repo_pkgs(names)
                 except subprocess.CalledProcessError as exc:
                     _log.error(
-                        f"[revert] {p.target}: reinstall of {p.stock_pkg} "
+                        f"[revert] {p.target}: reinstall of {', '.join(names)} "
                         f"failed ({exc})")
                     _log.error("[revert] stopping: remaining targets not processed")
                     return ExecResult(exit_code=1)
+                forget_packages(pre.ctx["state_dir"], names, opt_out=VIA_REVERT)
+                continue
             # forget this entry so `update` stops rebuilding it
             forget_packages(pre.ctx["state_dir"], [p.pkgname], opt_out=VIA_REVERT)
 

@@ -227,6 +227,21 @@ class ArtifactRegistry:
         tmp.replace(self.path)
 
 
+def _parent_present(path: Path) -> bool:
+    """Whether ``path``'s directory is there with something in it.
+
+    A file on an unmounted filesystem is missing because its filesystem is,
+    not because it was deleted: its directory is gone too, or is the empty
+    mount point. Pruning its decline then would re-offer the file once the
+    filesystem returns (3.5.0-B92). An entry whose directory is merely empty
+    is kept as well; at worst a stale line.
+    """
+    try:
+        return any(path.parent.iterdir())
+    except OSError:
+        return False
+
+
 class IgnoreList:
     """Persistent record of *declined* discovery candidates: path -> content-hash.
 
@@ -283,7 +298,7 @@ class IgnoreList:
             if not p or not h:
                 continue
             path = Path(p)
-            if not path.exists():
+            if not path.exists() and _parent_present(path):
                 continue  # deleted file: legitimately re-offerable next scan
             out[path] = h
         return out

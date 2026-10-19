@@ -1496,3 +1496,17 @@ def test_a_phase_change_forgets_ninja_totals(monkeypatch):
     _detail_after("[9000/10023] x")
     progress.phase("repackaging")
     assert _detail_after("[10/400] y") == "ninja 2%"
+
+
+def test_a_second_build_in_one_step_reads_its_own_percentage(monkeypatch):
+    """3.5.0-B91: the --bolt-only repackage runs with no tick or phase change."""
+    _fake_tty_stderr(monkeypatch)
+    progress.init()
+    _detail_after("[9000/10023] x")
+    progress.build_started()
+    assert _detail_after("[10/400] y") == "ninja 2%"
+
+
+def test_progress_module_still_satisfies_the_hooks_protocol():
+    from sysforge.primitives import progress_hooks
+    assert isinstance(progress, progress_hooks.ProgressHooks)

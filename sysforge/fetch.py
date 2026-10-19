@@ -24,11 +24,35 @@ from sysforge.primitives.config import (
     resolve_repo_track,
 )
 from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
-from sysforge.primitives.source_sync import SyncRequest, get_scheduler
+from sysforge.primitives.build_prep import pkgbase_from_globals
+from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+from sysforge.primitives.source_sync import (
+    STATUS_FAILED,
+    STATUS_FROZEN,
+    STATUS_PURGE_REFUSED,
+    STATUS_RATE_LIMITED,
+    SyncRequest,
+    get_scheduler,
+)
+
+
+# Sync results that leave the checkout unusable or stale: the run fails.
+_BLOCKERS = frozenset({STATUS_FAILED, STATUS_RATE_LIMITED, STATUS_PURGE_REFUSED,
+                       STATUS_FROZEN})
+
+
+def _pkgbase_of(pkgbuild_path) -> str | None:
+    try:
+        globals_ = parse_pkgbuild(pkgbuild_path).get("globals", {})
+    except Exception:  # noqa: BLE001 — an unparseable PKGBUILD keeps the dir name
+        return None
+    return pkgbase_from_globals(globals_)
 
 
 def cmd_fetch(args) -> int:
-    """Entry point for sysforge fetch. Returns process exit code (0 or 1)."""
+    """Entry point for sysforge fetch. Returns process exit code (0 or 1): 1 when a
+    package could not be found or its sync was refused (frozen, purge refused,
+    rate-limited, failed)."""
     config_paths = [Path(args.profile_conf)] if getattr(args, "profile_conf", None) else None
     config = load_config(config_paths=config_paths)
     cleansrc_force = getattr(args, "cleansrc_force", False)
@@ -62,13 +86,20 @@ def cmd_fetch(args) -> int:
             # --cleansrc[/-force] always engages the scheduler: --no-update
             # only suppresses the lightweight refresh, not an explicit purge.
             if cleansrc or not args.no_update:
+                # The authoritative pkgbase keys the freeze's --thaw, the VCS
+                # check and dedup, never the checkout dir name (3.5.0-B82).
+                pkgbase = _pkgbase_of(pkgbuild_path) or pkgbuild_dir.name
                 result = scheduler.request(SyncRequest(
-                    pkgbase=pkgbuild_dir.name,
+                    pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_dir,
                     force_fetch=getattr(args, "force_fetch", False),
                 ))
+                if result.status in _BLOCKERS:
+                    _log.error(f"{pkgbase}: {result.error or result.status}")
+                    failed += 1
+                    continue
                 if result.error and result.status != "up_to_date":
-                    _log.warn(f"{pkgbuild_dir.name}: {result.error}")
+                    _log.warn(f"{pkgbase}: {result.error}")
 
             print(str(pkgbuild_dir))
 

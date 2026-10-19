@@ -17,6 +17,7 @@ def _patch_cfg(monkeypatch):
     monkeypatch.setattr(inst, "load_bootstrap", lambda: cfg)
     # Probe would hit a real /dev/vda; stub a plausible 40 GiB disk.
     monkeypatch.setattr(inst, "probe_disk_size_bytes", lambda _dev: 40 * 1024**3)
+    monkeypatch.setattr(inst, "refuse_unsafe_device", lambda _dev: None)
     return cfg
 
 
@@ -74,3 +75,53 @@ def test_unprobeable_disk_dry_run_uses_nominal_size(monkeypatch):
     root = next(p for p in seen["cfg_dict"]["disk_config"]["device_modifications"][0]["partitions"]
                 if p["obj_id"] == "root")
     assert root["size"]["value"] > 0  # preview still renders a concrete layout
+
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B96: the disk the live system runs from is refused before the prompt
+# ---------------------------------------------------------------------------
+
+def test_non_block_path_is_refused(tmp_path):
+    from sysforge.pipeline.stages._partition_plan import refuse_unsafe_device
+    f = tmp_path / "disk.img"
+    f.write_bytes(b"")
+    with pytest.raises(RuntimeError, match="not a block device"):
+        refuse_unsafe_device(str(f))
+
+
+def _fake_block(monkeypatch, lsblk_out):
+    import stat
+    from types import SimpleNamespace
+    from sysforge.pipeline.stages import _partition_plan as pp
+    monkeypatch.setattr(pp.Path, "stat", lambda self: SimpleNamespace(st_mode=stat.S_IFBLK))
+    monkeypatch.setattr(pp.run, "probe", lambda argv: SimpleNamespace(
+        returncode=0, stdout=lsblk_out))
+    return pp
+
+
+@pytest.mark.parametrize("out,what", [
+    ("nvme0n1 \nnvme0n1p1 /boot\nnvme0n1p2 /\n", "nvme0n1p2 on /"),
+    ("sdb \nsdb1 /run/archiso/bootmnt\n", "archiso"),
+    ("sda \nsda2 [SWAP]\n", "SWAP"),
+])
+def test_mounted_device_is_refused(monkeypatch, out, what):
+    pp = _fake_block(monkeypatch, out)
+    with pytest.raises(RuntimeError, match="in use") as e:
+        pp.refuse_unsafe_device("/dev/x")
+    assert what in str(e.value)
+
+
+def test_unmounted_block_device_passes(monkeypatch):
+    pp = _fake_block(monkeypatch, "vda \nvda1 \n")
+    pp.refuse_unsafe_device("/dev/vda")
+
+
+def test_real_run_checks_the_device_before_the_prompt(monkeypatch):
+    _patch_cfg(monkeypatch)
+    order = []
+    monkeypatch.setattr(inst, "refuse_unsafe_device", lambda d: order.append("check"))
+    monkeypatch.setattr(inst, "_confirm", lambda c: order.append("confirm"))
+    monkeypatch.setattr(inst, "run_archinstall", lambda *a, **k: None)
+    inst.InstallStage().run({}, None, _Opts())
+    assert order == ["check", "confirm"]

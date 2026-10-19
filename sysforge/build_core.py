@@ -106,6 +106,10 @@ class BuildTarget:
     # pkgver, where the matching artifact is still in PKGDEST and makepkg would
     # otherwise exit 13 and skip the build. Batch-wide flags stay batch-wide.
     force_rebuild: bool = False
+    # The stage owning this package (kernel/toolchain), so a rebuild through
+    # ``update --include-stage-owned`` builds and records as that stage does
+    # rather than drifting on every axis (3.5.0-B63).
+    owner_stage: str | None = None
 
 
 @dataclass
@@ -1067,6 +1071,7 @@ def build_and_install(
         run as build_run,
         PGOBuildSkipped,
         AlreadyBuilt,
+        built_manifest_artifacts,
     )
     from sysforge.primitives.cache_probe import reset_session, emit_session_report
     from sysforge.primitives import payload_layout
@@ -1359,6 +1364,7 @@ def build_and_install(
                         toolchain_variant=active_variant,
                         toolchain_fingerprint=toolchain_fingerprint,
                         pgo_mode=pgo_mode,
+                        owner_stage=getattr(target, "owner_stage", None),
                     ))
                     new_pkgs = sorted(
                         p for p in snapshot_pkg_dir(search_dir)
@@ -1402,9 +1408,14 @@ def build_and_install(
                     # 2.5.1-F2: policy-routed. "reuse" is trivially REUSE today;
                     # the seam call is the one home any future policy lands in.
                     resolve_already_built("reuse", interactive=interactive)
-                    existing = _find_existing_artifacts(
-                        search_dir, target.pkgnames, target.pkgbuild_ver,
-                    )
+                    # A renamed build's artifacts are named by its manifest; a
+                    # stock-named lookup would install a leftover stock build
+                    # instead, or find nothing (3.5.0-B60).
+                    existing = built_manifest_artifacts(target.pkgbuild_path.parent)
+                    if existing is None:
+                        existing = _find_existing_artifacts(
+                            search_dir, target.pkgnames, target.pkgbuild_ver,
+                        )
                     # A reused artifact is as exposed as a fresh one: the
                     # broken build from an earlier run is exactly what sits
                     # in PKGDEST waiting to be "installed as already built".

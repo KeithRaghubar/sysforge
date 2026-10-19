@@ -53,6 +53,7 @@ import contextlib
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -63,6 +64,12 @@ _COLOR_MODE = "auto"  # one of {"auto", "always", "never"}; see use_color()
 _UNICODE_MODE = "auto"  # one of {"auto", "always", "never"}; see use_unicode()
 _unified_log_fh = None
 _pkg_log_fh = None
+# Guards both handles and the stamp bookkeeping: worker threads (the profraw
+# merge daemon, the sudo keepalive) log too, and without it a line could hit
+# a closed handle, land between a close's truncate and its cleared marker, or
+# race _stamp's date marker (3.5.0-B87). Re-entrant: open_* write their
+# header through _write_to_files while holding it.
+_FILE_LOCK = threading.RLock()
 _last_stamp_date: str | None = None  # date of the last stamped/headed file line
 
 # ---------------------------------------------------------------------------
@@ -342,13 +349,14 @@ def open_unified_log(path, purge: bool = False, *, label: str = "sysforge") -> N
     except Exception:
         path.parent.mkdir(parents=True, exist_ok=True)
     mode = "w" if purge else "a"
-    _unified_log_fh = path.open(mode, buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_unified_log
-    # Group-writable so other sysforge-group members (e.g. post-reboot primary
-    # user) can append on subsequent invocations. Best-effort: silently skip if
-    # we don't own the file (e.g. appending an existing root-owned log).
-    with contextlib.suppress(OSError):
-        path.chmod(0o664)
-    _write_to_files(_session_header(label), raw=True)
+    with _FILE_LOCK:
+        _unified_log_fh = path.open(mode, buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_unified_log
+        # Group-writable so other sysforge-group members (e.g. post-reboot
+        # primary user) can append on subsequent invocations. Best-effort:
+        # silently skip if we don't own the file (e.g. an existing root-owned log).
+        with contextlib.suppress(OSError):
+            path.chmod(0o664)
+        _write_to_files(_session_header(label), raw=True)
 
 
 def close_unified_log(success: bool = True, persist: bool = False) -> None:
@@ -356,14 +364,15 @@ def close_unified_log(success: bool = True, persist: bool = False) -> None:
     Close the unified log. Truncates on success unless persist=True.
     """
     global _unified_log_fh
-    if _unified_log_fh is None:
-        return
-    if success and not persist:
-        _unified_log_fh.seek(0)
-        _unified_log_fh.truncate()
-        _unified_log_fh.write(_CLEARED_MARKER)
-    _unified_log_fh.close()
-    _unified_log_fh = None
+    with _FILE_LOCK:
+        if _unified_log_fh is None:
+            return
+        if success and not persist:
+            _unified_log_fh.seek(0)
+            _unified_log_fh.truncate()
+            _unified_log_fh.write(_CLEARED_MARKER)
+        _unified_log_fh.close()
+        _unified_log_fh = None
 
 
 def open_pkg_log(path, argv=None) -> None:
@@ -372,10 +381,11 @@ def open_pkg_log(path, argv=None) -> None:
     global _pkg_log_fh
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _pkg_log_fh = path.open("a", encoding="utf-8", buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_pkg_log
-    _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
-    if argv:
-        _write_to_files(f"# invocation: {' '.join(str(a) for a in argv)}\n", raw=True)
+    with _FILE_LOCK:
+        _pkg_log_fh = path.open("a", encoding="utf-8", buffering=1)  # noqa: SIM115 — line-buffered handle held open across calls, closed by close_pkg_log
+        _write_to_files(_session_header(f"sysforge build {path.parent.name}"), raw=True)
+        if argv:
+            _write_to_files(f"# invocation: {' '.join(str(a) for a in argv)}\n", raw=True)
 
 
 def close_pkg_log(success: bool = True, persist: bool = False) -> None:
@@ -383,14 +393,15 @@ def close_pkg_log(success: bool = True, persist: bool = False) -> None:
     Close the per-package log. Truncates on success unless persist=True.
     """
     global _pkg_log_fh
-    if _pkg_log_fh is None:
-        return
-    if success and not persist:
-        _pkg_log_fh.seek(0)
-        _pkg_log_fh.truncate()
-        _pkg_log_fh.write(_CLEARED_MARKER)
-    _pkg_log_fh.close()
-    _pkg_log_fh = None
+    with _FILE_LOCK:
+        if _pkg_log_fh is None:
+            return
+        if success and not persist:
+            _pkg_log_fh.seek(0)
+            _pkg_log_fh.truncate()
+            _pkg_log_fh.write(_CLEARED_MARKER)
+        _pkg_log_fh.close()
+        _pkg_log_fh = None
 
 
 def write_pkg_log(line: str) -> None:
@@ -400,22 +411,24 @@ def write_pkg_log(line: str) -> None:
     whole output is teed here, and only its failure tail is repeated through a
     normal logger into both files (3.2.0-F19).
     """
-    if _pkg_log_fh is not None:
-        with contextlib.suppress(Exception):
-            _pkg_log_fh.write(line if line.endswith("\n") else line + "\n")
+    with _FILE_LOCK:
+        if _pkg_log_fh is not None:
+            with contextlib.suppress(Exception):
+                _pkg_log_fh.write(line if line.endswith("\n") else line + "\n")
 
 
 def _write_to_files(line: str, raw: bool = False) -> None:
     """Write a line to all open file handles. raw=True skips formatting,
     including the time stamp (session headers carry their own date+time)."""
-    if _unified_log_fh is None and _pkg_log_fh is None:
-        return
-    if not raw:
-        line = _stamp(line)
-    for fh in (_unified_log_fh, _pkg_log_fh):
-        if fh is not None:
-            with contextlib.suppress(Exception):
-                fh.write(line)  # never let file I/O break the build
+    with _FILE_LOCK:
+        if _unified_log_fh is None and _pkg_log_fh is None:
+            return
+        if not raw:
+            line = _stamp(line)
+        for fh in (_unified_log_fh, _pkg_log_fh):
+            if fh is not None:
+                with contextlib.suppress(Exception):
+                    fh.write(line)  # never let file I/O break the build
 
 
 # ---------------------------------------------------------------------------
