@@ -150,6 +150,7 @@ canonical ordering.
 | `3.5.0-B76` | Gate 3 rollback is refused when the snapshot names a package that was never installed | med | small | patch |
 | `3.5.0-B77` | privileged directory provisioning follows symlinks in the shared state tree | med | small | patch |
 | `3.5.0-B78` | a -sysforge renamed VCS package is not treated as VCS | med | small | patch |
+| `3.5.0-B99` | the cache report shows 0/0 hits for sandboxed builds | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
 | `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
@@ -962,6 +963,23 @@ canonical ordering.
   reading of the code, not yet reproduced, so confirm before fixing. Tests: with the mode off,
   the message names the manual rebuild.
   *Priority: low · Effort: small · Bump: patch* — misleading output.
+
+---
+
+- **`3.5.0-B99` — the cache report shows `0/0 hits` for sandboxed builds.** A sandboxed build
+  never reaches the host's compiler caches: `build_sandbox._HOST_ONLY_BUILDENV` forces
+  `!ccache`/`!distcc` and `_ENV_EXPORT_DENY` drops `RUSTC_WRAPPER`/`CCACHE_DIR`/`SCCACHE_DIR`
+  (`3.2.0-B2`). `makepkg_wrapper` still probes the host caches before and after each build
+  (`probe_ccache`/`probe_sccache`), so the difference is always zero, and `--cache-report` prints
+  `ccache 0/0 hits (n/a) cache=5.0 GiB` per package and in the totals. That reads as a cache that
+  went unused, when it was never in the path, and `cache=` is the size of the host cache, not
+  anything the build touched. Record a sandboxed build as not measured (no difference) and
+  render it as `n/a (sandboxed, host cache not used)`. Leave it out of the ccache/sccache totals,
+  and update the `--cache-report` help and the design text. Seen in the 2026-10-18 `update` run
+  log (every package sandboxed, every line `0/0`); confirmed in the code. Tests: a sandboxed
+  build records no difference and renders the sandboxed note; a host build still reports its
+  difference; totals count host builds only.
+  *Priority: med · Effort: small · Bump: patch* — misleading output on the default-on sandbox path.
 
 ### Documentation
 
