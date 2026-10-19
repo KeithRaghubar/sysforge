@@ -151,6 +151,7 @@ canonical ordering.
 | `3.5.0-B77` | privileged directory provisioning follows symlinks in the shared state tree | med | small | patch |
 | `3.5.0-B78` | a -sysforge renamed VCS package is not treated as VCS | med | small | patch |
 | `3.5.0-B99` | the cache report shows 0/0 hits for sandboxed builds | med | small | patch |
+| `3.5.0-B100` | standard and optimized drop Arch's -D_GLIBCXX_ASSERTIONS | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
 | `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
@@ -178,6 +179,13 @@ canonical ordering.
 | `3.5.0-B96` | the install stage does not refuse the disk the live system runs from | low | small | patch |
 | `3.5.0-B97` | read-only update runs still save build state | low | small | patch |
 | `3.5.0-B98` | Gate 3 promises a consumer rebuild that is not queued | low | small | patch |
+| `3.5.0-B101` | the setup preset diff can show the wrong current profile | low | small | patch |
+| `3.5.0-B102` | the hardened paste-in note blames the wrong cause and omits the path | low | small | patch |
+| `3.5.0-B103` | the low-friction preset turns the build sandbox off without saying so | low | small | patch |
+| `3.5.0-B104` | an unexpected live value crashes the setup preset step | low | small | patch |
+| `3.5.0-B105` | a top-level key write can corrupt a valid TOML file | low | small | patch |
+| `3.5.0-B106` | sysforge setup --preset is dropped when pacman.conf is missing | low | small | patch |
+| `3.5.0-B107` | the hardened profile does not warn that it can abort legacy C code | low | small | patch |
 | `3.5.0-DOC9` | concept page: measuring performance honestly | low | small | patch |
 | `3.5.0-DOC10` | glossary | low | small | patch |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
@@ -980,6 +988,102 @@ canonical ordering.
   build records no difference and renders the sandboxed note; a host build still reports its
   difference; totals count host builds only.
   *Priority: med · Effort: small · Bump: patch* — misleading output on the default-on sandbox path.
+
+---
+
+- **`3.5.0-B100` — `standard` and `optimized` drop Arch's `-D_GLIBCXX_ASSERTIONS`.**
+  `/etc/makepkg.conf` sets `CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"`, but that token is not
+  in `[preserved_system_tokens] CXXFLAGS` (`etc/sysforge/profiles.toml`), so any profile that
+  rewrites CXXFLAGS (every shipped one, via `CXXFLAGS = "$CFLAGS"`) builds C++ without libstdc++'s
+  bounds and precondition checks, which the distro enables. Confirmed 2026-10-18 by running
+  `emit_makepkg_conf` against the live `/etc/makepkg.conf` and sourcing the result: `standard` and
+  `optimized` CXXFLAGS lack the token, and only `hardened` (`3.5.0-F9`) keeps it because it adds
+  it itself. Add `-Wp,-D_GLIBCXX_ASSERTIONS` to the preserved CXXFLAGS list (CXXFLAGS only, never
+  CFLAGS). Tests: extend `tests/test_hardening_preservation.py` so a `CXXFLAGS = "$CFLAGS"`
+  profile emitted over a system conf carrying the token keeps it, and the shipped-declaration
+  test lists it.
+  *Priority: med · Effort: small · Bump: patch* — silently drops distro C++ hardening.
+
+---
+
+- **`3.5.0-B101` — the setup preset diff can show the wrong current profile.**
+  `setup_cmd._live_value` reads only the active profiles file, so with `extends_system = true` a
+  key the user file leaves unset shows the row's shipped default rather than the merged value,
+  and a file with no `[defaults] profile` shows `"standard"` although the resolver falls back to
+  `"bare"`. Only the `old` side of `key: old → new` is wrong (plus an occasional redundant write).
+  Read the `profiles` target from the same merged view `_resolved_profiles` loads. Found in the
+  `3.5.0-F9` final review. Tests: an `extends_system` user file without `[defaults]` shows the
+  system value as `old`.
+  *Priority: low · Effort: small · Bump: patch* — misleading preset diff.
+
+---
+
+- **`3.5.0-B102` — the hardened paste-in note blames the wrong cause and omits the path.**
+  `setup_cmd._HARDENED_BLOCK` always says the user's profiles.toml "replaces the system file",
+  but the guard also fires with no user file at all, when `/etc/sysforge/profiles.toml` predates
+  the profile (a hand-edited copy whose upgrade went to `.pacnew`) or `SYSFORGE_CONFIG_DIR` points
+  at an old tree. Word the cause neutrally ("the profiles.toml your builds read does not define
+  `[profiles.hardened]`") and print the path it checked. Found in the `3.5.0-F9` final review.
+  Tests: the note names the checked path; a stale system file with no user file gets the
+  neutral wording.
+  *Priority: low · Effort: small · Bump: patch* — points the user at the wrong file.
+
+---
+
+- **`3.5.0-B103` — the low-friction preset turns the build sandbox off without saying so.**
+  `config_presets.PRESETS["low-friction"]` writes `[security] sandbox_builds = false`, a security
+  downgrade unrelated to "fewest prompts", but its summary ("no plan confirmation, no source
+  review"), the README and the `3.5.0-F9` release note never mention it; `--preset low-friction`
+  applies it without a confirm. Either drop the row (the sandbox adds no prompts) or name it in
+  the summary, README and release note. Found in the `3.5.0-F9` final review. Tests: if kept, the
+  summary names the sandbox; if dropped, an enabled sandbox survives the preset.
+  *Priority: low · Effort: small · Bump: patch* — an undisclosed security downgrade.
+
+---
+
+- **`3.5.0-B104` — an unexpected live value crashes the setup preset step.**
+  `setup_cmd._live_value` assumes each section is a table (`build = "x"` raises
+  `AttributeError`), and printing the plan calls `config.toml_literal(old)`, which raises
+  `TypeError` for an int, float or list live value. Either aborts `sysforge setup` with a
+  traceback. Guard with `isinstance(table, dict)` (treat a non-table as unset) and fall back to
+  `repr()` for display. Found in the `3.5.0-F9` final review. Tests: a non-table section and a
+  list-valued key each plan a write without raising.
+  *Priority: low · Effort: small · Bump: patch* — a traceback on a malformed config.
+
+---
+
+- **`3.5.0-B105` — a top-level key write can corrupt a valid TOML file.**
+  `config._rewrite_toml_key(section=None)` takes the first line matching `^\s*\[` as the first
+  table header, which also matches a line inside a top-level multi-line array (`a = [\n  [1,
+  2],\n]`) or a multi-line string, so the key is spliced inside it and an invalid file is
+  written. The shipped files don't hit this. Have `set_toml_key` parse the new text with
+  `tomllib.loads` before writing and raise on failure, so callers print their manual edit
+  instead. Found in the `3.5.0-F9` final review. Tests: a top-level array of arrays is left
+  unwritten and the call raises.
+  *Priority: low · Effort: small · Bump: patch* — can write an unparseable config.
+
+---
+
+- **`3.5.0-B106` — `sysforge setup --preset` is dropped when pacman.conf is missing.**
+  `setup_cmd.cmd_setup` returns before the hooks and preset steps when `pacman.conf` is not
+  found, printing only "nothing to configure", so an explicit `--preset` is silently ignored.
+  And a `load_config()` failure (no profiles.toml, a bad rule priority) inside `_preset_paths`
+  raises a traceback. Run the preset step, or refuse it with a message, independently of the
+  pacman.conf check, and catch config-load errors with a clear line. Found in the `3.5.0-F9`
+  final review. Tests: a missing pacman.conf with `--preset secure` still applies (or reports);
+  a `load_config` `FileNotFoundError` prints a message, not a traceback.
+  *Priority: low · Effort: small · Bump: patch* — an explicit request silently ignored.
+
+---
+
+- **`3.5.0-B107` — the hardened profile does not warn that it can abort legacy C code.**
+  `[profiles.hardened]` adds `-fstrict-flex-arrays=3`, and with the preserved
+  `-D_FORTIFY_SOURCE=3` the fortified string functions then treat old-style `[0]`/`[1]` trailing
+  arrays as their declared size and abort at run time on code that overruns them. The profile
+  comment in `etc/sysforge/profiles.toml` should say so and point at a per-package `[[rules]]`
+  override as the opt-out. Found in the `3.5.0-F9` final review. Tests: none beyond
+  `make check-shipped` (comment-only change).
+  *Priority: low · Effort: small · Bump: patch* — an unexplained run-time abort.
 
 ### Documentation
 

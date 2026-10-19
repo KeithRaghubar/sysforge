@@ -7,6 +7,10 @@
 
 `profiles.toml` is a single file holding flag profiles, `[[rules]]`, `[append_conflict_groups]`, and `[consumes_inference]`. By default the user file **fully replaces** the system file. To layer on top instead, add `extends_system = true` at the top of the user file — user values take priority on all conflicts. User rule priorities are bumped by 100 on merge (range 100–199) to always outrank system rules (range 0–99).
 
+### Setup presets
+
+`sysforge setup` presets (`3.5.0-F9`, §`setup_cmd.py`) are **one-shot**: a preset writes a bundle of ordinary values into the live config through `config.set_toml_key` and records nothing else. There is no persistent `preset = "…"` key and no preset precedence tier: the config layer reads each file from one resolved path with no per-key fallback, and a runtime preset layer would add a third source to every reader and leave add-only `sync-config` unable to tell a user's choice from a preset's. After a preset, every value is indistinguishable from a hand-set one.
+
 ### Adopting new shipped defaults
 
 The non-`profiles.toml` configs (`packages.toml`, `toolchain.toml`, `kernel.toml`, `sysforge.toml`) are read from a single resolved path with no per-key fallback to shipped defaults, so a live config does **not** automatically gain keys/sections added by a new release. On an installed system pacman's `backup=()` + `.pacnew` reconciliation covers this (and `doctor --pacman` warns about unmerged `.pacnew`). In a from-repo dev setup — where `SYSFORGE_CONFIG_DIR` points at a working tree and pacman never touches the config — `make sync-config` (`tools/sync_config.py`) fills the gap.

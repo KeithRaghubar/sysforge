@@ -455,7 +455,11 @@ _sysforge_run() {
 
 _sysforge_setup() {
     _sysforge_flag_arg && return
-    [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--pacman-conf" -- "$cur") )
+    if [[ $prev == --preset ]]; then
+        COMPREPLY=( $(compgen -W "defaults performance low-friction secure" -- "$cur") )
+        return
+    fi
+    [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--pacman-conf --preset" -- "$cur") )
 }
 
 _sysforge_env() {

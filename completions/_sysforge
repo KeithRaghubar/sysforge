@@ -723,7 +723,8 @@ _sysforge_run_kernel() {
 
 _sysforge_setup() {
   _arguments \
-    '--pacman-conf[path to pacman.conf]:file:_files'
+    '--pacman-conf[path to pacman.conf]:file:_files' \
+    '--preset[apply a config preset without asking]:preset:(defaults performance low-friction secure)'
 }
 
 _sysforge_env() {

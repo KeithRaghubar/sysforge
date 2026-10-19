@@ -850,22 +850,42 @@ def toml_literal(value) -> str:
     raise TypeError(f"set_toml_key: unsupported value type {type(value).__name__}")
 
 
-def _rewrite_toml_key(text: str, section: str, key: str, value) -> str:
+def _rewrite_toml_key(text: str, section: str | None, key: str, value) -> str:
     """Return ``text`` with ``[section] key = value``. Comment-preserving, no tomlkit.
 
     In the first ``[section]`` table only: replace an active ``key = …``; else
     uncomment a pure commented assignment; else insert after the header. With
     no such table, append one. The table ends at the next ``[…]`` or ``[[…]]``.
+    ``section=None`` is a top-level key: the same search over the lines before
+    the first table header, else an insert just above that header (a key after
+    a header belongs to that table).
     """
     new_line = f"{key} = {toml_literal(value)}"
     lines = text.splitlines()
     trailing_nl = "\n" if text.endswith("\n") else ""
-    header_re = _re.compile(rf"^\s*\[{_re.escape(section)}\]\s*(?:#.*)?$")
     any_header_re = _re.compile(r"^\s*\[")
     active_re = _re.compile(rf"^(\s*){_re.escape(key)}\s*=")
     commented_re = _re.compile(
         rf"^(\s*)#\s*{_re.escape(key)}\s*=\s*{_TOML_VALUE}\s*(?:#.*)?$")
 
+    if section is None:
+        end = next((i for i, line in enumerate(lines) if any_header_re.match(line)),
+                   len(lines))
+        for pattern in (active_re, commented_re):
+            for i in range(end):
+                m = pattern.match(lines[i])
+                if m:
+                    lines[i] = f"{m.group(1)}{new_line}"
+                    return "\n".join(lines) + trailing_nl
+        if end == len(lines):
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.append(new_line)
+            return "\n".join(lines).lstrip("\n") + "\n"
+        lines[end:end] = [new_line, ""]
+        return "\n".join(lines) + trailing_nl
+
+    header_re = _re.compile(rf"^\s*\[{_re.escape(section)}\]\s*(?:#.*)?$")
     start = next((i for i, line in enumerate(lines) if header_re.match(line)), None)
     if start is None:
         if lines and lines[-1].strip():
@@ -884,7 +904,12 @@ def _rewrite_toml_key(text: str, section: str, key: str, value) -> str:
     return "\n".join(lines) + trailing_nl
 
 
-def set_toml_key(path, section: str, key: str, value) -> str:
+def toml_location(section: str | None, key: str) -> str:
+    """``[section] key`` for messages; bare ``key`` for a top-level key."""
+    return key if section is None else f"[{section}] {key}"
+
+
+def set_toml_key(path, section: str | None, key: str, value) -> str:
     """Set one key in a live config file: the one runtime TOML writer (3.1.0-F4).
 
     Writes through :func:`atomic_write.replace_file`, which keeps the file's
@@ -899,7 +924,7 @@ def set_toml_key(path, section: str, key: str, value) -> str:
         text = ""
     new_text = _rewrite_toml_key(text, section, key, value)
     atomic_write.replace_file(path, new_text, tag="CONFIG")
-    _log.info(f"Set [{section}] {key} = {toml_literal(value)} in {path}")
+    _log.info(f"Set {toml_location(section, key)} = {toml_literal(value)} in {path}")
     return new_text
 
 

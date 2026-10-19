@@ -151,6 +151,15 @@ def test_shipped_config_declares_the_hardening_set():
 # emit_makepkg_conf seam
 # ---------------------------------------------------------------------------
 
+def test_hardened_profile_keeps_system_hardening(sys_conf_path):
+    profile = {"CFLAGS": "-march=native -O2 -pipe -ftrivial-auto-var-init=zero "
+                         "-fstrict-flex-arrays=3", "CXXFLAGS": "$CFLAGS"}
+    with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf:
+        vals = read_conf(conf)
+    assert "-ftrivial-auto-var-init=zero" in vals["CFLAGS"]
+    assert "-Wp,-D_FORTIFY_SOURCE=3" in vals["CFLAGS"]
+
+
 def test_emitted_conf_keeps_hardening_under_a_profile_override(sys_conf_path):
     profile = {"CFLAGS": "-march=native -O2 -pipe", "CXXFLAGS": "$CFLAGS"}
     with emit_makepkg_conf(profile, system_conf_path=sys_conf_path) as conf:

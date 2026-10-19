@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-18"
+.TH "sysforge" "1" "2026\-10\-19"
 .PP
 .PP
 .SH NAME
@@ -1105,11 +1105,16 @@ remove even though the live file changed outside sysforge (discards those live\-
 .PP
 \fBsysforge setup\fR [\fIOPTIONS\fR]
 .PP
-Configure system integration (pacman IgnoreGroup for sf\-build; sysforge'\&s pacman hooks) and save update preferences (plan confirmation, PKGBUILD review, AUR, build sandbox).\&
+Configure system integration (pacman IgnoreGroup for sf\-build; sysforge'\&s pacman hooks), offer a config preset, and save update preferences (plan confirmation, PKGBUILD review, AUR, build sandbox).\&
 .PP
 \fB\-\-pacman\-conf\fR \fIFILE\fR
 .RS 4
 Path to pacman.\&conf (default: /etc/pacman.\&conf).\&
+.PP
+.RE
+\fB\-\-preset\fR \fIPRESET\fR
+.RS 4
+Apply a config preset without asking: defaults, performance (faster binaries), low\-friction (fewest prompts) or secure (hardened builds and sources).\&
 .PP
 .RE
 .SS config

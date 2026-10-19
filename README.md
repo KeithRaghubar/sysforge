@@ -100,6 +100,13 @@ upgrade, and the protections in force) and asks `Proceed? [Y/n]`. `--yes`, or
 `confirm_plan = false` in `packages.toml`, skips the question. `sysforge setup` asks about
 these choices (confirmation, review, AUR, build sandbox) and saves the ones you change.
 
+If you have one clear goal, `sysforge setup` first offers a preset that sets several of these at
+once, showing each change before it writes anything: `performance` (the LLVM toolchain and the
+`optimized` profile), `low-friction` (no plan confirmation and no source review) or `secure`
+(the `hardened` flag profile, review and confirmation on, clean-chroot builds once a chroot
+exists, and kernel hardening). The values it writes are ordinary settings you can change later.
+`sysforge setup --preset NAME` applies one without asking.
+
 ### Common commands
 
 **Build and maintain packages**
@@ -146,7 +153,7 @@ Fields may be added in a minor release; a renamed or removed field bumps `"schem
 
 ```bash
 sysforge config merge           # adopt shipped config-default drift (.sfnew)
-sysforge setup                  # pacman integration (IgnoreGroup + hooks) + update preferences
+sysforge setup                  # pacman integration (IgnoreGroup + hooks), a preset, update preferences
 sysforge artifact list          # inventory your scripts, systemd units, pacman hooks
 sysforge artifact review        # offer newly-discovered ones for adoption
 sysforge artifact deploy NAME   # push a managed artifact to the live system

@@ -254,6 +254,21 @@ CFLAGS  = "-march=native -O3 -pipe -fno-plt"
 LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 makepkg_flags = ["--noconfirm", "--syncdeps", "--cleanbuild"]
 
+# hardened: standard's -O2 build plus compiler hardening beyond what
+#   [preserved_system_tokens] restores from /etc/makepkg.conf, from the OpenSSF
+#   Compiler Options Hardening Guide for C and C++. Zeroes uninitialised stack
+#   variables, bounds-checks trailing arrays, enables libstdc++ assertions, and
+#   marks the stack non-executable. Needs gcc 13+ or clang 16+. -z nodlopen is
+#   left out on purpose: it would stop every plugin, Python extension and
+#   PAM/NSS module built with it from loading. Chosen by
+#   `sysforge setup --preset secure`. Kernel builds never use profile flags;
+#   see kernel.toml `hardening`.
+[profiles.hardened]
+extends  = "standard"
+CFLAGS   = "-march=native -O2 -pipe -ftrivial-auto-var-init=zero -fstrict-flex-arrays=3"
+CXXFLAGS = "$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
+LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,-z,noexecstack"
+
 [profiles.pgo_llvm_toolchain]
 extends = "optimized"
 build_mode = "pgo_llvm_toolchain"

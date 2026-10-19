@@ -78,3 +78,35 @@ def test_set_default_toolchain_uses_atomic_write(tmp_path, monkeypatch):
     p.write_text('[defaults]\ntoolchain = "gcc"\n')
     config.set_default_toolchain("llvm", path=p)
     assert calls == [p]
+
+
+def test_top_level_replaces_active_key_before_first_header():
+    out = rw('hardening = false\n[fdo]\nhardening = false\n', section=None,
+             key="hardening", value=True)
+    assert out == 'hardening = true\n[fdo]\nhardening = false\n'
+
+
+def test_top_level_uncomments_commented_example():
+    out = rw('# hardening: doc\n#hardening = false\n\n[fdo]\n', section=None,
+             key="hardening", value=True)
+    assert out == '# hardening: doc\nhardening = true\n\n[fdo]\n'
+
+
+def test_top_level_inserts_above_first_header():
+    out = rw('[fdo]\nmode = "x"\n', section=None, key="hardening", value=True)
+    assert out == 'hardening = true\n\n[fdo]\nmode = "x"\n'
+
+
+def test_top_level_ignores_key_inside_a_table():
+    out = rw('[fdo]\n#hardening = false\n', section=None, key="hardening", value=True)
+    assert out.startswith('hardening = true\n')
+    assert '[fdo]\n#hardening = false' in out
+
+
+def test_top_level_empty_text():
+    assert rw('', section=None, key="hardening", value=True) == 'hardening = true\n'
+
+
+def test_toml_location():
+    assert config.toml_location("build", "review") == "[build] review"
+    assert config.toml_location(None, "hardening") == "hardening"

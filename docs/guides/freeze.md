@@ -153,7 +153,9 @@ built. To keep building unattended, choose one:
 - `--no-review` on the timer's command line, or `[build] review = false`: no gate at all.
 
 `sysforge setup` asks how to treat changed sources, whether to use the AUR and, once a
-chroot exists, whether to build in the sandbox, and saves the answers you change.
+chroot exists, whether to build in the sandbox, and saves the answers you change. Its `secure`
+preset turns review and plan confirmation on and, once a chroot exists, the sandbox; its
+`low-friction` preset sets `review = false`, with the same risk as above.
 
 Both options above mean code nobody looked at is built and installed. A build sandbox
 (`[security] sandbox_builds`) limits what a build can read while it runs, but it does not
