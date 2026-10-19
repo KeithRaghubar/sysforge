@@ -17,6 +17,7 @@ against what the installed libLLVM *provides*.
 """
 from pathlib import Path
 from sysforge.primitives import run
+from sysforge.primitives import stage_sentinel
 
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
@@ -339,6 +340,11 @@ def verify_llvm_install(
     return issues
 
 
+def llvm_recovery() -> "stage_sentinel.Recovery":
+    """The canonical pacman reinstall that restores a consistent LLVM set."""
+    return stage_sentinel.Recovery.pacman_sync(_LLVM_VERSION_MATCH_SET)
+
+
 def llvm_recovery_command() -> str:
-    """The canonical pacman command that restores a consistent LLVM set."""
-    return "sudo pacman -S " + " ".join(_LLVM_VERSION_MATCH_SET)
+    """:func:`llvm_recovery` as a shell line, for messages."""
+    return llvm_recovery().display()

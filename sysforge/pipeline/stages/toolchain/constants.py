@@ -84,3 +84,11 @@ PROFRAW_SETTLE_SECS = 10
 # Warn if the merged profdata is smaller — likely indicates compilation was
 # bypassed (e.g. by a cache tool that slipped past CCACHE/SCCACHE_DISABLE).
 PGO_PROFDATA_MIN_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+# The toolchain variant build_state records for llvm's PGO passes 1 to 3
+# (3.5.0-B39). They build with variant "pgo_llvm" (its lld guard and overlays),
+# but what they leave in PKGDEST is instrumented or a bootstrap, never the
+# optimized product. Recording them under their own variant lets the no-build
+# modes (--install-only, --bolt-only) tell a finished Pass 4 from a run that
+# stopped part way; Pass 4 overwrites it with "pgo_llvm".
+INTERMEDIATE_VARIANT = "pgo_llvm_intermediate"

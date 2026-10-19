@@ -295,3 +295,101 @@ def test_repair_still_preserves_valid_build_mode_in_shell_var_repair(tmp_path, m
 
     bs = BuildState(state_dir)
     assert bs.get("weston-git")["build_mode"] == "source_built"
+
+
+# ── 3.5.0-B42: repaired entries keep their provenance ───────────────────────
+
+_STICKY = {
+    "build_mode": '"pgo_llvm"',
+    "flags_string": '"CFLAGS=-O2"',
+    "built_at": '"2026-03-26T13:29:45Z"',
+    "built_upstream_commit": '"abc123"',
+    "source": '"aur"',
+    "owner_stage": '"toolchain"',
+    "toolchain_variant": '"pgo_llvm"',
+    "toolchain_fingerprint": '"fp-1"',
+    "build_inputs": '"python=3.14"',
+    "build_seconds": '"10,20,30"',
+    "sandboxed": "true",
+}
+
+
+def _write_raw_state(state_dir: Path, entries: dict[str, dict[str, str]]) -> None:
+    """Like _write_broken_state, but values are raw TOML (bools, quoted strings)."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for key, fields in entries.items():
+        lines.append(f'["{key}"]')
+        lines += [f"{k} = {v}" for k, v in fields.items()]
+        lines.append("")
+    (state_dir / "build_state.toml").write_text("\n".join(lines))
+
+
+def _foo_pkgbuild(tmp_path: Path) -> Path:
+    d = tmp_path / "foo"
+    d.mkdir()
+    (d / "PKGBUILD").write_text(
+        '_base=foo\npkgname="$_base"\npkgver=1.0\npkgrel=2\narch=(x86_64)\n')
+    return d
+
+
+def test_repair_keeps_every_sticky_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    d = _foo_pkgbuild(tmp_path)
+    state_dir = tmp_path / "state"
+    _write_raw_state(state_dir, {"$_base": {
+        "pkgver": '"1.0"', "pkgrel": '"2"', "epoch": '"0"',
+        "pkgbase": '"$_base"', "pkgbuild_dir": f'"{d}"', **_STICKY,
+    }})
+
+    cmd_state_repair(_args(state_dir))
+
+    entry = BuildState(state_dir).get("foo")
+    assert entry["pkgbase"] == "foo"
+    for key, raw in _STICKY.items():
+        want = True if raw == "true" else raw.strip('"')
+        assert entry[key] == want, key
+
+
+def test_repair_keeps_an_unbroken_renamed_member(tmp_path, monkeypatch):
+    """A -sysforge member the PKGBUILD's pkgname=() does not list was deleted
+    with the broken group and never recreated."""
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    d = _foo_pkgbuild(tmp_path)
+    state_dir = tmp_path / "state"
+    _write_raw_state(state_dir, {
+        "$_base": {"pkgver": '"1.0"', "pkgrel": '"2"', "epoch": '"0"',
+                   "pkgbase": '"$_base"', "pkgbuild_dir": f'"{d}"'},
+        "foo-sysforge": {"pkgver": '"1.0"', "pkgrel": '"2"', "epoch": '"0"',
+                         "pkgbase": '"foo-sysforge"', "pkgbuild_dir": f'"{d}"',
+                         "origin_pkgbase": '"foo"', "build_mode": '"pgo_mesa"'},
+    })
+
+    cmd_state_repair(_args(state_dir))
+
+    pkgs = BuildState(state_dir).all_packages()
+    assert "$_base" not in pkgs
+    assert "foo" not in pkgs   # no phantom stock entry beside the rename
+    renamed = pkgs["foo-sysforge"]
+    assert renamed["origin_pkgbase"] == "foo"
+    assert renamed["pkgbase"] == "foo-sysforge"
+    assert renamed["build_mode"] == "pgo_mesa"
+
+
+def test_repair_rebuilds_a_broken_renamed_member_under_its_rename(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    d = _foo_pkgbuild(tmp_path)
+    state_dir = tmp_path / "state"
+    _write_raw_state(state_dir, {
+        "foo-sysforge": {"pkgver": '"$pkgver"', "pkgrel": '"2"', "epoch": '"0"',
+                         "pkgbase": '"foo-sysforge"', "pkgbuild_dir": f'"{d}"',
+                         "origin_pkgbase": '"foo"', "owner_stage": '"kernel"'},
+    })
+
+    cmd_state_repair(_args(state_dir))
+
+    pkgs = BuildState(state_dir).all_packages()
+    assert set(pkgs) == {"foo-sysforge"}
+    assert pkgs["foo-sysforge"]["pkgver"] == "1.0"
+    assert pkgs["foo-sysforge"]["origin_pkgbase"] == "foo"
+    assert pkgs["foo-sysforge"]["owner_stage"] == "kernel"

@@ -679,3 +679,70 @@ def test_aur_build_already_built_still_installs(tmp_path, seam_installs):
          patch.object(_pkgs, "makepkg_run", side_effect=already):
         _pkgs._build_aur({"name": "foo"}, {}, {}, make_options(state_dir=tmp_path), {})
     assert seam_installs["installed"] == [pkg_dir]
+
+
+@pytest.mark.parametrize("first_exc", [KeyboardInterrupt, ValueError])
+def test_packages_stage_resume_builds_a_package_interrupted_mid_build(tmp_path, first_exc):
+    """3.5.0-B40: an exception the stage does not catch (Ctrl-C, or anything
+    not a RuntimeError) left the package in no bucket, so --resume skipped it
+    and reported success. It is built on resume."""
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "llvm")
+    make_pkgbuild(builds_dir, "mesa-git")
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+    state = PipelineState(tmp_path / "state")
+
+    def interrupt_mesa(path, **kwargs):
+        if "mesa-git" in str(path):
+            raise first_exc()
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run", side_effect=interrupt_mesa), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        m.return_value = MagicMock(returncode=0)
+        with pytest.raises(first_exc):
+            PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
+
+    # The CLI gate's recovery prompt runs before a real `--resume`; accept it
+    # (it clears the packages sentinel the interrupt left, 3.5.0-B46).
+    from sysforge.primitives.stage_sentinel import StageSentinel
+    StageSentinel().clear()
+    state = PipelineState(tmp_path / "state")   # re-read what the interrupted run saved
+    called = []
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=lambda path, **k: called.append(Path(path).parent.name)), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        m.return_value = MagicMock(returncode=0)
+        PackagesStage().run({"packages_file": str(pkg_file)}, state,
+                            make_options(resume=True))
+
+    assert called == ["mesa-git"]
+    assert "mesa-git" in state.get_package_progress()["built"]
+
+
+def test_packages_stage_first_ctrl_c_stops_before_the_next_package(tmp_path):
+    """3.5.0-B44: a Ctrl-C during one package's build stops the stage before
+    the next one starts, with the clean-exit message and the sentinel kept."""
+    import signal
+    from sysforge.primitives.stage_sentinel import StageSentinel
+    builds_dir = tmp_path / "builds"
+    make_pkgbuild(builds_dir, "llvm")
+    make_pkgbuild(builds_dir, "mesa-git")
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+    state_dir = tmp_path / "state"
+    state = PipelineState(state_dir)
+    built = []
+
+    def ctrl_c_during_llvm(path, **kwargs):
+        built.append(Path(path).parent.name)
+        if "llvm" in str(path):
+            signal.raise_signal(signal.SIGINT)
+
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=ctrl_c_during_llvm), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        m.return_value = MagicMock(returncode=0)
+        with pytest.raises(RuntimeError, match="interrupted by user"):
+            PackagesStage().run({"packages_file": str(pkg_file)}, state,
+                                make_options(state_dir=state_dir))
+    assert built == ["llvm"]
+    assert StageSentinel(state_dir).get_active()["stage"] == "packages"

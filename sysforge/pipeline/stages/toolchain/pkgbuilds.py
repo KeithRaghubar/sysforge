@@ -35,6 +35,7 @@ from sysforge.primitives import prompt
 from sysforge.primitives import render
 from sysforge.primitives import version
 from sysforge.primitives import config as prim_config
+from sysforge.pipeline.stages.toolchain import constants
 from sysforge import log
 
 _log = log.get_logger("TOOLCHAIN")
@@ -455,7 +456,9 @@ def check_last_pgo_build(
     both act on what the last run left instead of building. ``entry`` is llvm's
     ``build_state`` record; it must say llvm was last built as ``pgo_llvm`` at
     the PKGBUILD's own version, so what is left is not from another version or
-    a stock build. Returns ``(pkgbuild, pkgbase, "<pkgver>-<pkgrel>")``; raises
+    a stock build, nor from PGO passes 1 to 3, which record
+    ``constants.INTERMEDIATE_VARIANT`` (3.5.0-B39). Returns
+    ``(pkgbuild, pkgbase, "<pkgver>-<pkgrel>")``; raises
     ``RuntimeError`` naming *flag* and the first mismatch.
     """
     from sysforge.build import makepkg_wrapper
@@ -472,6 +475,11 @@ def check_last_pgo_build(
         raise RuntimeError(
             f"[{tag}] {flag}: no record of a {pkgbase} build; run "
             "`sysforge run toolchain` first")
+    if entry.get("toolchain_variant") == constants.INTERMEDIATE_VARIANT:
+        raise RuntimeError(
+            f"[{tag}] {flag}: the last {pkgbase} build stopped before the final "
+            "PGO pass, so what it left is instrumented or a bootstrap, not the "
+            "optimized toolchain; run `sysforge run toolchain` to finish it")
     if entry.get("toolchain_variant") != "pgo_llvm":
         raise RuntimeError(
             f"[{tag}] {flag}: {pkgbase} was last built as "

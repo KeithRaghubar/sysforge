@@ -4,11 +4,15 @@ test_stage_sentinel.py — tests for the stage_in_progress.toml sentinel.
 Covers mark_started/clear/get_active round-trips plus the CLI-entry
 recovery helper check_and_recover_stale_sentinel().
 """
+import os
 from unittest.mock import MagicMock, patch
 
+import pytest
 
+from sysforge.primitives import stage_sentinel as ss
 from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.stage_sentinel import (
+    Recovery,
     StageSentinel,
     check_and_recover_stale_sentinel,
 )
@@ -21,25 +25,28 @@ def test_get_active_absent_returns_none(tmp_path):
 
 def test_mark_started_writes_record(tmp_path):
     s = StageSentinel(tmp_path)
-    s.mark_started("toolchain", compiler="llvm", pgo=True, recovery_cmd="sudo pacman -S llvm")
+    s.mark_started("toolchain", compiler="llvm", pgo=True,
+                   **Recovery.pacman_sync(["llvm"]).record_fields())
 
     record = s.get_active()
     assert record is not None
     assert record["stage"] == "toolchain"
     assert record["compiler"] == "llvm"
     assert record["pgo"] is True
-    assert record["recovery_cmd"] == "sudo pacman -S llvm"
+    assert record["recovery_kind"] == "pacman_sync"
+    assert record["recovery_args"] == ["llvm"]
     assert "started_at" in record
 
 
 def test_mark_started_round_trips_through_new_instance(tmp_path):
     """The sentinel survives across StageSentinel instances (the actual use case)."""
     StageSentinel(tmp_path).mark_started(
-        "kernel", recovery_cmd="sudo pacman -S linux",
+        "kernel", **Recovery.pacman_sync(['linux']).record_fields(),
     )
     record = StageSentinel(tmp_path).get_active()
     assert record["stage"] == "kernel"
-    assert record["recovery_cmd"] == "sudo pacman -S linux"
+    assert record["recovery_kind"] == "pacman_sync"
+    assert record["recovery_args"] == ["linux"]
 
 
 def test_clear_removes_file(tmp_path):
@@ -78,7 +85,7 @@ def test_check_no_sentinel_returns_true(tmp_path):
 def test_check_stale_declined_returns_false(tmp_path):
     """User declines recovery → block."""
     StageSentinel(tmp_path).mark_started(
-        "toolchain", recovery_cmd="sudo pacman -S llvm",
+        "toolchain", **Recovery.pacman_sync(['llvm']).record_fields(),
     )
     with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
          patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="n"):
@@ -91,7 +98,7 @@ def test_check_stale_declined_returns_false(tmp_path):
 def test_check_stale_accepted_runs_recovery_and_clears(tmp_path):
     """User accepts recovery → run pacman, clear sentinel, proceed."""
     StageSentinel(tmp_path).mark_started(
-        "toolchain", recovery_cmd="sudo pacman -S llvm llvm-libs",
+        "toolchain", **Recovery.pacman_sync(['llvm', 'llvm-libs']).record_fields(),
     )
     fake_proc = MagicMock(returncode=0)
     with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
@@ -101,7 +108,7 @@ def test_check_stale_accepted_runs_recovery_and_clears(tmp_path):
         result = check_and_recover_stale_sentinel(tmp_path)
     assert result is True
     run_mock.assert_called_once_with(
-        ["sudo", "pacman", "-S", "llvm", "llvm-libs"], check=False,
+        ["sudo", "pacman", "-S", "--", "llvm", "llvm-libs"], check=False,
         preexec_fn=lift_for_child,
     )
     assert StageSentinel(tmp_path).get_active() is None
@@ -110,7 +117,7 @@ def test_check_stale_accepted_runs_recovery_and_clears(tmp_path):
 def test_check_stale_recovery_fails_leaves_sentinel(tmp_path):
     """Recovery command returns non-zero → block, leave sentinel."""
     StageSentinel(tmp_path).mark_started(
-        "toolchain", recovery_cmd="sudo pacman -S llvm",
+        "toolchain", **Recovery.pacman_sync(['llvm']).record_fields(),
     )
     fake_proc = MagicMock(returncode=1)
     with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
@@ -172,7 +179,7 @@ def test_check_stale_non_tty_emits_loud_error_and_blocks(tmp_path, capsys):
     manual-recovery instructions so the user understands what happened.
     """
     StageSentinel(tmp_path).mark_started(
-        "toolchain", recovery_cmd="sudo pacman -S llvm",
+        "toolchain", **Recovery.pacman_sync(['llvm']).record_fields(),
     )
     with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=False), \
          patch("sysforge.primitives.stage_sentinel.prompt_choice") as prompt_mock, \
@@ -188,7 +195,7 @@ def test_check_stale_non_tty_emits_loud_error_and_blocks(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "stdin is not a TTY" in err
     assert str(tmp_path / "stage_in_progress.toml") in err
-    assert "sudo pacman -S llvm" in err
+    assert "sudo pacman -S -- llvm" in err
 
 
 def test_check_stale_clear_silent_failure_is_reported(tmp_path, capsys):
@@ -200,7 +207,7 @@ def test_check_stale_clear_silent_failure_is_reported(tmp_path, capsys):
     has no idea why. Verify-after-clear catches it.
     """
     StageSentinel(tmp_path).mark_started(
-        "toolchain", recovery_cmd="sudo pacman -S llvm",
+        "toolchain", **Recovery.pacman_sync(['llvm']).record_fields(),
     )
     fake_proc = MagicMock(returncode=0)
     # Simulate clear() being a no-op (file persists) — this is the
@@ -217,3 +224,110 @@ def test_check_stale_clear_silent_failure_is_reported(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "sentinel file is still present" in err
     assert str(tmp_path / "stage_in_progress.toml") in err
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B43: the recovery command is rebuilt from a validated kind, never run
+# from the group-writable file
+# ---------------------------------------------------------------------------
+
+
+def _plant(tmp_path, body: str) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / StageSentinel.FILENAME).write_text(
+        '[stage_in_progress]\nstage = "toolchain"\nstarted_at = "x"\n' + body)
+
+
+def _accept_all():
+    return (patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True),
+            patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"),
+            patch("sysforge.primitives.stage_sentinel.subprocess.run",
+                  return_value=MagicMock(returncode=0)))
+
+
+def test_planted_free_form_command_is_never_run(tmp_path):
+    """A record carrying only a legacy recovery_cmd string offers just the
+    clear-the-sentinel question; the string is shown, never executed."""
+    _plant(tmp_path, 'recovery_cmd = "sudo sh -c id"\n')
+    interactive, prompt, run = _accept_all()
+    with interactive, prompt as prompt_mock, run as run_mock:
+        assert check_and_recover_stale_sentinel(tmp_path) is True
+    run_mock.assert_not_called()
+    assert "Clear the sentinel" in prompt_mock.call_args.args[0]
+
+
+@pytest.mark.parametrize("body", [
+    'recovery_kind = "pacman_sync"\nrecovery_args = ["--config=/tmp/evil"]\n',
+    'recovery_kind = "pacman_sync"\nrecovery_args = ["llvm; id"]\n',
+    'recovery_kind = "pacman_sync"\nrecovery_args = []\n',
+    'recovery_kind = "pacman_upgrade"\nrecovery_args = ["/tmp/evil-1-1-x86_64.pkg.tar.zst"]\n',
+    'recovery_kind = "mkinitcpio"\nrecovery_args = ["-k", "/tmp/x"]\n',
+    'recovery_kind = "sh"\nrecovery_args = ["-c", "id"]\n',
+])
+def test_planted_invalid_recovery_is_refused(tmp_path, body):
+    _plant(tmp_path, body)
+    interactive, prompt, run = _accept_all()
+    with interactive, prompt, run as run_mock:
+        check_and_recover_stale_sentinel(tmp_path)
+    run_mock.assert_not_called()
+
+
+def test_sentinel_owned_by_another_user_is_refused(tmp_path, monkeypatch):
+    StageSentinel(tmp_path).mark_started(
+        "toolchain", **Recovery.pacman_sync(["llvm"]).record_fields())
+    real_uid = os.getuid()
+    monkeypatch.setattr(ss.os, "getuid", lambda: real_uid + 4242)
+    if real_uid == 0:
+        pytest.skip("root owns the file, which is always accepted")
+    interactive, prompt, run = _accept_all()
+    with interactive, prompt as prompt_mock, run as run_mock:
+        assert check_and_recover_stale_sentinel(tmp_path) is False
+    prompt_mock.assert_not_called()
+    run_mock.assert_not_called()
+    assert StageSentinel(tmp_path).get_active() is not None
+
+
+def test_symlinked_sentinel_is_refused(tmp_path):
+    real = tmp_path / "elsewhere.toml"
+    StageSentinel(tmp_path / "x").mark_started("toolchain")
+    (tmp_path / "x" / StageSentinel.FILENAME).rename(real)
+    (tmp_path / "x" / StageSentinel.FILENAME).symlink_to(real)
+    interactive, prompt, run = _accept_all()
+    with interactive, prompt as prompt_mock, run:
+        assert check_and_recover_stale_sentinel(tmp_path / "x") is False
+    prompt_mock.assert_not_called()
+
+
+def test_each_recovery_kind_rebuilds_its_command(tmp_path, monkeypatch):
+    """pacman_sync and mkinitcpio rebuild from templates; pacman_upgrade
+    accepts a root-owned archive in a pacman cache dir only."""
+    monkeypatch.setattr(ss, "privileged_argv", lambda argv: ["sudo", *argv])
+    assert Recovery.pacman_sync(["llvm", "lib32-llvm-libs"]).argv() == [
+        "sudo", "pacman", "-S", "--", "llvm", "lib32-llvm-libs"]
+    assert Recovery.mkinitcpio().argv() == ["sudo", "mkinitcpio", "-P"]
+
+    from sysforge.primitives import pacman
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    archive = cache / "llvm-23.1.3-3-x86_64.pkg.tar.zst"
+    archive.write_bytes(b"")
+    monkeypatch.setattr(pacman, "get_pacman_cache_dirs", lambda: [cache])
+    rec = Recovery.pacman_upgrade([archive])
+    if os.getuid() == 0:
+        assert rec.argv()[-1] == str(archive)
+    else:
+        with pytest.raises(ValueError, match="not owned by root"):
+            rec.argv()
+        monkeypatch.setattr(ss.Path, "stat",
+                            lambda self, **k: os.stat_result((0o100644, 0, 0, 1, 0, 0, 0, 0, 0, 0)))
+        assert rec.argv() == ["sudo", "pacman", "-U", "--noconfirm", "--", str(archive)]
+    outside = tmp_path / "llvm-23.1.3-3-x86_64.pkg.tar.zst"
+    outside.write_bytes(b"")
+    with pytest.raises(ValueError, match="not in a pacman cache dir"):
+        Recovery.pacman_upgrade([outside]).argv()
+
+
+def test_recovery_round_trips_through_the_record(tmp_path):
+    rec = Recovery.pacman_sync(["llvm", "clang"])
+    StageSentinel(tmp_path).mark_started("toolchain", **rec.record_fields())
+    assert ss.recovery_from_record(StageSentinel(tmp_path).get_active()) == rec

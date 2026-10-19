@@ -43,6 +43,7 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import build_sandbox
+from sysforge.primitives import interrupt
 from sysforge.primitives import sudo_session
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.timing import PhaseRecord, PhaseTimer
@@ -1253,6 +1254,9 @@ def build_and_install(
         [getattr(t, "pkgnames", None) or [t.pkgbase] for t in targets], _bs_est)
     with _ui_progress.tracker(len(targets), "building", expected=_expected) as _tick:
         for _idx, target in enumerate(targets):
+            # Between packages is a safe stop: a first Ctrl-C inside the
+            # verb's sentinel scope ends the run here (3.5.0-B44).
+            interrupt.checkpoint()
             _tick(target.pkgbase)
             # ── Just-in-time install of intra-batch deps ──────────────────
             # Deferred bulk install would leave this target configuring

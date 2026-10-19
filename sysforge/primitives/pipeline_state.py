@@ -248,10 +248,27 @@ class PipelineState:
         """
         Initialise progress for the packages stage from a full ordered list.
         Only sets remaining if it hasn't been set yet (idempotent on resume).
+
+        On resume, a listed package in none of ``remaining``/``built``/
+        ``failed``/``skipped`` is requeued in list order (3.5.0-B40):
+        :meth:`mark_package_building` takes it out of ``remaining`` before the
+        build, so an interrupt (Ctrl-C, a kill, a power loss, any exception the
+        stage does not catch) left it in no bucket, and the loop, which only
+        builds ``remaining``, never built it.
         """
         p = self._progress()
         if not p.get("remaining") and not p.get("built"):
             p["remaining"] = list(names)
+        else:
+            accounted = set(p.get("remaining", []))
+            for bucket in ("built", "failed", "skipped"):
+                accounted.update(p.get(bucket, []))
+            lost = [n for n in names if n not in accounted]
+            if lost:
+                lost_set = set(lost)
+                remaining = set(p.get("remaining", []))
+                p["remaining"] = [n for n in names if n in remaining or n in lost_set] + [
+                    n for n in p.get("remaining", []) if n not in set(names)]
         self.touch()
 
     def mark_package_building(self, name):

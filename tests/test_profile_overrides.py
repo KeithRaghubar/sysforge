@@ -1,3 +1,4 @@
+import pytest
 from sysforge.primitives.profile import resolve_profile
 
 
@@ -115,9 +116,48 @@ def test_writer_upserts_existing_row(tmp_path):
     data = tomllib.loads(p.read_text())
     assert data["package_compiler_overrides"]["htop"]["cc"] == "clang"
     # Exactly one htop row.
-    assert p.read_text().count("htop =") == 1
+    assert p.read_text().count('"htop" =') == 1
 
 
 def test_writer_returns_false_on_missing_parent(tmp_path):
     p = tmp_path / "does-not-exist" / "profiles.toml"
     assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is False
+
+
+@pytest.mark.parametrize("pkgbase, cc", [
+    ("libstdc++", "gcc"),                 # `+` is invalid in a bare key
+    ("python-ruamel.yaml", "gcc"),       # `.` made a bare key a nested table
+    ("htop", 'gcc "quoted"'),            # a `"` typed into the manual entry
+    ("odd\\name", "back\\slash"),
+])
+def test_writer_round_trips_names_and_values_toml_cannot_take_bare(
+        tmp_path, pkgbase, cc):
+    """3.5.0-B45: the key is quoted and the values escaped, so the file stays
+    valid TOML and the override is found under the same pkgbase."""
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML)
+    assert write_package_compiler_override(p, pkgbase, cc, "g++", "bfd") is True
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"][pkgbase] == {
+        "cc": cc, "cxx": "g++", "ld": "bfd"}
+    prof = resolve_profile(_pkgmeta(pkgbase), [], {
+        "profiles": data["profiles"], "defaults": data["defaults"],
+        "package_compiler_overrides": data["package_compiler_overrides"],
+    })
+    assert prof["CC"] == cc
+    # A second write replaces the row rather than adding one.
+    write_package_compiler_override(p, pkgbase, "clang", "clang++", "lld")
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"][pkgbase]["cc"] == "clang"
+    assert len(data["package_compiler_overrides"]) == 1
+
+
+def test_writer_replaces_a_legacy_bare_key_row(tmp_path):
+    """A row an older version wrote with a bare key is replaced, not duplicated."""
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML + "\n[package_compiler_overrides]\n"
+                 'htop = { cc = "gcc", cxx = "g++", ld = "bfd" }\n')
+    write_package_compiler_override(p, "htop", "clang", "clang++", "lld")
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"] == {
+        "htop": {"cc": "clang", "cxx": "clang++", "ld": "lld"}}

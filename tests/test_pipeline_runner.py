@@ -196,6 +196,26 @@ def test_dry_run_does_not_write_done_state(tmp_path):
     assert state.stage_status("a") == "pending"
 
 
+@pytest.mark.parametrize("start_from", [None, "b"])
+def test_dry_run_leaves_no_state_file(tmp_path, start_from):
+    """3.5.0-B41: --start-from marks and init_meta were saved before the
+    dry-run check, so a preview changed what the next real run did."""
+    stages = [OkStage("a"), OkStage("b")]
+    run_pipeline({}, make_options(dry_run=True, start_from=start_from,
+                                  state_dir=tmp_path), stages=stages)
+    assert not (tmp_path / "pipeline_state.toml").exists()
+
+
+def test_dry_run_start_from_then_real_resume_runs_every_stage(tmp_path):
+    """3.5.0-B41: a real run after a dry --start-from preview neither refuses
+    nor treats the stages before the start point as done."""
+    run_pipeline({}, make_options(dry_run=True, start_from="b", state_dir=tmp_path),
+                 stages=[OkStage("a"), OkStage("b")])
+    a, b = OkStage("a"), OkStage("b")
+    run_pipeline({}, make_options(state_dir=tmp_path), stages=[a, b])
+    assert a.called and b.called
+
+
 # ---------------------------------------------------------------------------
 # Stage dependency validation
 # ---------------------------------------------------------------------------

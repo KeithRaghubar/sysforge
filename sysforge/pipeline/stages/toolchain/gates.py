@@ -19,7 +19,7 @@ half-installed LLVM is worse than no new LLVM.
 from pathlib import Path
 
 from sysforge.primitives import toolchain_safety
-from sysforge.primitives.stage_sentinel import sentinel_scope
+from sysforge.primitives.stage_sentinel import Recovery, sentinel_scope
 from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
 
 from sysforge.pipeline.stages.toolchain import config, profdata, verify
@@ -110,7 +110,7 @@ def install_bootstrap_compilers(findings, options, tcfg: "config.ToolchainConfig
     with sentinel_scope(
         options.state_dir,
         "toolchain",
-        recovery_cmd="sudo pacman -S " + " ".join(pkgs),
+        recovery=Recovery.pacman_sync(pkgs),
         retry_cmd="sysforge run toolchain",
         compiler=tcfg.compiler,
     ):
@@ -652,17 +652,22 @@ def rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:
     return pacman.batch_install_pkgs(files)
 
 
-def snapshot_recovery_cmd(snapshot: dict[str, "Path | None"]) -> str:
-    """Recovery command stored in the sentinel when rollback can't run cleanly.
+def snapshot_recovery(snapshot: dict[str, "Path | None"]) -> "Recovery":
+    """Recovery stored in the sentinel when rollback can't run cleanly.
 
     Prefers an offline ``pacman -U <cached files>`` when every member is cached;
     otherwise falls back to the online ``pacman -S <suite>``. Stored in the
-    sentinel so the next-run recovery prompt has a copy-pasteable restore.
+    sentinel so the next-run recovery prompt has a restore to offer.
     """
     files = [p for p in snapshot.values() if p is not None]
     if files and all(p is not None for p in snapshot.values()):
-        return "sudo pacman -U --noconfirm " + " ".join(str(p) for p in files)
-    return verify.llvm_recovery_command()
+        return Recovery.pacman_upgrade(files)
+    return verify.llvm_recovery()
+
+
+def snapshot_recovery_cmd(snapshot: dict[str, "Path | None"]) -> str:
+    """:func:`snapshot_recovery` as a shell line, for messages."""
+    return snapshot_recovery(snapshot).display()
 
 
 def log_toolchain_resolution_summary(

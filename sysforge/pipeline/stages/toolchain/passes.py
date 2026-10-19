@@ -51,6 +51,7 @@ def build_pkg(
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
     pgo_reuse: bool = True,
+    record_variant: str | None = None,
 ) -> Path | None:
     """Build one package via makepkg_wrapper.run().
 
@@ -66,6 +67,11 @@ def build_pkg(
     ``sysforge update`` skip these LLVM packages by default and point the user
     at ``sysforge run toolchain`` instead. Like ``toolchain_variant`` it is set
     only on install-bearing passes; intermediate passes leave it ``None``.
+
+    ``record_variant`` overrides only the variant build_state records, not the
+    one the build uses: PGO passes 1 to 3 pass ``constants.INTERMEDIATE_VARIANT``
+    so a run that stops before Pass 4 cannot pass for a finished one
+    (3.5.0-B39).
     """
     if options.dry_run:
         cc_label = f" CC={cc}" if cc else ""
@@ -99,6 +105,7 @@ def build_pkg(
             strip_flags=strip_flags,
             toolchain_variant=toolchain_variant,
             owner_stage=owner_stage,
+            record_toolchain_variant=record_variant,
             cmake_llvm_dir=cmake_llvm_dir,
             pgo_reuse=pgo_reuse,
         ))
@@ -151,6 +158,7 @@ def build_pass(
     pgo_reuse: bool = True,
     tick: "progress.Tick | None" = None,
     build_roots: dict[Path, Path] | None = None,
+    record_variant: str | None = None,
 ) -> dict[str, str]:
     """Build all packages in pkgbuild_map for one pass.
 
@@ -193,6 +201,8 @@ def build_pass(
     ``build_roots``, when given, collects ``{pkgbuild_dir: build root}`` for
     each directory this call built (see :func:`build_pkg`), so a later step
     can find the tree the build left (BOLT, 3.5.0-B22).
+
+    ``record_variant`` is passed to each :func:`build_pkg` (3.5.0-B39).
     """
     # makepkg never escalates (3.4.0-F1): no --install, and --syncdeps is
     # always stripped. A sudo inside the build's forwarded output could not
@@ -262,6 +272,7 @@ def build_pass(
                 owner_stage=owner_stage,
                 cmake_llvm_dir=cmake_llvm_dir,
                 pgo_reuse=pgo_reuse,
+                record_variant=record_variant,
             )
             first = False
             if build_roots is not None and root is not None:

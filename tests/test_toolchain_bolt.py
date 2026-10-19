@@ -373,6 +373,18 @@ def test_last_pgo_build_check_names_the_flag_asking(tmp_path, monkeypatch):
         pgo_map, entry, flag="--install-only", tag="TOOLCHAIN")[1:] == ("llvm", "23.1.3-3")
 
 
+@pytest.mark.parametrize("flag", ["--install-only", "--bolt-only"])
+def test_last_pgo_build_check_refuses_an_intermediate_pass(tmp_path, monkeypatch, flag):
+    """3.5.0-B39: a record left by PGO pass 1, 2 or 3 (same version, built as
+    pgo_llvm, recorded as INTERMEDIATE_VARIANT) is refused; Pass 4's passes."""
+    from sysforge.pipeline.stages.toolchain import constants, pkgbuilds
+    _, pgo_map, entry = _bolt_only_setup(tmp_path, monkeypatch)
+    stopped = {**entry, "toolchain_variant": constants.INTERMEDIATE_VARIANT}
+    with pytest.raises(RuntimeError, match="stopped before the final PGO pass"):
+        pkgbuilds.check_last_pgo_build(pgo_map, stopped, flag=flag, tag="TOOLCHAIN")
+    assert pkgbuilds.check_last_pgo_build(pgo_map, entry, flag=flag, tag="TOOLCHAIN")
+
+
 # ---------------------------------------------------------------------------
 # 3.5.0-B31: a BOLTed package is recorded as build_mode bolt_llvm
 # ---------------------------------------------------------------------------

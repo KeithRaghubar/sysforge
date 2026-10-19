@@ -97,14 +97,15 @@ def test_stale_sentinel_is_error_with_recovery(monkeypatch):
         "started_at": "2026-05-31T22:57:21Z",
         "compiler": "llvm",
         "pgo": True,
-        "recovery_cmd": "sudo pacman -S llvm llvm-libs clang lld",
+        "recovery_kind": "pacman_sync",
+        "recovery_args": ["llvm", "llvm-libs", "clang", "lld"],
     })
     findings = state_probe.collect_state_findings(installed={})
     sent = [f for f in findings if f.check_id == "stale_sentinel"]
     assert len(sent) == 1
     f = sent[0]
     assert f.severity == diag.SEV_ERROR
-    assert f.fix_cmd == "sudo pacman -S llvm llvm-libs clang lld"
+    assert f.fix_cmd.endswith("pacman -S -- llvm llvm-libs clang lld")
     assert "toolchain" in f.message
     # metadata surfaced inline
     assert "compiler=llvm" in f.message

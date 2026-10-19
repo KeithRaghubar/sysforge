@@ -342,16 +342,19 @@ _PKGVER_LINE_RE = _re.compile(r"^[+-]\s*(pkgver|pkgrel)\s*=\s*\S.*$")
 
 
 def _diff_is_pkgver_only(pkgbuild_dir: Path, path: str) -> bool:
-    """Return True iff ``git diff -U0`` for ``path`` only touches pkgver/pkgrel lines.
+    """Return True iff ``git diff -U0 HEAD`` for ``path`` only touches pkgver/pkgrel lines.
 
     Used by ``git_is_dirty(..., is_vcs=True)`` to ignore makepkg's pkgver()
-    auto-bump pattern in the PKGBUILD of a VCS packaging repo. Fail-safe: any
-    git error or unexpected diff line makes this return False so the
-    surrounding dirty check keeps protecting the operator's work.
+    auto-bump pattern in the PKGBUILD of a VCS packaging repo. Compares the
+    working tree against ``HEAD``, not the index: a bare ``git diff`` hides a
+    staged edit, so a ``git add``ed real change under an unstaged pkgver bump
+    read as pkgver-only and was reset away (``3.5.0-B38``). Fail-safe: any
+    git error (no ``HEAD`` included) or unexpected diff line makes this return
+    False so the surrounding dirty check keeps protecting the operator's work.
     """
     r = run.probe(
         ["git", "-C", str(pkgbuild_dir),
-         "diff", "-U0", "--no-color", "--", path],
+         "diff", "-U0", "--no-color", "HEAD", "--", path],
     )
     if r.returncode != 0:
         return False

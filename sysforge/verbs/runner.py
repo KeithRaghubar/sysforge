@@ -87,7 +87,7 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
         scope = sentinel_scope(
             _resolve_state_dir(args),
             verb.name,
-            recovery_cmd=verb.sentinel_recovery_cmd(args, pre),
+            recovery=verb.sentinel_recovery(args, pre),
             retry_cmd=f"sysforge {verb.name}",
             **verb.sentinel_metadata(args, pre),
         )

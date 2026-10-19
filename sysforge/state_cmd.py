@@ -40,6 +40,10 @@ _log = log.get_logger("STATE")
 # understands.
 _LEGACY_BUILD_MODE_TOKENS = {"profiled": BUILD_MODE_SOURCE}
 
+# The fields `state repair` re-derives from the PKGBUILD; every other entry
+# field is carried from the entry it replaces (3.5.0-B42).
+_REPAIR_IDENTITY_KEYS = frozenset({"pkgver", "pkgrel", "epoch", "pkgbase", "pkgbuild_dir"})
+
 
 def cmd_state_list(args):
     """Print build_state.toml entries in a tabular layout.
@@ -191,11 +195,15 @@ def cmd_state_repair(args):
        its key or any of pkgbase/pkgver/pkgrel/epoch contains a literal ``$``.
        Broken entries are grouped by pkgbuild_dir; the PKGBUILD for each dir
        is re-parsed through the current (variable-expanding) parser, and all
-       entries under that dir are replaced with the expected set. flags_string
-       and built_at are carried over from the first old entry in the group so
-       true build history is preserved; build_mode is carried over too, but
-       through the same legacy-token normalization as pass 2 below, so a
-       group repair can't reintroduce a stale token.
+       entries under that dir are replaced with the expected set. Every field
+       but the re-derived identity (``_REPAIR_IDENTITY_KEYS``) is carried
+       from the old entry each new one replaces (same name, its ``-sysforge``
+       rename, else the group's first broken entry), so provenance such as
+       ``owner_stage`` and ``origin_pkgbase`` survives (3.5.0-B42); build_mode
+       goes through the same legacy-token normalization as pass 2 below, so a
+       group repair can't reintroduce a stale token. A renamed member stays
+       under its ``-sysforge`` key, and an unbroken renamed member the
+       PKGBUILD's ``pkgname=()`` does not list is kept.
 
        Skips a group when the PKGBUILD is missing or when re-parse still
        yields ``$`` in any relevant field (e.g. shell parameter expansion the
@@ -210,8 +218,9 @@ def cmd_state_repair(args):
        a typo) is left alone rather than coerced — only the closed set of
        known legacy tokens is rewritten.
     """
-    from sysforge.primitives.build_state import BuildState
+    from sysforge.primitives.build_state import _ENTRY_KEYS, BuildState
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
     from sysforge.pipeline.state import resolve_state_dir
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
@@ -286,29 +295,45 @@ def cmd_state_repair(args):
             skipped_unresolvable.append((pdir, [n for n, _ in group], reason))
             continue
 
-        template = group[0][1]
-        build_mode = template.get("build_mode")
-        build_mode = _LEGACY_BUILD_MODE_TOKENS.get(build_mode, build_mode)
-        flags_string = template.get("flags_string")
-        built_at = template.get("built_at")
-
-        delete_keys = [n for n, _ in group]
+        # Each new entry carries every field of the old entry it replaces
+        # (3.5.0-B42): owner_stage, origin_pkgbase, source, the toolchain
+        # stamps, build_inputs and the rest are what `update` and
+        # `revert-to-stock` act on. The source is the old entry under the same
+        # name, else under its `-sysforge` rename, else the group's first
+        # broken entry (whose key is the unexpanded one being replaced).
+        by_name = dict(group)
+        first_broken = next(r for n, r in group if _entry_broken(n, r))
+        suffix = f"-{RENAME_SUFFIX}"
         create_records: list[tuple[str, dict]] = []
         for name in expected_names:
-            rec = {
+            src = by_name.get(name) or by_name.get(name + suffix) or first_broken
+            renamed = name not in by_name and (
+                name + suffix in by_name or bool(src.get("origin_pkgbase")))
+            target = name + suffix if renamed else name
+            pkgbase = expected_pkgbase
+            if renamed:
+                pkgbase = (src["pkgbase"] if src.get("pkgbase") and not _has_var(src["pkgbase"])
+                           else expected_pkgbase + suffix)
+            rec = {k: v for k, v in src.items()
+                   if k in _ENTRY_KEYS and k not in _REPAIR_IDENTITY_KEYS}
+            rec.update({
                 "pkgver": expected_pkgver,
                 "pkgrel": expected_pkgrel,
                 "epoch": expected_epoch,
-                "pkgbase": expected_pkgbase,
+                "pkgbase": pkgbase,
                 "pkgbuild_dir": pdir,
-            }
-            if build_mode is not None:
-                rec["build_mode"] = build_mode
-            if flags_string is not None:
-                rec["flags_string"] = flags_string
-            if built_at is not None:
-                rec["built_at"] = built_at
-            create_records.append((name, rec))
+            })
+            mode = rec.get("build_mode")
+            if mode is not None:
+                rec["build_mode"] = _LEGACY_BUILD_MODE_TOKENS.get(mode, mode)
+            create_records.append((target, rec))
+
+        # A renamed member the PKGBUILD's pkgname=() does not list, with
+        # nothing broken in it, is kept rather than dropped.
+        targets = {t for t, _ in create_records}
+        delete_keys = [n for n, r in group
+                       if n not in targets and (_entry_broken(n, r) or not r.get("origin_pkgbase"))]
+        delete_keys += [t for t in targets if t in by_name]
 
         plans.append((pdir, delete_keys, create_records))
 
@@ -378,17 +403,10 @@ def cmd_state_repair(args):
         for k in dels:
             bs.delete(k)
         for name, rec in creates:
-            bs.record(
-                pkgname=name,
-                pkgver=rec["pkgver"],
-                pkgrel=rec["pkgrel"],
-                epoch=rec["epoch"],
-                pkgbase=rec["pkgbase"],
-                pkgbuild_dir=Path(rec["pkgbuild_dir"]),
-                build_mode=rec.get("build_mode"),
-                flags_string=rec.get("flags_string"),
-                built_at=rec.get("built_at"),
-            )
+            # Written whole, not through record(): record() carries its sticky
+            # fields from the entry under this key, which was just deleted, and
+            # would append a fake build_seconds sample (3.5.0-B42).
+            bs._data[name] = dict(rec)
             total_created += 1
 
     total_fixed = 0

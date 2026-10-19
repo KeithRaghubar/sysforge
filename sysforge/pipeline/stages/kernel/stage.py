@@ -709,7 +709,7 @@ class KernelStage(Stage):
             with sentinel_scope(
                 options.state_dir,
                 "kernel",
-                recovery_cmd=constants.kernel_recovery_command(),
+                recovery=constants.kernel_recovery(),
                 retry_cmd="sysforge run kernel",
                 pkgname=fdo_eff_pkgname,
                 bootloader=bootloader,

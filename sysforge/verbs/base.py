@@ -38,7 +38,10 @@ import argparse
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sysforge.primitives.stage_sentinel import Recovery
 
 
 @dataclass
@@ -171,13 +174,15 @@ class Verb(ABC):
         del args, pre
         return {}
 
-    def sentinel_recovery_cmd(self, args, pre: PreCheckResult) -> str | None:
-        """Recovery shell command stored in the sentinel for the operator.
+    def sentinel_recovery(self, args, pre: PreCheckResult) -> "Recovery | None":
+        """Recovery stored in the sentinel for the operator.
 
         Surfaces in the CLI-entry recovery prompt and the
         ``CleanExitRequested`` → ``RuntimeError`` message. Override when
-        a single canonical command (e.g. ``sudo pacman -S llvm llvm-libs``)
-        restores consistency after an interrupt.
+        a single canonical recovery (e.g.
+        ``Recovery.pacman_sync(["llvm", "llvm-libs"])``) restores consistency
+        after an interrupt. A kind plus arguments, never a command line
+        (3.5.0-B43).
         """
         del args, pre
         return None

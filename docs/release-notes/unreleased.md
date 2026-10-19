@@ -120,6 +120,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Fixed
 
+
 - **`3.4.0-B14` — `update --explain-drift` no longer syncs sources before it reports.** Its help promised an informational report with no source sync, but the report ran only after `update`'s normal source sync, so a plain `sysforge update --explain-drift` cloned and fetched every package in scope first, and only `--offline` avoided that. `--explain-drift` now implies `--offline`: both drift checks compare your local PKGBUILDs, config and toolchain against what `build_state.toml` recorded, so the report needs nothing from the network and makes no network request at all. The drift guide no longer tells you to add `--offline`.
 
 ---
@@ -299,3 +300,44 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B36` — run logs name the command that ran.** Every standalone run's log opened with `# sysforge pipeline`, even `sysforge-run-toolchain.log`, and logged its failure under `[PIPELINE]`. Each log now opens with its command (`# sysforge run toolchain: …`), and a standalone run logs its own lines under the stage's tag. The kernel and packages stages say they took the compiler "from the last `run toolchain`" instead of "from pipeline" or "pipeline state".
+
+---
+
+- **`3.5.0-B38` — a staged edit to a `-git` package's PKGBUILD is no longer wiped.** For a VCS package, sysforge ignores makepkg's own `pkgver=` rewrite when deciding whether a checkout holds your work, but it compared the file with git's index rather than the last commit. An edit you had `git add`ed was invisible to that check, so with makepkg's bump on top the checkout looked clean, and a diverged sync reset it away or `--cleansrc` deleted it. The check now compares with the last commit, so a staged edit counts as your work. A staged bump with no other change is still treated as clean; it was previously counted as your work.
+
+---
+
+- **`3.5.0-B39` — `run toolchain --install-only` no longer installs an unfinished PGO build.** The PGO toolchain builds llvm four times, and the first three passes leave instrumented or bootstrap packages in PKGDEST. Each pass recorded the same toolchain variant and version as the final one, so after a run that stopped part way, `--install-only` (the retry the stage itself suggests) could install an instrumented libLLVM and clang to `/usr` as the optimized build. The first three passes are now recorded as intermediate, and `--install-only` and `--bolt-only` refuse such a record and say to finish the run with `sysforge run toolchain`. The PGO guide says so.
+
+---
+
+- **`3.5.0-B40` — `run pipeline --resume` builds a package that was interrupted mid-build.** The packages stage took each package off its to-do list when its build started and only put it on the built or failed list when the build ended, so a Ctrl-C, a kill or a power loss mid-build left it on neither. `--resume` then never built it and reported success. On resume, a package on none of the lists is now built again, in its original place in the order.
+
+---
+
+- **`3.5.0-B41` — `run pipeline --dry-run` no longer changes what the next real run does.** A dry run saved the pipeline's state file before it checked for `--dry-run`. With `--start-from packages`, it marked the earlier stages as skipped, so a later real `--resume` never ran install, hardware or configure. A plain dry run left a state file that made the next real run stop with "state file already exists". A dry run now writes no state.
+
+---
+
+- **`3.5.0-B42` — `state repair` keeps what it knew about each package it fixes.** When `state repair` rebuilt an entry from its PKGBUILD, it kept only the build mode, the flags and the build time. It lost which stage owns the package, the stock name of a `-sysforge` build, the source, the toolchain stamps, the recorded build inputs, the sandbox flag and the build times. With the owner gone, `update` started rebuilding packages that `run toolchain` or `run kernel` own; without the stock name, `revert-to-stock` picked the wrong package to go back to. A `-sysforge` package the PKGBUILD does not list by that name was deleted outright. Repaired entries now keep every field except the version and package base, which come from the PKGBUILD, and a `-sysforge` package stays under its own name.
+
+---
+
+- **`3.5.0-B44` — the first Ctrl-C during an install stops sysforge at the next safe point.** While installing, sysforge is meant to finish the current step on the first Ctrl-C and then stop, but nothing ever acted on it. sysforge silently ignored the first Ctrl-C (the build or pacman running at the time still received it), and only a second Ctrl-C stopped it, wherever it happened to be, possibly in the middle of `pacman -U`. The first Ctrl-C now prints a notice and stops `build`, `update` and `run packages` before their next package, with the interrupted-run record kept so the next run offers recovery. Toolchain and kernel installs have no safe point part way, so they finish the install and its checks, then stop. A second Ctrl-C still stops at once.
+
+---
+
+- **`3.5.0-B45` — saving a compiler swap from the build-failure menu no longer breaks `profiles.toml`.** When you keep a compiler or linker swap from the recovery menu, sysforge adds a row for the package to `profiles.toml`, but it wrote the package name and values unquoted. A name with `+`, such as `libstdc++`, made the file invalid, so every later command failed to load its config. A name with `.`, such as `python-ruamel.yaml`, was read as a nested table, so the swap never applied, and a `"` typed into the manual compiler entry broke the file too. Names and values are now quoted and escaped. A row an earlier version wrote is replaced, not duplicated, the next time you save a swap for that package. If a row already broke your file, quote its package name by hand.
+
+---
+
+- **`3.5.0-B46` — other commands no longer erase the record of an interrupted install.** sysforge offered to recover an interrupted install only before `build`, `update`, `run` and `setup`. Other commands that change the system, such as `uninstall`, `revert-to-stock`, `state repair` and the artifact commands, replaced the record with their own and deleted it when they finished. After an interrupted toolchain install, `sysforge uninstall foo` erased the only sign that the toolchain was half-installed, and the next `update` went ahead without offering recovery. Those commands now offer the same recovery first, and refuse to start, leaving the record in place, if you decline or it fails.
+
+## Security
+
+
+- **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.
+
+---
+
+- **`3.5.0-B43` — the interrupted-install recovery no longer runs a command read from a shared file.** When an install-bearing run is interrupted, sysforge leaves a record in its state directory, and the next run offers to run the recovery command stored in it, often under `sudo`. Any member of the `sysforge` group can write that directory, so one member could plant a record and choose the command another member's next `update` or `build` offered to run. The record now holds only the kind of recovery and its package names or cached package files, and sysforge builds the command itself from a fixed form for each kind: reinstall packages, reinstall cached packages, or regenerate the initramfs. A package name must be a valid pacman name, and a cached package must be a root-owned file in pacman's package cache. A record owned by anyone but you or root, or one that is a symlink, is refused without a prompt. A record left by an older sysforge still shows its command, but only offers to clear the record; run the command yourself if it is right.

@@ -12,7 +12,9 @@ import signal
 
 import pytest
 
+from sysforge.primitives import interrupt as _interrupt
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
+from sysforge.primitives.stage_sentinel import StageSentinel, sentinel_scope
 
 
 def test_no_signal_check_is_noop():
@@ -69,3 +71,52 @@ def test_clean_exit_requested_is_base_exception():
     it must propagate to top-level cleanup so the sentinel is preserved."""
     assert issubclass(CleanExitRequested, BaseException)
     assert not issubclass(CleanExitRequested, Exception)
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B44: the first Ctrl-C is acted on (checkpoint / redeliver), not lost
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_is_a_noop_outside_a_scope():
+    _interrupt.checkpoint()
+
+
+def test_checkpoint_raises_after_first_ctrl_c(capfd):
+    with pytest.raises(CleanExitRequested), InterruptScope():
+        _interrupt.checkpoint()
+        signal.raise_signal(signal.SIGINT)
+        _interrupt.checkpoint()
+    assert "stopping at the next safe point" in capfd.readouterr().err
+    _interrupt.checkpoint()   # scope gone: no-op again
+
+
+def test_first_ctrl_c_in_sentinel_scope_stops_at_checkpoint_sentinel_kept(tmp_path):
+    reached = []
+    with pytest.raises(RuntimeError, match="interrupted by user"):
+        with sentinel_scope(tmp_path, "update", retry_cmd="sysforge update"):
+            signal.raise_signal(signal.SIGINT)
+            reached.append("after signal")    # the handler swallowed it
+            _interrupt.checkpoint()
+            reached.append("after checkpoint")
+    assert reached == ["after signal"]
+    assert StageSentinel(tmp_path).get_active()["stage"] == "update"
+
+
+def test_ctrl_c_with_no_checkpoint_stops_once_the_body_completes(tmp_path):
+    """An install window with no safe midpoint finishes, clears its
+    sentinel, then the Ctrl-C takes effect as it would outside the scope."""
+    done = []
+    with pytest.raises(KeyboardInterrupt):
+        with sentinel_scope(tmp_path, "kernel"):
+            signal.raise_signal(signal.SIGINT)
+            done.append("install finished")
+    assert done == ["install finished"]
+    assert StageSentinel(tmp_path).get_active() is None
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_no_ctrl_c_no_redelivery(tmp_path):
+    with sentinel_scope(tmp_path, "kernel"):
+        pass
+    assert StageSentinel(tmp_path).get_active() is None

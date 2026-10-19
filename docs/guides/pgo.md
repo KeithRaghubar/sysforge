@@ -576,8 +576,9 @@ sysforge run toolchain --install-only
 
 It installs the packages the last run left, BOLTed ones included, through the same
 checks, snapshot and verification as a full run. It refuses when the last build isn't
-the optimized build of the version you have checked out, or a package is missing; run
-`sysforge run toolchain` then. A full or `--bolt-only` run asks for your sudo password
+the optimized build of the version you have checked out (including a run that stopped
+before its final pass, which leaves instrumented packages behind), or a package is
+missing; run `sysforge run toolchain` then. A full or `--bolt-only` run asks for your sudo password
 before its long work starts, and stops without changing anything if sudo isn't granted at
 install time, saying to run `--install-only`.
 

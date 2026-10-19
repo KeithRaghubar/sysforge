@@ -273,3 +273,34 @@ def test_resolve_state_dir_narrates_its_source_once(tmp_path, monkeypatch, capsy
     err = capsys.readouterr().err
     assert err.count("State dir source(s) found") == 1
     assert err.count("Using state dir") == 1
+
+
+def test_init_package_list_requeues_a_package_in_no_bucket(state):
+    """3.5.0-B40: mark_package_building drops the name from remaining; an
+    interrupt before built/failed left it nowhere. Resume requeues it in list
+    order, ahead of what was still remaining."""
+    state.init_package_list(["a", "b", "c", "d"])
+    state.mark_package_built("a")
+    state.mark_package_building("b")   # interrupted here
+    state.init_package_list(["a", "b", "c", "d"])
+    p = state.get_package_progress()
+    assert p["remaining"] == ["b", "c", "d"]
+    assert p["built"] == ["a"]
+
+
+def test_init_package_list_requeues_when_last_package_interrupted(state):
+    state.init_package_list(["a", "b"])
+    state.mark_package_built("a")
+    state.mark_package_building("b")
+    state.init_package_list(["a", "b"])
+    assert state.get_package_progress()["remaining"] == ["b"]
+
+
+def test_init_package_list_leaves_failed_and_skipped_alone(state):
+    state.init_package_list(["a", "b", "c"])
+    state.mark_package_failed("a", "err")
+    state.mark_package_skipped("b")
+    state.init_package_list(["a", "b", "c"])
+    p = state.get_package_progress()
+    assert p["remaining"] == ["c"]
+    assert p["failed"] == ["a"] and p["skipped"] == ["b"]

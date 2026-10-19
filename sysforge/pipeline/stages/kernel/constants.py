@@ -25,16 +25,22 @@ SYNC_BLOCKING_STATUSES = frozenset({
 })
 
 
-def kernel_recovery_command():
-    """Canonical shell command to restore boot consistency after an interrupted
+def kernel_recovery():
+    """Canonical recovery to restore boot consistency after an interrupted
     kernel install. Always regenerates the initramfs — that's the step whose
     absence makes the system unbootable. Bootloader regen is omitted because
-    the sentinel uses naive ``cmd.split()`` (no shell operators) and most
-    bootloaders pick up new kernel images automatically once the initramfs is
-    present; the operator can re-run ``sysforge run kernel`` for a full
-    bootloader-aware regen.
+    the sentinel stores only a fixed-template recovery kind (3.5.0-B43) and
+    most bootloaders pick up new kernel images automatically once the
+    initramfs is present; the operator can re-run ``sysforge run kernel`` for
+    a full bootloader-aware regen.
     """
-    return "sudo mkinitcpio -P"
+    from sysforge.primitives.stage_sentinel import Recovery
+    return Recovery.mkinitcpio()
+
+
+def kernel_recovery_command():
+    """:func:`kernel_recovery` as a shell line, for messages."""
+    return kernel_recovery().display()
 
 VALID_COMPILERS = ("gcc", "llvm")
 VALID_BOOTLOADERS = ("systemd-boot", "grub", "none")

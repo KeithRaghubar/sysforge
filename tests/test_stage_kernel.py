@@ -2292,7 +2292,7 @@ def test_kernel_stage_preserves_sentinel_on_mkinitcpio_failure(tmp_path):
     record = StageSentinel(state_dir).get_active()
     assert record is not None
     assert record["stage"] == "kernel"
-    assert "mkinitcpio" in record["recovery_cmd"]
+    assert record["recovery_kind"] == "mkinitcpio"
 
 
 def test_kernel_stage_sentinel_records_compiler_metadata_gcc(tmp_path):

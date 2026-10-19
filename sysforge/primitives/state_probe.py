@@ -158,10 +158,16 @@ def collect_state_result(state_dir: Path | str | None = None,
     if record:
         stage = record.get("stage", "?")
         started = record.get("started_at", "?")
-        recovery_cmd = record.get("recovery_cmd")
+        # Rebuilt from its validated template, never a stored command line,
+        # since the group-writable record may have been planted (3.5.0-B43).
+        from sysforge.primitives.stage_sentinel import (
+            _RECORD_DISPLAY_SKIP, recovery_from_record,
+        )
+        recovery = recovery_from_record(record)
+        recovery_cmd = recovery.display() if recovery else None
         extra = ", ".join(
             f"{k}={v}" for k, v in sorted(record.items())
-            if k not in ("stage", "started_at", "recovery_cmd")
+            if k not in _RECORD_DISPLAY_SKIP
         )
         msg = f"interrupted stage '{stage}' (started {started}) never completed"
         if extra:

@@ -1166,6 +1166,10 @@ class BuildOptions:
     owner_stage: str | None = None
     # "gcc" | "stock_llvm" | "pgo_llvm" — persisted so `sysforge update` can flag drift
     toolchain_variant: str | None = None
+    # What build_state records as the variant when it is not the build's own:
+    # the toolchain's PGO passes 1 to 3 build as "pgo_llvm" but record
+    # INTERMEDIATE_VARIANT (3.5.0-B39). None records toolchain_variant.
+    record_toolchain_variant: str | None = None
     # Q9: opaque active-toolchain identity — persisted so `sysforge update` flags
     # same-variant rebuilds
     toolchain_fingerprint: str | None = None
@@ -1244,6 +1248,8 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
             _prov, options.toolchain_variant, options.toolchain_fingerprint)
     else:
         _variant, _fingerprint = options.toolchain_variant, options.toolchain_fingerprint
+    if options.record_toolchain_variant is not None:
+        _variant = options.record_toolchain_variant
     try:
         from sysforge.primitives.paths import resolve_state_dir
         from sysforge.primitives.build_state import BUILD_MODE_SOURCE, BuildState

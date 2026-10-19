@@ -505,6 +505,7 @@ def build_llvm_pgo_inner(
                 # -fprofile-generate driver flag regardless, but stay consistent
                 # with Pass 2/3/4 so the whole sequence uses one linker.
                 toolchain_variant="pgo_llvm",
+                record_variant=constants.INTERMEDIATE_VARIANT,
             )
             profdata.pgo_stage_instrumented(pgo_map, staging1, options.dry_run)
             _log.info("[PGO] 1/4 complete (staged to "
@@ -579,6 +580,7 @@ def build_llvm_pgo_inner(
                 staged_deps=True,
                 cmake_llvm_dir=f"{staging1}/usr/lib/cmake/llvm",
                 toolchain_variant="pgo_llvm",
+                record_variant=constants.INTERMEDIATE_VARIANT,
             )
             profdata.extract_built_to_staging(non_pgo_map, staging1, options.dry_run)
             _log.info(f"[PGO] 2/4 complete (stage1 self-sufficient at {staging1})")
@@ -669,6 +671,7 @@ def build_llvm_pgo_inner(
                         # instrumented stage1 archives under the gcc profile's bfd
                         # and the bare profile-runtime ref drops out by order.
                         toolchain_variant="pgo_llvm",
+                        record_variant=constants.INTERMEDIATE_VARIANT,
                         tick=tick3,
                     )
                     # Training-corpus enrichment (mesa, …). Compiled by the SAME

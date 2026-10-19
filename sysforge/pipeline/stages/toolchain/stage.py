@@ -21,7 +21,7 @@ from sysforge.primitives import build_fingerprint
 from sysforge.primitives import sudo_session
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
-from sysforge.primitives.stage_sentinel import sentinel_scope
+from sysforge.primitives.stage_sentinel import Recovery, sentinel_scope
 
 from sysforge.pipeline.stages.toolchain import (
     config,
@@ -184,7 +184,7 @@ class ToolchainStage(Stage):
                 with sentinel_scope(
                     options.state_dir,
                     "toolchain",
-                    recovery_cmd="sudo pacman -S " + " ".join(suite),
+                    recovery=Recovery.pacman_sync(suite),
                     retry_cmd="sysforge run toolchain",
                     compiler=compiler,
                     pgo=pgo_enabled,
@@ -441,12 +441,12 @@ class ToolchainStage(Stage):
             # Install + post-install verify are the mutation window — wrap them
             # in the sentinel so an interrupted/failed install blocks the next
             # run with a recovery command. CleanExitRequested → RuntimeError
-            # translation (with retry_cmd + recovery_cmd) happens inside
+            # translation (with retry_cmd + the recovery) happens inside
             # sentinel_scope. See primitives/stage_sentinel.py.
             with sentinel_scope(
                 options.state_dir,
                 "toolchain",
-                recovery_cmd=gates.snapshot_recovery_cmd(snapshot),
+                recovery=gates.snapshot_recovery(snapshot),
                 retry_cmd=retry,
                 compiler=compiler,
                 pgo=pgo_enabled,

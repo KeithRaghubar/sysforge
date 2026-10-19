@@ -1278,6 +1278,30 @@ def test_git_is_dirty_vcs_still_dirty_on_real_pkgbuild_edit(tmp_path):
     assert git_is_dirty(local, is_vcs=True) is True
 
 
+def test_git_is_dirty_vcs_staged_edit_plus_unstaged_bump_is_dirty(tmp_path):
+    """A staged real edit hides from ``git diff`` (worktree vs index); with an
+    unstaged pkgver bump on top, the filter must still see it (3.5.0-B38)."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    pkgbuild = local / "PKGBUILD"
+    pkgbuild.write_text(pkgbuild.read_text() + "makedepends=('cargo')\n")
+    _git("add", "PKGBUILD", cwd=local)
+    _bump_pkgver_line(local, new_value="1.2.3.r5.gabc1234")
+    status = subprocess.run(
+        ["git", "-C", str(local), "status", "--short"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert status.startswith("MM PKGBUILD")
+    assert git_is_dirty(local, is_vcs=True) is True
+
+
+def test_git_is_dirty_vcs_staged_only_pkgver_bump_is_clean(tmp_path):
+    """A staged pkgver-only bump is still makepkg churn, not dirty (3.5.0-B38)."""
+    local = _seed_vcs_pkgbuild(tmp_path)
+    _bump_pkgver_line(local, new_value="1.2.3.r5.gabc1234")
+    _git("add", "PKGBUILD", cwd=local)
+    assert git_is_dirty(local, is_vcs=True) is False
+
+
 def test_git_is_dirty_vcs_still_dirty_on_other_tracked_file_edit(tmp_path):
     """A tracked file other than PKGBUILD/.SRCINFO modified → still dirty."""
     local = _seed_vcs_pkgbuild(tmp_path)

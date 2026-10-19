@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives.config import toml_literal
 
 _log = log.get_logger("PROFILE")
 
@@ -28,7 +29,20 @@ _HEADER = (
 
 
 def _row(pkgbase: str, cc: str, cxx: str, ld: str) -> str:
-    return f'{pkgbase} = {{ cc = "{cc}", cxx = "{cxx}", ld = "{ld}" }}\n'
+    """One override row, key and values as TOML basic strings (3.5.0-B45).
+
+    A bare key broke on any pkgbase outside ``[A-Za-z0-9_-]``: a ``+``
+    (``libstdc++``) made the file invalid TOML and a ``.``
+    (``python-ruamel.yaml``) a nested table the lookup never matched; an
+    unescaped ``"`` in a manually entered compiler did the same to a value.
+    """
+    q = toml_literal
+    return f"{q(pkgbase)} = {{ cc = {q(cc)}, cxx = {q(cxx)}, ld = {q(ld)} }}\n"
+
+
+def _row_re(pkgbase: str) -> re.Pattern:
+    """Match this pkgbase's row, quoted or in the bare form written before 3.5.0-B45."""
+    return re.compile(rf"^\s*(?:{re.escape(toml_literal(pkgbase))}|{re.escape(pkgbase)})\s*=")
 
 
 def write_package_compiler_override(
@@ -49,7 +63,7 @@ def write_package_compiler_override(
     sect_idx = next(
         (i for i, ln in enumerate(lines) if ln.strip() == _SECTION), None
     )
-    row_re = re.compile(rf"^\s*{re.escape(pkgbase)}\s*=")
+    row_re = _row_re(pkgbase)
 
     if sect_idx is None:
         # Append a fresh section at EOF (ensure a trailing blank-line gap).

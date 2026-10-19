@@ -257,6 +257,7 @@ def _pgo_fake_run_factory(pgo_store, call_log):
             "cfe":     options.compiler_flags_extra if options else None,
             "lfe":     options.linker_flags_extra if options else None,
             "variant": options.toolchain_variant if options else None,
+            "record_variant": options.record_toolchain_variant if options else None,
             "env":     env,
         })
         # Pass 3 is the training run: it injects CCACHE_DISABLE into extra_env.

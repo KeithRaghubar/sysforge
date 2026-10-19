@@ -58,6 +58,7 @@ from sysforge.build.makepkg_wrapper import AlreadyBuilt, install_built_packages
 from sysforge.build.makepkg_wrapper import run as makepkg_run
 from sysforge import build_core
 from sysforge.build_core import make_build_options
+from sysforge.primitives import interrupt
 from sysforge.primitives.pacman import BATCH_STRIP_FLAGS
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.prompt import prompt_choice
@@ -469,6 +470,8 @@ class PackagesStage(Stage):
                         # Was already handled (built or skipped) in a prior run
                         continue
 
+                    # Safe stop before the next package (3.5.0-B44).
+                    interrupt.checkpoint()
                     state.mark_package_building(name)
                     state.save()
 

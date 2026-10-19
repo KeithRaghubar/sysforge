@@ -595,6 +595,26 @@ def test_pgo_instrumented_consumer_passes_select_lld(tmp_path):
         assert call["variant"] == "pgo_llvm", \
             "Pass 3 must select lld via toolchain_variant=pgo_llvm"
 
+def test_pgo_intermediate_passes_record_their_own_variant(tmp_path):
+    """3.5.0-B39: passes 1 to 3 build as pgo_llvm but record
+    INTERMEDIATE_VARIANT, so a run that stops before Pass 4 cannot pass the
+    --install-only / --bolt-only record check. Pass 4 records pgo_llvm."""
+    from sysforge.pipeline.stages.toolchain import constants
+    call_log = _run_pgo(
+        tmp_path, pgo_pkgs=["llvm"], non_pgo_pkgs=["compiler-rt"],
+    )
+    intermediate = (_instrument_calls(call_log) + _bootstrap_calls(call_log)
+                    + _train_calls(call_log))
+    assert _instrument_calls(call_log) and _bootstrap_calls(call_log) and _train_calls(call_log)
+    for call in intermediate:
+        assert call["variant"] == "pgo_llvm"
+        assert call["record_variant"] == constants.INTERMEDIATE_VARIANT
+    final = _build_calls(call_log)
+    assert final
+    for call in final:
+        assert call["record_variant"] is None
+
+
 def test_pgo_warns_when_profdata_suspiciously_small(tmp_path):
     """
     A warn is emitted when merged profdata is smaller than PGO_PROFDATA_MIN_BYTES.

@@ -4,6 +4,10 @@
 
 """Tests for primitives/pacman_hooks.py — hook source resolution, drift
 detection, and privileged provisioning."""
+import os
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from sysforge.primitives import fs_provision, pacman_hooks
@@ -102,3 +106,59 @@ def test_provision_propagates_priv_failure(fake_dest, monkeypatch):
     monkeypatch.setattr(fs_provision, "_run_priv", boom)
     with pytest.raises(fs_provision.FsProvisionError):
         pacman_hooks.provision()
+
+
+# ── pacman-hook-helper.sh link refusal (3.5.0-B37) ──────────────────────────
+
+_HELPER = Path(__file__).resolve().parent.parent / "tools/pacman-hook-helper.sh"
+
+
+def _run_helper(sentinel_dir, kind="buildstate", stdin="mesa\n"):
+    env = {**os.environ, "SYSFORGE_SENTINEL_DIR": str(sentinel_dir)}
+    return subprocess.run(
+        ["sh", str(_HELPER), kind], input=stdin, text=True, env=env,
+        capture_output=True, timeout=10, check=False,
+    )
+
+
+def test_helper_creates_missing_dir_and_appends(tmp_path):
+    d = tmp_path / "state/sentinels"
+    assert _run_helper(d).returncode == 0
+    assert _run_helper(d, stdin="llvm\n").returncode == 0
+    text = (d / "buildstate").read_text()
+    assert "mesa" in text and "llvm" in text
+    assert os.stat(d).st_mode & 0o2775 == 0o2775
+
+
+def test_helper_refuses_symlinked_sentinel_dir(tmp_path):
+    target = tmp_path / "etc"
+    target.mkdir()
+    target.chmod(0o755)
+    d = tmp_path / "sentinels"
+    d.symlink_to(target)
+    assert _run_helper(d).returncode == 0
+    assert list(target.iterdir()) == []
+    assert os.stat(target).st_mode & 0o7777 == 0o755
+
+
+def test_helper_refuses_symlinked_sentinel_file(tmp_path):
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_text("original\n")
+    (d / "buildstate").symlink_to(victim)
+    assert _run_helper(d).returncode == 0
+    assert victim.read_text() == "original\n"
+
+
+def test_helper_does_not_hang_on_fifo(tmp_path):
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    os.mkfifo(d / "buildstate")
+    assert _run_helper(d).returncode == 0
+
+
+def test_helper_refuses_path_kind(tmp_path):
+    d = tmp_path / "sentinels"
+    assert _run_helper(d, kind="../escape").returncode == 0
+    assert not (tmp_path / "escape").exists()

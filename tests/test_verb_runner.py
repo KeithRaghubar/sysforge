@@ -12,7 +12,7 @@ import argparse
 import pytest
 
 from sysforge.primitives.config import ConfigError
-from sysforge.primitives.stage_sentinel import StageSentinel
+from sysforge.primitives.stage_sentinel import Recovery, StageSentinel
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, run_verb
 
 
@@ -264,9 +264,9 @@ class _SentinelVerb(Verb):
     name = "sentverb"
     requires_sentinel = True
 
-    def __init__(self, *, fail_execute=False, recovery="sudo restore"):
+    def __init__(self, *, fail_execute=False, recovery=None):
         self._fail_execute = fail_execute
-        self._recovery = recovery
+        self._recovery = recovery or Recovery.mkinitcpio()
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
@@ -276,7 +276,7 @@ class _SentinelVerb(Verb):
             raise RuntimeError("execute failed")
         return ExecResult()
 
-    def sentinel_recovery_cmd(self, args, pre):
+    def sentinel_recovery(self, args, pre):
         return self._recovery
 
 
@@ -296,7 +296,7 @@ def test_sentinel_preserved_on_failure(tmp_path):
     record = StageSentinel(tmp_path).get_active()
     assert record is not None
     assert record["stage"] == "sentverb"
-    assert record["recovery_cmd"] == "sudo restore"
+    assert record["recovery_kind"] == "mkinitcpio"
 
 
 def test_sentinel_skipped_when_requires_sentinel_false(tmp_path):

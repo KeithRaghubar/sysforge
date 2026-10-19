@@ -203,7 +203,7 @@ def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
         source=None,
         owner_stage=None,
         toolchain_variant=None,
-        toolchain_fingerprint=None,
+        toolchain_fingerprint=None, record_toolchain_variant=None,
     )
     pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
                            "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
@@ -239,7 +239,7 @@ def test_record_build_state_warns_when_no_pkgname_resolves(tmp_path, monkeypatch
     from types import SimpleNamespace
     options = SimpleNamespace(
         state_dir=None, source=None, owner_stage="kernel",
-        toolchain_variant=None, toolchain_fingerprint=None,
+        toolchain_variant=None, toolchain_fingerprint=None, record_toolchain_variant=None,
     )
     rename = {"origin_pkgbase": "linux", "origin_pkgnames": [],
               "renamed_pkgbase": "linux-sysforge", "renamed_pkgnames": []}
@@ -505,12 +505,13 @@ def _spy_record(monkeypatch):
     return captured
 
 
-def _record(tmp_path, variant="pgo_llvm", fingerprint="fp-host"):
+def _record(tmp_path, variant="pgo_llvm", fingerprint="fp-host", record_variant=None):
     from types import SimpleNamespace
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
     options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
-                              toolchain_variant=variant, toolchain_fingerprint=fingerprint)
+                              toolchain_variant=variant, toolchain_fingerprint=fingerprint,
+                              record_toolchain_variant=record_variant)
     pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
                            "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
     makepkg_wrapper._record_build_state(pkgbuild, pkgmeta, None, options, rename=None,
@@ -536,6 +537,15 @@ def test_record_site_host_build_records_host_values(tmp_path, monkeypatch):
     assert (cap["toolchain_variant"], cap["toolchain_fingerprint"]) == ("pgo_llvm", "fp-host")
 
 
+def test_record_site_records_the_override_variant(tmp_path, monkeypatch):
+    """3.5.0-B39: record_toolchain_variant replaces only what is recorded."""
+    from sysforge.primitives import build_sandbox
+    build_sandbox.clear_provenance()
+    cap = _spy_record(monkeypatch)
+    _record(tmp_path, record_variant="pgo_llvm_intermediate")
+    assert cap["toolchain_variant"] == "pgo_llvm_intermediate"
+
+
 @pytest.mark.parametrize("cc,variant", [("clang", "stock_llvm"), ("gcc", "gcc")])
 def test_record_site_sandboxed_records_the_copy_compiler(tmp_path, monkeypatch, cc, variant):
     from sysforge.primitives import build_sandbox
@@ -557,7 +567,8 @@ def test_record_site_clears_provenance_on_the_no_pkgname_path(tmp_path, monkeypa
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("\n")
     options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
-                              toolchain_variant=None, toolchain_fingerprint=None)
+                              toolchain_variant=None, toolchain_fingerprint=None,
+                              record_toolchain_variant=None)
     makepkg_wrapper._record_build_state(pkgbuild, {"globals": {}}, None, options,
                                         rename=None, record_build_mode=None, build_elapsed=1)
     assert build_sandbox.take_provenance() is None

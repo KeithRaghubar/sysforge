@@ -292,7 +292,10 @@ def run_pipeline(config, options, stages=None):
                     state.mark_skipped_to(stage.name)
                     _log.info(f"Marking {stage.name} as skipped-to")
 
-        state.save()
+        # A dry run keeps these marks in memory only, so the preview's stage
+        # list matches the real run without changing what it does (3.5.0-B41).
+        if not options.dry_run:
+            state.save()
         _log.info(f"Starting from stage: {options.start_from}")
 
     elif options.resume:
@@ -305,9 +308,12 @@ def run_pipeline(config, options, stages=None):
     else:
         start_idx = 0
 
-    # Init meta (no-op if already set)
+    # Init meta (no-op if already set). Never saved under --dry-run: a state
+    # file left by a preview made the next real run refuse with "state file
+    # already exists" (3.5.0-B41).
     state.init_meta()
-    state.save()
+    if not options.dry_run:
+        state.save()
 
     # Reset cache session accumulator and emit system-level probes
     reset_session()

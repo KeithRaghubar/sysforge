@@ -13,20 +13,27 @@ prior ``llvm``/``clang``/``lld`` set).
 
 This primitive installs a SIGINT handler that **does not** raise
 ``KeyboardInterrupt`` immediately. Instead, the first Ctrl-C flips an
-internal flag; the stage code is expected to check it at safe boundaries
-(after each ``makepkg`` run, between PGO passes, after each ``pacman -U``)
-via :meth:`InterruptScope.check` and exit cleanly with the
+internal flag, and code inside the scope stops at its next safe boundary
+by calling :func:`checkpoint` (no scope object needed), which raises
+:class:`CleanExitRequested` and leaves the
 :class:`~sysforge.primitives.stage_sentinel.StageSentinel` intact. A
 double-Ctrl-C falls through to the default Python SIGINT behaviour
 (immediate ``KeyboardInterrupt``) — the operator explicitly chose the
 unsafe path at that point.
 
+Where the scope's body has no safe midpoint (an install, then its
+verification) there is no checkpoint, and the request is acted on when the
+body completes: :meth:`InterruptScope.redeliver` sends the SIGINT again once
+the previous handler is back, so the run stops exactly as a Ctrl-C outside
+any scope would (3.5.0-B44). Children in the terminal's foreground process
+group (makepkg, pacman) still receive the first Ctrl-C themselves.
+
 Usage::
 
-    with InterruptScope() as scope:
+    with InterruptScope():
         for step in ...:
+            checkpoint()    # raises CleanExitRequested if Ctrl-C was seen
             run_subprocess(...)
-            scope.check()   # raises CleanExitRequested if Ctrl-C was seen
 
 ``CleanExitRequested`` is a subclass of ``BaseException`` (not
 ``Exception``) so it propagates through ``except Exception:`` blocks
@@ -35,8 +42,23 @@ without being silently swallowed.
 from __future__ import annotations
 
 import contextlib
+import os
 import signal
 import threading
+
+# Innermost-last stack of entered scopes, so checkpoint() reaches the active
+# one without the scope being threaded through every call.
+_ACTIVE: list["InterruptScope"] = []
+
+
+def checkpoint() -> None:
+    """Raise :class:`CleanExitRequested` when the active scope saw a Ctrl-C.
+
+    A no-op outside any :class:`InterruptScope`. Call only where stopping
+    leaves the system consistent, e.g. between two packages.
+    """
+    if _ACTIVE:
+        _ACTIVE[-1].check()
 
 
 class CleanExitRequested(BaseException):
@@ -78,11 +100,24 @@ class InterruptScope:
     def __enter__(self) -> "InterruptScope":
         self._prev_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handler)
+        _ACTIVE.append(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        with contextlib.suppress(ValueError):
+            _ACTIVE.remove(self)
         if self._prev_handler is not None:
             signal.signal(signal.SIGINT, self._prev_handler)
+
+    def redeliver(self) -> None:
+        """Send the deferred SIGINT again, once the scope has exited.
+
+        For a body that completed with a request pending: the work it
+        protected is done, so the Ctrl-C now takes effect under the previous
+        handler (normally ``KeyboardInterrupt``). A no-op when none was seen.
+        """
+        if self.requested:
+            signal.raise_signal(signal.SIGINT)
 
     # ------------------------------------------------------------------
     # public API
@@ -121,3 +156,10 @@ class InterruptScope:
         if self._on_signal is not None:
             with contextlib.suppress(Exception):
                 self._on_signal()
+        else:
+            # The first Ctrl-C used to be silent (3.5.0-B44). A raw write:
+            # a signal handler must not take the logging locks.
+            with contextlib.suppress(OSError):
+                os.write(2, b"\n[SYSFORGE] Ctrl-C: stopping at the next safe point. "
+                            b"Press Ctrl-C again to stop now, which may leave the "
+                            b"system inconsistent.\n")
