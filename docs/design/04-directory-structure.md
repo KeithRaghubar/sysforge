@@ -160,6 +160,8 @@ sysforge/
     bootstrap.toml                   # written by iso-install.sh (or hand-copied from the example)
 /usr/share/sysforge/
     bootstrap.toml.example           # starter template for manual hand-edit setups
+/usr/share/licenses/sysforge/
+    LICENSE                          # MIT text (not an Arch common license, so shipped per package)
 /usr/bin/sysforge
 ~/.config/sysforge/                  # $XDG_CONFIG_HOME/sysforge
     profiles.toml                    # user overrides (optional; merges with system via extends_system)

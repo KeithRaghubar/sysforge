@@ -60,6 +60,9 @@ package() {
     cd "$srcdir/$pkgname-$pkgver"
     python -m installer --destdir="$pkgdir" dist/*.whl
 
+    # MIT is not one of the common licenses, so the text ships with the package
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
     # Man page
     install -Dm644 man/sysforge.1 "$pkgdir/usr/share/man/man1/sysforge.1"
 

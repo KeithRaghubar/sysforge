@@ -39,9 +39,14 @@ def run_checker(repo=None, args=()):
     return subprocess.run(cmd, capture_output=True, text=True, cwd=REPO)
 
 
+# The package() line 3.5.0-B115 added to both PKGBUILDs.
+_LICENSE_INSTALL_LINE = (
+    '    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"\n')
+
+
 def copy_shipped_tree(dst: Path) -> Path:
     """Copy etc/sysforge/, tests/data/etc/sysforge/, PKGBUILD, PKGBUILD-git,
-    pyproject.toml, README.md, DESIGN.md, completions/, man/, and
+    pyproject.toml, README.md, DESIGN.md, LICENSE, completions/, man/, and
     etc/pacman.d/ into dst so the synthetic repo passes every check group.
 
     Returns the destination path.
@@ -53,7 +58,7 @@ def copy_shipped_tree(dst: Path) -> Path:
         if src.is_dir():
             shutil.copytree(src, dst / sub)
     for name in ("PKGBUILD", "PKGBUILD-git", "sysforge.install",
-                 "pyproject.toml", "README.md", "DESIGN.md"):
+                 "pyproject.toml", "README.md", "DESIGN.md", "LICENSE"):
         if (REPO / name).exists():
             shutil.copyfile(REPO / name, dst / name)
     return dst
@@ -216,8 +221,36 @@ class TestPkgbuildDrift:
         assert res.returncode == 1
         assert "40-hex fingerprint" in res.stdout
 
+    def test_license_not_installed_fails(self, tmp_path):
+        """3.5.0-B115: MIT is not a common license; the package must ship it."""
+        repo = copy_shipped_tree(tmp_path)
+        pkgbuild = repo / "PKGBUILD"
+        text = pkgbuild.read_text()
+        new = text.replace(_LICENSE_INSTALL_LINE, "")
+        assert new != text
+        pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=pkgbuild"])
+        assert res.returncode == 1
+        assert "LICENSE not installed to $pkgdir/usr/share/licenses/$pkgname/LICENSE" in res.stdout
+
 
 class TestPkgbuildParity:
+    def test_license_missing_from_git_pkgbuild_only(self, tmp_path):
+        """The pkgbuild group reads the stable PKGBUILD; parity carries the
+        license requirement to PKGBUILD-git (3.5.0-B115)."""
+        repo = copy_shipped_tree(tmp_path)
+        git_pkgbuild = repo / "PKGBUILD-git"
+        text = git_pkgbuild.read_text()
+        new = text.replace(_LICENSE_INSTALL_LINE, "")
+        assert new != text
+        git_pkgbuild.write_text(new)
+
+        res = run_checker(repo=repo, args=["--check=pkgbuild_parity"])
+        assert res.returncode == 1
+        assert "install target missing" in res.stdout
+        assert "/usr/share/licenses/$pkgname/LICENSE" in res.stdout
+
     def test_optdepends_drift(self, tmp_path):
         repo = copy_shipped_tree(tmp_path)
         # Mutate PKGBUILD-git optdepends without changing PKGBUILD.

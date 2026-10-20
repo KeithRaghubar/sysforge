@@ -700,10 +700,14 @@ _CONT_RE = re.compile(r"\\\s*\n\s*")
 #     reads at runtime — same rationale as the provisioning stubs. Matched by
 #     exact path (not a /usr/share/sysforge/ prefix) so a future real file there
 #     is not silently over-excluded.
+#   - the license text (3.5.0-B115): packaging metadata nothing reads at run
+#     time, so a trial from the checkout has no use for it under
+#     /usr/share/licenses. Exact path, as parsed ($pkgname is not expanded).
 _EXCLUDED_SYSTEM_PATH_MARKERS = (
     "/usr/lib/sysusers.d/",
     "/usr/lib/tmpfiles.d/",
     "/usr/share/sysforge/bootstrap.toml.example",
+    "/usr/share/licenses/$pkgname/LICENSE",
 )
 
 
@@ -731,6 +735,9 @@ def _parse_pkgbuild_install_targets(text: str) -> set[str]:
 _VALIDPGPKEYS_SENTINEL = "REPLACE_WITH_MAINTAINER_KEY_FINGERPRINT"
 
 
+_LICENSE_DEST = "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+
 def check_pkgbuild(repo: Path) -> list[Finding]:
     findings: list[Finding] = []
     pkgbuild = repo / "PKGBUILD"
@@ -747,11 +754,14 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
             backup.add(q1 or q2)
 
     install_etc_paths: set[str] = set()
+    installs_license = False
     for m in _INSTALL_RE.finditer(text):
         src = m.group(1)
         dst = m.group(2).strip("'\"")
         for var, val in local_vars.items():
             dst = dst.replace(var, val)
+        if src == "LICENSE" and dst == _LICENSE_DEST:
+            installs_license = True
 
         # Source paths in this PKGBUILD are repo-relative (no $srcdir prefix
         # in front of the `install` arg - the package() cd's into $srcdir
@@ -768,6 +778,13 @@ def check_pkgbuild(repo: Path) -> list[Finding]:
         if "$pkgdir/etc/" in dst:
             etc_rel = dst.split("$pkgdir/", 1)[1]
             install_etc_paths.add(etc_rel)
+
+    # MIT is not among the common licenses (/usr/share/licenses/common), so the
+    # package must ship its text (3.5.0-B115). pkgbuild_parity carries the
+    # requirement to PKGBUILD-git: the destination is the same literal text.
+    if not installs_license:
+        findings.append(Finding("pkgbuild", "error", "PKGBUILD",
+                                f"LICENSE not installed to {_LICENSE_DEST}"))
 
     for p in sorted(install_etc_paths - backup):
         findings.append(Finding("pkgbuild", "error", "PKGBUILD",

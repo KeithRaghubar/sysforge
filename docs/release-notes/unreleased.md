@@ -580,6 +580,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B114` — a failed toolchain install that cannot be rolled back says why.** When the new toolchain failed its post-install check and none of its packages had been installed before the run, as on a first toolchain install, there was no earlier version to put back, but the error said only that the automatic rollback "could not complete". sysforge now says that nothing was installed before, so there is no prior version to reinstall. The rest is unchanged: the recovery command is still printed, and the next run still offers it.
 
+---
+
+- **`3.5.0-B115` — the package installs its license.** sysforge is MIT-licensed, and MIT is not one of the licenses Arch provides for every package to share, so Arch packages under it install their own copy of the license text. sysforge's packages did not, which Arch's package checker reports. Both the `sysforge` and `sysforge-git` packages now install it as `/usr/share/licenses/sysforge/LICENSE` (`sysforge-git/LICENSE` for the VCS package). `make dev-install` does not link it, since nothing reads it at run time.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

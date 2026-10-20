@@ -115,15 +115,18 @@ canonical ordering.
 | `3.5.0-B109` | lib32-* packages are built in a sandbox without the multilib toolchain | med | small | patch |
 | `3.5.0-B111` | the shipped optimized profile disables LTO under the default gcc toolchain | med | small | patch |
 | `3.5.0-B113` | a compiler swap kept from the build-failure menu is lost on the default layout | med | small | patch |
+| `3.5.0-DEV8` | make make test the complete suite, so pre-release matches CI | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
 | `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
 | `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
 | `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
+| `3.5.0-B116` | the one runtime dependency can never install | low | small | patch |
 | `3.5.0-DEV5` | name the failing gate on the CI run page | low | small | patch |
 | `3.5.0-DEV6` | report test failures in full in CI | low | small | patch |
 | `3.5.0-DEV7` | print the container's environment at the top of the CI log | low | small | patch |
+| `3.5.0-DEV9` | correct the Makefile's stale comments and small gaps | low | small | patch |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
 | `3.5.0-DEV2` | raise test coverage where this review's bugs clustered | low | medium | patch |
 <!-- END roadmap-table -->
@@ -283,6 +286,17 @@ canonical ordering.
   written via the privilege seam; a symlink is kept and its target replaced; mode is preserved.
   *Priority: med · Effort: small · Bump: patch* — the recovery menu's "keep this swap" silently does nothing.
 
+---
+
+- **`3.5.0-B116` — the one runtime dependency can never install.** `pyproject.toml` declares
+  `"tomli>=2.0; python_version<'3.11'"` beside `requires-python = ">=3.11"`, so the marker is
+  always false and the line is dead; the `audit` target's comment repeats the "tomli backport"
+  claim. Drop the dependency (and any `tomli` import fallback it was for), leaving
+  `dependencies = []`, and correct the comment. Found in the 2026-10-19 Makefile audit.
+  Tests: the built wheel's metadata lists no `Requires-Dist`; `make audit`'s comment no longer
+  names tomli.
+  *Priority: low · Effort: small · Bump: patch* — dead metadata claiming a dependency surface.
+
 ### Developer tooling
 
 - **`3.5.0-DEV1` — test the branches mutation testing showed are unchecked.** Mutating
@@ -341,5 +355,31 @@ canonical ordering.
   debugging the 2026-10-19 red run. Tests: `make ci-local` output starts with the block;
   `shellcheck` passes.
   *Priority: low · Effort: small · Bump: patch* — a CI-only failure is a diff, not a guess.
+
+---
+
+- **`3.5.0-DEV8` — make `make test` the complete suite, so `pre-release` matches CI.** `test`
+  runs the system `pytest`, so `tests/test_sync_config.py` (which `importorskip`s tomlkit) runs
+  only where `python-tomlkit` happens to be installed; the Makefile's own comment calls
+  `coverage` "the complete run". CI runs `coverage`, but `make pre-release`, the gate before a
+  release, runs `test`, so its completeness depends on the machine. Run `test`/`test-x` through
+  `uv run --no-sync --with tomlkit pytest`, and drop the comments that explain the gap.
+  Found in the 2026-10-19 Makefile audit. Tests: on a machine without `python-tomlkit`,
+  `make test` runs `tests/test_sync_config.py` instead of skipping it.
+  *Priority: med · Effort: small · Bump: patch* — the release gate runs fewer tests than CI on some machines.
+
+---
+
+- **`3.5.0-DEV9` — correct the Makefile's stale comments and small gaps.** From the 2026-10-19
+  audit: the `check-shipped` comment says "seven check groups" (`GROUPS` in
+  `tools/check_shipped.py` has 11); the `next-id` comment lists `F/B/Q/STD` (it also takes
+  `DEV` and `DOC`); the `help` "Variables:" footer omits `TESTS=`, `NAME=`/`GUI=`, `DISTRO=`,
+  `VM_USER=` and the preflight `RUN_*` skips; `vm-ssh-root` duplicates `vm-ssh`, whose
+  `VM_USER` already defaults to root; `dev` does not depend on `venv`, so it fails on a fresh
+  checkout; `clean` leaves `man/sysforge.1.scd` and `.ruff_cache/`; and `typecheck` covers only
+  `sysforge/` while `lint-py` covers `sysforge/ tests/ tools/` (decide whether that is intended
+  and say so). Tests: `tests/test_makefile_help.py` still passes; `make dev` works on a fresh
+  checkout.
+  *Priority: low · Effort: small · Bump: patch* — the Makefile's comments are its documentation.
 
 ### Open questions
