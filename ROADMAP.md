@@ -122,7 +122,6 @@ canonical ordering.
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
 | `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
 | `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
-| `3.5.0-B116` | the one runtime dependency can never install | low | small | patch |
 | `3.5.0-DEV5` | name the failing gate on the CI run page | low | small | patch |
 | `3.5.0-DEV6` | report test failures in full in CI | low | small | patch |
 | `3.5.0-DEV7` | print the container's environment at the top of the CI log | low | small | patch |
@@ -286,17 +285,6 @@ canonical ordering.
   written via the privilege seam; a symlink is kept and its target replaced; mode is preserved.
   *Priority: med · Effort: small · Bump: patch* — the recovery menu's "keep this swap" silently does nothing.
 
----
-
-- **`3.5.0-B116` — the one runtime dependency can never install.** `pyproject.toml` declares
-  `"tomli>=2.0; python_version<'3.11'"` beside `requires-python = ">=3.11"`, so the marker is
-  always false and the line is dead; the `audit` target's comment repeats the "tomli backport"
-  claim. Drop the dependency (and any `tomli` import fallback it was for), leaving
-  `dependencies = []`, and correct the comment. Found in the 2026-10-19 Makefile audit.
-  Tests: the built wheel's metadata lists no `Requires-Dist`; `make audit`'s comment no longer
-  names tomli.
-  *Priority: low · Effort: small · Bump: patch* — dead metadata claiming a dependency surface.
-
 ### Developer tooling
 
 - **`3.5.0-DEV1` — test the branches mutation testing showed are unchecked.** Mutating
@@ -363,9 +351,17 @@ canonical ordering.
   only where `python-tomlkit` happens to be installed; the Makefile's own comment calls
   `coverage` "the complete run". CI runs `coverage`, but `make pre-release`, the gate before a
   release, runs `test`, so its completeness depends on the machine. Run `test`/`test-x` through
-  `uv run --no-sync --with tomlkit pytest`, and drop the comments that explain the gap.
-  Found in the 2026-10-19 Makefile audit. Tests: on a machine without `python-tomlkit`,
-  `make test` runs `tests/test_sync_config.py` instead of skipping it.
+  `uv run --no-sync --with tomlkit pytest`, and drop the comments that explain the gap. Then
+  define the gate list once: it is written twice, as `pre-release`'s prerequisites and as the
+  `make -k …` line in `tools/ci.sh`, which is how `test` and `coverage` drifted apart. A `GATES`
+  variable that `pre-release` depends on and `ci.sh` runs (or `ci.sh` running
+  `make -k pre-release`) keeps them equal by construction, and makes true the
+  `docs/RELEASE-CHECKLIST.md` line saying `ci-local` runs "the same gate list as `pre-release`".
+  `make ci-local` stays: it answers a different question (the same gates, away from this
+  workstation's packages, shell environment, live config and `/boot`), which is what caught
+  `3.5.0-DEV3` and the second round of `3.5.0-DEV4`. Found in the 2026-10-19 Makefile audit.
+  Tests: on a machine without `python-tomlkit`, `make test` runs `tests/test_sync_config.py`
+  instead of skipping it; a test that `tools/ci.sh` and `pre-release` resolve to the same gates.
   *Priority: med · Effort: small · Bump: patch* — the release gate runs fewer tests than CI on some machines.
 
 ---

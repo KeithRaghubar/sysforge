@@ -584,6 +584,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B115` — the package installs its license.** sysforge is MIT-licensed, and MIT is not one of the licenses Arch provides for every package to share, so Arch packages under it install their own copy of the license text. sysforge's packages did not, which Arch's package checker reports. Both the `sysforge` and `sysforge-git` packages now install it as `/usr/share/licenses/sysforge/LICENSE` (`sysforge-git/LICENSE` for the VCS package). `make dev-install` does not link it, since nothing reads it at run time.
 
+---
+
+- **`3.5.0-B116` — the Python package no longer lists a dependency that can never apply.** sysforge's package metadata named `tomli`, a TOML reader for Python versions before 3.11, although sysforge requires Python 3.11 or newer, whose standard library reads TOML itself. The entry could never be installed and only made sysforge look as if it had a dependency. sysforge now declares none; `pyalpm` remains an optional extra.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

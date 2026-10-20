@@ -9,9 +9,8 @@ description = "AUR helper that builds and tracks packages tuned to your CPU with
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = [
-    "tomli>=2.0; python_version<'3.11'",  # fallback if ever needed
-]
+# None: TOML is read with the stdlib tomllib, which requires-python guarantees.
+dependencies = []
 
 [project.optional-dependencies]
 # `extra` is opt-in fast-path bindings. Install with `uv sync --extra extra`

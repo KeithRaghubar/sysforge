@@ -189,8 +189,8 @@ lint-sh: ## Lint shell only (shellcheck)
 	    || { echo "shellcheck not found — install with: make dev-deps-core"; exit 1; }
 	shellcheck $(LINT_SH_FILES)
 
-# Supply-chain audit (2.3.0-F3). The runtime dep surface is near-empty by
-# design (tomli backport + optional pyalpm), but the dev/build toolchain
+# Supply-chain audit (2.3.0-F3). The runtime dep surface is empty by design
+# (only the optional pyalpm extra), but the dev/build toolchain
 # (hatchling, pytest, ruff, pyright, coverage overlay, …) is still a
 # supply-chain surface. Scans the active dev environment for packages with
 # known CVEs via pip-audit in an ephemeral uv overlay (same --no-sync --with

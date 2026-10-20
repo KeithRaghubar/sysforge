@@ -19,8 +19,5 @@ extra = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pyalpm", marker = "extra == 'extra'", specifier = ">=0.10.6" },
-    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
-]
+requires-dist = [{ name = "pyalpm", marker = "extra == 'extra'", specifier = ">=0.10.6" }]
 provides-extras = ["extra"]
