@@ -31,9 +31,11 @@ back to a user-writable location (e.g. the XDG state dir).
 This primitive does I/O and logs (via the ``FSPROV`` logger); it never imports
 the pipeline layer.
 """
+import contextlib
 import getpass
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -156,6 +158,49 @@ def _refuse_planted_symlink(path: Path) -> None:
             raise FsProvisionError(
                 f"refusing to provision {path} with sudo: {p} is a symlink "
                 f"in a directory others can write to")
+
+
+def check_private_dir(path: Path | str, *, check_mode: bool = True) -> None:
+    """Refuse *path* unless it is a real directory this user owns that no one
+    else can write to.
+
+    For build-time prefixes in a shared directory such as ``/var/tmp`` whose
+    contents later run (``PATH``, ``LD_LIBRARY_PATH``, ``CC``): another local
+    user who created the name first, or planted a symlink there, would have
+    their files run in the build (3.5.0-B54). The sticky bit on ``/var/tmp``
+    keeps anyone else from replacing a directory this user owns, so ownership
+    plus mode is enough. ``check_mode=False`` skips the mode test, for a
+    directory about to be deleted, whose contents will never run. Raises
+    :class:`FsProvisionError`; a missing *path* passes (nothing there to run).
+    """
+    path = Path(path)
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        raise FsProvisionError(f"refusing {path}: it is a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise FsProvisionError(f"refusing {path}: it is not a directory")
+    if st.st_uid != os.geteuid():
+        raise FsProvisionError(
+            f"refusing {path}: owned by uid {st.st_uid}, not this user; another "
+            "user may have created it. Inspect it, remove it, and run again")
+    if check_mode and st.st_mode & 0o022:
+        raise FsProvisionError(
+            f"refusing {path}: others can write to it "
+            f"(mode {stat.S_IMODE(st.st_mode):04o}); remove it and run again")
+
+
+def ensure_private_dir(path: Path | str) -> Path:
+    """Create *path* mode 0700 (parents as usual), or verify an existing one
+    with :func:`check_private_dir`. Returns *path*."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    check_private_dir(path)
+    return path
 
 
 def ensure_writable_dir(

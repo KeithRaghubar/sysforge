@@ -190,3 +190,18 @@ def test_confirm_runs_before_the_build_phase():
     names = [p.__name__ for p in update._PHASES]
     assert names.index("_phase_confirm") == names.index("_phase_plan") + 1
     assert names.index("_phase_confirm") + 1 == names.index("_phase_build")
+
+
+def test_source_sync_phase_picks_up_rpc_versions_recorded_this_run(tmp_path, monkeypatch):
+    """3.5.0-B108: a split pkgbase first resolved by this run's RPC (through a
+    member pkgname) is usable by the version check now, not one run later."""
+    from types import SimpleNamespace
+    run = _run(tmp_path)
+    run.rpc_version_by_base = {"htop": "3.3-1"}
+    cache = {"htop": {"rpc_version": "3.3-1"},
+             "lib32-libdbusmenu": {"rpc_version": "16.04.0-6"}}
+    monkeypatch.setattr(update, "_sync_sources", lambda *a: {})
+    monkeypatch.setattr(update, "get_scheduler",
+                        lambda: SimpleNamespace(cache=SimpleNamespace(all=lambda: cache)))
+    assert update._phase_source_sync(run) is None
+    assert run.rpc_version_by_base == {"htop": "3.3-1", "lib32-libdbusmenu": "16.04.0-6"}

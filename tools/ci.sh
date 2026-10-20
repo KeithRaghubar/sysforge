@@ -34,11 +34,57 @@ chown -R "$user:$user" "$work"
 # host's leftovers can't make a gate pass.
 runuser -u "$user" -- git -C "$work" clean -fdXq
 
-# The `pre-release` set, in its order. -k: one red gate must not hide the
-# others; the run still fails.
-# `coverage`, not `test` (3.4.0-DEV2): it is the complete run. `make test` uses
-# the system pytest, so tests/test_sync_config.py only runs where
-# python-tomlkit happens to be installed; coverage layers tomlkit in.
-runuser -u "$user" -- make -C "$work" -k \
-    lint typecheck coverage check-shipped check-personal check-design check-roadmap-table \
-    check-standards
+# The environment the gates run in (3.5.0-DEV7). A test that depends on the
+# host fails only where the environment differs, so a CI-only failure should
+# read as a diff against the local machine, not a guess.
+echo "== environment"
+echo "packages:  $(pacman -Q 2>/dev/null | wc -l)"
+for pkg in llvm clang lld python-tomlkit pyalpm; do
+    printf '%-10s %s\n' "$pkg:" "$(pacman -Q "$pkg" 2>/dev/null || echo 'not installed')"
+done
+echo "python:    $(python3 --version 2>&1)"
+echo "pytest:    $(pytest --version 2>&1 | head -1) (system; make test overlays its own)"
+echo "uv:        $(uv --version 2>&1)"
+
+# The `pre-release` gates, in their order, read from the Makefile so the two
+# cannot drift (3.5.0-DEV8). Every gate runs even after one fails (make -k's
+# behaviour, kept by hand so each gate can be grouped and reported); the run
+# still fails.
+read -ra gates <<<"$(runuser -u "$user" -- make -s --no-print-directory -C "$work" print-gates)"
+in_actions=${GITHUB_ACTIONS:-false}
+# A gate's full test-failure report (3.5.0-DEV6): every failure with its
+# assertion, and a JUnit file Actions annotations are drawn from. -o addopts=
+# drops the suite's -v, which would print one line per test.
+junit=/home/$user/junit.xml
+test_args="-o addopts= -q -rfE --tb=short -o junit_family=xunit1 --junitxml=$junit"
+failed=()
+results=()
+for gate in "${gates[@]}"; do
+    [[ $in_actions == true ]] && echo "::group::$gate"
+    args=()
+    [[ $gate == test ]] && args=("ARGS=$test_args")
+    if runuser -u "$user" -- make -C "$work" --no-print-directory "$gate" "${args[@]}"; then
+        results+=("| \`$gate\` | pass |")
+    else
+        failed+=("$gate")
+        results+=("| \`$gate\` | **FAIL** |")
+    fi
+    [[ $in_actions == true ]] && echo "::endgroup::"
+done
+
+# Outside Actions (`make ci-local`) the output stays the gates' own.
+if [[ $in_actions == true ]]; then
+    [[ -f $junit ]] && python3 "$work/tools/junit_annotate.py" "$junit"
+    if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
+        {
+            echo "| Gate | Result |"
+            echo "|------|--------|"
+            printf '%s\n' "${results[@]}"
+        } >>"$GITHUB_STEP_SUMMARY"
+    fi
+fi
+
+if ((${#failed[@]})); then
+    echo "FAILED gates: ${failed[*]}" >&2
+    exit 1
+fi

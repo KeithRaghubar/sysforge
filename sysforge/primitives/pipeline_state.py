@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 from sysforge.primitives import build_fingerprint, config
 
 _log = log.get_logger("STATE")
@@ -91,10 +92,7 @@ class PipelineState:
 
     def save(self):
         """Write current state to disk atomically (write + rename)."""
-        self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text(self._serialize())
-        tmp.rename(self.path)
+        atomic_write.write_state(self.path, self._serialize())
 
     def _now(self):
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

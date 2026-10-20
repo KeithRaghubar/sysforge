@@ -68,8 +68,7 @@ def test_atomic_write_no_tmp_leftover(tmp_path):
     bs = BuildState(tmp_path)
     _record(bs)
     bs.save()
-    tmp_file = bs.path.with_suffix(".toml.tmp")
-    assert not tmp_file.exists()
+    assert sorted(p.name for p in tmp_path.iterdir() if "tmp" in p.name) == []
 
 
 def test_serialized_toml_is_valid(tmp_path):

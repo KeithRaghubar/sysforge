@@ -1606,6 +1606,21 @@ def check_semver_bump(repo: Path,
 _RELEASE_GATE_EXEMPT = {"test"}
 _PRE_RELEASE_RE = re.compile(r"^pre-release:([^#\n]*)", re.MULTILINE)
 _RELEASE_MAKE_RE = re.compile(r"\bmake\s+(?:--no-print-directory\s+)?([a-z][\w-]*)")
+_MAKE_VAR_REF_RE = re.compile(r"\$\((\w+)\)")
+
+
+def _expand_make_vars(words: list[str], text: str) -> list[str]:
+    """Expand ``$(VAR)`` prerequisites from simple ``VAR :=``/``VAR =`` lines
+    (the `GATES` list, 3.5.0-DEV8); anything else is kept verbatim."""
+    out: list[str] = []
+    for word in words:
+        ref = _MAKE_VAR_REF_RE.fullmatch(word)
+        if ref is None:
+            out.append(word)
+            continue
+        m = re.search(rf"^{ref.group(1)}\s*:?=([^#\n]*)", text, re.MULTILINE)
+        out.extend(m.group(1).split() if m else [word])
+    return out
 
 
 def check_release_gates(repo: Path) -> list[Finding]:
@@ -1622,11 +1637,12 @@ def check_release_gates(repo: Path) -> list[Finding]:
     script = repo / "tools" / "release.sh"
     if not makefile.is_file() or not script.is_file():
         return []
-    m = _PRE_RELEASE_RE.search(makefile.read_text(encoding="utf-8"))
+    text = makefile.read_text(encoding="utf-8")
+    m = _PRE_RELEASE_RE.search(text)
     if m is None:
         return [Finding("release_gates", "error", "Makefile",
                         "no `pre-release:` target to compare the release preflight against")]
-    pre = set(m.group(1).split()) - _RELEASE_GATE_EXEMPT
+    pre = set(_expand_make_vars(m.group(1).split(), text)) - _RELEASE_GATE_EXEMPT
     called = set(_RELEASE_MAKE_RE.findall(script.read_text(encoding="utf-8")))
     findings = [
         Finding("release_gates", "error", "tools/release.sh",
@@ -1637,7 +1653,7 @@ def check_release_gates(repo: Path) -> list[Finding]:
     # A gate that can block a release must be deterministic: an unpinned
     # `uv run --with <tool>` resolves the newest release on every run, so a
     # tool update alone can turn a release red (3.2.0-STD1).
-    recipes = _make_recipes(makefile.read_text(encoding="utf-8"))
+    recipes = _make_recipes(text)
     for gate in sorted(pre & called):
         for tool in _UNPINNED_WITH_RE.findall(recipes.get(gate, "")):
             findings.append(Finding(

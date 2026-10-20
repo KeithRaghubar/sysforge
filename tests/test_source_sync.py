@@ -78,6 +78,56 @@ def test_rpc_short_circuit_when_cache_matches(tmp_path):
     clone.assert_not_called()
 
 
+# A split pkgbase that is none of its pkgnames: RPC `info` matches names only,
+# so the base itself returns nothing (3.5.0-B108, seen live).
+_DBUSMENU_GLIB = {"Name": "lib32-libdbusmenu-glib", "PackageBase": "lib32-libdbusmenu",
+                  "Version": "16.04.0-6", "LastModified": 1700}
+
+
+def _fake_info(names, **_kw):
+    return {"lib32-libdbusmenu-glib": _DBUSMENU_GLIB} \
+        if "lib32-libdbusmenu-glib" in names else {}
+
+
+def test_split_pkgbase_resolves_its_rpc_entry_through_a_member(tmp_path):
+    sched = _scheduler(tmp_path)
+    with patch("sysforge.primitives.source_sync.aur_info", side_effect=_fake_info) as info:
+        sched._ensure_rpc(
+            ["lib32-libdbusmenu"],
+            members={"lib32-libdbusmenu": ("lib32-libdbusmenu-glib",
+                                           "lib32-libdbusmenu-gtk3")})
+    queried = info.call_args.args[0]
+    assert queried == ["lib32-libdbusmenu", "lib32-libdbusmenu-glib",
+                       "lib32-libdbusmenu-gtk3"]
+    assert sched._rpc_entry("lib32-libdbusmenu") == _DBUSMENU_GLIB
+    # A member name is not a pkgbase anyone asked about.
+    assert sched._rpc_entry("lib32-libdbusmenu-glib") is None
+
+
+def test_split_pkgbase_short_circuits_and_records_its_rpc_version(tmp_path):
+    pkg = _make_repo(tmp_path, "lib32-libdbusmenu")
+    sched = _scheduler(tmp_path)
+    sched.cache.update("lib32-libdbusmenu", rpc_version="16.04.0-6",
+                       rpc_last_modified=1700, head_commit="abc")
+    req = SyncRequest(pkgbase="lib32-libdbusmenu", pkgbuild_dir=pkg,
+                      pkgnames=("lib32-libdbusmenu-glib", "lib32-libdbusmenu-gtk3"))
+    with patch("sysforge.primitives.source_sync.aur_info", side_effect=_fake_info), \
+         patch("sysforge.primitives.source_sync._head_commit", return_value="abc"), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare") as fetch:
+        result = sched.sync_many([req])["lib32-libdbusmenu"]
+    assert result.status == STATUS_UP_TO_DATE
+    fetch.assert_not_called()
+    assert sched.cache.get("lib32-libdbusmenu")["rpc_version"] == "16.04.0-6"
+
+
+def test_plain_pkgbase_is_still_keyed_by_name(tmp_path):
+    sched = _scheduler(tmp_path)
+    htop = {"Name": "htop", "PackageBase": "htop", "Version": "3.3-1"}
+    with patch("sysforge.primitives.source_sync.aur_info", return_value={"htop": htop}):
+        sched._ensure_rpc(["htop"])
+    assert sched._rpc_entry("htop") == htop
+
+
 def test_rpc_miss_triggers_fetch(tmp_path):
     pkg = _make_repo(tmp_path, "htop")
     sched = _scheduler(tmp_path)

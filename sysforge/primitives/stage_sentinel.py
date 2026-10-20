@@ -81,6 +81,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.privilege import privileged_argv
@@ -482,10 +483,7 @@ class StageSentinel:
     # ------------------------------------------------------------------
 
     def _write(self, data: dict) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text(self._serialize(data))
-        tmp.rename(self.path)
+        atomic_write.write_state(self.path, self._serialize(data))
 
     @staticmethod
     def _serialize(data: dict) -> str:

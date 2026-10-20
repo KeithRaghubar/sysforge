@@ -3606,6 +3606,10 @@ def _run_stage_already_built(tmp_path, *, prompt_ret=None, tty=True,
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          patch("sysforge.build.makepkg_wrapper.built_kernel_artifact_release",
                return_value=None), \
+         patch.object(_km.gates, "resolve_reused_config",
+                      return_value=_km.gates.ReusedConfig(
+                          {"CONFIG_EXT4_FS": "y"}, "7.2.7-arch1-1", "build tree /t")), \
+         patch.object(_km.gates, "_gate2_audit_config"), \
          _capture_logs() as logs:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         try:
@@ -3689,6 +3693,10 @@ def test_already_built_install_failure_suggests_fresh_build(tmp_path):
                side_effect=AlreadyBuilt(builds / "PKGBUILD")), \
          patch.object(_km.stage, "install_built_packages",
                       side_effect=RuntimeError("pacman -U failed (exit 1)")), \
+         patch.object(_km.gates, "resolve_reused_config",
+                      return_value=_km.gates.ReusedConfig(
+                          {"CONFIG_EXT4_FS": "y"}, "7.2.7-arch1-1", "build tree /t")), \
+         patch.object(_km.gates, "_gate2_audit_config"), \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub, \
          pytest.raises(RuntimeError, match="stale"):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
@@ -5175,10 +5183,13 @@ def _reuse_tree(root, release, body="CONFIG_EXT4_FS=y\nCONFIG_HZ_1000=y\n"):
     return tree
 
 
-def _artifact_release(monkeypatch, release):
+def _artifact_release(monkeypatch, release, shipped_config=None):
     from sysforge.build import makepkg_wrapper
     monkeypatch.setattr(makepkg_wrapper, "built_kernel_artifact_release",
                         lambda d: release)
+    # Never read the host's PKGDEST: it may hold a real headers package.
+    monkeypatch.setattr(makepkg_wrapper, "built_kernel_artifact_config",
+                        lambda d, rel: shipped_config if rel == release else None)
 
 
 def test_reused_config_matching_tree_is_used(tmp_path, monkeypatch):
@@ -5205,6 +5216,55 @@ def test_reused_config_mismatched_tree_falls_back_to_archive(tmp_path, monkeypat
     assert got is not None and got.path is None
     assert "kconfig-history" in got.source
     assert got.config["CONFIG_ARCHIVED"] == "y"
+
+
+def test_reused_config_falls_back_to_the_packages_own_config(tmp_path, monkeypatch):
+    """3.5.0-B59: with the tree wiped and no archive, the headers package's
+    .config (tied to the artifact by construction) is audited."""
+    _artifact_release(monkeypatch, _REL, shipped_config="CONFIG_EXT4_FS=y\nCONFIG_SHIPPED=y\n")
+    got = _km.gates.resolve_reused_config(
+        tmp_path / "state", "linux-sysforge", tmp_path / "pkg", build_dir=None)
+    assert got is not None and got.path is None and got.release == _REL
+    assert got.config["CONFIG_SHIPPED"] == "y"
+    assert "package's own .config" in got.source
+
+
+def test_gate2_refuses_a_reused_package_with_no_tied_config(tmp_path, monkeypatch):
+    """3.5.0-B59: never fall back to some build tree's newest .config, which
+    may be another build's."""
+    other = _reuse_tree(tmp_path / "pkg", "9.9.9-other")
+    monkeypatch.setattr(_km.gates, "_gate2_audit_config",
+                        lambda *a, **k: pytest.fail(f"audited {other}"))
+    with pytest.raises(RuntimeError, match="no config tied to it"):
+        _km.gates.gate2_audit(tmp_path / "pkg", None, skip_boot_audit=False,
+                              build_dir=None, reused=None, already_built=True)
+
+
+def test_gate2_skip_boot_audit_lets_an_unverifiable_reuse_through(tmp_path, monkeypatch):
+    monkeypatch.setattr(_km.gates, "_gate2_audit_config",
+                        lambda *a, **k: pytest.fail("audited a guessed config"))
+    _km.gates.gate2_audit(tmp_path / "pkg", None, skip_boot_audit=True,
+                          build_dir=None, reused=None, already_built=True)
+
+
+def test_drift_check_does_not_guess_a_config_for_an_untied_reuse(tmp_path):
+    _reuse_tree(tmp_path / "pkg", "9.9.9-other")
+    frag = tmp_path / "frag.config"
+    frag.write_text("CONFIG_HZ_1000=y\n")
+    assert _km.gates.gate2_kconfig_drift(
+        tmp_path / "pkg", frag, build_dir=None, reused=None, already_built=True) is None
+
+
+def test_installed_release_of_a_reuse_comes_from_the_artifact(tmp_path, monkeypatch):
+    """Boot entry and Gate 3 must name the package being installed, not the
+    newest tree's release (3.5.0-B59)."""
+    _artifact_release(monkeypatch, _REL)
+    _reuse_tree(tmp_path / "pkg", "9.9.9-other")
+    assert _km.gates.installed_kernel_release(
+        tmp_path / "pkg", build_dir=None, reused=None, already_built=True) == _REL
+    reused = _km.gates.ReusedConfig({}, "7.2.6-x", "archive")
+    assert _km.gates.installed_kernel_release(
+        tmp_path / "pkg", reused=reused, already_built=True) == "7.2.6-x"
 
 
 def test_reused_config_none_without_tree_or_archive(tmp_path, monkeypatch):
@@ -5590,3 +5650,25 @@ def test_kernel_stage_failed_entry_authenticate_stops_before_building(tmp_path):
          patch.object(_km.stage.sudo_session, "authenticate", lambda: False), \
          pytest.raises(RuntimeError, match="nothing was built"):
         KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+
+def test_artifact_config_reads_the_headers_packages_config(tmp_path, monkeypatch):
+    """3.5.0-B59: the real bsdtar read of usr/lib/modules/<rel>/build/.config."""
+    import shutil
+    import tarfile
+    from sysforge.build import makepkg_wrapper
+    if not shutil.which("bsdtar"):
+        pytest.skip("bsdtar not installed")
+    root = tmp_path / "root"
+    cfg = root / "usr" / "lib" / "modules" / _REL / "build" / ".config"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("CONFIG_EXT4_FS=y\n")
+    headers = tmp_path / "linux-sysforge-headers-7.2.7-1-x86_64.pkg.tar"
+    with tarfile.open(headers, "w") as tf:
+        tf.add(root / "usr", arcname="usr")
+    kernel = tmp_path / "linux-sysforge-7.2.7-1-x86_64.pkg.tar"
+    with tarfile.open(kernel, "w"):
+        pass
+    monkeypatch.setattr(makepkg_wrapper, "_artifacts_for_pkgbuild", lambda d: [kernel, headers])
+    assert makepkg_wrapper.built_kernel_artifact_config(tmp_path, _REL) == "CONFIG_EXT4_FS=y\n"
+    assert makepkg_wrapper.built_kernel_artifact_config(tmp_path, "9.9.9") is None

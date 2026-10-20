@@ -40,8 +40,15 @@ pull request in a fresh `archlinux:base-devel` container, as an unprivileged use
 core dev tier (`make dev-deps-core`) installed. Its job is
 to catch a test or gate that passes only because of the workstation (clang-forced shell, live
 config, installed extras, one hardware profile); it is not a release gate and holds no signing key.
-The suite runs as `make coverage`, not `make test`: only the coverage overlay supplies `tomlkit`,
-so it is the one run in which no test module skips for a missing package (`3.4.0-DEV2`).
+The gate list is the Makefile's `GATES` variable, which `pre-release` depends on and the job reads
+through `make print-gates`, so the two run the same gates by construction (`3.5.0-DEV8`); `make test`
+runs pytest in a uv overlay that supplies `tomlkit`, so no test module skips for a missing package
+on either. The job runs each gate in turn and keeps going past a failure (`make -k`'s behaviour);
+inside Actions it wraps each in a log group, appends a pass/fail table to the step summary
+(`3.5.0-DEV5`), and annotates each failing test with its file and line from the suite's JUnit
+report (`tools/junit_annotate.py`, `3.5.0-DEV6`). It opens with the container's environment
+(package count, LLVM and `tomlkit` presence, Python, pytest and uv versions) so a CI-only failure
+compares against the local machine (`3.5.0-DEV7`).
 The job body is `tools/ci.sh`, and `make ci-local` replays it under podman against the working tree
 (read-only mount, `CI=true` set as on the runner), so a red run reproduces without a push. It stays
 advisory (no branch protection) until it has held green for one release cycle. Because it runs the

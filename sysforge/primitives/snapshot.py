@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import run
+from sysforge.primitives import privilege, run, sudo_session
 
 _log = log.get_logger("SNAPSHOT")
 _done = False
@@ -83,14 +83,19 @@ def create_raw_snapshot() -> Path | None:
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = Path("/.snapshots") / f"sysforge-pre-build-{stamp}"
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        r = run.probe(["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)])
-    except OSError as e:
-        _log.warn(f"  raw btrfs snapshot failed: {e}")
+    # Both steps need root: /.snapshots sits in /, and snapshotting / needs its
+    # owner or CAP_FOWNER. Run as the build user they always failed, so the
+    # opt-in safety net never fired (3.5.0-B117). A declined sudo is a warning,
+    # never a failed build.
+    if not sudo_session.authenticate():
+        _log.warn("  raw btrfs snapshot skipped: sudo was not authorised")
         return None
-    if r.returncode != 0:
-        _log.warn(f"  raw btrfs snapshot failed: {r.stderr.strip()}")
+    try:
+        privilege.run_privileged(["mkdir", "-p", str(dest.parent)], tag="SNAPSHOT")
+        privilege.run_privileged(["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)],
+                                 tag="SNAPSHOT")
+    except (RuntimeError, OSError) as e:
+        _log.warn(f"  raw btrfs snapshot failed: {e}")
         return None
     return dest
 

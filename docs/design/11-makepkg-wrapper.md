@@ -235,7 +235,9 @@ leak into the next one's persistence check.
 `profile_writer.write_package_compiler_override` — the sole profiles.toml
 writer for this table (see §Flag/Profile System →
 `[package_compiler_overrides]`) — wrapped so a read/write failure is logged
-and swallowed rather than failing an otherwise-successful build. A swap with
+and swallowed rather than failing an otherwise-successful build. A failed write
+(sudo declined, say) is an `error()`, not a `-v` warning: the swap the menu offered
+to keep is lost and the next build fails the same way (`3.5.0-B113`). A swap with
 any of `cc`/`cxx`/`ld` missing is skipped with a warning instead of writing a
 partial row. A gcc/clang unit is written as `{ toolchain = … }` (plus `ld` when one was
 entered), not raw cc/cxx (`3.5.0-F12`), and the retry that produced it already ran

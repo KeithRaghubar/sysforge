@@ -483,7 +483,10 @@ def test_write_round_is_atomic_and_replaces_whole(tmp_path, monkeypatch):
     monkeypatch.setattr(kernel_fdo.os, "replace",
                         lambda a, b: replaced.append((Path(a), Path(b))) or real(a, b))
     kernel_fdo.write_round(tmp_path, pkgver="7.2.7.arch1-1", build_dir=None)
-    assert replaced == [(tmp_path / "round.toml.tmp", tmp_path / "round.toml")]
+    # A unique temp beside the file (3.5.0-B81), renamed over it.
+    [(tmp, dest)] = replaced
+    assert dest == tmp_path / "round.toml"
+    assert tmp.parent == tmp_path and tmp.name.startswith(".round.toml.")
     assert (tmp_path / "round.toml").read_text() == 'pkgver = "7.2.7.arch1-1"\n'
     assert sorted(p.name for p in tmp_path.iterdir()) == ["round.toml"]
 

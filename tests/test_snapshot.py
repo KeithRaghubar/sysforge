@@ -162,28 +162,57 @@ def test_create_raw_snapshot_without_btrfs_warns(monkeypatch):
     assert "btrfs command not found" in warned[0]
 
 
-@pytest.mark.parametrize("probe", [
-    lambda argv: _probe_result(1, err="Permission denied"),
-    lambda argv: (_ for _ in ()).throw(OSError("exec failed")),
-])
-def test_create_raw_snapshot_failure_warns_and_returns_none(monkeypatch, probe):
+def _raw_env(monkeypatch, *, authorised=True, privileged=None):
+    """The raw path with btrfs present; sudo and the privilege seam faked."""
     monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/btrfs")
-    monkeypatch.setattr(snapshot.Path, "mkdir", lambda self, **k: None)
-    monkeypatch.setattr(snapshot.run, "probe", probe)
+    monkeypatch.setattr(snapshot.sudo_session, "authenticate", lambda: authorised)
+    seen = []
+
+    def _run_privileged(argv, *, tag, **_k):
+        seen.append((argv, tag))
+        if privileged is not None:
+            privileged(argv)
+
+    monkeypatch.setattr(snapshot.privilege, "run_privileged", _run_privileged)
+    return seen
+
+
+def _refuse(argv):
+    raise RuntimeError("[SNAPSHOT] btrfs failed: Permission denied")
+
+
+def _exec_failed(argv):
+    raise OSError("exec failed")
+
+
+@pytest.mark.parametrize("privileged", [_refuse, _exec_failed])
+def test_create_raw_snapshot_failure_warns_and_returns_none(monkeypatch, privileged):
+    _raw_env(monkeypatch, privileged=privileged)
     warned = _record_log(monkeypatch).warned
     assert snapshot.create_raw_snapshot() is None
     assert "raw btrfs snapshot failed" in warned[0]
 
 
-def test_create_raw_snapshot_takes_a_read_only_snapshot_of_root(monkeypatch):
-    monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/btrfs")
-    monkeypatch.setattr(snapshot.Path, "mkdir", lambda self, **k: None)
-    seen = []
-    monkeypatch.setattr(snapshot.run, "probe", lambda argv: seen.append(argv) or _probe_result())
+def test_create_raw_snapshot_runs_mkdir_and_btrfs_through_the_privilege_seam(monkeypatch):
+    """3.5.0-B117: both need root, so as the build user they always failed."""
+    seen = _raw_env(monkeypatch)
+    monkeypatch.setattr(snapshot.run, "probe",
+                        lambda *a, **k: pytest.fail("ran unprivileged"))
     dest = snapshot.create_raw_snapshot()
     assert dest is not None and dest.parent == Path("/.snapshots")
     assert dest.name.startswith("sysforge-pre-build-")
-    assert seen[0] == ["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)]
+    assert seen == [
+        (["mkdir", "-p", "/.snapshots"], "SNAPSHOT"),
+        (["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)], "SNAPSHOT"),
+    ]
+
+
+def test_create_raw_snapshot_declined_sudo_warns_and_runs_nothing(monkeypatch):
+    seen = _raw_env(monkeypatch, authorised=False)
+    warned = _record_log(monkeypatch).warned
+    assert snapshot.create_raw_snapshot() is None
+    assert seen == []
+    assert "sudo was not authorised" in warned[0]
 
 
 def _enabled(monkeypatch, *, snapper_cfg):

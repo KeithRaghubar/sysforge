@@ -206,11 +206,14 @@ def resolve_reused_config(state_dir, pkgname, pkgbuild_dir, *, build_dir=None):
     pkgbase). A later aborted build can leave a different ``.config`` there, so
     the tree counts only when its ``kernel.release`` equals the release the
     artifact ships; otherwise the ``kconfig-history`` archive for that release
-    is used. ``None`` when the artifact's release is unknown or neither source
-    matches — the caller then reports the checks as not run.
+    is used, then the ``.config`` the package itself ships (its headers
+    package, 3.5.0-B59). ``None`` when the artifact's release is unknown or no
+    source matches — Gate 2 then refuses unless ``--skip-boot-audit``.
     """
     from sysforge.primitives import kconfig_history
-    from sysforge.build.makepkg_wrapper import built_kernel_artifact_release
+    from sysforge.build.makepkg_wrapper import (
+        built_kernel_artifact_config, built_kernel_artifact_release,
+    )
 
     release = built_kernel_artifact_release(pkgbuild_dir)
     if not release:
@@ -234,6 +237,10 @@ def resolve_reused_config(state_dir, pkgname, pkgbuild_dir, *, build_dir=None):
         if archived:
             where = kconfig_history.archive_path(state_dir, pkgname, release)
             return ReusedConfig(archived, release, f"kconfig-history archive {where}")
+    shipped = built_kernel_artifact_config(pkgbuild_dir, release)
+    if shipped:
+        return ReusedConfig(kernel_safety.parse_kconfig_text(shipped), release,
+                            f"the package's own .config (release {release})")
     return None
 
 
@@ -360,7 +367,7 @@ def built_kernel_release(config_path):
 
 
 def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
-                build_dir=None, reused=None):
+                build_dir=None, reused=None, already_built=False):
     """Audit the resolved .config before install. Raises on brick unless skipped.
 
     Runs *outside* the install sentinel: a brick abort here leaves the system
@@ -386,12 +393,30 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
                             source=reused.source, release=reused.release,
                             warn_running=False)
         return
+    if already_built and reused is None:
+        # AlreadyBuilt with nothing tied to the reused package (3.5.0-B59): the
+        # newest .config in some build tree may be another build's, so a
+        # package Gate 2 once rejected could be audited against the wrong one
+        # and installed. Refuse, as a fresh build without a config does.
+        if not skip_boot_audit:
+            raise RuntimeError(
+                "[KERNEL] Gate 2: the reused kernel package in PKGDEST has no "
+                "config tied to it (no matching build tree, kconfig-history "
+                "archive or headers package); boot-critical config cannot be "
+                "validated, aborting before install. Rebuild it (remove it from "
+                "PKGDEST or bump pkgrel), or pass --skip-boot-audit to override."
+            )
+        _log.warn(
+            "Gate 2: no config is tied to the reused kernel package; "
+            "boot-critical config was NOT validated before install "
+            "(--skip-boot-audit)."
+        )
+        return
     config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
     if config_path is None:
         # A fresh build reported its tree (``build_dir``) yet left no .config
         # there: the boot-critical backstop would silently be off, so refuse
-        # (3.2.0-B37). Without a fresh build (AlreadyBuilt) there is no tree
-        # to demand — that stays a warning.
+        # (3.2.0-B37).
         if build_dir is not None and not skip_boot_audit:
             raise RuntimeError(
                 "[KERNEL] Gate 2: resolved kernel .config not found under the "
@@ -474,7 +499,8 @@ def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
         )
 
 
-def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=None):
+def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=None,
+                        already_built=False):
     """Advisory: warn when options sysforge merged didn't survive into the
     resolved .config.
 
@@ -497,6 +523,10 @@ def gate2_kconfig_drift(pkgbuild_dir, fragment_path, *, build_dir=None, reused=N
         # AlreadyBuilt with a verified source for the reused package's config
         # (3.3.0-B11): check against it and say which one it was.
         resolved, source = reused.config, reused.source
+    elif already_built:
+        # Nothing tied to the reused package: another build's newest .config
+        # would report drift against the wrong kernel (3.5.0-B59).
+        resolved, source = None, ""
     else:
         config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
         resolved = (kernel_safety.parse_kconfig(config_path) or {}) if config_path else None
@@ -620,16 +650,33 @@ def kconfig_drift_lines(drifts) -> list[str]:
     ]
 
 
-def gate3_verify(pkgbuild_dir, pkgname, bootloader, *, build_dir=None):
+def installed_kernel_release(pkgbuild_dir, *, build_dir=None, reused=None,
+                             already_built=False):
+    """The release the package being installed ships, for the boot entry and
+    Gate 3's DKMS check.
+
+    A fresh build reads its own tree. A reused (AlreadyBuilt) package reads
+    its verified config's release, else the artifact itself — never the
+    newest ``.config`` of whatever build tree is lying around (3.5.0-B59).
+    """
+    if not already_built:
+        return built_kernel_release(resolve_built_config(pkgbuild_dir, build_dir=build_dir))
+    if reused is not None:
+        return reused.release
+    from sysforge.build.makepkg_wrapper import built_kernel_artifact_release
+    return built_kernel_artifact_release(pkgbuild_dir)
+
+
+def gate3_verify(pkgbuild_dir, pkgname, bootloader, *, build_dir=None, reused=None,
+                 already_built=False):
     """Post-install boot-readiness verification. Raises on brick.
 
     Runs inside the sentinel: a failure here leaves the sentinel set so the
     operator is told to resolve boot wiring before the next run.
     """
     findings = list(kernel_safety.verify_boot_artifacts(pkgname, bootloader))
-    kver = built_kernel_release(
-        resolve_built_config(pkgbuild_dir, build_dir=build_dir)
-    )
+    kver = installed_kernel_release(pkgbuild_dir, build_dir=build_dir, reused=reused,
+                                    already_built=already_built)
     if kver:
         findings += kernel_safety.check_dkms_for_kernel(kver)
 

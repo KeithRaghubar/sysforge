@@ -46,7 +46,6 @@ filesystem existence checks in :func:`require_profile` / :func:`resolve_vmlinux`
 and the ``/proc/cpuinfo`` read in :func:`detect_branch_sampling` (injectable for
 tests).
 """
-import contextlib
 import hashlib
 import mmap
 import os
@@ -57,6 +56,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from sysforge.primitives import atomic_write
 from sysforge.primitives.artifacts import toml_escape
 from sysforge.primitives.makepkg_pgo import (
     APPLIED_SIDECAR, ROUND_SIDECAR, resolve_method_store,
@@ -233,18 +233,8 @@ class RoundInfo:
 def _write_sidecar(store: Path, name: str, lines: list[str]) -> Path:
     """Write ``<store>/<name>`` atomically: a sibling ``<name>.tmp`` then
     ``os.replace``, so a reader never sees a half-written sidecar."""
-    store.mkdir(parents=True, exist_ok=True)
     path = store / name
-    tmp = store / f"{name}.tmp"
-    try:
-        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        tmp.replace(path)  # os.replace: atomic within one filesystem
-    except BaseException:
-        # The cleanup shares the write's directory, so it can fail the same
-        # way; never let its error replace the one that matters (3.3.0-B18).
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
+    atomic_write.write_state(path, "\n".join(lines) + "\n")
     return path
 
 

@@ -1440,7 +1440,7 @@ def test_sync_sources_skips_vcs_without_devel(tmp_path, monkeypatch):
     class _FakeScheduler:
         offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
-        def _ensure_rpc(self, bases):  # noqa: ARG002
+        def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
         def request(self, req):
             seen.append(req.pkgbase)
@@ -1480,7 +1480,7 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     class _FakeScheduler:
         offline = cleansrc = cleansrc_force = force_devel = False
         cache = MagicMock()
-        def _ensure_rpc(self, bases):  # noqa: ARG002
+        def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
         def request(self, req):
             seen.append(req.pkgbase)
@@ -1494,6 +1494,40 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     _sync_sources(pkgbase_map, pkgbase_entry, args)
 
     assert sorted(seen) == ["htop", "mesa-git"]
+
+
+def test_sync_sources_primes_the_rpc_with_split_members(tmp_path, monkeypatch):
+    """3.5.0-B108: the RPC is primed with each pkgbase's member pkgnames, and
+    each request carries them, so a split base that is no pkgname resolves."""
+    from sysforge.primitives import source_sync
+    from sysforge.primitives.source_sync import STATUS_UP_TO_DATE, SyncResult
+
+    d = tmp_path / "lib32-libdbusmenu"
+    d.mkdir()
+    (d / "PKGBUILD").write_text("pkgbase=lib32-libdbusmenu\n")
+    members = ["lib32-libdbusmenu-glib", "lib32-libdbusmenu-gtk3"]
+    primed: list = []
+    reqs: list = []
+
+    class _FakeScheduler:
+        offline = cleansrc = cleansrc_force = force_devel = False
+        cache = MagicMock()
+        def _ensure_rpc(self, bases, members=None):
+            primed.append((bases, members))
+        def request(self, req):
+            reqs.append(req)
+            return SyncResult(pkgbase=req.pkgbase, status=STATUS_UP_TO_DATE)
+        def close(self):
+            pass
+
+    monkeypatch.setattr(source_sync, "_scheduler", _FakeScheduler())
+    args = _make_args(offline=False, cleansrc=False, cleansrc_force=False,
+                      devel=False, state_dir=str(tmp_path))
+    _sync_sources({"lib32-libdbusmenu": members},
+                  {"lib32-libdbusmenu": {"pkgbuild_dir": str(d), "source": "aur"}}, args)
+
+    assert primed == [(["lib32-libdbusmenu"], {"lib32-libdbusmenu": tuple(members)})]
+    assert reqs[0].pkgnames == tuple(members)
 
 
 def test_pull_failure_continues_to_next_package(update_scenario, capsys):

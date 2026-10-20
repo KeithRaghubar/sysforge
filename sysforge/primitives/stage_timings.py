@@ -20,11 +20,11 @@ shape) and never raises, so timing can never fail a stage.
 from __future__ import annotations
 
 import contextlib
-import os
-import tempfile
 import tomllib
 from pathlib import Path
 from statistics import median
+
+from sysforge.primitives import atomic_write
 
 FILENAME = "stage_timings.toml"
 _RING = 5
@@ -67,20 +67,7 @@ def _serialize(data: dict) -> str:
 
 def _write(path: Path, text: str) -> None:
     """Temp file in the destination dir, fsync, rename. Never escalates."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.chmod(0o644)
-        tmp.replace(path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
-        raise
+    atomic_write.write_state(path, text)
 
 
 def record(state_dir: Path, stage: str, step: str, seconds: float) -> None:

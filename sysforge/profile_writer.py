@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 from sysforge.primitives.config import toml_literal
 
 _log = log.get_logger("PROFILE")
@@ -103,12 +104,13 @@ def write_package_compiler_override(
         if not replaced:
             lines.insert(sect_idx + 1, new_row)
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # The default layout's target is root's /etc/sysforge/profiles.toml, so the
+    # write escalates through the one config-replace seam (3.5.0-B113).
     try:
-        tmp.write_text("".join(lines))
-        tmp.replace(path)
+        atomic_write.replace_file(path, "".join(lines), tag="CONFIG")
     except OSError as e:
-        _log.warn(f"profiles.toml override write failed: {e}")
+        # The swap the menu offered to keep is lost: the next build fails alike.
+        _log.error(f"Could not save the compiler swap for {pkgbase} to {path}: {e}")
         return False
     what = (f"toolchain={toolchain}" + (f" ld={ld}" if ld else "")
             if toolchain else f"cc={cc} cxx={cxx} ld={ld}")

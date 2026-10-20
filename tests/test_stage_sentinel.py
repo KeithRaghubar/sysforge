@@ -5,6 +5,7 @@ Covers mark_started/clear/get_active round-trips plus the CLI-entry
 recovery helper check_and_recover_stale_sentinel().
 """
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -331,3 +332,87 @@ def test_recovery_round_trips_through_the_record(tmp_path):
     rec = Recovery.pacman_sync(["llvm", "clang"])
     StageSentinel(tmp_path).mark_started("toolchain", **rec.record_fields())
     assert ss.recovery_from_record(StageSentinel(tmp_path).get_active()) == rec
+
+
+# ---------------------------------------------------------------------------
+# Edges the mutation sweep found unchecked (3.5.0-DEV1)
+# ---------------------------------------------------------------------------
+
+def test_state_dir_resolution_order(tmp_path, monkeypatch):
+    monkeypatch.delenv("SYSFORGE_STATE_DIR", raising=False)
+    assert ss._resolve_state_dir(None) == Path("/var/lib/sysforge")
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "env"))
+    assert ss._resolve_state_dir(None) == tmp_path / "env"
+    assert ss._resolve_state_dir(tmp_path / "arg") == tmp_path / "arg"
+
+
+def test_cached_archive_refuses_a_relative_path_by_name():
+    with pytest.raises(ValueError, match="not a package archive path"):
+        ss._check_cached_archive("llvm-1-1-x86_64.pkg.tar.zst")
+
+
+def test_unknown_recovery_kind_is_dropped_without_validation(capsys):
+    assert ss.recovery_from_record({"recovery_kind": "bogus", "recovery_args": []}) is None
+    assert ss.recovery_from_record(
+        {"recovery_kind": ss.RECOVERY_MKINITCPIO, "recovery_args": "x"}) is None
+    out = capsys.readouterr()
+    assert "refused" not in out.err + out.out
+
+
+def test_invalid_recovery_displays_as_its_kind():
+    assert Recovery("pacman_sync", ("-bad",)).display() == "<invalid pacman_sync recovery>"
+
+
+def test_recovery_is_immutable():
+    import dataclasses
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        Recovery.mkinitcpio().kind = "x"  # type: ignore[misc]
+
+
+def test_root_owned_path_is_not_foreign():
+    assert ss._foreign_owner(Path("/")) is None
+
+
+def _prompted(tmp_path, capsys, record, answer="n"):
+    StageSentinel(tmp_path).mark_started("toolchain", **record)
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value=answer):
+        result = check_and_recover_stale_sentinel(tmp_path)
+    out = capsys.readouterr()
+    return result, out.err + out.out
+
+
+def test_prompt_lists_metadata_but_not_the_recovery_fields(tmp_path, capsys):
+    _, text = _prompted(tmp_path, capsys,
+                        {"pkgver": "22.1.8", **Recovery.mkinitcpio().record_fields()})
+    assert "pkgver = 22.1.8" in text
+    assert "recovery_kind =" not in text
+
+
+def test_empty_legacy_recovery_reads_as_none_recorded(tmp_path, capsys):
+    _, text = _prompted(tmp_path, capsys, {"recovery_cmd": ""})
+    assert "No recovery command recorded" in text
+    assert "older sysforge" not in text
+
+
+def test_declined_clear_without_recovery_is_false(tmp_path, capsys):
+    result, _ = _prompted(tmp_path, capsys, {}, answer="n")
+    assert result is False
+
+
+def test_clear_without_recovery_that_misses_the_file_is_false(tmp_path, capsys):
+    StageSentinel(tmp_path).mark_started("toolchain")
+    with patch("sysforge.primitives.stage_sentinel.is_interactive", return_value=True), \
+         patch("sysforge.primitives.stage_sentinel.prompt_choice", return_value="y"), \
+         patch.object(StageSentinel, "clear", lambda self: None):
+        assert check_and_recover_stale_sentinel(tmp_path) is False
+    assert "Possible state-dir mismatch" in capsys.readouterr().err
+
+
+def test_declined_restore_is_false_and_runs_nothing(tmp_path, capsys):
+    with patch("sysforge.primitives.stage_sentinel.subprocess.run") as run:
+        result, _ = _prompted(tmp_path, capsys, Recovery.mkinitcpio().record_fields(),
+                              answer="n")
+    assert result is False
+    run.assert_not_called()
+    assert StageSentinel(tmp_path).get_active() is not None

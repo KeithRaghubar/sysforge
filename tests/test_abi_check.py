@@ -17,6 +17,8 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -845,3 +847,144 @@ def test_skew_gate_is_inert_without_source_built_packages():
     with patch("sysforge.primitives.abi_check.package_abi_findings",
                side_effect=AssertionError("must not extract")):
         assert source_built_skew_findings([Path("mesa.pkg.tar")], set()) == []
+
+
+# ---------------------------------------------------------------------------
+# ELF class matching: a 32-bit .so resolves only against 32-bit exports
+# (3.5.0-DEV1: mutation survivors)
+# ---------------------------------------------------------------------------
+
+_READELF_H = """ELF Header:
+  Magic:   7f 45 4c 46 01 01 01 00 00 00 00 00 00 00 00 00
+  Class:                             {klass}
+  Data:                              2's complement, little endian
+"""
+
+
+@pytest.mark.parametrize("klass", ["ELF32", "ELF64"])
+def test_elf_class_reads_the_header_class(klass):
+    from sysforge.primitives import abi_check
+    probe = MagicMock(returncode=0, stdout=_READELF_H.format(klass=klass))
+    with patch.object(abi_check.run, "probe", return_value=probe) as p:
+        assert abi_check._elf_class(Path("/x/libfoo.so.1")) == klass
+    assert p.call_args.args[0] == ["readelf", "-h", "/x/libfoo.so.1"]
+
+
+@pytest.mark.parametrize("returncode,stdout", [
+    (1, _READELF_H.format(klass="ELF64")),   # readelf failed
+    (0, "ELF Header:\n  Data: little endian\n"),  # no Class line
+    (0, "  Class:\n"),                         # Class with no value
+])
+def test_elf_class_is_empty_when_unknown(returncode, stdout):
+    from sysforge.primitives import abi_check
+    with patch.object(abi_check.run, "probe",
+                      return_value=MagicMock(returncode=returncode, stdout=stdout)):
+        assert abi_check._elf_class(Path("/x/libfoo.so")) == ""
+
+
+@pytest.mark.parametrize("tag,klass", [
+    ("libc6,x86-64", "ELF64"), ("libc6,AArch64", "ELF64"), ("libc6,aarch64", "ELF64"),
+    ("libc6,64bit", "ELF64"), ("libc6", "ELF32"), ("libc6,hard-float", "ELF32"),
+])
+def test_ldconfig_tag_class(tag, klass):
+    from sysforge.primitives import abi_check
+    assert abi_check._ldconfig_tag_class(tag) == klass
+
+
+# ---------------------------------------------------------------------------
+# Parser and guard edges (3.5.0-DEV1: mutation survivors)
+# ---------------------------------------------------------------------------
+
+def test_parse_nm_undefined_drops_malformed_versions():
+    assert _parse_nm_undefined("U foo@@V1\nU @V1\nU foo@\nU bar@V2\n") == {("bar", "V2")}
+
+
+def test_parse_nm_exports_drops_malformed_versions():
+    out = "0001 T @@V1\n0002 T foo@@\n0003 T bar@V2\n0004 T baz@@V3\n"
+    assert _parse_nm_exports(out) == {("bar", "V2"), ("baz", "V3")}
+
+
+_VERINFO = """\
+Version definition section '.gnu.version_d' contains 1 entry:
+  0x0000: Rev: 1  Flags: BASE  Index: 1  Cnt: 1  Name: libdef.so.1
+  0x001c: Name: DEF_ONLY  Flags: none  Version: 2
+
+Version needs section '.gnu.version_r' contains 1 entry:
+  0x0000: Name: ORPHAN_BEFORE_FILE  Flags: none  Version: 9
+  0x0000: Version: 1  File: libc.so.6  Cnt: 1
+  0x0010:   Name: GLIBC_2.34  Flags: none  Version: 3
+
+Version definition section '.gnu.version_d' contains 1 entry:
+  0x0000: Version: 1  File: libnot.so.1  Cnt: 1
+  0x0010:   Name: AFTER_NEEDS  Flags: none  Version: 4
+"""
+
+
+def test_parse_verneed_reads_only_the_needs_section_and_bound_names():
+    """Name lines before the needs section, before its first File, or in a
+    later definition section never count."""
+    assert _parse_verneed(_VERINFO) == {"GLIBC_2.34": {"libc.so.6"}}
+
+
+def test_verneed_map_is_empty_when_readelf_fails():
+    from sysforge.primitives import abi_check
+    with patch.object(abi_check.run, "probe",
+                      return_value=MagicMock(returncode=1, stdout=_VERINFO)):
+        assert abi_check._verneed_map(Path("/x/lib.so")) == {}
+
+
+def test_extract_sos_warns_only_on_failure_and_skips_directories(tmp_path):
+    from sysforge.primitives import abi_check
+    (tmp_path / "usr/lib/libfoo.so.1").parent.mkdir(parents=True)
+    (tmp_path / "usr/lib/libfoo.so.1").write_bytes(b"\x7fELF")
+    (tmp_path / "usr/lib/dir.so").mkdir()
+    members = ["usr/lib/libfoo.so.1", "usr/lib/dir.so", "usr/lib/absent.so"]
+    for rc, warned in ((0, False), (1, True)):
+        with patch.object(abi_check.run, "probe",
+                          return_value=MagicMock(returncode=rc, stderr="boom")), \
+             patch.object(type(abi_check._log), "warn") as warn:
+            got = _extract_sos(Path("/x/p.pkg.tar.zst"), members, tmp_path)
+        assert got == [tmp_path / "usr/lib/libfoo.so.1"]
+        assert warn.called is warned
+
+
+def test_skip_list_names_bundled_binaries_only():
+    from sysforge.primitives.abi_check import is_abi_check_skipped_package
+    assert is_abi_check_skipped_package("steam") is True
+    assert is_abi_check_skipped_package("mesa") is False
+
+
+def test_abi_finding_is_immutable():
+    import dataclasses
+    f = AbiFinding(so="libx.so", kind="symbol", message="m", libs=())
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        f.kind = "missing_needed"  # type: ignore[misc]
+
+
+def test_skew_needs_a_symbol_finding_with_an_attributed_lib(tmp_path):
+    from sysforge.primitives import abi_check, pacman
+    pkg = tmp_path / "mesa-1-1-x86_64.pkg.tar.zst"
+    findings = [AbiFinding(so="a.so", kind="missing_needed", message="m",
+                           libs=("/usr/lib/libLLVM.so",)),
+                AbiFinding(so="a.so", kind="symbol", message="s", libs=())]
+    with patch.object(abi_check, "package_abi_findings", return_value=findings), \
+         patch.object(pacman, "owners_of",
+                      side_effect=lambda paths: pytest.fail("no candidate to attribute")):
+        assert source_built_skew_findings([pkg], {"llvm"}) == []
+
+
+def test_post_build_report_says_when_nothing_was_built():
+    from sysforge.primitives import abi_check
+    with patch.object(type(abi_check._log), "info") as info:
+        abi_check.report_post_build_abi([])
+    assert any("No built packages" in c.args[0] for c in info.call_args_list)
+    with patch.object(type(abi_check._log), "info") as info, \
+         patch.object(abi_check, "check_package_abi", return_value=[]):
+        abi_check.report_post_build_abi([Path("/x/a.pkg.tar.zst")])
+    assert not any("No built packages" in c.args[0] for c in info.call_args_list)
+
+
+def test_parse_verneed_ignores_lines_before_any_section_header():
+    pre = ("  0x0000: Version: 1  File: libpre.so.1  Cnt: 1\n"
+           "  0x0010:   Name: BEFORE_ANY_SECTION  Flags: none  Version: 2\n")
+    assert _parse_verneed(pre + _VERINFO) == {"GLIBC_2.34": {"libc.so.6"}}

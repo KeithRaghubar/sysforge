@@ -2015,3 +2015,63 @@ def test_step_gpg_refresh_on_request(gpg, rlog, refresh_rc, level, msg):
     _rc._step_gpg({}, None, make_options(), "vi")
     assert ["gpg", "--refresh-keys"] in gpg.calls
     assert msg in rlog.text(level)
+
+
+# ---------------------------------------------------------------------------
+# GPG / sudo steps (3.5.0-B119)
+# ---------------------------------------------------------------------------
+
+def _gpg_step_env(tmp_path):
+    from contextlib import ExitStack
+    from types import SimpleNamespace
+    stack = ExitStack()
+    mod = "sysforge.pipeline.stages.reconfigure"
+    stack.enter_context(patch(f"{mod}.shutil.which", return_value="/usr/bin/gpg"))
+    stack.enter_context(patch(f"{mod}.run.probe",
+                              return_value=SimpleNamespace(returncode=0, stdout="", stderr="")))
+    stack.enter_context(patch(f"{mod}.CONFIG_DIR", tmp_path))
+    stack.enter_context(patch(f"{mod}._interactive", return_value=True))
+    return stack
+
+
+def test_gpg_refresh_is_skipped_under_a_source_freeze(tmp_path, frozen_policy, capsys):
+    from sysforge.pipeline.stages.reconfigure import _step_gpg
+    with _gpg_step_env(tmp_path), \
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice") as prompt, \
+         patch("sysforge.pipeline.stages.reconfigure.subprocess.run") as gpg_run:
+        _step_gpg({}, None, make_options(), "vim")
+    prompt.assert_not_called()
+    gpg_run.assert_not_called()
+    out = capsys.readouterr()
+    assert "Keyserver refresh skipped" in out.out + out.err
+
+
+def test_gpg_refresh_runs_when_not_frozen(tmp_path):
+    from types import SimpleNamespace
+    from sysforge.pipeline.stages.reconfigure import _step_gpg
+    with _gpg_step_env(tmp_path), \
+         patch("sysforge.pipeline.stages.reconfigure._prompt_choice", return_value="y"), \
+         patch("sysforge.pipeline.stages.reconfigure.subprocess.run",
+               return_value=SimpleNamespace(returncode=0)) as gpg_run:
+        _step_gpg({}, None, make_options(), "vim")
+    assert gpg_run.call_args.args[0] == ["gpg", "--refresh-keys"]
+
+
+def test_sudo_warning_names_sysforges_install_step(monkeypatch, capsys):
+    from types import SimpleNamespace
+    from sysforge.pipeline.stages.reconfigure import _step_sudo
+    monkeypatch.setenv("USER", "builder")
+    monkeypatch.delenv("SUDO_USER", raising=False)
+
+    def probe(argv, **_k):
+        if argv[:2] == ["sudo", "-n"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="builder users\n", stderr="")
+
+    with patch("sysforge.pipeline.stages.reconfigure.os.geteuid", return_value=1000), \
+         patch("sysforge.pipeline.stages.reconfigure.run.probe", side_effect=probe):
+        _step_sudo({}, None, make_options(), "vim")
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "makepkg -si" not in text
+    assert "sysforge's install step" in text

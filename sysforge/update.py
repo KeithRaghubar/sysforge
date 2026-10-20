@@ -1012,8 +1012,13 @@ def _phase_llvm_preflight(run: UpdateRun) -> int | None:
 
     # Authoritative pkgbuild versions for packages whose PKGBUILDs use bash
     # parameter expansion the static parser can't evaluate. The scheduler's
-    # SourceMetaCache holds the latest AUR RPC Version per pkgbase.
-    run.rpc_version_by_base = {
+    # SourceMetaCache holds the latest AUR RPC Version per pkgbase; read again
+    # after the source sync, which records this run's RPC answers.
+    run.rpc_version_by_base = _cached_rpc_versions()
+
+
+def _cached_rpc_versions() -> dict[str, str]:
+    return {
         pb: meta["rpc_version"]
         for pb, meta in get_scheduler().cache.all().items()
         if meta.get("rpc_version")
@@ -1024,6 +1029,9 @@ def _phase_source_sync(run: UpdateRun) -> int | None:
     """Phase 2: Source sync."""
     with run.timer.phase("source sync"):
         run.sync_failures = _sync_sources(run.pkgbase_map, run.pkgbase_entry, run.args)
+    # A pkgbase first resolved this run (a split base, 3.5.0-B108) is usable now,
+    # not only on the next run.
+    run.rpc_version_by_base.update(_cached_rpc_versions())
 
     # Pacman fast-path: one ``checkupdates`` call covers every pacman-class
     # repo package in scope. Only run it when at least one pacman-class

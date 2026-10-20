@@ -77,6 +77,7 @@ from sysforge.primitives.pkg_catalog import (
     write_desktop_group,
 )
 from sysforge.primitives import storage_probe
+from sysforge.primitives.net_policy import KIND_KEY_FETCH, NetworkFrozen, get_policy
 from sysforge.primitives import atomic_write
 from sysforge.primitives import config as prim_config
 from sysforge.primitives.privilege import privileged_argv
@@ -109,7 +110,7 @@ _STEPS = [
     ("makepkg",    "makepkg.conf review",
      "Review /etc/makepkg.conf: MAKEFLAGS, BUILDDIR, PKGDEST, flag baselines"),
     ("sudo",       "User / sudo verification",
-     "Confirm build user and sudoers are correctly configured for makepkg -si"),
+     "Confirm the build user can sudo for sysforge's package install step"),
     ("disk",       "Disk space check",
      "Estimate required build space and warn if free space is low"),
     ("network",    "Network probe",
@@ -1256,7 +1257,7 @@ def _step_sudo(config, state, options, editor: str) -> str:
     else:
         _log.warn(
             f"  sudo: user {user!r} is not in wheel or sudo group. "
-            "makepkg -si will fail when trying to install packages."
+            "sysforge's install step (sudo pacman) will fail."
         )
     return editor
 
@@ -1403,6 +1404,14 @@ def _step_gpg(config, state, options, editor: str) -> str:
         )
 
     if _interactive() and not options.dry_run:
+        # A keyserver contact like any other key fetch, so the source freeze
+        # covers it (3.5.0-B119). No pkgbase: a whole-keyring refresh matches
+        # no per-package --thaw, so a freeze always denies it.
+        try:
+            get_policy().check(KIND_KEY_FETCH, None)
+        except NetworkFrozen as e:
+            _log.ui(f"  Keyserver refresh skipped: {e}")
+            return editor
         choice = _prompt_choice(
             "  Refresh all keys from keyserver? (gpg --refresh-keys) [y/N]: ",
             choices=("y", "n"),

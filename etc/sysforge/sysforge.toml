@@ -132,9 +132,11 @@ clone_timeout = 60
 # pre_build_snapshot — take an optional btrfs snapshot before builds run.
 # Off by default. When on and the root is btrfs: delegates to snapper if a
 # config covers "/" (that config's retention governs cleanup), otherwise takes
-# a raw read-only `btrfs subvolume snapshot` that sysforge does NOT auto-reap
-# (you own its cleanup). No-op on non-btrfs roots and under --dry-run. A
-# snapshot failure never blocks the build.
+# a raw read-only `btrfs subvolume snapshot` under /.snapshots, through sudo,
+# that sysforge does NOT auto-reap (you own its cleanup). The snapper path runs
+# as you, so it needs that config's ALLOW_USERS to include you. No-op on
+# non-btrfs roots and under --dry-run. A snapshot failure, or a declined sudo
+# prompt, never blocks the build.
 #pre_build_snapshot = false
 
 [failure_handling]

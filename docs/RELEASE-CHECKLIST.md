@@ -44,12 +44,11 @@ In more detail:
   gates) against your working tree, in your shell. It works on any branch at any time and changes
   nothing. Because it runs in your environment, a test that only passes because of your machine
   (clang-forced shell, live config, installed extras, your hardware) passes here too.
-- **`make ci-local`** runs the same gate list as `pre-release`, but in a fresh
-  `archlinux:base-devel` container, as an unprivileged user, with only the core dev tools installed.
-  It is the exact job GitHub CI runs (`tools/ci.sh`), reading your working tree, uncommitted edits
-  included. It runs the suite as `make coverage` rather than `make test`, so it is also the one run
-  where no test skips for a missing `tomlkit`. **For a release, prefer it over `pre-release`:** it
-  checks strictly more. Needs podman and network; fall back to `make pre-release` without them.
+- **`make ci-local`** runs the same gate list as `pre-release` (both read the Makefile's `GATES`),
+  but in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the core dev
+  tools installed. It is the exact job GitHub CI runs (`tools/ci.sh`), reading your working tree,
+  uncommitted edits included. **For a release, prefer it over `pre-release`:** it checks strictly
+  more. Needs podman and network; fall back to `make pre-release` without them.
 - **`make preflight`** (`tools/preflight.sh`) is a read-only readiness report: one pass that prints
   `PASS`/`WARN`/`FAIL` per section. It checks the things the gates do not: that the release
   infrastructure is present (clean `main`, chroot, a running VM, podman) and the coverage ratchet,
@@ -70,7 +69,7 @@ In more detail:
 | --- | :---: | :---: | :---: | :---: |
 | `lint` (ruff + shellcheck) | yes | yes | yes | yes |
 | `typecheck` (pyright) | yes | yes | no | yes |
-| full test suite | yes (`test`) | yes (`coverage`) | yes (`coverage`) | no |
+| full test suite | yes (`test`) | yes (`test`) | yes (`coverage`) | no |
 | `check-shipped` (includes version markers, completions) | yes | yes | subset | yes |
 | `check-personal`, `check-design`, `check-roadmap-table`, `check-standards` | yes | yes | no | yes |
 | clean environment (not your workstation) | no | yes | no | no |

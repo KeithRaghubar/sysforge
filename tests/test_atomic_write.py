@@ -155,3 +155,100 @@ def test_set_makepkg_conf_keys_in_place_is_atomic(tmp_path, monkeypatch):
     monkeypatch.setattr(atomic_write, "replace_file", spy)
     config.set_makepkg_conf_keys(conf, {"MAKEFLAGS": '"-j16"'})
     assert seen.get("called") and '-j16' in conf.read_text()
+
+
+# ---------------------------------------------------------------------------
+# write_state — sysforge's own state files (3.5.0-B81)
+# ---------------------------------------------------------------------------
+
+def test_write_state_writes_and_creates_the_parent(tmp_path):
+    f = tmp_path / "state" / "build_state.toml"
+    atomic_write.write_state(f, "a = 1\n")
+    assert f.read_text() == "a = 1\n"
+    assert sorted(p.name for p in f.parent.iterdir()) == ["build_state.toml"]
+
+
+def test_write_state_uses_a_unique_temp_and_fsyncs_before_the_rename(tmp_path, monkeypatch):
+    f = tmp_path / "build_state.toml"
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(atomic_write.os, "fsync",
+                        lambda fd: events.append("fsync") or real_fsync(fd))
+    monkeypatch.setattr(os, "replace",
+                        lambda a, b: events.append(("replace", Path(a))) or real_replace(a, b))
+    atomic_write.write_state(f, "one")
+    atomic_write.write_state(f, "two")
+    temps = [e[1] for e in events if isinstance(e, tuple)]
+    # Two writers can no longer share (and publish) one temp file.
+    assert len(set(temps)) == 2
+    assert all(t.parent == tmp_path and t.name.startswith(".build_state.toml.") for t in temps)
+    # The data reaches disk before the rename publishes it.
+    assert events[0] == "fsync" and isinstance(events[1], tuple)
+    assert f.read_text() == "two"
+
+
+def test_write_state_keeps_an_existing_mode(tmp_path):
+    f = tmp_path / "s.toml"
+    f.write_text("old")
+    f.chmod(0o664)
+    atomic_write.write_state(f, "new")
+    assert stat.S_IMODE(f.stat().st_mode) == 0o664
+
+
+def test_write_state_new_file_follows_the_umask_not_mkstemps_0600(tmp_path, monkeypatch):
+    """A group-shared state dir must stay group-writable."""
+    monkeypatch.setattr(atomic_write, "_umask", lambda: 0o002)
+    f = tmp_path / "s.toml"
+    atomic_write.write_state(f, "x")
+    assert stat.S_IMODE(f.stat().st_mode) == 0o664
+
+
+def test_umask_is_read_without_changing_it():
+    before = os.umask(0o022)
+    os.umask(before)
+    assert atomic_write._umask() == before
+    after = os.umask(before)
+    assert after == before
+
+
+def test_write_state_failure_leaves_the_old_file_and_no_temp(tmp_path, monkeypatch):
+    f = tmp_path / "s.toml"
+    f.write_text("old")
+
+    def boom(a, b):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(PermissionError):
+        atomic_write.write_state(f, "new")
+    assert f.read_text() == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["s.toml"]
+
+
+def _writers(tmp_path):
+    from sysforge.primitives import (
+        artifacts, build_fingerprint, kbuild_map, kernel_fdo, opt_out,
+        pipeline_state, source_meta, stage_sentinel,
+    )
+    from sysforge.primitives.build_state import BuildState
+    return {
+        "build_state": lambda: BuildState(tmp_path).save(),
+        "pipeline_state": lambda: pipeline_state.PipelineState(tmp_path).save(),
+        "source_meta": lambda: source_meta.SourceMetaCache(tmp_path).save(),
+        "stage_sentinel": lambda: stage_sentinel.StageSentinel(tmp_path).mark_started("kernel"),
+        "opt_out": lambda: opt_out.OptOutList(tmp_path).save({}),
+        "artifacts": lambda: artifacts.ArtifactRegistry(tmp_path, tmp_path).save({}),
+        "artifacts_ignored": lambda: artifacts.IgnoreList(tmp_path).save({}),
+        "build_fingerprint": lambda: build_fingerprint.save_cache(tmp_path / "c.json", {}),
+        "kernel_fdo": lambda: kernel_fdo.write_round(tmp_path, pkgver="1-1", build_dir=None),
+        "kbuild_map": lambda: kbuild_map.save_map(tmp_path / "m.json", {}, None),
+    }
+
+
+@pytest.mark.parametrize("writer", sorted(_writers(Path("/unused"))))
+def test_every_state_writer_goes_through_write_state(tmp_path, monkeypatch, writer):
+    """3.5.0-B81: no state writer keeps its own fixed-name temp + rename."""
+    seen = []
+    monkeypatch.setattr(atomic_write, "write_state", lambda path, data: seen.append(Path(path)))
+    _writers(tmp_path)[writer]()
+    assert seen, f"{writer} did not write through atomic_write.write_state"

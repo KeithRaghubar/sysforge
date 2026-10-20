@@ -878,6 +878,18 @@ def test_release_gates_exempts_the_full_test_suite(tmp_path):
     assert mod.check_release_gates(repo) == []
 
 
+def test_release_gates_expands_the_gates_variable(tmp_path):
+    """`pre-release: $(GATES)` (3.5.0-DEV8) is checked gate by gate, not as one
+    opaque `$(GATES)` token the release script could never match."""
+    mod = _load_check_standards()
+    repo = _release_gate_repo(tmp_path, ["$(GATES)"], ["lint"])
+    with (repo / "Makefile").open("a") as f:
+        f.write("GATES := lint test check-design\n")
+    findings = mod.check_release_gates(repo)
+    assert [f.severity for f in findings] == ["error"]
+    assert "check-design" in findings[0].message
+
+
 def test_release_gates_flags_an_unpinned_type_checker(tmp_path):
     """Row 27: a blocking gate needs a deterministic tool — an unpinned
     `--with pyright` can turn a release red with no code change."""

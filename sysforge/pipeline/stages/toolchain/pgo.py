@@ -440,6 +440,12 @@ def build_llvm_pgo_inner(
             f"pgo_store={pgo_store}",
         )
 
+        # The staging prefixes are fixed names in a world-writable /var/tmp and
+        # their contents run later in the build: refuse one another user made
+        # (or planted as a symlink) before purging or reusing it (3.5.0-B54).
+        # Its mode does not matter here: the purge deletes what is in it.
+        for prefix in (staging1, staging, staging3):
+            fs_provision.check_private_dir(prefix, check_mode=False)
         if staging1.exists():
             _log.info(f"[PGO] Purging stale stage1: {staging1}")
             _shutil.rmtree(staging1)
@@ -783,6 +789,9 @@ def build_llvm_pgo_inner(
             and not options.dry_run
             and Path(staged_cc).exists()
         )
+        if using_staged_cc:
+            # It becomes CC/CXX: same ownership rule as the extraction (3.5.0-B54).
+            fs_provision.check_private_dir(staging)
         if not skip_profgen and not options.dry_run and not using_staged_cc:
             _log.info(
                 f"[PGO] staged clang not found at {staged_cc} "

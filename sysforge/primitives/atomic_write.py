@@ -30,8 +30,18 @@ Out of scope: creating files with a class-defined mode (``artifacts.write_live``
 ``pacman_hooks``' shipped artifacts) — there is no destination mode to honour,
 and those already go through ``install -Dm``.
 
+A second, narrower writer, :func:`write_state`, is the one home for sysforge's
+own state files (``build_state.toml``, ``source_meta.toml``, sentinels, caches;
+3.5.0-B81). It never escalates and does not follow symlinks; what it adds over a
+fixed ``<file>.tmp`` + rename is a **unique** temp name (two concurrent writers
+can no longer publish each other's half-written file or fail the second
+rename) and an **fsync** before the rename (a power loss can no longer leave an
+empty file in its place — an empty ``build_state.toml`` loses every package's
+provenance).
+
 Public API:
     replace_file(path, text, *, tag, default_mode=0o644) -> Path
+    write_state(path, data) -> None
 """
 from __future__ import annotations
 
@@ -47,6 +57,58 @@ from sysforge.primitives.privilege import run_privileged
 _log = log.get_logger("WRITE")
 
 _TMP_SUFFIX = ".sysforge-tmp"
+
+
+def _umask() -> int:
+    """The process umask, read without changing it.
+
+    The ``os.umask`` set-and-restore idiom briefly sets a process-wide mask,
+    which a concurrent thread (the sudo keepalive) could create a file under.
+    """
+    with contextlib.suppress(OSError, ValueError):
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("Umask:"):
+                return int(line.split()[1], 8)
+    return 0o022
+
+
+def write_state(path, data: str | bytes) -> None:
+    """Write sysforge's own state file *path*: unique temp, fsync, rename.
+
+    The temp is created beside *path* (``rename(2)`` stays on one filesystem)
+    under a unique name, flushed to disk, then renamed over *path*; the
+    directory is fsynced afterwards so the rename itself survives a power loss.
+    The file keeps an existing *path*'s mode, else gets what a plain
+    ``write_text`` would (``0666 & ~umask``), so a group-shared state dir stays
+    group-writable. Creates the parent directory. Never escalates; raises
+    :class:`OSError` on failure, leaving *path* untouched and no temp behind.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o666 & ~_umask()
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.chmod(mode)
+        tmp.replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    with contextlib.suppress(OSError):
+        dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 def _existing_attrs(target: Path, default_mode: int) -> tuple[int, int | None, int | None]:

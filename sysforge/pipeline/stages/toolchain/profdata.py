@@ -21,7 +21,7 @@ import os
 import subprocess
 import threading
 
-from sysforge.primitives import pacman
+from sysforge.primitives import fs_provision, pacman
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives import run
@@ -42,8 +42,12 @@ _log = log.get_logger("TOOLCHAIN")
 
 
 def extract_pkg_to_staging(pkg_file: Path, staging: Path) -> None:
-    """Extract a .pkg.tar.* file to the staging directory."""
-    staging.mkdir(parents=True, exist_ok=True)
+    """Extract a .pkg.tar.* file to the staging directory.
+
+    The directory is created 0700, or refused when another user owns it or can
+    write to it: its contents run during the build (3.5.0-B54).
+    """
+    fs_provision.ensure_private_dir(staging)
     _log.info(f"  Extracting {pkg_file.name} → {staging}")
     result = run.probe(
         [
@@ -408,6 +412,9 @@ def stage_env(staging: Path) -> dict[str, str]:
     haven't staged (``libstdc++.so``, ``glibc`` data, etc.).  Used by Pass 3
     (pointed at stage1) and Pass 4 (pointed at stage2).
     """
+    # The prefix goes first on PATH and LD_LIBRARY_PATH: refuse one another
+    # user could have filled (3.5.0-B54).
+    fs_provision.check_private_dir(staging)
     usr = staging / "usr"
 
     def _prepend(var: str, value: str) -> str:

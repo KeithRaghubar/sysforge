@@ -298,3 +298,60 @@ def test_symlinked_ancestor_in_a_root_only_dir_is_fine(tmp_path):
     real.mkdir()
     (sysdir / "home").symlink_to(real)
     fs_provision._refuse_planted_symlink(sysdir / "home" / "x" / "y")  # no raise
+
+
+# ---------------------------------------------------------------------------
+# Private build prefixes in a shared directory (3.5.0-B54)
+# ---------------------------------------------------------------------------
+
+def test_ensure_private_dir_creates_0700(tmp_path):
+    import stat as _stat
+    d = fs_provision.ensure_private_dir(tmp_path / "stage1")
+    assert _stat.S_IMODE(d.stat().st_mode) == 0o700
+
+
+def test_ensure_private_dir_accepts_its_own_existing_dir(tmp_path):
+    d = tmp_path / "stage1"
+    d.mkdir(mode=0o755)
+    assert fs_provision.ensure_private_dir(d) == d
+
+
+def test_private_dir_refuses_a_symlink(tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    link = tmp_path / "stage1"
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(fs_provision.FsProvisionError, match="symlink"):
+        fs_provision.ensure_private_dir(link)
+    with pytest.raises(fs_provision.FsProvisionError, match="symlink"):
+        fs_provision.check_private_dir(link, check_mode=False)
+
+
+def test_private_dir_refuses_another_users_dir(tmp_path, monkeypatch):
+    d = tmp_path / "stage1"
+    d.mkdir(mode=0o700)
+    monkeypatch.setattr(fs_provision.os, "geteuid", lambda: d.stat().st_uid + 1)
+    with pytest.raises(fs_provision.FsProvisionError, match="owned by uid"):
+        fs_provision.ensure_private_dir(d)
+    with pytest.raises(fs_provision.FsProvisionError, match="owned by uid"):
+        fs_provision.check_private_dir(d, check_mode=False)
+
+
+def test_private_dir_refuses_a_dir_others_can_write(tmp_path):
+    d = tmp_path / "stage1"
+    d.mkdir()
+    d.chmod(0o777)
+    with pytest.raises(fs_provision.FsProvisionError, match="others can write"):
+        fs_provision.check_private_dir(d)
+    # About to be purged: its mode is irrelevant.
+    fs_provision.check_private_dir(d, check_mode=False)
+
+
+def test_private_dir_refuses_a_plain_file(tmp_path):
+    f = tmp_path / "stage1"
+    f.write_text("")
+    with pytest.raises(fs_provision.FsProvisionError, match="not a directory"):
+        fs_provision.check_private_dir(f)
+
+
+def test_check_private_dir_passes_a_missing_path(tmp_path):
+    fs_provision.check_private_dir(tmp_path / "absent")

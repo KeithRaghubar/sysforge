@@ -153,6 +153,10 @@ class SyncRequest:
     # callers thread ``origin_pkgbase`` here so the pin resolves. None → use
     # ``pkgbase`` (the common, un-renamed case).
     sync_db_name: str | None = None
+    # The pkgnames this pkgbase builds. The AUR RPC ``info`` endpoint matches
+    # package names only, so a split pkgbase that is none of its pkgnames
+    # (``lib32-libdbusmenu``) is found only through a member (3.5.0-B108).
+    pkgnames: tuple[str, ...] = ()
 
 
 @dataclass
@@ -222,10 +226,11 @@ class SourceSyncScheduler:
         """Sync a batch. Issues the single RPC call up front, then processes
         each request in order.
         """
-        aur_bases = [r.pkgbase for r in reqs
-                     if r.source in ("aur", "git") and r.pkgbase not in self._rpc_map]
-        if aur_bases and not self.offline:
-            self._ensure_rpc(aur_bases)
+        aur = [r for r in reqs
+               if r.source in ("aur", "git") and r.pkgbase not in self._rpc_map]
+        if aur and not self.offline:
+            self._ensure_rpc([r.pkgbase for r in aur],
+                             members={r.pkgbase: r.pkgnames for r in aur})
 
         out: dict[str, SyncResult] = {}
         for r in reqs:
@@ -251,8 +256,15 @@ class SourceSyncScheduler:
     # Internals
     # ------------------------------------------------------------------
 
-    def _ensure_rpc(self, pkgbases: list[str]) -> None:
+    def _ensure_rpc(self, pkgbases: list[str],
+                    members: dict[str, tuple[str, ...]] | None = None) -> None:
         """Run the batched AUR RPC call once per scheduler lifetime.
+
+        ``members`` maps a pkgbase to the pkgnames it builds; they are queried
+        too, and a result is keyed by its ``PackageBase`` as well as its
+        ``Name``, because ``info`` matches names only (3.5.0-B108). Every
+        member of one pkgbase carries the same Version and LastModified, so
+        whichever member answers stands for the pkgbase.
 
         Network errors are non-fatal: callers fall back to fetch-all, which
         is still bounded by the rate limiter and no worse than the old flow.
@@ -264,14 +276,23 @@ class SourceSyncScheduler:
         pending = [p for p in pkgbases if p not in self._rpc_map]
         if not pending:
             return
+        names = list(dict.fromkeys(
+            [*pending, *(n for p in pending for n in (members or {}).get(p, ()))]))
 
         try:
-            results = aur_info(pending, limiter=self.limiter)
+            results = aur_info(names, limiter=self.limiter)
         except Exception as e:  # noqa: BLE001 — urllib raises a sprawling tree
             _log.warn(f"AUR RPC batch failed: {e}; falling back to fetch-all")
             return
 
-        self._rpc_map.update(results)
+        wanted = set(pending)
+        for name, entry in results.items():
+            if name in wanted:
+                self._rpc_map[name] = entry
+        for entry in results.values():
+            base = entry.get("PackageBase")
+            if base in wanted:
+                self._rpc_map.setdefault(base, entry)
         self.cache.mark_rpc_sync()
 
     def _rpc_entry(self, pkgbase: str) -> dict | None:

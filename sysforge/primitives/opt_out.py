@@ -28,6 +28,8 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sysforge.primitives import atomic_write
+
 FILE_NAME = "opted-out.toml"
 
 # The verb that recorded the decision.
@@ -104,9 +106,7 @@ class OptOutList:
             lines.append(f'at = "{_esc(e.get("at", ""))}"')
             lines.append(f"pkgnames = [{names}]")
             lines.append("")
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text("\n".join(lines))
-        tmp.replace(self.path)
+        atomic_write.write_state(self.path, "\n".join(lines))
 
     def add(self, pkgbase: str, pkgnames, *, via: str) -> None:
         """Record (or refresh) the decision for ``pkgbase`` and save."""

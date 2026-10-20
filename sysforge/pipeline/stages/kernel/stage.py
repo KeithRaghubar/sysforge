@@ -666,6 +666,7 @@ class KernelStage(Stage):
                     pkgbuild.parent, topology,
                     skip_boot_audit=skip_boot_audit, state_dir=state_dir,
                     build_dir=built_dir, reused=reused_config,
+                    already_built=already_built,
                 )
 
                 # Advisory: warn if any option sysforge merged didn't survive
@@ -673,7 +674,7 @@ class KernelStage(Stage):
                 # dep drop). Never raises; no-op when no fragment was written.
                 self._kconfig_drift = gates.gate2_kconfig_drift(
                     pkgbuild.parent, fragment_path, build_dir=built_dir,
-                    reused=reused_config,
+                    reused=reused_config, already_built=already_built,
                 )
                 self._reported_kconfig_merge = fragment_path is not None
 
@@ -739,8 +740,9 @@ class KernelStage(Stage):
 
                 install.run_mkinitcpio(options.dry_run)
                 install.update_bootloader(bootloader, options.dry_run)
-                entry_version = None if options.dry_run else gates.built_kernel_release(
-                    gates.resolve_built_config(pkgbuild.parent, build_dir=built_dir))
+                entry_version = None if options.dry_run else gates.installed_kernel_release(
+                    pkgbuild.parent, build_dir=built_dir, reused=reused_config,
+                    already_built=already_built)
                 try:
                     install.sync_boot_entries(
                         pkgname, fdo_eff_pkgname, install.fdo_role(fdo_mode, fdo_propeller),
@@ -764,7 +766,8 @@ class KernelStage(Stage):
                 if not options.dry_run:
                     gates.gate3_verify(
                         pkgbuild.parent, fdo_eff_pkgname, bootloader,
-                        build_dir=built_dir,
+                        build_dir=built_dir, reused=reused_config,
+                        already_built=already_built,
                     )
 
         # Record round: write round.toml for capture (vmlinux tree, profiled

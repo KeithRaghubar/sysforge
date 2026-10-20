@@ -52,7 +52,9 @@ Mechanism lives in the cited §DESIGN section.
 - **Replacing an existing config file**: `atomic_write.replace_file` (symlink-, mode- and
   owner-preserving temp-in-dest-dir + rename; escalates via `run_privileged`). Never
   `write_text`/`sudo cp` over a user's or root's config. Creating files with a fixed mode
-  (`artifacts.write_live`, `pacman_hooks`) is a different shape and stays out. §primitives-layer.
+  (`artifacts.write_live`, `pacman_hooks`) is a different shape and stays out. sysforge's **own
+  state files** go through `atomic_write.write_state` (unique temp + fsync + rename, never
+  escalates, `3.5.0-B81`) — never a fixed `<file>.tmp` + rename. §primitives-layer.
 - **Runtime TOML key writes**: `config.set_toml_key(path, section, key, value)` (bool/str only,
   comment-preserving, via `atomic_write.replace_file`); `set_default_toolchain` and `setup` are its
   callers. Never `write_text` a config or pull tomlkit in at runtime.
@@ -213,10 +215,11 @@ Mechanism lives in the cited §DESIGN section.
   a build that cannot install runs (`3.5.0-B55`). The kernel stage also
   probes *before* `sentinel_scope` so a stale prompt can't strand a recovery
   sentinel for a mutation that never began. §22.
-- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at seven
+- **Source freeze**: `primitives/net_policy.py` (`get_policy().check(...)`) is consulted at eight
   seams — AUR clone, `build_prep.pkgctl_checkout`, source-sync fetch, both `vcs_pkgver.py`
   probes, `build_prep.fetch_pgp_keys` (`KIND_KEY_FETCH`, the one keyserver home — consent-gated,
-  `auto_repair` routes through it), and `auto_repair`'s subproject/submodule download
+  `auto_repair` routes through it), `reconfigure._step_gpg`'s whole-keyring refresh (same kind,
+  `None` pkgbase, `3.5.0-B119`), and `auto_repair`'s subproject/submodule download
   (`KIND_SUBPROJECT_FETCH`) — the two `vcs_pkgver` seams must stay gated together. Every seam keys the `--thaw` lift
   on the **authoritative pkgbase**, threaded explicitly (never the checkout dir name — a rename
   breaks it). A new code-ingress seam gets its own `KIND_*`, never a reuse. `update.py`'s single

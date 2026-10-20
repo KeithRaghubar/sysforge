@@ -343,7 +343,11 @@ key and every value are written as TOML basic strings via `config.toml_literal`
 (`3.5.0-B45`): a bare key broke on `libstdc++` (invalid TOML) and on
 `python-ruamel.yaml` (a dotted key, so a nested table the lookup never found).
 An upsert also matches a bare-key row written before that, so it is replaced
-rather than duplicated. The sole caller is the makepkg wrapper, persisting a successful recovery-menu
+rather than duplicated. The file is replaced through `atomic_write.replace_file`
+(`3.5.0-B113`): on the default layout the target is root's
+`/etc/sysforge/profiles.toml`, so a hand-rolled temp-and-rename beside it failed and
+the swap was silently lost; the seam escalates through the privilege seam and keeps a
+symlink, the mode and the owner. The sole caller is the makepkg wrapper, persisting a successful recovery-menu
 compiler swap; don't add a second writer for this table or write it from
 anywhere else.
 

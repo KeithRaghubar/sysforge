@@ -1,7 +1,7 @@
 .PHONY: all help dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
-        check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release audit \
+        check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
         roadmap-table check-roadmap-table roadmap-view \
         sync-config \
         preflight release-major release-minor release-patch release-resume \
@@ -161,12 +161,16 @@ dev-uninstall: ## Remove a dev-install
 
 # Pass extra pytest args via ARGS, e.g.
 #   make test ARGS="tests/test_standards_compliance.py -q"
+# tomlkit rides a uv overlay (3.5.0-DEV8): tests/test_sync_config.py
+# importorskips it, and the system pytest made whether they ran depend on
+# python-tomlkit happening to be installed. pytest rides it too: a bare
+# `pytest` resolves to /usr/bin/pytest, whose interpreter cannot see the overlay.
 ##@ Test & lint
 test: ## Run the full suite (ARGS= extra pytest args)
-	pytest $(ARGS)
+	uv run --no-sync --with pytest --with tomlkit pytest $(ARGS)
 
 test-x: ## Run the suite, stop on first failure
-	pytest -x $(ARGS)
+	uv run --no-sync --with pytest --with tomlkit pytest -x $(ARGS)
 
 # Both linters. Shell is not a second-class language here: 12 of the repo's
 # scripts are the test/release tooling, where a quoting bug fails a release or
@@ -211,13 +215,8 @@ audit: ## Audit the dependency chain for known CVEs
 # Coverage report. Layers pytest-cov into an ephemeral uv overlay (same
 # `uv run --no-sync` pattern as check-shipped/man) so nothing is added to
 # the system or the venv. Prints a term summary and writes coverage.json;
-# the ratchet baseline lives in tests/COVERAGE_BASELINE.md.
-#
-# tomlkit rides the same overlay (2.6.1-B23). tests/test_sync_config.py
-# importorskips it, and `make test` runs the system pytest, so whether those
-# tests execute there depends on python-tomlkit happening to be installed.
-# This is the one target that runs them deterministically -- making the
-# instrumented suite, not `make test`, the complete run.
+# the ratchet baseline lives in tests/COVERAGE_BASELINE.md. tomlkit rides
+# the overlay for the same reason as `test`.
 coverage: ## Run the suite with a coverage report
 	uv run --no-sync --with pytest-cov --with tomlkit pytest \
 	  --cov=sysforge \
@@ -349,7 +348,15 @@ sync-config: ## Merge new shipped defaults into the live config dir
 # DESIGN.md freshness + standards compliance. Run before kicking off
 # `make release-{major,minor,patch}`.
 ##@ Release
-pre-release: lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards ## Composite gate: lint, types, tests, all checks
+# The gate list, in run order, written once (3.5.0-DEV8): `pre-release`
+# depends on it and tools/ci.sh reads it through `print-gates`, so the release
+# gate and CI cannot drift apart.
+GATES := lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards
+
+pre-release: $(GATES) ## Composite gate: lint, types, tests, all checks
+
+print-gates: ## Print the gate list pre-release and CI run
+	@echo $(GATES)
 
 # Read-only readiness report over stages 1-4 of docs/RELEASE-CHECKLIST.md; not a
 # gate (no typecheck or check-* gates). Skips:

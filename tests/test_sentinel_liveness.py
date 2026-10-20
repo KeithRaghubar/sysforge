@@ -107,6 +107,15 @@ def test_entry_probe_names_holder_pid(tmp_path, capsys):
     assert str(proc.pid) in (out.err + out.out)
 
 
+def test_entry_probe_names_the_live_runs_stage(tmp_path, capsys):
+    """3.5.0-DEV1: the refusal says what the live run is doing."""
+    _write_sentinel(tmp_path, stage="kernel")
+    with lock_holder(_lock_path(tmp_path)):
+        check_and_recover_stale_sentinel(tmp_path)
+    out = capsys.readouterr()
+    assert "It is running stage 'kernel'" in (out.err + out.out)
+
+
 def test_sigkilled_owner_leaves_lock_takeable(tmp_path):
     """No false positives: a killed owner releases the lock, prompt runs as before."""
     _write_sentinel(tmp_path)

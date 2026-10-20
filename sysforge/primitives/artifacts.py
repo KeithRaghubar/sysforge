@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 from sysforge.primitives import pacman, pacman_hooks, paths
 from sysforge.primitives.config import load_sysforge_toml
 from sysforge.primitives.privilege import run_privileged
@@ -222,9 +223,7 @@ class ArtifactRegistry:
             if art.deployed_at:
                 lines.append(f'deployed_at = "{_toml_escape(art.deployed_at)}"')
             lines.append("")
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text("\n".join(lines))
-        tmp.replace(self.path)
+        atomic_write.write_state(self.path, "\n".join(lines))
 
 
 def _parent_present(path: Path) -> bool:
@@ -316,9 +315,7 @@ class IgnoreList:
             lines.append(f'path = "{_toml_escape(path)}"')
             lines.append(f'hash = "{_toml_escape(entries[path])}"')
             lines.append("")
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text("\n".join(lines))
-        tmp.replace(self.path)
+        atomic_write.write_state(self.path, "\n".join(lines))
 
 
 # ---------------------------------------------------------------------------

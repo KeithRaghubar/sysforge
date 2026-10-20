@@ -43,6 +43,7 @@ import tomllib
 from pathlib import Path
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 _log = log.get_logger("HARDWARE")
 from sysforge.pipeline.stages.base import Stage
 from sysforge.pipeline.state import resolve_state_dir
@@ -396,10 +397,7 @@ def _write_hardware_profile(
             _log.ui(f"  {line}")
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(content)
-    tmp.rename(path)
+    atomic_write.write_state(path, content)
     _log.info(f"Wrote hardware_profile.toml: {path}")
 
 

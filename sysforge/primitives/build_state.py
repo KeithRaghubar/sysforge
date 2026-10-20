@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 from sysforge import log
+from sysforge.primitives import atomic_write
 
 _log = log.get_logger("STATE")
 
@@ -664,10 +665,7 @@ class BuildState:
         _log.debug(f"build_state save by {writer}: {len(self._data)} entries")
         if self._stat_sig() != self._disk_sig:
             self._warn_lost_updates(writer)
-        self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text(self._serialize())
-        tmp.rename(self.path)
+        atomic_write.write_state(self.path, self._serialize())
         self._disk_sig = self._stat_sig()
         self._loaded_built_at = {k: _built_at(v) for k, v in self._data.items()}
 

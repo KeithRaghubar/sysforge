@@ -116,6 +116,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV1` — the branches mutation testing showed unchecked are tested.** A mutation sweep over `abi_check`, `stage_sentinel`, `flag_drift`, `version` and `build_estimate` (comparisons, boolean operators, `not`, constants and return values flipped one at a time, each against every test file that imports the module) left mutants alive in every module. New tests kill all but six, which cannot change behaviour: `version`'s outer loop bound, whose inner loops re-check before indexing, and two `>`/`>=` swaps reached only when the operands already differ; `abi_check`'s `rsplit("/", 2)[-1]`, the same last element; and `stage_sentinel`'s branch its own comment marks unreachable. The new tests cover the ELF-class readers behind 32/64-bit matching, the verneed and `nm` parsers' malformed-input edges, the bsdtar failure path and the skew gate's symbol filter; the recovery prompt's metadata listing, declined and state-dir-mismatch returns, and invalid-record display; the flag-drift sub-axis guards and the compiler the build-inputs axis resolves with; `vercmp_local` against `vercmp(8)` for trailing separators, separator runs and alpha tails; and the duration and percent boundaries of the build-time estimate.
+
+---
+
 - **`3.5.0-DEV2` — the modules where the review found bugs are now covered.** The ten least-covered modules were the ones the 2026-10-18 review found bugs in. Their failure and resume paths now have tests: the packages stage's resume prompt and retry, each `artifact` verb's refusals, `packages list`, the pre-build snapshot's failure paths, the toolchain's PGO profdata gate and LLVM pre-flight, and `run reconfigure`'s makepkg, sudo, disk, network and GPG steps. Branch coverage rose from 89.6% to 91.2% overall (`snapshot.py` 53% → 99%, `packages_cmd.py` 60% → 93%, `reconfigure.py` 64% → 82%, `verbs/artifact.py` 70% → 95%, `dep_analysis.py` 71% → 82%, `pipeline/stages/packages.py` 72% → 93%, `configure.py` 78% → 90%, `makepkg_pgo.py` 77% → 99%, `toolchain/pkgbuilds.py` 80% → 88%, `makepkg_wrapper.py` 82% → 84%). The ratchet floor is re-stamped at 91.2% and now tracks these modules, with the two rows that pointed at the pre-package `kernel.py`/`toolchain.py` paths corrected. Writing the tests surfaced three bugs, filed for a later fix. Every pacman `-U` in the suite now records into a scratch sentinel dir, never the host's (`tests/conftest.py`).
 
 ---
@@ -125,6 +129,22 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DEV4` — a test that reads the host's pacman database fails, naming where.** A test whose code ran a real `pacman` query passed or failed by what the machine had installed, which is how `3.5.0-DEV3`'s tests were green on a workstation and red in CI. `tests/conftest.py` now fails any such test with `HostStateError: test reached the host pacman DB via primitives/pacman.py:971 get_installed_version (pacman -Q llvm)`, and fails it at teardown even when the code under test catches the error, as the best-effort probes do. A stub at any level above the subprocess, or a pacman pointed at a fixture `--dbpath`, passes; `@pytest.mark.host_pacman` opts out the tests of the query functions themselves. The fence caught 67 tests in 8 files; each now stubs its answer as the clean CI container gives it. Eleven of them failed only in the container: the kernel stage's bootloader probe answers from `/boot` on a workstation and asks pacman only when `/boot` has no bootloader files, so the fence, like the original bug, needs a CI run to see everything. One had a stub that never applied: `test_dep_versions_excludes_build_set_members` patched a re-export the code doesn't call. And `tests/test_doctor.py`'s package-walk tests ran the opt-in rust and integrity axes, which probe the host's Rust toolchain and package files, because nothing stubbed them. `tests/test_host_fence.py` covers the fence.
+
+---
+
+- **`3.5.0-DEV5` — the CI run page names the gate that failed.** Each gate now runs in its own collapsible log group, and the run's summary page gets a table of every gate with pass or fail, so a red run no longer means searching ten minutes of log for the gate that broke. Every gate still runs after one fails, and the job still fails. `make ci-local` output is unchanged.
+
+---
+
+- **`3.5.0-DEV6` — CI reports test failures in full.** The suite in CI now prints each failure's assertion and a short traceback instead of a one-line summary, and writes a JUnit report from which each failing test is annotated on the run page with its file and line (`tools/junit_annotate.py`).
+
+---
+
+- **`3.5.0-DEV7` — the CI log opens with the container's environment.** Before the gates, `tools/ci.sh` prints the installed package count, whether LLVM, clang, lld, `python-tomlkit` and `pyalpm` are installed, and the Python, pytest and uv versions, so a failure seen only in CI can be compared with the local machine.
+
+---
+
+- **`3.5.0-DEV8` — `make test` is the complete suite, and `pre-release` and CI run one gate list.** `make test` ran the system pytest, so `tests/test_sync_config.py` skipped wherever `python-tomlkit` was not installed, and `make pre-release` ran fewer tests than CI on such a machine. It now runs pytest in a uv overlay with `tomlkit`, as `make coverage` does. The gate list is written once, as the Makefile's `GATES`: `pre-release` depends on it, and `tools/ci.sh` reads it through the new `make print-gates`, so CI now runs `test` like `pre-release` instead of `coverage`. The `release_gates` standards check expands `$(GATES)`, so it still compares each gate against the release script.
 
 ---
 
@@ -434,6 +454,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B59` — `run kernel` checks a reused kernel package against its own config, or refuses it.** When makepkg found the kernel package already built and nothing tied a config to it, the boot-safety check (Gate 2) audited the newest `.config` in any build tree, which could belong to another build, or with none only warned, so a package the check had once rejected could be installed later after its build tree was wiped. The boot entry's version and the post-install DKMS check guessed the release the same way. A reused package is now checked against the config its own headers package ships when its build tree and archived config are gone, and is refused when no config can be tied to it (rebuild it, or pass `--skip-boot-audit`). The boot entry and DKMS check use the release of the package being installed.
+
+---
+
 - **`3.5.0-B60` — reusing an already-built renamed package installs the right files.** When makepkg found a package of the same version already built and skipped the build, sysforge looked for it under its stock name. For a build renamed to `<name>-sysforge` (a `--pgo=use` build, a renamed kernel), a leftover stock build of the same version was installed instead, or the package failed with "no matching .pkg.tar" although the right files were there. sysforge now uses the list of files the build itself recorded, and never falls back to a stock-named leftover for a renamed build.
 
 ---
@@ -495,6 +519,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B80` — numeric `[[kconfig]]` values apply.** A `kernel.toml` entry such as `CONFIG_NR_CPUS` with value `64` was written to the config fragment as `CONFIG_NR_CPUS="64"`, which the kernel's config tool rejects for number options, so the entry was silently dropped and only a drift warning mentioned it. Decimal and `0x` hexadecimal values are now written without quotes; other strings stay quoted.
+
+---
+
+- **`3.5.0-B81` — state files survive concurrent writers and power loss.** `build_state.toml` and sysforge's other state files (pipeline state, the source-sync cache, the install sentinel, the opt-out list, the artifact registry and ignore list, the toolchain build cache, the kernel FDO sidecars, the kernel module map and the hardware profile) were written to a fixed `<file>.tmp` and renamed into place without being flushed to disk. Two sysforge processes saving at once could publish each other's half-written file, and a power loss just after a save could leave an empty file; an empty `build_state.toml` makes `update` treat every package as a plain repo package, losing what sysforge built. Each write now uses its own temporary file, flushes it to disk before renaming it into place, and keeps the file's permissions.
 
 ---
 
@@ -590,6 +618,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B108` — split AUR packages whose base is not a package name update again.** sysforge looks up AUR versions by pkgbase, but the AUR's lookup matches package names only, so a split package whose pkgbase is none of its package names (`lib32-libdbusmenu`, which builds `lib32-libdbusmenu-glib` and `-gtk3`) was never found. When its PKGBUILD's version could not be read without running it, `update` skipped the package on every run ("unresolved shell expansion and no cached RPC version"), and its checkout was fetched every run even when nothing had changed. The lookup now also asks for each pkgbase's package names and files the answer under the pkgbase, and the version is usable in the same run.
+
+---
+
 - **`3.5.0-B109` — `lib32-*` packages build in the sandbox.** Arch builds its 32-bit packages in a build root that already holds the 32-bit compiler libraries (`multilib-devel`), so their PKGBUILDs never list them. sysforge's build sandbox installed only what the PKGBUILD lists, so a 32-bit build failed at link time with `libgcc_s.so.1 is incompatible with elf32-i386`. sysforge now adds `multilib-devel` to the sandbox for a `lib32-*` package, and only for one. If `[multilib]` is not enabled in `/etc/pacman.conf`, the build is refused with a message that says so.
 
 ---
@@ -598,7 +630,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B111` — the shipped `optimized` profile keeps LTO under the default gcc toolchain.** The profile hardcoded `-fuse-ld=lld` while the shipped default toolchain is gcc, and gcc cannot link its LTO objects with lld, so sysforge turned LTO off for every package built with `optimized`. The profile no longer names a linker: the `llvm` toolchain still adds lld itself, and lld's `--icf=all` is still dropped when another linker is in use. An edited `/etc/sysforge/profiles.toml` is kept as it is (pacman writes the new one beside it as `.pacnew`), so remove `-fuse-ld=lld` from its `[profiles.optimized] LDFLAGS` by hand.
+
+---
+
 - **`3.5.0-B112` — the shipped config files no longer give stale advice.** The shipped profiles listed `--syncdeps`, `--install` and `--rmdeps` among their `makepkg_flags`, and `profiles.toml` recommended them, although sysforge installs dependencies and built packages itself and removes the first two from every build; they are gone, and the comment says why. `profiles.toml` called `[defaults] profile` required, but the `bare` profile is used when it is unset. Its example `CPPFLAGS = "-D_FORTIFY_SOURCE=2"` would define a macro Arch already sets in `CFLAGS`, and is replaced. `kernel.toml` and `profiles.toml` said `sysforge run kernel` needs a `profile = "kernel"` rule; it needs neither the rule nor the profile, which stays as an example for a kernel built with `sysforge build`. `sysforge.toml` and `bootstrap.toml` named a `converge` command that no longer exists and said `sysforge reconfigure` for what is now `sysforge run reconfigure`. A file installed with an earlier version keeps its text until you adopt the new defaults (`sysforge config merge`).
+
+---
+
+- **`3.5.0-B113` — a compiler swap kept from the build-failure menu is saved on the default layout.** Choosing to keep a working compiler swap writes it to `profiles.toml`, which on the default layout is root's `/etc/sysforge/profiles.toml`. sysforge tried to write a temporary file beside it as the build user, failed, and reported this only at `-v`, so the swap was never saved and the next build failed the same way. The write now asks for sudo when it needs to, keeps a symlinked `profiles.toml` a symlink, and keeps the file's mode and owner. If the save still fails, it is reported as an error.
 
 ---
 
@@ -614,7 +654,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B117` — the raw pre-build snapshot is taken.** With `[build] pre_build_snapshot = true` and no snapper config covering `/`, sysforge takes a read-only btrfs snapshot under `/.snapshots`. It ran both steps as the build user, and both need root, so the snapshot always failed with a warning. They now run through sudo, asking for the password first when needed; a declined prompt is a warning and the build goes ahead. The snapper path is unchanged: it runs as you, so the snapper config's `ALLOW_USERS` must include you.
+
+---
+
 - **`3.5.0-B118` — `clean_builddir = true` no longer deletes the package's checkout.** The profile setting, which the shipped `batch` profile sets, is documented as clearing `src/` before a build. It deleted everything in the PKGBUILD's directory except the PKGBUILD: the checkout's `.git`, its `.SRCINFO`, and any patches or other files the PKGBUILD lists as sources, so the build failed and an AUR checkout could no longer sync. It now asks makepkg to clean its own source directory (`--cleanbuild`), wherever makepkg puts it, and leaves the checkout alone. A checkout already damaged this way needs a fresh clone (`sysforge fetch <package> --cleansrc`).
+
+---
+
+- **`3.5.0-B119` — `run reconfigure` no longer refreshes keys from a keyserver during a source freeze.** The GPG step's "Refresh all keys from keyserver?" ran `gpg --refresh-keys` without consulting the source freeze, so a frozen system still contacted the keyserver. Under a freeze the step now skips the offer and says why; a whole-keyring refresh names no package, so `--thaw` does not lift it. The sudo step's warning for a user outside `wheel` also no longer says `makepkg -si` will fail, since makepkg has not installed anything itself since 3.4.0; it names sysforge's own install step.
 
 ---
 
@@ -631,6 +679,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B53` — a PKGBUILD's dependency names can no longer pass options to pacman.** sysforge installs a package's missing dependencies with `sudo pacman -S`, and checks them with `pacman -T` and `pacman -Si`, passing the names from the PKGBUILD as they were. A dependency written to start with `-` in a malicious PKGBUILD was read by the root pacman as an option. Names that do not follow the package-name rules are now ignored with a warning, and every pacman command marks where its options end before the package names.
+
+---
+
+- **`3.5.0-B54` — another local user can no longer run code in a PGO toolchain build.** The PGO build stages its intermediate compilers in fixed directories under `/var/tmp` (`sysforge-llvm-stage1`, `-stage2`, `-stage3`) and later runs what is in them. They were created without checking who owned an existing one, so another user on the machine could create one first, or put a symlink there, and have their own files run in your build. The directories are now created readable and writable by you only, and a build refuses to use one that is a symlink, belongs to someone else or that others can write to, naming the directory to inspect and remove.
 
 ---
 

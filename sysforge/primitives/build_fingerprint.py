@@ -42,7 +42,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path
-from sysforge.primitives import run
+from sysforge.primitives import atomic_write, run
 
 # Fingerprint schema version. Bump whenever the set of inputs folded into a
 # fingerprint changes, so every previously cached entry is invalidated (a stale
@@ -271,11 +271,7 @@ def load_cache(path) -> dict:
 
 def save_cache(path, cache) -> None:
     """Atomically write the build cache (write temp + rename)."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(cache, indent=2, sort_keys=True))
-    tmp.replace(p)
+    atomic_write.write_state(Path(path), json.dumps(cache, indent=2, sort_keys=True))
 
 
 def _newest_artifact(search_dirs, pkgname) -> Path | None:

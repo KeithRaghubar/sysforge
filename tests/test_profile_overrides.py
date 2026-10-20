@@ -124,6 +124,58 @@ def test_writer_returns_false_on_missing_parent(tmp_path):
     assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is False
 
 
+def test_writer_escalates_a_root_owned_target(tmp_path, monkeypatch):
+    """3.5.0-B113: the default layout's target is root's /etc file, so the
+    write goes through the config-replace seam's privilege escalation."""
+    from sysforge.primitives import atomic_write
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML)
+    calls = []
+
+    def refuse(*a, **k):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(atomic_write, "_replace_direct", refuse)
+    monkeypatch.setattr(atomic_write, "run_privileged",
+                        lambda argv, **k: calls.append(argv))
+    assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is True
+    assert [c[0] for c in calls] == ["install", "mv"]
+    assert calls[1][-1] == str(p)
+
+
+def test_writer_failed_escalation_is_an_error_not_a_quiet_warning(
+        tmp_path, monkeypatch, capsys):
+    from sysforge.primitives import atomic_write
+    p = tmp_path / "profiles.toml"
+    p.write_text(_BASE_TOML)
+
+    def refuse(*a, **k):
+        raise PermissionError(13, "denied")
+
+    def sudo_declined(argv, **k):
+        raise RuntimeError("sudo declined")
+
+    monkeypatch.setattr(atomic_write, "_replace_direct", refuse)
+    monkeypatch.setattr(atomic_write, "run_privileged", sudo_declined)
+    assert write_package_compiler_override(p, "htop", "gcc", "g++", "bfd") is False
+    assert p.read_text() == _BASE_TOML
+    err = capsys.readouterr()
+    assert "Could not save the compiler swap for htop" in err.out + err.err
+
+
+def test_writer_keeps_a_symlink_and_the_mode(tmp_path):
+    real = tmp_path / "real-profiles.toml"
+    real.write_text(_BASE_TOML)
+    real.chmod(0o640)
+    link = tmp_path / "profiles.toml"
+    link.symlink_to(real)
+    assert write_package_compiler_override(link, "htop", "gcc", "g++", "bfd") is True
+    assert link.is_symlink()
+    assert "htop" in real.read_text()
+    assert real.stat().st_mode & 0o777 == 0o640
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 @pytest.mark.parametrize("pkgbase, cc", [
     ("libstdc++", "gcc"),                 # `+` is invalid in a bare key
     ("python-ruamel.yaml", "gcc"),       # `.` made a bare key a nested table

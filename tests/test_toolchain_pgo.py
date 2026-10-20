@@ -256,6 +256,37 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
     assert instrument[0]["cc"] == "/usr/bin/clang"
     assert instrument[0]["cxx"] == "/usr/bin/clang++"
 
+def test_full_pgo_refuses_a_planted_staging_symlink_before_any_build(tmp_path):
+    """3.5.0-B54: a stage prefix another user planted in /var/tmp (here a
+    symlink) is refused at the purge, before anything is built or extracted."""
+    import pytest
+    from sysforge.primitives.fs_provision import FsProvisionError
+    builds = tmp_path / "builds"
+    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
+    staging1, staging, staging3 = (
+        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
+    )
+    (tmp_path / "theirs").mkdir()
+    staging.symlink_to(tmp_path / "theirs")
+    pgo_store = tmp_path / "pgo_store"
+    pgo_store.mkdir()
+    options = make_options(
+        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
+    )
+    T = "sysforge.pipeline.stages.toolchain."
+    with patch(T + "profdata.validate_pgo_environment"), \
+         patch(T + "pgo.pgo_confirm"), \
+         patch(T + "pgo.fs_provision.ensure_writable_dir"), \
+         patch(T + "pgo.fs_provision.empty_dir_contents"), \
+         patch(T + "passes.build_pass") as build_pass, \
+         pytest.raises(FsProvisionError, match="symlink"):
+        build_llvm_pgo_inner(
+            pgo_map, {}, {}, staging1, staging, staging3, pgo_store, options,
+        )
+    build_pass.assert_not_called()
+    assert (tmp_path / "theirs").is_dir()
+
+
 def test_train_corpus_enrichment_compiles_extras_into_profile(tmp_path):
     """A non-empty corpus_map compiles the extra targets (mesa) in Pass 3 with
     the SAME instrumented LLVM_PROFILE_FILE so their codegen profraw merges into

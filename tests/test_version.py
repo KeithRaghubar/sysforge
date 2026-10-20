@@ -176,6 +176,9 @@ _VERCMP_PAIRS = [
     ("20240101", "20240215"), ("1.0-1.1", "1.0-1"), ("1.0", "1.0-1"),
     ("1.0-1", "1.0"), ("a", "1"), ("1", "a"), ("", "1"), ("1.0~rc1", "1.0"),
     ("2.10", "2.9"), ("1.0.0", "1.0.0.0"), ("1.a.1", "1.b.0"),
+    ("1.", "1.0"), ("1.0", "1."), ("1", "1a"), ("1a", "1"), ("1", "1.1"),
+    ("1.1", "1"), ("1.a", "1.0"), ("1_", "1"), ("1.0.", "1.0.0"),
+    ("1..0", "1.0"), ("1.1", "1.a"), ("a:1.0", "1.0"), (":1.0", "1.0"),
 ]
 
 
@@ -183,6 +186,17 @@ _VERCMP_PAIRS = [
     ("1.0-1", "1.0-1", 0), ("1.0-1", "1.0-2", -1), ("2.10", "2.9", 1),
     ("1:1.0-1", "2.0-1", 1), ("1.0rc1", "1.0", -1), ("001", "1", 0),
     ("1.0", "1.0.0", -1), ("1.0a", "1.0", -1),
+    # 3.5.0-DEV1: a trailing separator exhausts one side mid-segment, and the
+    # tail rule (an alpha remainder loses, any other wins), checked against
+    # vercmp(8) so they hold where the binary is absent (CI).
+    ("1.", "1.0", -1), ("1.0", "1.", 1), ("1.0.", "1.0.0", -1),
+    ("1", "1a", 1), ("1a", "1", -1), ("1", "1.1", -1), ("1.1", "1", 1),
+    ("1.a", "1.0", -1), ("1_", "1", 1),
+    # Separator runs of different length, and a number against letters: the
+    # result is exactly -1/0/1, never a larger magnitude.
+    ("1..0", "1.0", 1), ("1.0", "1..0", -1), ("1.1", "1.a", 1), ("1.a", "1.1", -1),
+    # parseEVR: a non-numeric "epoch" is part of the pkgver; an empty one is dropped.
+    ("a:1.0", "1.0", -1), (":1.0", "1.0", 0),
 ])
 def test_vercmp_local_known_answers(a, b, want):
     from sysforge.primitives.version import vercmp_local
@@ -199,3 +213,26 @@ def test_vercmp_local_agrees_with_vercmp_binary(a, b):
                          check=True).stdout.strip()
     want = (int(out) > 0) - (int(out) < 0)
     assert vercmp_local(a, b) == want, (a, b)
+
+
+@pytest.mark.parametrize("c,alpha,digit", [
+    ("a", True, False), ("z", True, False), ("A", True, False), ("Z", True, False),
+    ("0", False, True), ("9", False, True),
+    ("`", False, False), ("{", False, False), ("@", False, False), ("[", False, False),
+    ("/", False, False), (":", False, False), (".", False, False),
+])
+def test_rpmvercmp_character_classes_are_ascii_ranges(c, alpha, digit):
+    """3.5.0-DEV1: the range ends are inclusive, and their ASCII neighbours are
+    separators."""
+    from sysforge.primitives.version import _is_alpha, _is_digit
+    assert _is_alpha(c) is alpha
+    assert _is_digit(c) is digit
+
+
+@pytest.mark.parametrize("ver,evr", [
+    ("1:2.0-3", ("1", "2.0", "3")), (":2.0-3", ("0", "2.0", "3")),
+    ("a:2.0-3", ("0", "a:2.0", "3")), ("2.0", ("0", "2.0", None)),
+])
+def test_parse_evr(ver, evr):
+    from sysforge.primitives.version import _parse_evr
+    assert _parse_evr(ver) == evr

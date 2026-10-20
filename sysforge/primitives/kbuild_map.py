@@ -47,6 +47,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sysforge.primitives import atomic_write
+
 KBUILD_MAP_FILENAME = "kbuild_module_map.json"
 
 # Top-level tree entries that contain no driver kbuild files. Pruned at the
@@ -132,9 +134,7 @@ def save_map(path: Path, mapping: dict[str, str], kernel_release: str | None) ->
         "entry_count": len(mapping),
         "entries": mapping,
     }
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
-    tmp.replace(path)
+    atomic_write.write_state(path, json.dumps(payload, indent=1, sort_keys=True) + "\n")
 
 
 def load_map(path: Path) -> tuple[dict[str, str], str] | None:

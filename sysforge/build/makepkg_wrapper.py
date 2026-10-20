@@ -346,6 +346,23 @@ def built_kernel_artifact_release(pkgbuild_dir) -> str | None:
     return None
 
 
+def built_kernel_artifact_config(pkgbuild_dir, release: str) -> str | None:
+    """The ``.config`` text this build's PKGDEST artifacts ship for *release*.
+
+    Kernel headers packages carry ``usr/lib/modules/<release>/build/.config``:
+    the config the package was built from, tied to it by construction, so a
+    reused (AlreadyBuilt) kernel can still be audited after its build tree is
+    gone and with no archived config (3.5.0-B59). Scoped like the install;
+    ``None`` when no artifact carries it (headers disabled) or a read fails.
+    """
+    member = f"usr/lib/modules/{release}/build/.config"
+    for pkg in _artifacts_for_pkgbuild(pkgbuild_dir):
+        res = run_seam.capture(["bsdtar", "-x", "-O", "-q", "-f", str(pkg), member])
+        if res is not None and res.returncode == 0 and res.stdout.strip():
+            return res.stdout
+    return None
+
+
 def _pkgbuild_version(globals_: dict) -> tuple[str, str, str] | None:
     """``(epoch, pkgver, pkgrel)`` as :func:`_parse_built_pkg_filename` returns
     it, from parsed PKGBUILD globals; ``None`` when pkgver or pkgrel is absent."""

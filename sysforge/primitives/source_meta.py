@@ -34,6 +34,8 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sysforge.primitives import atomic_write
+
 
 SCHEMA_VERSION = 1
 
@@ -129,10 +131,7 @@ class SourceMetaCache:
         return self._meta.get("last_rpc_at")
 
     def save(self) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".toml.tmp")
-        tmp.write_text(self._serialize())
-        tmp.rename(self.path)
+        atomic_write.write_state(self.path, self._serialize())
 
     def _serialize(self) -> str:
         lines = [

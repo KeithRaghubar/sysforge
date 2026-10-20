@@ -1128,3 +1128,42 @@ def test_gate2_audit_runs_parity_and_never_raises_on_it(tmp_path, monkeypatch):
         {"llvm-libs": pkg_dir / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False,
     ) == []
     assert seen == [[fake_pkg]]
+
+
+# ---------------------------------------------------------------------------
+# Staging prefixes in /var/tmp are refused unless private (3.5.0-B54)
+# ---------------------------------------------------------------------------
+
+def test_extract_refuses_another_users_staging_before_tar(tmp_path, monkeypatch):
+    import pytest
+    from sysforge.pipeline.stages.toolchain import profdata
+    from sysforge.primitives import fs_provision
+    staging = tmp_path / "sysforge-llvm-stage1"
+    staging.mkdir(mode=0o700)
+    monkeypatch.setattr(fs_provision.os, "geteuid", lambda: staging.stat().st_uid + 1)
+    monkeypatch.setattr(profdata.run, "probe",
+                        lambda *a, **k: pytest.fail("extracted into a foreign dir"))
+    with pytest.raises(fs_provision.FsProvisionError):
+        profdata.extract_pkg_to_staging(tmp_path / "llvm-1-1-x86_64.pkg.tar.zst", staging)
+
+
+def test_extract_creates_a_private_staging_dir(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    from sysforge.pipeline.stages.toolchain import profdata
+    staging = tmp_path / "sysforge-llvm-stage1"
+    monkeypatch.setattr(profdata.run, "probe",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stderr=b""))
+    profdata.extract_pkg_to_staging(tmp_path / "llvm-1-1-x86_64.pkg.tar.zst", staging)
+    assert stat.S_IMODE(staging.stat().st_mode) == 0o700
+
+
+def test_stage_env_refuses_a_symlinked_prefix(tmp_path):
+    import pytest
+    from sysforge.pipeline.stages.toolchain import profdata
+    from sysforge.primitives import fs_provision
+    (tmp_path / "theirs").mkdir()
+    link = tmp_path / "sysforge-llvm-stage2"
+    link.symlink_to(tmp_path / "theirs")
+    with pytest.raises(fs_provision.FsProvisionError):
+        profdata.stage_env(link)

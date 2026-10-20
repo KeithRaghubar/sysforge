@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Keith Raghubar
 #
 # SPDX-License-Identifier: MIT
+import pytest
+
 from sysforge.primitives import build_estimate as be
 
 
@@ -79,3 +81,21 @@ def test_per_target_seconds_in_order_with_unknowns():
     }
     targets = [["mesa"], ["newpkg"], ["llvm", "llvm-libs"], ["lib32-mesa"]]
     assert per_target_seconds(targets, bs) == [1200, None, 900, None]
+
+
+@pytest.mark.parametrize("secs,want", [
+    (0, "~0s"), (59, "~59s"), (60, "~1m"), (119, "~1m"), (3599, "~59m"),
+    (3600, "~1h 00m"), (3725, "~1h 02m"), (36000, "~10h 00m"),
+])
+def test_fmt_hms_unit_boundaries(secs, want):
+    """3.5.0-DEV1: each unit starts exactly at its boundary."""
+    assert be._fmt_hms(secs) == want
+
+
+@pytest.mark.parametrize("est,actual,pct", [
+    (100, 100, "+0%"), (100, 150, "+50%"), (100, 50, "-50%"), (0, 10, "+0%"),
+    (1, 2, "+100%"), (3, 1, "-67%"),
+])
+def test_format_estimate_vs_actual_percent(est, actual, pct):
+    line = be.format_estimate_vs_actual(est, actual)
+    assert line.endswith(f"({pct})"), line

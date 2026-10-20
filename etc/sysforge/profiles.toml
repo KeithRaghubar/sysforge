@@ -258,7 +258,10 @@ makepkg_flags = ["--noconfirm"]
 [profiles.optimized]
 extends = "standard"
 CFLAGS  = "-march=native -O3 -pipe -fno-plt"
-LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
+# No -fuse-ld= here: the llvm toolchain adds lld itself, and under gcc an lld
+# link would cost LTO (GCC LTO bitcode is incompatible with lld). --icf=all is
+# lld-only and is stripped when another linker is in use.
+LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 makepkg_flags = ["--noconfirm", "--cleanbuild"]
 
 # hardened: standard's -O2 build plus compiler hardening beyond what

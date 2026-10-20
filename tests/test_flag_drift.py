@@ -9,6 +9,8 @@ produces the flags_string this module diffs against.
 """
 from pathlib import Path
 
+import pytest
+
 from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.profile import SYSFORGE_KEYS, serialize_flags
 from sysforge.primitives.flag_drift import (
@@ -537,3 +539,67 @@ def test_non_compiling_build_still_judges_sandbox(tmp_path):
     r = _drift(entry, sandbox_policy=_OFF)
     assert r.drifted
     assert r.diffs == [line for line in r.diffs if "sandboxed" in line]
+
+
+# ---------------------------------------------------------------------------
+# Sub-axis guards (3.5.0-DEV1: mutation survivors)
+# ---------------------------------------------------------------------------
+
+def test_sandbox_diff_is_empty_without_a_record_or_a_policy():
+    from sysforge.primitives.flag_drift import _sandbox_diff
+    assert _sandbox_diff({"build_mode": "source_built"}, {}, _ON) == []
+    assert _sandbox_diff({"sandboxed": True}, {}, None) == []
+
+
+def test_nothing_to_judge_returns_without_parsing(tmp_path, monkeypatch):
+    """No flags, no sandbox record, no build_inputs record: NO_FLAGS straight
+    away, even with a policy and a state dir available."""
+    import sysforge.primitives.flag_drift as fd
+    d = _pkgbuild(tmp_path)
+    monkeypatch.setattr(fd, "parse_pkgbuild", lambda *a, **k: pytest.fail("parsed"))
+    r = _drift({"build_mode": "source_built", "pkgbuild_dir": str(d)},
+               sandbox_policy=_ON, state_dir=tmp_path)
+    assert r.status == STATUS_NO_FLAGS
+
+
+def test_unparsable_pkgbuild_without_flags_is_no_flags(tmp_path, monkeypatch):
+    import sysforge.primitives.flag_drift as fd
+    d = _pkgbuild(tmp_path)
+
+    def boom(*a, **k):
+        raise ValueError("malformed")
+
+    monkeypatch.setattr(fd, "parse_pkgbuild", boom)
+    r = _drift({"build_mode": "source_built", "pkgbuild_dir": str(d), "sandboxed": False},
+               sandbox_policy=_ON)
+    assert r.status == STATUS_NO_FLAGS
+    assert r.pkgbuild_path == d / "PKGBUILD"
+
+
+def test_inputs_diff_unresolvable_now_is_no_drift(tmp_path, monkeypatch):
+    import sysforge.primitives.build_inputs as bi
+    from sysforge.primitives.flag_drift import _inputs_diff
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot resolve")
+
+    monkeypatch.setattr(bi, "resolve_build_inputs", boom)
+    assert _inputs_diff({"build_inputs": "python=3.14"}, {}, {}, tmp_path) == []
+
+
+def test_inputs_diff_resolves_with_the_profiles_compiler(tmp_path, monkeypatch):
+    import sysforge.primitives.build_inputs as bi
+    from sysforge.primitives.flag_drift import _inputs_diff
+    seen = {}
+
+    def fake_resolve(pkgmeta, *, state_dir, cc, owner_stage):
+        seen["cc"] = cc
+        return {}
+
+    monkeypatch.setenv("CC", "gcc")
+    monkeypatch.setattr(bi, "resolve_build_inputs", fake_resolve)
+    monkeypatch.setattr(bi, "serialize_build_inputs", lambda d: "")
+    _inputs_diff({"build_inputs": ""}, {}, {"CC": "clang"}, tmp_path)
+    assert seen["cc"] == "clang"
+    _inputs_diff({"build_inputs": ""}, {}, {}, tmp_path)
+    assert seen["cc"] == "gcc"
