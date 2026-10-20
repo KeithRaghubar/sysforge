@@ -50,7 +50,7 @@ from sysforge.primitives.makepkg_flags import (
     INSTALL_FLAGS,
     resolve_effective_linker,
 )
-from sysforge.primitives.profile import CONF_KEY_MAP
+from sysforge.primitives.profile import CONF_KEY_MAP, toolchain_for_compilers
 from sysforge.primitives.prompt import prompt_choice, prompt_text
 from sysforge.primitives.resource_guard import lift_for_child, make_child_preexec
 from sysforge.primitives.pty_runner import run_with_pty, strip_ansi
@@ -923,9 +923,12 @@ def _prompt_toolchain_swap(resolved_profile):
                              default=cur_cc or "", tag="MAKEPKG")
         new_cxx = prompt_text(f"CXX [{cur_cxx or 'default'}]: ",
                               default=cur_cxx or "", tag="MAKEPKG")
+        blank = "blank to keep"
     else:
         _name, new_cc, new_cxx = next(u for u in units if u[0] == choice)
-    new_ld = prompt_text("LD (e.g. lld, bfd, mold; blank to keep): ",
+        # A unit swaps the whole bundle, its linker included (3.5.0-F12).
+        blank = f"blank for the {_name} default"
+    new_ld = prompt_text(f"LD (e.g. lld, bfd, mold; {blank}): ",
                          default="", tag="MAKEPKG")
     return new_cc, new_cxx, new_ld
 
@@ -1009,7 +1012,10 @@ def _run_recovery_menu(pkgbuild_path, conf_path, resolved_profile, *,
             except subprocess.CalledProcessError:
                 _makepkg_log.error(
                     f"Build still failed after compiler swap: {label}")
-                used = (new_cc or cc, new_cxx or cxx, new_ld or ld)
+                used = (new_cc or cc, new_cxx or cxx,
+                        new_ld or ("(toolchain default)"
+                                   if toolchain_for_compilers(new_cc, new_cxx)
+                                   else ld))
                 continue
 
         # choice == "r": retry as-is.

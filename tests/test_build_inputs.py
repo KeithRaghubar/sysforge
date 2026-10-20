@@ -305,3 +305,16 @@ def test_build_inputs_is_sticky_when_a_caller_does_not_know(tmp_path):
     bs.record("p", "1", "1", "0", "p", Path("/x"), build_inputs="python=3.13\n")
     bs.record("p", "2", "1", "0", "p", Path("/x"))
     assert bs.get("p")["build_inputs"] == "python=3.13\n"
+
+
+def test_compiles_round_trips_as_bool_and_is_sticky(tmp_path):
+    """3.5.0-F11: ``compiles`` is a native TOML bool and survives a caller
+    that does not know it (repair/backfill)."""
+    from sysforge.primitives.build_state import BuildState
+    bs = BuildState(tmp_path)
+    bs.record("foo-bin", "1", "1", "0", "foo-bin", tmp_path, compiles=False)
+    bs.save()
+    bs = BuildState(tmp_path)
+    assert bs.get("foo-bin")["compiles"] is False
+    bs.record("foo-bin", "2", "1", "0", "foo-bin", tmp_path)
+    assert bs.get("foo-bin")["compiles"] is False

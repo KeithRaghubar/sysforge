@@ -421,6 +421,10 @@ git        = ["makepkg"]
 
 # Auto-managed by sysforge — compiler/linker overrides recovered from build
 # failures (sysforge build's interactive recovery menu, [c] swap). Keyed by
-# pkgbase; applied last in resolve_profile, so a row here wins over the matched
-# profile's CC/CXX/LD for that package. Safe to edit or delete by hand.
+# pkgbase. A row's toolchain = "gcc" | "llvm" swaps the whole compiler bundle
+# (CC/CXX, binutils, linker) as a [[rules]] profile's toolchain would; raw
+# cc/cxx/ld keys, for compilers outside both bundles, apply after it. Both win
+# over the matched profile; `sysforge build --cc/--cxx/--ld` wins over both.
+# Safe to edit or delete by hand, e.g.:
+#   "gamescope" = { toolchain = "gcc" }
 [package_compiler_overrides]

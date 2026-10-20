@@ -237,7 +237,9 @@ writer for this table (see §Flag/Profile System →
 `[package_compiler_overrides]`) — wrapped so a read/write failure is logged
 and swallowed rather than failing an otherwise-successful build. A swap with
 any of `cc`/`cxx`/`ld` missing is skipped with a warning instead of writing a
-partial row.
+partial row. A gcc/clang unit is written as `{ toolchain = … }` (plus `ld` when one was
+entered), not raw cc/cxx (`3.5.0-F12`), and the retry that produced it already ran
+the full bundle swap (`_reemit_for_swap` → `profile.swap_toolchain`).
 
 ### Batch mode
 

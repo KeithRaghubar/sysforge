@@ -406,3 +406,95 @@ def test_pc_owner_resolves_via_pacman(monkeypatch):
     monkeypatch.setattr("sysforge.primitives.pacman.owners_of", _owners)
     assert _bd._pc_owner("wayland-client") == "wayland"
     assert seen["paths"] == ["/usr/lib/pkgconfig/wayland-client.pc"]
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F10: undeclared dependency + C++20 `module` identifier
+# ---------------------------------------------------------------------------
+
+# Real lines from the 2026-10-19 `update --devel` run (ethtool-git, wlrctl-git).
+_ETHTOOL_LOG = (
+    "checking for libmnl... no\n"
+    "configure: error: Package requirements (libmnl) were not met:\n"
+    "\n"
+    "Package 'libmnl' not found\n"
+    "\n"
+    "Consider adjusting the PKG_CONFIG_PATH environment variable if you\n"
+    "==> ERROR: A failure occurred in build().\n"
+)
+_WLRCTL_LOG = (
+    "==> Validating source files with sha1sums...\n"
+    "    wlrctl-git ... Skipped\n"
+    "==> ERROR: Cannot find the git package needed to handle git sources.\n"
+    "==> ERROR: Build failed, check /home/keith/chroot/sysforge/build\n"
+)
+# gamescope-nvidia: reshade's effect_codegen.hpp declares `module _module;`.
+_RESHADE_LOG = (
+    "In file included from ../gamescope/src/reshade/source/effect_codegen_spirv.cpp:6:\n"
+    "../gamescope/src/reshade/source/effect_codegen.hpp:400:2: error: module "
+    "declaration must not come from an #include directive\n"
+    "  400 |         module _module;\n"
+    "../gamescope/src/reshade/source/effect_codegen.hpp:305:25: error: use of "
+    "undeclared identifier '_module'\n"
+)
+
+
+def test_undeclared_pkgconfig_dep_names_owning_package(monkeypatch):
+    monkeypatch.setattr(_bd, "_pc_owner", lambda module: "libmnl")
+    out = diagnose(_lines(_ETHTOOL_LOG), None)
+    assert [s.signature for s in out] == ["deps:undeclared"]
+    s = out[0]
+    assert "libmnl.pc is owned by libmnl" in s.message
+    assert "report to its maintainer" in s.message
+    assert s.fix_cmd is not None and "add libmnl to makedepends" in s.fix_cmd
+
+
+def test_undeclared_pkgconfig_dep_required_by_variant(monkeypatch):
+    monkeypatch.setattr(_bd, "_pc_owner", lambda module: "libfoo")
+    log = "Package 'foo', required by 'bar', not found\n"
+    s = diagnose(_lines(log), None)[0]
+    assert s.signature == "deps:undeclared"
+    assert "add libfoo to makedepends" in (s.fix_cmd or "")
+
+
+def test_undeclared_pkgconfig_dep_owner_unresolved(monkeypatch):
+    """Host lacks the .pc too: still diagnosed, with a lookup command."""
+    monkeypatch.setattr(_bd, "_pc_owner", lambda module: None)
+    s = diagnose(_lines(_ETHTOOL_LOG), None)[0]
+    assert s.signature == "deps:undeclared"
+    assert s.fix_cmd == "pacman -F libmnl.pc   # then add that package to makedepends=()"
+
+
+def test_undeclared_pkgconfig_probe_failure_keeps_diagnosis(monkeypatch):
+    def _boom(module):
+        raise RuntimeError("pacman db locked")
+
+    monkeypatch.setattr(_bd, "_pc_owner", _boom)
+    assert diagnose(_lines(_ETHTOOL_LOG), None)[0].signature == "deps:undeclared"
+
+
+def test_undeclared_vcs_tool_names_package():
+    s = diagnose(_lines(_WLRCTL_LOG), None)[0]
+    assert s.signature == "deps:undeclared"
+    assert "makepkg needs git to fetch the git sources" in s.message
+    assert "add git to makedepends" in (s.fix_cmd or "")
+
+
+def test_undeclared_dep_no_false_positive():
+    log = "checking for libmnl... yes\nPackage libmnl found: YES 1.0.5\n"
+    assert diagnose(_lines(log), None) == []
+
+
+def test_cxx_module_identifier_suggests_gcc_swap():
+    out = diagnose(_lines(_RESHADE_LOG), None)
+    assert [s.signature for s in out] == ["cxx:module-identifier"]
+    s = out[0]
+    assert "P1857" in s.message
+    assert s.fix_cmd is not None
+    assert "gcc swap" in s.fix_cmd and 'toolchain = "gcc"' in s.fix_cmd
+
+
+def test_cxx_module_cascade_alone_no_match():
+    """Only the canonical diagnostic fires, never the undeclared-name cascade."""
+    log = "effect_codegen.hpp:305:25: error: use of undeclared identifier '_module'\n"
+    assert diagnose(_lines(log), None) == []

@@ -560,6 +560,60 @@ def has_hardcoded_gcc(parsed):
     return False
 
 
+# A command that compiles (or drives a build system that does), at command
+# position in a function body. Deliberately broad: a false hit only keeps a
+# package under flag drift, which is the pre-3.5.0-F11 behaviour.
+_COMPILE_CMD = re.compile(
+    r"""
+    (?:^|[;&|(`]|\$\(|\bthen\b|\bdo\b|\belse\b)  # command position
+    [ \t]*
+    (?:command[ \t]+|env[ \t]+(?:\S+=\S*[ \t]+)*)?
+    (?:
+        (?:arch-)?meson | g?make | cmake | ninja | samu | cargo | go | rustc
+      | gcc | g\+\+ | cc | c\+\+ | clang | clang\+\+ | nvcc | zig
+      | python3? | scons | qmake6? | dotnet | npm | yarn | pnpm | node-gyp
+      | ant | mvn | gradle | bazel
+      | "?\$\{?(?:CC|CXX)\}?"?
+      | \S*/configure
+    )
+    (?=[ \t;&|)"]|$)
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def compiles_nothing(parsed, inference_map) -> bool:
+    """
+    True if the PKGBUILD visibly compiles nothing, so its compiler/linker flags
+    cannot reach the built package (a prebuilt ``-bin`` repackage, a data or
+    script-only package). Read at build time to record ``compiles`` (3.5.0-F11).
+
+    All three must hold: no ``build()`` (with a body); no makedepends that
+    ``consumes_inference`` maps to a build system (anything beyond the
+    ``makepkg`` baseline, so ``git`` alone does not count); and no compile
+    command (:data:`_COMPILE_CMD`) in ``prepare``/``check``/``package``/
+    ``package_*``. False is not authoritative, only the safe default: a
+    compiling package must never drop out of flag drift.
+    """
+    if not isinstance(parsed, dict):
+        return False
+    funcs = parsed.get("functions", {}) or {}
+    if (funcs.get("build") or "").strip():
+        return False
+    for dep in parsed.get("globals", {}).get("makedepends", []) or []:
+        bare = re.split(r"[><=!]", dep, maxsplit=1)[0].strip()
+        if set(inference_map.get(bare, ())) - {"makepkg"}:
+            return False
+    for name, body in funcs.items():
+        if not body:
+            continue
+        if name not in _SCAN_FUNCS_LITERAL and not name.startswith("package_"):
+            continue
+        if _COMPILE_CMD.search(body):
+            return False
+    return True
+
+
 # musl makedepends that mark a PKGBUILD as a static-musl bootstrap (it builds
 # its bundled libs against musl rather than glibc). pacman-static is the
 # canonical example: makedepends=(... 'musl' 'kernel-headers-musl' ...).

@@ -296,10 +296,36 @@ Wrapper → Interactive recovery menu). Each row is an inline table:
 
 ```toml
 [package_compiler_overrides]
-"some-pkgbase" = { cc = "clang", cxx = "clang++", ld = "lld" }
+"some-pkgbase"  = { toolchain = "gcc" }                       # the bundle form (3.5.0-F12)
+"other-pkgbase" = { cc = "/opt/cc", cxx = "/opt/c++", ld = "lld" }  # raw: exotic compilers only
 ```
 
-**Applied last** in `resolve_profile` — after `merge_extends` and
+**`toolchain` swaps the bundle as a unit** (`3.5.0-F12`). The raw form replaced
+only `CC`, `CXX` and the `-fuse-ld=` token, so a gcc swap of an `llvm` profile
+kept `AR/NM/RANLIB/STRIP=llvm-*` and lld; a `[[rules]]` profile with
+`toolchain = "gcc"` switched consistently, the row did not. A row's `toolchain`
+is applied by `_apply_package_toolchain_override` right after the profile's own
+`_expand_toolchain`, through `profile.swap_toolchain` — which drops every bundle
+key (`_BUNDLE_KEYS`, explicit profile `CC`/`AR`/… included) and every
+`-fuse-ld=` token, then re-expands — so the profile carries exactly the new
+bundle; the emit-time gcc guards then handle clang-only flags (`-flto=thin`,
+lld-only `--icf=`) as for any gcc build. A row may add `ld`, applied after. An
+unknown value warns and is ignored. The recovery menu writes this form for a
+gcc/clang unit (`profile.toolchain_for_compilers` maps the chosen CC/CXX pair
+back to a bundle), and its retry runs the same `swap_toolchain` on a copy of the
+profile (`makepkg_wrapper._reemit_for_swap`), so the build that succeeded is the
+one that is kept; a blank LD there means the bundle's own linker. A hand-entered
+`[m]` pair stays raw.
+
+**Precedence, lowest to highest** — five surfaces choose a package's compiler:
+`[defaults] toolchain` < the matched profile's `toolchain` < the profile's
+explicit `CC`/`CXX`/`AR`/… keys < a `[package_compiler_overrides]` row
+(`toolchain`, then raw keys) < `sysforge build --cc/--cxx/--ld` (which rides
+`extra_env` and the conf `*_override` arguments). The CLI beating a row is
+logged at `info` (`makepkg_wrapper._log_cli_over_compiler_row`) so the row does
+not lose without a trace.
+
+The raw keys are **applied last** in `resolve_profile` — after `merge_extends` and
 `_expand_toolchain` — so it wins over whatever the matched profile (and its
 `toolchain` expansion) resolved. The single read home is `resolve_profile`
 (via `_apply_package_compiler_override`, keyed on the package's `pkgbase`,
@@ -342,6 +368,7 @@ anywhere else.
 8. **PKGBUILD `options=()` opt-outs** — `emit_makepkg_conf` honors the parsed `globals["options"]` array (via `pkgbuild_meta.options_list_disabled`, which applies makepkg's later-wins override semantics so `options=('!lto' 'lto')` leaves `lto` enabled). Two toggles matter to the flag layer (F9):
    - **`!lto`** — the author declared LTO breaks this package (the cosmic-edit/onig mold-failure class). makepkg's own `!lto` only suppresses *its* LTOFLAGS injection; profile-baked `-flto` in CFLAGS/CXXFLAGS/LDFLAGS still reaches the compiler. So `emit_makepkg_conf` strips **every** `-flto` variant — including clang-PGO-friendly `-flto=thin` — via `makepkg_flags._strip_all_lto` (distinct from `_strip_full_lto`, which preserves thin for the PGO passes) and clears LTOFLAGS.
    - **`!buildflags`** — makepkg discards CFLAGS/CXXFLAGS/CPPFLAGS/LDFLAGS from the conf entirely, so the resolved profile flags never reach the build. `flag_drift.resolve_flag_drift` short-circuits to `STATUS_BUILDFLAGS_IGNORED` (not `STATUS_DRIFTED`), so `update`'s Phase 4.3 never false-triggers a rebuild when those flags change — a change that cannot affect the built package.
+   - **A build that compiled nothing** (`3.5.0-F11`) — the same contract for a recorded `compiles = false` (a prebuilt repackage; see §`build_state.py`): `STATUS_COMPILES_NOTHING`, with the sandbox and build-inputs sub-axes still judged first. Toolchain drift is a separate axis and still applies.
 
 Guards 3–4 fire when any of the following is true:
 - **Profile CC is GCC** — `cc_override` (CLI `--cc`) > `resolved_profile["CC"]` resolves to a non-`clang` compiler.

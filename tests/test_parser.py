@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from sysforge.primitives.pkgbuild_meta import (
+    compiles_nothing,
     hardcoded_build_linker,
     has_hardcoded_gcc,
     is_musl_static_build,
@@ -869,3 +870,91 @@ def test_musl_static_plain_gcc_pkgbuild(tmp_path):
 def test_musl_static_empty_parsed():
     assert is_musl_static_build({}) is False
     assert is_musl_static_build({"globals": {}, "functions": {}}) is False
+
+
+# ---------------------------------------------------------------------------
+# compiles_nothing (3.5.0-F11)
+# ---------------------------------------------------------------------------
+
+_INFERENCE = {"cmake": ["makepkg", "cmake", "env"], "make": ["makepkg", "env"],
+              "git": ["makepkg"]}
+
+
+def _parse_text(tmp_path, text):
+    p = tmp_path / "PKGBUILD"
+    p.write_text(text)
+    return parse_pkgbuild(p)
+
+
+_BIN_PKGBUILD = """pkgname=foo-bin
+pkgver=1
+pkgrel=1
+options=(!strip)
+prepare() {
+	mkdir -p foo
+	bsdtar -xf "$pkgname-$pkgver.zip" -C foo
+	chmod +x foo/foo
+}
+package() {
+	install -dm0755 "$pkgdir/opt"
+	cp -a foo "$pkgdir/opt/$pkgname"
+	install -Dm0755 foo.sh "$pkgdir/usr/bin/foo"
+}
+"""
+
+
+def test_compiles_nothing_prebuilt_repackage(tmp_path):
+    assert compiles_nothing(_parse_text(tmp_path, _BIN_PKGBUILD), _INFERENCE) is True
+
+
+def test_compiles_nothing_git_only_makedepends_still_counts(tmp_path):
+    text = _BIN_PKGBUILD.replace("options=(!strip)", "makedepends=('git')")
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is True
+
+
+def test_compiles_nothing_false_with_build_function(tmp_path):
+    text = _BIN_PKGBUILD + "build() {\n\t./configure --prefix=/usr\n}\n"
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is False
+
+
+def test_compiles_nothing_false_with_build_system_makedepend(tmp_path):
+    text = _BIN_PKGBUILD.replace("options=(!strip)", "makedepends=('cmake>=3.20')")
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is False
+
+
+@pytest.mark.parametrize("cmd", [
+    'make DESTDIR="$pkgdir" install',
+    "cd src && make",
+    '"$CC" -o foo foo.c',
+    "${CXX} foo.cpp",
+    "./configure --prefix=/usr",
+    '"$srcdir"/configure',
+    "cargo build --release",
+    "arch-meson build",
+    "python -m build --wheel",
+    "env CFLAGS=-O2 gcc foo.c",
+])
+def test_compiles_nothing_false_on_compile_in_package(tmp_path, cmd):
+    text = _BIN_PKGBUILD.replace('\tinstall -dm0755 "$pkgdir/opt"\n',
+                                 f'\tinstall -dm0755 "$pkgdir/opt"\n\t{cmd}\n')
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is False
+
+
+def test_compiles_nothing_ignores_tool_names_inside_words(tmp_path):
+    """`makefile`, `cmake-docs`, `ccache` in paths are not commands."""
+    text = _BIN_PKGBUILD.replace(
+        "\tchmod +x foo/foo\n",
+        '\tchmod +x foo/foo\n\tinstall -Dm644 foo/Makefile.doc "$srcdir/make-notes"\n',
+    )
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is True
+
+
+def test_compiles_nothing_split_package_body_scanned(tmp_path):
+    text = ("pkgbase=foo\npkgname=(foo foo-docs)\npkgver=1\npkgrel=1\n"
+            "package_foo() {\n\tmake install\n}\n"
+            "package_foo-docs() {\n\tinstall -Dm644 README \"$pkgdir/x\"\n}\n")
+    assert compiles_nothing(_parse_text(tmp_path, text), _INFERENCE) is False
+
+
+def test_compiles_nothing_non_dict_is_false():
+    assert compiles_nothing(None, _INFERENCE) is False

@@ -161,3 +161,117 @@ def test_writer_replaces_a_legacy_bare_key_row(tmp_path):
     data = tomllib.loads(p.read_text())
     assert data["package_compiler_overrides"] == {
         "htop": {"cc": "clang", "cxx": "clang++", "ld": "lld"}}
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F12: a row's `toolchain` swaps the whole bundle
+# ---------------------------------------------------------------------------
+
+from pathlib import Path  # noqa: E402
+
+from sysforge.primitives.makepkg_conf import emit_makepkg_conf  # noqa: E402
+from sysforge.primitives.profile import (  # noqa: E402
+    swap_toolchain,
+    toolchain_for_compilers,
+)
+
+_LLVM_PROFILE = {
+    "toolchain": "llvm",
+    "CFLAGS": "-march=native -O3 -pipe -flto=thin",
+    "CXXFLAGS": "-march=native -O3 -pipe -flto=thin",
+    "LDFLAGS": "-fuse-ld=lld -Wl,-O1,--icf=all -flto=thin",
+}
+
+
+def _llvm_cfg(row, toolchain_default="llvm"):
+    return {
+        "defaults": {"profile": "fast", "toolchain": toolchain_default},
+        "profiles": {"fast": dict(_LLVM_PROFILE)},
+        "package_compiler_overrides": {"htop": row},
+    }
+
+
+def _emitted(prof) -> str:
+    with emit_makepkg_conf(prof, system_conf_path="/nonexistent") as conf:
+        return Path(conf).read_text()
+
+
+def test_toolchain_gcc_row_on_llvm_profile_yields_gcc_bundle():
+    prof = resolve_profile(_pkgmeta("htop"), [], _llvm_cfg({"toolchain": "gcc"}))
+    assert (prof["CC"], prof["CXX"]) == ("gcc", "g++")
+    assert prof["toolchain"] == "gcc"
+    for key in ("AR", "NM", "RANLIB", "STRIP"):
+        assert key not in prof, key  # system binutils, not llvm-*
+    assert "-fuse-ld=" not in prof["LDFLAGS"]
+    conf = _emitted(prof)
+    assert "llvm-" not in conf
+    assert "-flto=thin" not in conf
+    assert "--icf=all" not in conf  # lld-only, dropped with lld
+
+
+def test_raw_row_still_replaces_only_cc_cxx_ld():
+    """A raw cc/cxx/ld row behaves as before 3.5.0-F12: the bundle stays."""
+    prof = resolve_profile(_pkgmeta("htop"), [],
+                           _llvm_cfg({"cc": "gcc", "cxx": "g++", "ld": "bfd"}))
+    assert (prof["CC"], prof["CXX"]) == ("gcc", "g++")
+    assert prof["AR"] == "llvm-ar"
+    assert "-fuse-ld=bfd" in prof["LDFLAGS"]
+
+
+def test_toolchain_llvm_row_on_gcc_profile_yields_llvm_bundle():
+    cfg = {
+        "defaults": {"profile": "plain", "toolchain": "gcc"},
+        "profiles": {"plain": {"CFLAGS": "-O2", "LDFLAGS": "-Wl,-O1"}},
+        "package_compiler_overrides": {"htop": {"toolchain": "llvm"}},
+    }
+    prof = resolve_profile(_pkgmeta("htop"), [], cfg)
+    assert (prof["CC"], prof["CXX"], prof["AR"]) == ("clang", "clang++", "llvm-ar")
+    assert "-fuse-ld=lld" in prof["LDFLAGS"]
+
+
+def test_toolchain_row_overrides_explicit_profile_compiler_keys():
+    """Explicit CC/AR in the profile beat the bundle, but not a toolchain row."""
+    cfg = _llvm_cfg({"toolchain": "gcc"})
+    cfg["profiles"]["fast"].update(CC="clang-23", AR="llvm-ar")
+    prof = resolve_profile(_pkgmeta("htop"), [], cfg)
+    assert prof["CC"] == "gcc" and "AR" not in prof
+
+
+def test_toolchain_row_with_ld_applies_the_linker_last():
+    prof = resolve_profile(_pkgmeta("htop"), [],
+                           _llvm_cfg({"toolchain": "gcc", "ld": "mold"}))
+    assert prof["CC"] == "gcc"
+    assert prof["LDFLAGS"].split().count("-fuse-ld=mold") == 1
+
+
+def test_unknown_toolchain_row_is_ignored():
+    prof = resolve_profile(_pkgmeta("htop"), [], _llvm_cfg({"toolchain": "icc"}))
+    assert prof["CC"] == "clang" and prof["AR"] == "llvm-ar"
+
+
+def test_swap_toolchain_is_in_place_and_idempotent():
+    prof = dict(_LLVM_PROFILE, CC="clang", AR="llvm-ar")
+    assert swap_toolchain(prof, "gcc") is prof
+    once = dict(prof)
+    assert swap_toolchain(prof, "gcc") == once
+
+
+def test_toolchain_for_compilers():
+    assert toolchain_for_compilers("gcc", "g++") == "gcc"
+    assert toolchain_for_compilers("clang", "clang++") == "llvm"
+    assert toolchain_for_compilers("gcc", "clang++") is None
+    assert toolchain_for_compilers("/opt/cc", "/opt/c++") is None
+
+
+def test_writer_toolchain_row_round_trips(tmp_path):
+    p = tmp_path / "profiles.toml"
+    p.write_text("[defaults]\nprofile = \"standard\"\n")
+    assert write_package_compiler_override(
+        p, "htop", "gcc", "g++", "", toolchain="gcc") is True
+    data = tomllib.loads(p.read_text())
+    assert data["package_compiler_overrides"]["htop"] == {"toolchain": "gcc"}
+    # Upserting over a raw row replaces it with the toolchain form (+ ld).
+    write_package_compiler_override(p, "vim", "gcc", "g++", "bfd")
+    write_package_compiler_override(p, "vim", "gcc", "g++", "bfd", toolchain="gcc")
+    rows = tomllib.loads(p.read_text())["package_compiler_overrides"]
+    assert rows["vim"] == {"toolchain": "gcc", "ld": "bfd"}

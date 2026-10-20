@@ -674,3 +674,49 @@ def test_reuse_build_never_arms_counter_on_gcc(tmp_path, monkeypatch):
     from sysforge.primitives import mesa_pgo
     assert _run_reuse_build(tmp_path, monkeypatch, "gcc") == []
     assert mesa_pgo.take_skew_count() is None
+
+
+def _record_capture(tmp_path, monkeypatch, pkgbuild_text):
+    """Run _record_build_state over a real PKGBUILD; return bs.record kwargs."""
+    import sysforge.primitives.build_state as bs_mod
+    from types import SimpleNamespace
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    captured = {}
+
+    class _SpyState(bs_mod.BuildState):
+        def record(self, *a, **k):
+            captured.update(k)
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text(pkgbuild_text)
+    options = SimpleNamespace(
+        state_dir=None, source=None, owner_stage=None, cc_override=None,
+        toolchain_variant=None, toolchain_fingerprint=None,
+        record_toolchain_variant=None,
+    )
+    makepkg_wrapper._record_build_state(
+        pkgbuild, parse_pkgbuild(pkgbuild), None, options,
+        rename=None, record_build_mode=None, build_elapsed=1,
+    )
+    return captured
+
+
+def test_record_build_state_marks_prebuilt_repackage_non_compiling(tmp_path, monkeypatch):
+    """3.5.0-F11: a PKGBUILD that compiles nothing records compiles=False."""
+    captured = _record_capture(tmp_path, monkeypatch, (
+        "pkgname=foo-bin\npkgver=1\npkgrel=1\n"
+        "package() {\n\tinstall -Dm755 foo \"$pkgdir/usr/bin/foo\"\n}\n"))
+    assert captured["compiles"] is False
+
+
+def test_record_build_state_marks_compiling_build(tmp_path, monkeypatch):
+    captured = _record_capture(tmp_path, monkeypatch, (
+        "pkgname=foo\npkgver=1\npkgrel=1\n"
+        "build() {\n\tmake\n}\n"
+        "package() {\n\tmake DESTDIR=\"$pkgdir\" install\n}\n"))
+    assert captured["compiles"] is True

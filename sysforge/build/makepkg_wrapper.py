@@ -157,6 +157,8 @@ from sysforge.primitives.profile import (
     resolve_consumes,
     resolve_groups,
     resolve_profile,
+    swap_toolchain,
+    toolchain_for_compilers,
     variant_env_overlay,
 )
 from sysforge.primitives import run as run_seam
@@ -189,6 +191,20 @@ class _ConfKwargs(TypedDict):
     jobs: int | None
 
 
+def _log_cli_over_compiler_row(config, pkgbase, cc, cxx, ld) -> None:
+    """Say when an explicit --cc/--cxx/--ld beats a [package_compiler_overrides]
+    row: the CLI value rides extra_env and the conf, so the row loses without
+    a trace otherwise (3.5.0-F12)."""
+    row = ((config or {}).get("package_compiler_overrides") or {}).get(pkgbase or "")
+    given = [f"--{k} {v}" for k, v in (("cc", cc), ("cxx", cxx), ("ld", ld)) if v]
+    if not row or not given:
+        return
+    _build_log.info(
+        f"{' '.join(given)} overrides the [package_compiler_overrides] row for "
+        f"{pkgbase} ({', '.join(f'{k}={v}' for k, v in row.items())})"
+    )
+
+
 def _persist_recovery_overrides(pkgbase) -> None:
     """If the interactive recovery menu recorded a successful compiler swap,
     persist it to profiles.toml [package_compiler_overrides]. Best-effort:
@@ -208,7 +224,11 @@ def _persist_recovery_overrides(pkgbase) -> None:
     # out of here (CLAUDE.md: persistence never fails a good build).
     try:
         path = _active_profiles_path()
-        write_package_compiler_override(path, pkgbase, cc, cxx, ld)
+        # A gcc/clang unit persists as `toolchain`, so the next build swaps
+        # the whole bundle the retry ran with (3.5.0-F12).
+        write_package_compiler_override(
+            path, pkgbase, cc, cxx, ld,
+            toolchain=toolchain_for_compilers(cc, cxx))
     except Exception as e:
         _build_log.warn(f"Could not persist recovery override to profiles.toml: {e}")
 
@@ -678,10 +698,18 @@ def _reemit_for_swap(pkgbuild_path, original_pkgbuild_path, resolved_profile,
     already rewrote that token to the original effective linker — so this
     re-parses the *patched* file (the upstream ``pkgmeta`` still names the
     pre-rewrite linker and would gate the rewrite off). A blank ``ld`` keeps the
-    failed build's linker, CLI ``--ld`` included. On failure the PKGBUILD body
+    failed build's linker, CLI ``--ld`` included, except under a unit swap,
+    where it is the bundle's own. On failure the PKGBUILD body
     is restored so a later "retry as-is" (original conf) stays coherent.
+
+    A gcc/clang unit swaps the whole bundle (``profile.swap_toolchain`` on a
+    copy, 3.5.0-F12), the same swap the persisted ``toolchain`` row makes on
+    the next build, so the retry that succeeded is the one that gets kept.
     """
     ld = ld or ld_override
+    tc = toolchain_for_compilers(cc, cxx)
+    if tc is not None:
+        resolved_profile = swap_toolchain(dict(resolved_profile), tc)
     pkgbuild_path = Path(pkgbuild_path)
     before = pkgbuild_path.read_text()
     try:
@@ -902,6 +930,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
             extra_env["CC"] = cc_override
         if cxx_override is not None:
             extra_env["CXX"] = cxx_override
+        _log_cli_over_compiler_row(config, _pkgname_from_meta(pkgmeta),
+                                   cc_override, cxx_override, ld_override)
         if injected_env:
             extra_env.update(injected_env)
 
@@ -1369,6 +1399,16 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         except Exception as e:  # noqa: BLE001 — never block the record
             _build_log.debug(f"build inputs not resolved for {pkgbase}: {e}")
             _inputs = None
+        # Whether the profile flags can reach the package at all (3.5.0-F11):
+        # a prebuilt repackage records compiles=False and flag drift skips its
+        # flags comparison. Best-effort: unknown records nothing (compiling).
+        try:
+            from sysforge.primitives.config import load_consumes_inference
+            from sysforge.primitives.pkgbuild_meta import compiles_nothing
+            _compiles = not compiles_nothing(pkgmeta, load_consumes_inference())
+        except Exception as e:  # noqa: BLE001 — never block the record
+            _build_log.debug(f"compile detection skipped for {pkgbase}: {e}")
+            _compiles = None
         for name in pkgnames:
             ep, ver, rel = filename_versions.get(name, (
                 globals_.get("epoch", "0"),
@@ -1393,6 +1433,7 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                 build_inputs=_inputs,
                 build_seconds=build_elapsed,
                 sandboxed=_prov is not None,
+                compiles=_compiles,
             )
         bs.save()
         _build_log.info(f"Recorded build state for {pkgbase!r}")

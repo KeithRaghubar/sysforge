@@ -52,6 +52,8 @@ STATUS_IN_SYNC = "IN_SYNC"           # stored flags match the current resolution
 STATUS_NOT_PROFILED = "NOT_PROFILED"  # build_mode != "source_built" — no flags to drift
 STATUS_BUILDFLAGS_IGNORED = "BUILDFLAGS_IGNORED"  # PKGBUILD options=('!buildflags'):
 # makepkg ignores conf flags
+STATUS_COMPILES_NOTHING = "COMPILES_NOTHING"  # recorded build compiled nothing
+# (a prebuilt repackage): its profile flags cannot reach the package
 STATUS_NO_PKGBUILD = "NO_PKGBUILD"   # recorded pkgbuild_dir has no PKGBUILD
 STATUS_NO_FLAGS = "NO_FLAGS"         # built before flag tracking; nothing stored
 STATUS_PARSE_ERROR = "PARSE_ERROR"   # parse_pkgbuild raised
@@ -291,6 +293,18 @@ def resolve_flag_drift(entry: dict, config: dict, conflict_groups,
                                    pkgbuild_path=pkgbuild_path)
         return FlagDriftResult(
             status=STATUS_BUILDFLAGS_IGNORED, pkgbuild_path=pkgbuild_path,
+            stored_flags=stored_flags,
+        )
+    # A build that compiled nothing (3.5.0-F11, recorded at build time) gains
+    # nothing from new flags either; same contract as !buildflags. Toolchain
+    # drift is a separate axis in `update` and still applies.
+    if entry.get("compiles") is False:
+        if sub_diffs:
+            return FlagDriftResult(status=STATUS_DRIFTED, diffs=sub_diffs,
+                                   stored_flags=stored_flags,
+                                   pkgbuild_path=pkgbuild_path)
+        return FlagDriftResult(
+            status=STATUS_COMPILES_NOTHING, pkgbuild_path=pkgbuild_path,
             stored_flags=stored_flags,
         )
     # The kernel verdict must match makepkg_wrapper's at record time

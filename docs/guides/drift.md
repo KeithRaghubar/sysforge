@@ -97,10 +97,16 @@ package:
   A package built before sysforge recorded its build inputs shows no build-input drift until
   its next rebuild.
 
-Two cases never show flag drift:
+Three cases never show flag drift:
 
 - A PKGBUILD with `options=('!buildflags')`: makepkg ignores the configured flags, so a flag
   change cannot affect it. The sandbox and build-input lines above still apply.
+- A package whose build compiles nothing, such as a prebuilt `-bin` package that only unpacks
+  and copies files: no compiler sees the flags. sysforge decides this when it builds the package,
+  and only when the PKGBUILD has no `build()` step, no build-system makedepends and no compile
+  command; anything less clear counts as compiling. The sandbox and build-input lines still apply,
+  and so does toolchain drift. A package built before sysforge made this check is still judged
+  on its flags until its next rebuild.
 - A package built before sysforge recorded flags. Rebuild it once and it is tracked from then on.
 
 ---

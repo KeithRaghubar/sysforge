@@ -971,6 +971,10 @@ def test_gate3_failure_auto_restores_and_clears_sentinel(tmp_path, monkeypatch):
         "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
+    # The snapshot keeps only installed names (3.5.0-B76); pin "installed"
+    # rather than read the host's pacman DB, which a CI container lacks.
+    monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                        lambda name: "1")
 
     restored = {}
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
@@ -1026,6 +1030,10 @@ def test_gate3_consumer_symbol_brick_triggers_rollback(tmp_path, monkeypatch):
         "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
+    # The snapshot keeps only installed names (3.5.0-B76); pin "installed"
+    # rather than read the host's pacman DB, which a CI container lacks.
+    monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                        lambda name: "1")
     monkeypatch.setattr(
         "sysforge.primitives.llvm_targets.resolve_or_detect_llvm_targets",
         lambda tc, hw: ["X86", "AMDGPU"],
@@ -1095,6 +1103,10 @@ def test_gate3_failure_restore_fails_keeps_sentinel(tmp_path, monkeypatch):
         "sysforge.primitives.pacman.cached_pkg_files_for",
         lambda names: {n: cached for n in names},
     )
+    # The snapshot keeps only installed names (3.5.0-B76); pin "installed"
+    # rather than read the host's pacman DB, which a CI container lacks.
+    monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                        lambda name: "1")
 
     with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
          patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
@@ -1246,8 +1258,9 @@ def test_install_and_snapshot_cover_installed_pkgbase_members(tmp_path, monkeypa
     toml_path, state, config, options = _single_pass_setup(tmp_path, pkgs=("llvm", "clang"))
     pkgbuild_dir = Path(config["paths"]["pkgbuild_src_dir"])
     _merge_into_llvm(pkgbuild_dir, ["llvm", "llvm-libs", "clang", "lldb", "wasi-libc++"])
-    monkeypatch.setattr(pacman, "get_all_installed_packages",
-                        lambda: {"llvm": "1", "clang": "1", "lldb": "1"})
+    installed = {"llvm": "1", "clang": "1", "lldb": "1"}
+    monkeypatch.setattr(pacman, "get_all_installed_packages", lambda: installed)
+    monkeypatch.setattr(pacman, "get_installed_version", installed.get)
     snap_names = []
     monkeypatch.setattr(pacman, "cached_pkg_files_for",
                         lambda names: snap_names.extend(names) or {n: None for n in names})

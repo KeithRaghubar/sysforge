@@ -507,6 +507,100 @@ def _match_pkgconfig_version_gate(text: str, active: str | None) -> FixSuggestio
     )
 
 
+# ---------------------------------------------------------------------------
+# Undeclared dependency: the host has it, the clean build environment does not
+# ---------------------------------------------------------------------------
+
+# A sandboxed (clean-chroot) build installs only what the PKGBUILD declares, so
+# a dependency the maintainer's own system happens to carry surfaces as a
+# missing package. Two shapes in practice (2026-10-19 run):
+#   pkg-config/pkgconf:  Package 'libmnl' not found
+#                        Package 'libmnl', required by 'foo', not found
+#   makepkg source VCS:  ==> ERROR: Cannot find the git package needed to
+#                        handle git sources.
+_RE_PC_NOT_FOUND = re.compile(
+    r"Package '(?P<module>[^']+)'(?:, required by '[^']*',)? not found"
+)
+_RE_VCS_TOOL_MISSING = re.compile(
+    r"Cannot find the (?P<pkg>\S+) package needed to handle (?P<kind>\S+) sources"
+)
+
+
+def _undeclared_dep_suggestion(pkg: str, what: str) -> FixSuggestion:
+    return FixSuggestion(
+        signature="deps:undeclared",
+        message=(
+            f"{what}: the PKGBUILD does not declare {pkg}, which the host has "
+            "but a clean build environment (the sandbox) does not; this is a "
+            "PKGBUILD defect to report to its maintainer"
+        ),
+        fix_cmd=f"add {pkg} to makedepends=() in the PKGBUILD, then re-run the build",
+    )
+
+
+def _match_undeclared_dependency(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    m = _RE_VCS_TOOL_MISSING.search(text)
+    if m is not None:
+        pkg = m.group("pkg")
+        return _undeclared_dep_suggestion(
+            pkg, f"makepkg needs {pkg} to fetch the {m.group('kind')} sources"
+        )
+    m = _RE_PC_NOT_FOUND.search(text)
+    if m is None:
+        return None
+    module = m.group("module")
+    # Best-effort: name the owning package; a probe failure keeps the diagnosis.
+    try:
+        owner = _pc_owner(module)
+    except Exception:
+        owner = None
+    if owner is not None:
+        return _undeclared_dep_suggestion(
+            owner, f"pkg-config found no {module} ({module}.pc is owned by {owner})"
+        )
+    return FixSuggestion(
+        signature="deps:undeclared",
+        message=(
+            f"pkg-config found no {module}: the package providing {module}.pc "
+            "is not installed in the build environment and is likely missing "
+            "from the PKGBUILD's makedepends"
+        ),
+        fix_cmd=f"pacman -F {module}.pc   # then add that package to makedepends=()",
+    )
+
+
+# ---------------------------------------------------------------------------
+# C++20 `module` as a line-initial identifier (clang P1857, GCC accepts)
+# ---------------------------------------------------------------------------
+
+# P1857 makes a line starting with `module` a module-declaration directive, so
+# a member like reshade's `module _module;` is rejected when it comes from a
+# header. Clang enforces this; GCC still accepts the identifier.
+_RE_MODULE_DECL_IN_INCLUDE = re.compile(
+    r"module declaration must not come from an #include directive"
+)
+
+
+def _match_cxx_module_identifier(text: str, active: str | None) -> FixSuggestion | None:
+    del active
+    if not _RE_MODULE_DECL_IN_INCLUDE.search(text):
+        return None
+    return FixSuggestion(
+        signature="cxx:module-identifier",
+        message=(
+            "clang read a line-initial `module` identifier as a C++20 module "
+            "declaration (P1857): the source uses `module` as an ordinary name, "
+            "which GCC still accepts; build this package with gcc until upstream "
+            "renames it"
+        ),
+        fix_cmd=(
+            "rebuild with a per-package gcc swap: the recovery menu's [c], or a "
+            '[[rules]] profile with toolchain = "gcc"'
+        ),
+    )
+
+
 _MATCHERS = (
     _match_rust_missing_std,
     _match_gst_ptp,
@@ -516,6 +610,8 @@ _MATCHERS = (
     _match_lib32_clang_libgcc,
     _match_broken_llvm_toolchain,
     _match_pkgconfig_version_gate,
+    _match_undeclared_dependency,
+    _match_cxx_module_identifier,
 )
 
 

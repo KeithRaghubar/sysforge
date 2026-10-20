@@ -114,68 +114,18 @@ canonical ordering.
 | `3.5.0-B108` | a split AUR package whose pkgbase is not a package name never gets its RPC version | med | small | patch |
 | `3.5.0-B109` | lib32-* packages are built in a sandbox without the multilib toolchain | med | small | patch |
 | `3.5.0-B111` | the shipped optimized profile disables LTO under the default gcc toolchain | med | small | patch |
+| `3.5.0-B113` | a compiler swap kept from the build-failure menu is lost on the default layout | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
 | `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
-| `3.5.0-F12` | a per-package compiler swap switches the whole toolchain bundle | med | medium | minor |
 | `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
 | `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
-| `3.5.0-F10` | name the cause of build failures the sandbox and new compilers expose | low | small | minor |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
 | `3.5.0-DEV2` | raise test coverage where this review's bugs clustered | low | medium | patch |
-| `3.5.0-F11` | flag drift skips packages whose build compiles nothing | low | medium | minor |
 <!-- END roadmap-table -->
 
 ### Features
-
-- **`3.5.0-F10` — name the cause of build failures the sandbox and new compilers expose.**
-  Several failures in one run were reported only as "build() failed: could be upstream or a
-  flag/toolchain incompatibility from the active sysforge profile" although the log named the
-  cause. Add `build_diag` matchers (`_MATCHERS`) for: an **undeclared dependency** in a
-  sandboxed build, which the host has but the clean chroot lacks (pkg-config's `Package 'X' not
-  found`, makepkg's `Cannot find the X package needed to handle Y sources`), with the package to
-  add to `makedepends` and a note that it is a PKGBUILD defect to report to its maintainer; and
-  **C++20 `module` as a line-initial identifier** (`module declaration must not come from an
-  #include directive`, which clang 23 enforces under P1857 and GCC does not), with the per-package
-  gcc swap (`[[rules]]` or the recovery menu) as the workaround. Seen in the 2026-10-19 `update
-  --devel` run log (`ethtool-git`: `libmnl`; `wlrctl-git`: `git`; `gamescope-nvidia`: reshade's
-  `module _module;`). Tests: each matcher fires on the real log lines and names the package or
-  the gcc swap.
-  *Priority: low · Effort: small · Bump: minor* — turns three opaque failures into actionable ones.
-
----
-
-- **`3.5.0-F11` — flag drift skips packages whose build compiles nothing.** `flag_drift`
-  compares a package's recorded profile flags with today's for every source-built package, so a
-  flag change (here `3.5.0-B100`'s `-Wp,-D_GLIBCXX_ASSERTIONS`) reports drift for prebuilt
-  repackages too, and `--rebuild-on-flag-drift` rebuilds them for nothing: `1password`,
-  `brave-bin` and `proton-pass-bin` were rebuilt in the 2026-10-19 run, though their packages
-  cannot change. Record at build time whether the build consumed compiler flags (no compiler
-  invoked, or no build-system makedepends per the existing `consumes` inference) and leave such
-  packages out of flag drift, still reporting toolchain drift where it applies. Seen in the
-  2026-10-19 `update --devel` run log. Tests: a recorded non-compiling build shows no flag drift
-  after a profile flag change; a compiling one still does.
-  *Priority: low · Effort: medium · Bump: minor* — wasted rebuilds on every flag change.
-
----
-
-- **`3.5.0-F12` — a per-package compiler swap switches the whole toolchain bundle.** Five
-  surfaces choose a package's compiler: `[defaults] toolchain`, a rule-selected profile's
-  `toolchain`, a profile's explicit `CC`/`CXX`/`AR`/… keys, a `[package_compiler_overrides]` row,
-  and `sysforge build --cc/--cxx/--ld`. The row (written by the build-failure recovery menu's
-  swap) replaces only `CC`, `CXX` and the `-fuse-ld=` token after the profile resolves, so a gcc
-  swap on an `llvm` profile keeps `AR/NM/RANLIB/STRIP=llvm-*` and the clang-only flags, which the
-  gcc guards then rewrite or drop; a `[[rules]]` profile with `toolchain = "gcc"` switches the set
-  consistently. The row is also a second place to look for "which compiler builds X", and
-  `--cc` beats it silently (it rides `extra_env`). Let a row carry `toolchain = "gcc" | "llvm"`,
-  applied before `profile._expand_toolchain` so the bundle swaps as a unit; keep raw
-  `cc`/`cxx`/`ld` for exotic compilers only; have the recovery menu write the `toolchain` form;
-  log when `--cc/--cxx/--ld` overrides a row; and document the precedence in the table's comment
-  and §Flag/Profile. Existing raw rows keep working. Found in the 2026-10-19 shipped-config audit.
-  Tests: a `toolchain = "gcc"` row on an `llvm` profile yields the gcc bundle (no `llvm-*`
-  binutils, no `-flto=thin`); a raw row behaves as today; `--cc` over a row logs the override.
-  *Priority: med · Effort: medium · Bump: minor* — the swap the recovery menu offers is half a swap.
 
 ### Bugs
 
@@ -314,6 +264,21 @@ canonical ordering.
   example or goes; keep the fixtures in parity. Tests: `make check-shipped`; a test that no
   shipped profile's `makepkg_flags` contains a flag in `BATCH_STRIP_FLAGS`.
   *Priority: low · Effort: small · Bump: patch* — misleading guidance in the files users edit.
+
+---
+
+- **`3.5.0-B113` — a compiler swap kept from the build-failure menu is lost on the default
+  layout.** `profile_writer.write_package_compiler_override` writes `profiles.toml.tmp` next to
+  the file and renames it over, by hand, instead of through `atomic_write.replace_file`, the one
+  home for replacing a config (`sysforge/CLAUDE.md`). On the default layout the target
+  (`config._active_profiles_path`) is root's `/etc/sysforge/profiles.toml`, so creating the temp
+  file fails and the `OSError` becomes a warning shown only at `-v`: the menu's swap is never
+  saved and the next build fails the same way. A symlinked `profiles.toml` is replaced by a
+  regular file, and the file's mode and owner are not kept. Route the write through
+  `atomic_write.replace_file`, which escalates through the privilege seam, as `3.5.0-B47` did
+  for `packages.toml`. Found while implementing `3.5.0-F12`. Tests: a root-owned target is
+  written via the privilege seam; a symlink is kept and its target replaced; mode is preserved.
+  *Priority: med · Effort: small · Bump: patch* — the recovery menu's "keep this swap" silently does nothing.
 
 ### Developer tooling
 

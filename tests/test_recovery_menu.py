@@ -281,8 +281,9 @@ def test_wrapper_persists_swap_overrides(monkeypatch, tmp_path):
 
     recorded = {}
 
-    def fake_write(path, pkgbase, cc, cxx, ld):
-        recorded.update(dict(path=path, pkgbase=pkgbase, cc=cc, cxx=cxx, ld=ld))
+    def fake_write(path, pkgbase, cc, cxx, ld, *, toolchain=None):
+        recorded.update(dict(path=path, pkgbase=pkgbase, cc=cc, cxx=cxx, ld=ld,
+                             toolchain=toolchain))
         return True
 
     monkeypatch.setattr(mw, "write_package_compiler_override", fake_write,
@@ -298,6 +299,8 @@ def test_wrapper_persists_swap_overrides(monkeypatch, tmp_path):
     mw._persist_recovery_overrides("htop")
     assert recorded["pkgbase"] == "htop"
     assert recorded["cc"] == "gcc"
+    # 3.5.0-F12: a gcc unit persists as the toolchain form.
+    assert recorded["toolchain"] == "gcc"
 
 
 def test_run_build_persists_swap_for_single_package_pkgbase(tmp_path, monkeypatch):
@@ -320,7 +323,7 @@ def test_run_build_persists_swap_for_single_package_pkgbase(tmp_path, monkeypatc
 
     recorded = {}
 
-    def fake_write(path, pkgbase, cc, cxx, ld):
+    def fake_write(path, pkgbase, cc, cxx, ld, *, toolchain=None):
         recorded.update(dict(pkgbase=pkgbase, cc=cc, cxx=cxx, ld=ld))
         return True
 
@@ -366,7 +369,7 @@ def test_wrapper_persist_partial_overrides_never_raises(monkeypatch):
 
     called = {"n": 0}
 
-    def fake_write(path, pkgbase, cc, cxx, ld):
+    def fake_write(path, pkgbase, cc, cxx, ld, *, toolchain=None):
         called["n"] += 1
         return True
 
@@ -381,3 +384,65 @@ def test_wrapper_persist_partial_overrides_never_raises(monkeypatch):
     # Must not raise (best-effort contract): skips the write on an incomplete dict.
     mw._persist_recovery_overrides("htop")
     assert called["n"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F12: the retry swaps the whole bundle; --cc over a row is logged
+# ---------------------------------------------------------------------------
+
+def _capture_reemit(monkeypatch, tmp_path, cc, cxx, ld):
+    from contextlib import contextmanager
+    import sysforge.build.makepkg_wrapper as mw
+
+    seen = {}
+
+    @contextmanager
+    def fake_emit(profile, consumes, **kw):
+        seen.update(profile=profile, kw=kw)
+        yield tmp_path / "conf"
+
+    monkeypatch.setattr(mw, "emit_makepkg_conf", fake_emit)
+    monkeypatch.setattr(mw, "_maybe_patch_build_linker", lambda *a, **k: False)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=htop\npkgver=1\npkgrel=1\n")
+    original = {"toolchain": "llvm", "CC": "clang", "CXX": "clang++",
+                "AR": "llvm-ar", "LDFLAGS": "-fuse-ld=lld -Wl,-O1"}
+    with mw._reemit_for_swap(pb, pb, original, None, {}, cc=cc, cxx=cxx, ld=ld,
+                             ld_override=None):
+        pass
+    return original, seen
+
+
+def test_reemit_unit_swap_uses_full_gcc_bundle(monkeypatch, tmp_path):
+    original, seen = _capture_reemit(monkeypatch, tmp_path, "gcc", "g++", "")
+    prof = seen["profile"]
+    assert (prof["CC"], prof["CXX"]) == ("gcc", "g++")
+    assert "AR" not in prof and "-fuse-ld=" not in prof["LDFLAGS"]
+    assert original["AR"] == "llvm-ar"  # the caller's profile is not mutated
+
+
+def test_reemit_manual_pair_keeps_bundle(monkeypatch, tmp_path):
+    _original, seen = _capture_reemit(monkeypatch, tmp_path,
+                                      "/opt/gcc/bin/gcc", "/opt/gcc/bin/g++", "")
+    assert seen["profile"]["AR"] == "llvm-ar"
+    assert seen["kw"]["cc_override"] == "/opt/gcc/bin/gcc"
+
+
+def test_cli_compiler_over_row_is_logged(monkeypatch):
+    import sysforge.build.makepkg_wrapper as mw
+
+    lines = []
+
+    class _Log:
+        def info(self, msg):
+            lines.append(msg)
+
+    monkeypatch.setattr(mw, "_build_log", _Log())
+    cfg = {"package_compiler_overrides": {"htop": {"toolchain": "gcc"}}}
+    mw._log_cli_over_compiler_row(cfg, "htop", "clang", None, None)
+    assert lines == ["--cc clang overrides the [package_compiler_overrides] "
+                     "row for htop (toolchain=gcc)"]
+    lines.clear()
+    mw._log_cli_over_compiler_row(cfg, "htop", None, None, None)  # no CLI value
+    mw._log_cli_over_compiler_row(cfg, "vim", "clang", None, None)  # no row
+    assert lines == []

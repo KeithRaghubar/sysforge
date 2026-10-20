@@ -5,7 +5,8 @@
 """profile_writer.py — the single programmatic writer for profiles.toml.
 
 Only writes the auto-managed [package_compiler_overrides] table (pkgbase ->
-inline table of cc/cxx/ld), recovered from interactive build failures. Line-
+inline table of ``toolchain`` (+ ``ld``), or raw cc/cxx/ld for a hand-entered
+pair), recovered from interactive build failures. Line-
 level and comment-preserving, mirroring verbs.shared.rewrite_packages_toml:
 never round-trips the whole document through a TOML emitter (which would strip
 comments and reorder the user's hand-authored profiles/rules).
@@ -23,12 +24,14 @@ _log = log.get_logger("PROFILE")
 _SECTION = "[package_compiler_overrides]"
 _HEADER = (
     "# Auto-managed by sysforge: compiler/linker overrides recovered from "
-    "build failures.\n# Keyed by pkgbase; applied last in resolve_profile "
-    "(wins over the matched profile).\n"
+    "build failures.\n# Keyed by pkgbase. toolchain swaps the whole compiler "
+    "bundle; raw cc/cxx/ld\n# apply last. Both win over the matched profile; "
+    "--cc/--cxx/--ld win over both.\n"
 )
 
 
-def _row(pkgbase: str, cc: str, cxx: str, ld: str) -> str:
+def _row(pkgbase: str, cc: str, cxx: str, ld: str,
+         toolchain: str | None = None) -> str:
     """One override row, key and values as TOML basic strings (3.5.0-B45).
 
     A bare key broke on any pkgbase outside ``[A-Za-z0-9_-]``: a ``+``
@@ -37,6 +40,10 @@ def _row(pkgbase: str, cc: str, cxx: str, ld: str) -> str:
     unescaped ``"`` in a manually entered compiler did the same to a value.
     """
     q = toml_literal
+    if toolchain:
+        # 3.5.0-F12: the bundle form; ld only when one was chosen.
+        ld_part = f", ld = {q(ld)}" if ld else ""
+        return f"{q(pkgbase)} = {{ toolchain = {q(toolchain)}{ld_part} }}\n"
     return f"{q(pkgbase)} = {{ cc = {q(cc)}, cxx = {q(cxx)}, ld = {q(ld)} }}\n"
 
 
@@ -46,9 +53,14 @@ def _row_re(pkgbase: str) -> re.Pattern:
 
 
 def write_package_compiler_override(
-    path: Path, pkgbase: str, cc: str, cxx: str, ld: str
+    path: Path, pkgbase: str, cc: str, cxx: str, ld: str,
+    *, toolchain: str | None = None,
 ) -> bool:
-    """Upsert one [package_compiler_overrides] row. Best-effort: False on OSError."""
+    """Upsert one [package_compiler_overrides] row. Best-effort: False on OSError.
+
+    With ``toolchain`` the row is ``{ toolchain = …[, ld = …] }`` and cc/cxx
+    are not written (the bundle supplies them); without, the raw cc/cxx/ld row.
+    """
     path = Path(path)
     try:
         text = path.read_text()
@@ -56,7 +68,7 @@ def write_package_compiler_override(
         _log.warn(f"profiles.toml override write skipped (read failed): {e}")
         return False
 
-    new_row = _row(pkgbase, cc, cxx, ld)
+    new_row = _row(pkgbase, cc, cxx, ld, toolchain)
     lines = text.splitlines(keepends=True)
 
     # Locate the section header line, if present.
@@ -98,5 +110,7 @@ def write_package_compiler_override(
     except OSError as e:
         _log.warn(f"profiles.toml override write failed: {e}")
         return False
-    _log.info(f"Recorded compiler override for {pkgbase}: cc={cc} cxx={cxx} ld={ld}")
+    what = (f"toolchain={toolchain}" + (f" ld={ld}" if ld else "")
+            if toolchain else f"cc={cc} cxx={cxx} ld={ld}")
+    _log.info(f"Recorded compiler override for {pkgbase}: {what}")
     return True

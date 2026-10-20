@@ -13,6 +13,7 @@ from sysforge.primitives.makepkg_conf import serialize_effective_flags
 from sysforge.primitives.profile import SYSFORGE_KEYS, serialize_flags
 from sysforge.primitives.flag_drift import (
     STATUS_BUILDFLAGS_IGNORED,
+    STATUS_COMPILES_NOTHING,
     STATUS_DRIFTED,
     STATUS_IN_SYNC,
     STATUS_NO_FLAGS,
@@ -501,3 +502,38 @@ def test_a_bolted_entry_is_judged_like_a_source_build():
     from sysforge.primitives.flag_drift import drift_candidate
     assert drift_candidate({"build_mode": "bolt_llvm"})
     assert drift_candidate({"build_mode": "source_built"})
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-F11: a recorded build that compiled nothing is out of flag drift
+# ---------------------------------------------------------------------------
+
+def _stale_entry(d, **extra):
+    return {"build_mode": "source_built", "pkgbuild_dir": str(d),
+            "flags_string": "CFLAGS=-this-is-stale", **extra}
+
+
+def test_non_compiling_build_shows_no_flag_drift(tmp_path):
+    """A profile flag change after a prebuilt repackage's build is not drift."""
+    r = _drift(_stale_entry(_pkgbuild(tmp_path, "brave-bin"), compiles=False))
+    assert r.status == STATUS_COMPILES_NOTHING
+    assert not r.drifted and r.diffs == []
+
+
+def test_compiling_build_still_drifts(tmp_path):
+    r = _drift(_stale_entry(_pkgbuild(tmp_path), compiles=True))
+    assert r.status == STATUS_DRIFTED
+    assert any("CFLAGS" in line for line in r.diffs)
+
+
+def test_unrecorded_compiles_is_judged_as_compiling(tmp_path):
+    """A record from before the field existed keeps today's behaviour."""
+    assert _drift(_stale_entry(_pkgbuild(tmp_path))).status == STATUS_DRIFTED
+
+
+def test_non_compiling_build_still_judges_sandbox(tmp_path):
+    entry = _stale_entry(_pkgbuild(tmp_path, "brave-bin"), compiles=False,
+                         sandboxed=True)
+    r = _drift(entry, sandbox_policy=_OFF)
+    assert r.drifted
+    assert r.diffs == [line for line in r.diffs if "sandboxed" in line]

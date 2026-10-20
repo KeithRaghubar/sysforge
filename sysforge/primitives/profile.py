@@ -30,6 +30,8 @@ Public API:
     get_build_mode(matched_rules, config)                    -> str | None
     is_optimized_build_mode(build_mode)                      -> bool
     is_llvm_toolchain(toolchain)                             -> bool
+    swap_toolchain(profile, toolchain)                       -> dict
+    toolchain_for_compilers(cc, cxx)                         -> str | None
 """
 import fnmatch
 import pprint
@@ -588,18 +590,82 @@ def _expand_toolchain(profile: dict, default_toolchain: str | None) -> dict:
     return profile
 
 
-def _apply_package_compiler_override(result: dict, config: dict, pkgbase: str | None) -> None:
-    """Apply an auto-managed [package_compiler_overrides][pkgbase] row last.
+# Every key any bundle sets: a swap clears all of them, so no key of the old
+# bundle (llvm-ar under a gcc swap) survives the new one's setdefault.
+_BUNDLE_KEYS = frozenset(k for b in _TOOLCHAIN_BUNDLES.values() for k in b)
 
-    Wins over the matched profile's CC/CXX/LDFLAGS for this pkgbase. The
+
+def toolchain_for_compilers(cc: str | None, cxx: str | None) -> str | None:
+    """The bundle whose CC/CXX are exactly ``cc``/``cxx``, else None.
+
+    Lets the recovery menu persist a gcc/clang unit as ``toolchain = …``
+    rather than a raw cc/cxx pair (3.5.0-F12); a hand-entered pair stays raw.
+    """
+    for name, bundle in _TOOLCHAIN_BUNDLES.items():
+        if (cc, cxx) == (bundle["CC"], bundle["CXX"]):
+            return name
+    return None
+
+
+def swap_toolchain(profile: dict, toolchain: str) -> dict:
+    """Switch a resolved profile to another bundle as a unit, in place.
+
+    Drops every bundle key and any ``-fuse-ld=`` token, then re-expands, so the
+    profile carries exactly the new bundle: a gcc swap of an llvm profile loses
+    ``llvm-*`` binutils and ``-fuse-ld=lld`` (the emit-time gcc guards then
+    handle clang-only flags such as ``-flto=thin``). The one home for a
+    per-package toolchain swap: a ``[package_compiler_overrides]`` row with
+    ``toolchain`` and the recovery menu's retry both come through here.
+    """
+    for key in _BUNDLE_KEYS:
+        profile.pop(key, None)
+    ldflags = profile.get("LDFLAGS")
+    if ldflags:
+        profile["LDFLAGS"] = " ".join(
+            t for t in ldflags.split() if not t.startswith("-fuse-ld="))
+    profile["toolchain"] = toolchain
+    return _expand_toolchain(profile, None)
+
+
+def _package_compiler_row(config: dict, pkgbase: str | None) -> dict | None:
+    if not pkgbase:
+        return None
+    return (config.get("package_compiler_overrides") or {}).get(pkgbase) or None
+
+
+def _apply_package_toolchain_override(result: dict, config: dict,
+                                      pkgbase: str | None) -> None:
+    """Apply a row's ``toolchain`` (3.5.0-F12) in place of the profile's bundle.
+
+    Runs right after the profile's own ``_expand_toolchain`` and replaces that
+    bundle whole; the row's raw ``cc``/``cxx``/``ld`` still apply afterwards,
+    last. An unknown
+    value warns and leaves the profile's own bundle in place.
+    """
+    row = _package_compiler_row(config, pkgbase)
+    tc = row.get("toolchain") if row else None
+    if not tc:
+        return
+    if tc not in _TOOLCHAIN_BUNDLES:
+        _log.warn(
+            f"[package_compiler_overrides] {pkgbase}: toolchain={tc!r} is not a "
+            f"known value ({'/'.join(sorted(_TOOLCHAIN_BUNDLES))}): ignoring"
+        )
+        return
+    swap_toolchain(result, tc)
+    _log.info(f"[{pkgbase}] toolchain {tc!r} from [package_compiler_overrides]")
+
+
+def _apply_package_compiler_override(result: dict, config: dict, pkgbase: str | None) -> None:
+    """Apply a [package_compiler_overrides][pkgbase] row's raw keys last.
+
+    ``cc``/``cxx`` win over the resolved CC/CXX for this pkgbase. The
     LD value is folded into LDFLAGS as a -fuse-ld=<ld> token (replacing any
     existing -fuse-ld=), since linker selection is conf-delivered via LDFLAGS,
-    not a standalone key. No-op when the table or row is absent.
+    not a standalone key. A row's ``toolchain`` was already applied by
+    :func:`_apply_package_toolchain_override`. No-op when the row is absent.
     """
-    if not pkgbase:
-        return
-    overrides = config.get("package_compiler_overrides") or {}
-    row = overrides.get(pkgbase)
+    row = _package_compiler_row(config, pkgbase)
     if not row:
         return
     cc = row.get("cc")
@@ -694,6 +760,9 @@ def resolve_profile(pkgmeta, matched_rules, config, conflict_groups=None,
     # inherited value) wins over the [defaults] fallback. Explicit CC/CXX/AR/…
     # already present in `result` are preserved (setdefault).
     _expand_toolchain(result, defaults.get("toolchain"))
+    # A [package_compiler_overrides] row: `toolchain` swaps the bundle as a
+    # unit, then raw cc/cxx/ld (exotic compilers) apply last (3.5.0-F12).
+    _apply_package_toolchain_override(result, config, pkgname)
     _apply_package_compiler_override(result, config, pkgname)
     _log.debug(
         f"[{pkgname}] Full resolved profile ({profile_name}):\n"
