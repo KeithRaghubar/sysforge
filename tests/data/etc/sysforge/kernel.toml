@@ -7,8 +7,8 @@
 # install a custom kernel.
 #
 # The kernel PKGBUILD must already be cloned under [paths] pkgbuild_src_dir in
-# profiles.toml. A [[rules]] entry with profile = "kernel" is also
-# expected (provided in the default profiles.toml).
+# profiles.toml. It needs no profile or rule there: the stage stamps the
+# build with owner_stage "kernel", which turns on the kernel build handling.
 # =============================================================================
 
 enabled = false

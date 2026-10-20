@@ -112,22 +112,19 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.5.0-B108` | a split AUR package whose pkgbase is not a package name never gets its RPC version | med | small | patch |
-| `3.5.0-B109` | lib32-* packages are built in a sandbox without the multilib toolchain | med | small | patch |
 | `3.5.0-B111` | the shipped optimized profile disables LTO under the default gcc toolchain | med | small | patch |
 | `3.5.0-B113` | a compiler swap kept from the build-failure menu is lost on the default layout | med | small | patch |
 | `3.5.0-DEV8` | make make test the complete suite, so pre-release matches CI | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
-| `3.5.0-B64` | some sysforge installs are not recorded as self-installs | med | medium | patch |
+| `3.5.0-B120` | a removed package's build failure stays in build_state.toml | med | medium | patch |
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
-| `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
-| `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
+| `3.5.0-B117` | the pre-build snapshot runs unprivileged, so the raw fallback never works | low | small | patch |
+| `3.5.0-B119` | run reconfigure's GPG step refreshes keys past a source freeze | low | small | patch |
 | `3.5.0-DEV5` | name the failing gate on the CI run page | low | small | patch |
 | `3.5.0-DEV6` | report test failures in full in CI | low | small | patch |
 | `3.5.0-DEV7` | print the container's environment at the top of the CI log | low | small | patch |
-| `3.5.0-DEV9` | correct the Makefile's stale comments and small gaps | low | small | patch |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
-| `3.5.0-DEV2` | raise test coverage where this review's bugs clustered | low | medium | patch |
 <!-- END roadmap-table -->
 
 ### Features
@@ -158,21 +155,6 @@ canonical ordering.
   confirm before fixing. Tests: a reused artifact with no matching config is refused (unless
   `--skip-boot-audit`).
   *Priority: med · Effort: medium · Bump: patch* — can install a kernel config Gate 2 rejected.
-
----
-
-- **`3.5.0-B64` — some sysforge installs are not recorded as self-installs.**
-  `record_self_install` is called only from `pacman.batch_install_pkgs`, not from the
-  sudo-timeout recovery install in `makepkg_invoke`, `install_built_packages` or `configure`'s
-  `pacman -U`. A package installed through those paths looks external to the next `update`,
-  which demotes it to a pacman entry if it has a repo counterpart. The window is also reset only
-  by `update`, so `build foo`, then `pacman -S foo`, then `update` keeps it as self-installed
-  and rebuilds over the switch; `revert` and `uninstall` reconcile without update's sync-repo
-  filter. Record every `-U`, and clear the window where the consumer runs. Found in the
-  2026-10-18 whole-repo review; from a reviewer's reading of the code, not yet reproduced, so
-  confirm before fixing. Tests: each install path records a self-install; a later external
-  install is still demoted.
-  *Priority: med · Effort: medium · Bump: patch* — packages can be demoted or rebuilt against the user's choice.
 
 ---
 
@@ -207,35 +189,6 @@ canonical ordering.
 
 ---
 
-- **`3.5.0-B109` — `lib32-*` packages are built in a sandbox without the multilib toolchain.**
-  Arch builds its multilib PKGBUILDs in a chroot carrying the `multilib-devel` group
-  (`lib32-gcc-libs`, `lib32-glibc`, …), so those PKGBUILDs do not declare them. sysforge's build
-  sandbox installs only the PKGBUILD's own dependencies into a plain `base-devel` chroot
-  (`build_sandbox.py` has no `lib32` handling), so a 32-bit link finds only the 64-bit
-  `libgcc_s.so.1` and fails (`ld.lld: error: …/libgcc_s.so.1 is incompatible with elf32-i386`).
-  Every `lib32-*` source build that links against `libgcc_s` fails this way in the sandbox.
-  Install `multilib-devel` into the container for `lib32-*` targets (as Arch's `multilib-build`
-  does), and refuse with a clear message when `[multilib]` is not enabled in the chroot. Seen in
-  the 2026-10-19 `update --devel` run log (`lib32-libvdpau`); confirmed in the chroot (no
-  `lib32-gcc-libs`). Tests: a `lib32-*` target's container deps include `multilib-devel`; a
-  non-`lib32` target's do not.
-  *Priority: med · Effort: small · Bump: patch* — every sandboxed lib32 build can fail.
-
----
-
-- **`3.5.0-B110` — `[safety] llvm_preflight = false` has no effect.** `sysforge.toml` documents
-  `llvm_preflight` as the switch that suppresses the informational LLVM pre-flight table for
-  `fetch`, `update` and `build`, and ships it as `true`, but no code reads it: `fetch.cmd_fetch`,
-  `build_cmd` and `update._phase_llvm_preflight` check only `--no-llvm-preflight`. The design text
-  (§primitives-layer, the pre-flight wiring) also claims the key works. Resolve it through
-  `config.resolve_flag_default(args, "no_llvm_preflight", safety_cfg, …)` (inverted) at all three
-  sites, or remove the key; drop the comment's stale `converge` verb either way. Found in the
-  2026-10-19 shipped-config audit; confirmed in the code. Tests: `llvm_preflight = false`
-  suppresses the table on each verb; the CLI flag still wins.
-  *Priority: low · Effort: small · Bump: patch* — a documented setting silently does nothing.
-
----
-
 - **`3.5.0-B111` — the shipped `optimized` profile disables LTO under the default gcc
   toolchain.** `[profiles.optimized]` hardcodes `-fuse-ld=lld` in `LDFLAGS` while the shipped
   `[defaults] toolchain` is `"gcc"`. gcc plus lld trips `emit_makepkg_conf`'s guard ("GCC LTO
@@ -248,27 +201,6 @@ canonical ordering.
   Tests: the shipped `optimized` profile under `toolchain = "gcc"` keeps LTO; under `"llvm"` it
   still links with lld.
   *Priority: med · Effort: small · Bump: patch* — the default optimized profile silently loses LTO.
-
----
-
-- **`3.5.0-B112` — the shipped configs carry stale and dead guidance.** From the 2026-10-19
-  shipped-config audit, all confirmed in the code:
-  (1) `[profiles.batch]` and `[profiles.kernel]` `makepkg_flags` list `--syncdeps`/`--install`
-  (and `batch` `--rmdeps`), and the `profiles.toml` header lists them as common choices, though
-  every build strips `--syncdeps`/`--install` since `3.4.0-F1` (`BATCH_STRIP_FLAGS`/`SYNC_FLAGS`);
-  (2) `[profiles.kernel]` and its commented `[[rules]]` example are no longer needed: the kernel
-  stage stamps `owner_stage = "kernel"`, which turns on the kernel patchers, and never selects the
-  profile;
-  (3) `sysforge.toml` names a `converge` verb that no longer exists, and `sysforge.toml` and
-  `bootstrap.toml` say `sysforge reconfigure` for what is now `sysforge run reconfigure`;
-  (4) the header's example `CPPFLAGS = "-D_FORTIFY_SOURCE=2"` contradicts Arch's current
-  `-Wp,-D_FORTIFY_SOURCE=3` in `CFLAGS` (copying it defines the macro twice);
-  (5) the header calls `[defaults] profile` "(required)", but the resolver falls back to `bare`,
-  and it points at a hardcoded "line 220" that drifts with every edit.
-  Fix the text, drop the dead flags and decide whether `[profiles.kernel]` stays as an explicit
-  example or goes; keep the fixtures in parity. Tests: `make check-shipped`; a test that no
-  shipped profile's `makepkg_flags` contains a flag in `BATCH_STRIP_FLAGS`.
-  *Priority: low · Effort: small · Bump: patch* — misleading guidance in the files users edit.
 
 ---
 
@@ -285,6 +217,58 @@ canonical ordering.
   written via the privilege seam; a symlink is kept and its target replaced; mode is preserved.
   *Priority: med · Effort: small · Bump: patch* — the recovery menu's "keep this swap" silently does nothing.
 
+---
+
+- **`3.5.0-B117` — the pre-build snapshot runs unprivileged, so the raw fallback never works.**
+  With `[build] pre_build_snapshot = true` and no snapper config covering `/`,
+  `snapshot.create_raw_snapshot` creates `/.snapshots` and runs `btrfs subvolume snapshot -r`
+  through `run.probe`, as the build user sysforge runs as. Both need root, so the raw snapshot
+  always fails and only warns, while `sysforge.toml` documents it as taken. The snapper path
+  works only where the config's `ALLOW_USERS` grants the user. Route both through
+  `privilege.run_privileged` (after `sudo_session.authenticate()`, outside the progress bar), or
+  refuse up front with what to configure. Found while implementing `3.5.0-DEV2`; from reading
+  the code, not yet reproduced on a btrfs root, so confirm before fixing. Tests: the raw
+  snapshot's `mkdir` and `btrfs` run through the privilege seam; a declined sudo is a warn,
+  never a failed build.
+  *Priority: low · Effort: small · Bump: patch* — an opt-in safety net that silently never fires.
+
+---
+
+- **`3.5.0-B119` — `run reconfigure`'s GPG step refreshes keys past a source freeze.** The
+  step's "Refresh all keys from keyserver?" answer runs `gpg --refresh-keys` directly, without
+  `net_policy.get_policy().check(KIND_KEY_FETCH, …)`, the seam every other keyserver contact
+  goes through (`sysforge/CLAUDE.md`, source freeze), so a frozen system still reaches the
+  keyserver. The same step module's sudo check also still warns that "makepkg -si will fail"
+  for a user outside `wheel`, though makepkg has not escalated since `3.4.0-F1`; the install
+  step is sysforge's own privileged `pacman`. Gate the refresh on the policy (say why when
+  frozen) and reword the warning. Found while implementing `3.5.0-DEV2`; confirmed in the code.
+  Tests: a frozen policy skips the refresh with a message; the warning names sysforge's install
+  step.
+  *Priority: low · Effort: small · Bump: patch* — one keyserver contact the freeze does not cover.
+
+---
+
+- **`3.5.0-B120` — a removed package's build failure stays in `build_state.toml`.**
+  `[failures]` (keyed by pkgbase) is cleared only by a successful build (`BuildState.record`)
+  or `sysforge state failed --clear`, so once a package is removed, by `sysforge uninstall`, a
+  plain `pacman -R`, or anything else, `state failed`, `doctor` and the `state_probe` summary
+  keep reporting it. Removal is the trigger, whoever does it, and it has to be seen as an event:
+  "no member installed" alone would also erase the failure of a package whose first build
+  failed and so was never installed, which is the case `state failed` exists for. The shipped
+  `sysforge-buildstate.hook` already records every `Remove` transaction's targets. In
+  `install_reconcile.consume_external_installs` (the one sentinel consumer, run by `update`,
+  `revert-to-stock` and `uninstall`), treat a window target that is no longer installed as
+  removed, map it to its pkgbase (its build_state entry's `pkgbase`, reaching a `-sysforge`
+  build through `resolve_installed_name`; else the name itself), and clear that pkgbase's
+  failure once no member of it is installed. `state failed` and `doctor` apply the same pass
+  read-only, so the listing is right before the next `update` clears the window; `uninstall`
+  and `forget_packages` also clear their targets' pkgbases directly, which covers a host
+  without the hook. Reported by the user 2026-10-20. Tests: a failure is cleared after a
+  `pacman -R` recorded only by the hook (no sysforge verb), after `uninstall` of a tracked and
+  of an untracked package, and after `forget`/`revert`; a never-installed failed package keeps
+  its failure; removing one split member keeps the failure while a sibling is installed.
+  *Priority: med · Effort: medium · Bump: patch* — `state failed` lists packages that are gone.
+
 ### Developer tooling
 
 - **`3.5.0-DEV1` — test the branches mutation testing showed are unchecked.** Mutating
@@ -298,18 +282,6 @@ canonical ordering.
   each survivor. Found in the 2026-10-18 whole-repo review; confirmed in the code. Tests:
   rerunning the same mutations kills every one.
   *Priority: med · Effort: medium · Bump: patch* — the ABI and sentinel gates are the ones a regression would hurt most.
-
----
-
-- **`3.5.0-DEV2` — raise test coverage where this review's bugs clustered.** Branch coverage is
-  89.1% overall, and the least-covered modules are the ones this review found bugs in:
-  `snapshot.py` 53%, `packages_cmd.py` 61%, `pipeline/stages/reconfigure.py` 64%,
-  `verbs/artifact.py` 70%, `dep_analysis.py` 71%, `pipeline/stages/packages.py` 72%,
-  `configure.py` 75%, `makepkg_pgo.py` 77%, `toolchain/pkgbuilds.py` 79% and
-  `makepkg_wrapper.py` 81%. Cover their failure and resume paths first, then raise the coverage
-  ratchet. Found in the 2026-10-18 whole-repo review; confirmed in the code. Tests: each listed
-  module's coverage rises and the ratchet floor is re-stamped.
-  *Priority: low · Effort: medium · Bump: patch* — test debt.
 
 ---
 
@@ -363,19 +335,5 @@ canonical ordering.
   Tests: on a machine without `python-tomlkit`, `make test` runs `tests/test_sync_config.py`
   instead of skipping it; a test that `tools/ci.sh` and `pre-release` resolve to the same gates.
   *Priority: med · Effort: small · Bump: patch* — the release gate runs fewer tests than CI on some machines.
-
----
-
-- **`3.5.0-DEV9` — correct the Makefile's stale comments and small gaps.** From the 2026-10-19
-  audit: the `check-shipped` comment says "seven check groups" (`GROUPS` in
-  `tools/check_shipped.py` has 11); the `next-id` comment lists `F/B/Q/STD` (it also takes
-  `DEV` and `DOC`); the `help` "Variables:" footer omits `TESTS=`, `NAME=`/`GUI=`, `DISTRO=`,
-  `VM_USER=` and the preflight `RUN_*` skips; `vm-ssh-root` duplicates `vm-ssh`, whose
-  `VM_USER` already defaults to root; `dev` does not depend on `venv`, so it fails on a fresh
-  checkout; `clean` leaves `man/sysforge.1.scd` and `.ruff_cache/`; and `typecheck` covers only
-  `sysforge/` while `lint-py` covers `sysforge/ tests/ tools/` (decide whether that is intended
-  and say so). Tests: `tests/test_makefile_help.py` still passes; `make dev` works on a fresh
-  checkout.
-  *Priority: low · Effort: small · Bump: patch* — the Makefile's comments are its documentation.
 
 ### Open questions

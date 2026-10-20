@@ -746,3 +746,90 @@ def test_packages_stage_first_ctrl_c_stops_before_the_next_package(tmp_path):
                                 make_options(state_dir=state_dir))
     assert built == ["llvm"]
     assert StageSentinel(state_dir).get_active()["stage"] == "packages"
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-DEV2: the resume prompt and the repo-install failure path
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages import packages as _pkgs_mod  # noqa: E402
+
+
+def _answers(monkeypatch, *answers):
+    it = iter(answers)
+    monkeypatch.setattr(_pkgs_mod, "prompt_choice", lambda *a, **k: next(it))
+
+
+def test_resume_prompt_force_retry_retries_everything(monkeypatch):
+    monkeypatch.setattr(_pkgs_mod, "prompt_choice",
+                        lambda *a, **k: pytest.fail("prompted under --force-retry"))
+    assert _pkgs_mod._prompt_failed_packages(
+        ["a", "b"], {}, make_options(force_retry=True)) == ({"a", "b"}, set())
+
+
+@pytest.mark.parametrize("answer, expected", [
+    ("r", ({"a", "b"}, set())),
+    ("s", (set(), {"a", "b"})),
+])
+def test_resume_prompt_retry_or_skip_all(monkeypatch, answer, expected):
+    _answers(monkeypatch, answer)
+    assert _pkgs_mod._prompt_failed_packages(["a", "b"], {"a": "boom"}, make_options()) == expected
+
+
+def test_resume_prompt_abort_raises(monkeypatch):
+    _answers(monkeypatch, "a")
+    with pytest.raises(RuntimeError, match="Aborted by user at failed-package prompt"):
+        _pkgs_mod._prompt_failed_packages(["a"], {}, make_options())
+
+
+def test_resume_prompt_per_package_choice(monkeypatch):
+    _answers(monkeypatch, "c", "r", "s")
+    assert _pkgs_mod._prompt_failed_packages(
+        ["a", "b"], {}, make_options()) == ({"a"}, {"b"})
+
+
+def test_resume_prompt_per_package_abort_raises(monkeypatch):
+    _answers(monkeypatch, "c", "a")
+    with pytest.raises(RuntimeError, match=r"\[PACKAGES\] Aborted by user"):
+        _pkgs_mod._prompt_failed_packages(["a", "b"], {}, make_options())
+
+
+def test_resume_retries_a_failed_package_and_skips_a_declined_one(tmp_path, monkeypatch):
+    """A failed package the user retries goes back on the queue and builds; a
+    skipped one is recorded skipped and never built."""
+    builds_dir = tmp_path / "builds"
+    for name in ("llvm", "mesa-git"):
+        make_pkgbuild(builds_dir, name)
+    pkg_file = make_packages_toml(tmp_path, builds_dir)
+    state = PipelineState(tmp_path / "state")
+    state.init_package_list(["llvm", "htop", "mesa-git"])
+    state.mark_package_built("htop")
+    state.mark_package_failed("llvm", "link error")
+    state.mark_package_failed("mesa-git", "oom")
+    state.save()
+    _answers(monkeypatch, "c", "r", "s")
+
+    called = []
+    with patch("sysforge.pipeline.stages.packages.makepkg_run",
+               side_effect=lambda path, **k: called.append(Path(path).parent.name)), \
+         patch("sysforge.pipeline.stages.packages.subprocess.run") as m:
+        m.return_value = MagicMock(returncode=0)
+        PackagesStage().run({"packages_file": str(pkg_file)}, state, make_options())
+
+    p = state.get_package_progress()
+    assert called == ["llvm"]
+    assert "llvm" in p["built"] and "llvm" not in p["failed"]
+    assert "mesa-git" in p["skipped"]
+
+
+def test_install_repo_failure_names_the_package(monkeypatch):
+    monkeypatch.setattr(_pkgs_mod.subprocess, "run", lambda *a, **k: MagicMock(returncode=1))
+    with pytest.raises(RuntimeError, match="pacman -S failed for 'htop' \\(exit 1\\)"):
+        _pkgs_mod._install_repo({"name": "htop"}, make_options())
+
+
+def test_toolchain_overrides_carry_only_what_the_stage_recorded():
+    state = MagicMock()
+    state.get_stage_result.return_value = {"cc": "clang", "ld": "lld", "variant": "pgo"}
+    assert _pkgs_mod._toolchain_overrides(state) == {
+        "cc_override": "clang", "ld_override": "lld", "variant": "pgo"}

@@ -20,7 +20,7 @@
 # NO_COLOR / FORCE_COLOR; "always" forces colour on (e.g. piping into a pager);
 # "never" disables it. The --color CLI flag overrides this.
 color = "auto"
-#editor = "vim"       # Override $EDITOR for sysforge reconfigure
+#editor = "vim"       # Override $EDITOR for sysforge run reconfigure
 #merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
@@ -153,8 +153,8 @@ clone_timeout = 60
 [safety]
 # LLVM source-tree safety pre-flight. Surfaces variant, origin, dirty
 # status, divergence, install origin, and resolved build_mode for any
-# LLVM-toolchain package in scope before fetch / update / build / converge
-# / run toolchain touch it.
+# LLVM-toolchain package in scope before fetch / update / build / run
+# toolchain touch it.
 #
 # llvm_strict_toolchain — when true (default), `sysforge run toolchain`
 #   refuses to proceed on a dirty or diverged LLVM tree. Bypass per-run
@@ -162,7 +162,8 @@ clone_timeout = 60
 #   bypassable — building against stale profdata silently corrupts the
 #   output.
 # llvm_preflight — when false, suppress the informational pre-flight
-#   table for fetch / update / build / converge. The toolchain stage
+#   table for fetch / update / build (--no-llvm-preflight does the same
+#   per run). The toolchain stage
 #   always runs the pre-flight regardless of this setting (it's a safety
 #   gate, not just informational there).
 llvm_strict_toolchain = true

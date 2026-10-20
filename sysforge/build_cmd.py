@@ -362,7 +362,8 @@ class BuildVerb(Verb):
                         "packages (doubled build + a manual record/use workload). "
                         "Add it to sysforge.toml [pgo] allow to silence this."
                     )
-        if not getattr(args, "no_llvm_preflight", False):
+        from sysforge.primitives.llvm_state import preflight_suppressed
+        if not preflight_suppressed(args):
             _render_llvm_preflight([_pkg_to_name(p) for p in args.pkgbuilds], config)
         if getattr(args, "dry_run", False):
             self.requires_sentinel = False

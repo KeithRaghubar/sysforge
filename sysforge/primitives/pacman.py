@@ -721,14 +721,23 @@ def batch_install_pkgs(
                 if conflicts_out is not None:
                     conflicts_out.update(file_conflict_culprits(result.stderr))
             return False
-    # Record sysforge's own install targets so `sysforge update`'s reconcile can
-    # tell them apart from an external `pacman -S` (which demotes a source-built
-    # entry). Best-effort: a missing marker never fails the install.
+    record_installed_artifacts(pkg_paths)
+    return True
+
+
+def record_installed_artifacts(pkg_paths, sentinel_dir=None) -> None:
+    """Record a successful ``pacman -U`` of sysforge's own *pkg_paths*.
+
+    Every such install calls this (3.5.0-B64), so the reconcile can tell them
+    apart from an external ``pacman -S``, which demotes a source-built entry.
+    Best-effort: a missing marker never fails the install. *sentinel_dir* is
+    for an install into another root (``configure``'s target).
+    """
     from sysforge.primitives.install_reconcile import record_self_install
     record_self_install(
-        [n for n in (read_pkgname_from_file(p) for p in pkg_paths) if n]
+        [n for n in (read_pkgname_from_file(p) for p in pkg_paths) if n],
+        sentinel_dir=sentinel_dir,
     )
-    return True
 
 
 # A pacman hook that failed: libalpm's hook wrapper prints the WARNING when a

@@ -23,7 +23,11 @@ from sysforge.primitives.config import (
     load_sysforge_toml,
     resolve_repo_track,
 )
-from sysforge.primitives.llvm_state import collect_llvm_state, render_preflight
+from sysforge.primitives.llvm_state import (
+    collect_llvm_state,
+    preflight_suppressed,
+    render_preflight,
+)
 from sysforge.primitives.build_prep import pkgbase_from_globals
 from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 from sysforge.primitives.source_sync import (
@@ -64,7 +68,7 @@ def cmd_fetch(args) -> int:
         repo_track=resolve_repo_track(load_sysforge_toml().get("build", {})),
     )
 
-    if not getattr(args, "no_llvm_preflight", False):
+    if not preflight_suppressed(args):
         report = collect_llvm_state(args.pkgs, config)
         if report.states:
             _log.ui(render_preflight(report))

@@ -100,7 +100,7 @@ Then from the host, transfer the config and run the installer over SSH:
 cd tools/vm && python3 -m http.server 8080
 
 # SSH into the live environment
-make vm-ssh-root
+make vm-ssh
 
 # In the live environment
 curl http://10.0.2.2:8080/archinstall-config.json -o /root/archinstall-config.json
@@ -158,7 +158,7 @@ New installs get `console=ttyS0` baked into the bootloader entries by step 3's
 once, in-guest (it's systemd-boot loader-entry state, not settable from the host):
 
 ```bash
-make vm-ssh-root
+make vm-ssh
 # Inside the VM:
 sed -i '/^options /{/console=ttyS0/!s/$/ console=tty0 console=ttyS0,115200/}' /boot/loader/entries/*.conf
 reboot
@@ -292,7 +292,6 @@ make vm-boot-gui   # then: gvncviewer localhost
 # SSH into a running VM
 make vm-ssh         # root (default — works in the ISO and for any username)
 make vm-ssh-builder # builder user (makepkg / sysforge work, post-install only)
-make vm-ssh-root    # root (explicit; same as vm-ssh)
 
 # Open the QEMU monitor (loadvm, info snapshots, quit, etc.)
 # For savevm use 'make vm-savevm NAME=<tag>' — see step 4 for why.

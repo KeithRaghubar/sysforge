@@ -1054,3 +1054,66 @@ def test_copied_bootstrap_toml_is_never_world_readable(tmp_path, monkeypatch):
     assert os.stat(dst).st_mode & 0o777 == 0o600
     assert (src / "bootstrap.toml").stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "mnt" / "etc/sysforge" / "packages.toml").exists()
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-DEV2: configure's skip and failure paths
+# ---------------------------------------------------------------------------
+
+from sysforge.pipeline.stages import configure as _cfg_mod  # noqa: E402
+
+
+def test_parallel_downloads_without_pacman_conf_skips(tmp_path):
+    _set_pacman_parallel_downloads(make_cfg(target=str(tmp_path)))
+    assert not (tmp_path / "etc" / "pacman.conf").exists()
+
+
+class TestRunReflector:
+    def test_missing_reflector_skips_without_running(self, tmp_path):
+        with patch.object(_cfg_mod, "_chroot") as chroot:
+            _cfg_mod._run_reflector(make_cfg(target=str(tmp_path)))
+        chroot.assert_not_called()
+
+    @pytest.mark.parametrize("rc", [0, 1])
+    def test_runs_reflector_with_each_country(self, tmp_path, rc):
+        (tmp_path / "usr/bin").mkdir(parents=True)
+        (tmp_path / "usr/bin/reflector").touch()
+        cfg = make_cfg(target=str(tmp_path), mirror_countries=["DE", "FR"])
+        with patch.object(_cfg_mod, "_chroot", return_value=MagicMock(returncode=rc)) as chroot:
+            _cfg_mod._run_reflector(cfg)  # a failed run only warns
+        cmd = chroot.call_args.args[1]
+        assert cmd[0] == "reflector" and cmd.count("--country") == 2
+        assert cmd[-4:] == ["--country", "DE", "--country", "FR"]
+
+
+class TestDesktopAndShell:
+    def test_no_desktop_selected_writes_nothing(self, tmp_path):
+        with patch.object(_cfg_mod, "select_desktop", return_value=None), \
+             patch.object(_cfg_mod, "write_desktop_group") as write:
+            _cfg_mod._configure_desktop(make_cfg(target=str(tmp_path)))
+        write.assert_not_called()
+
+    def test_selected_desktop_is_written_into_the_target(self, tmp_path):
+        with patch.object(_cfg_mod, "select_desktop", return_value="gnome"), \
+             patch.object(_cfg_mod, "write_desktop_group") as write:
+            _cfg_mod._configure_desktop(make_cfg(target=str(tmp_path)))
+        write.assert_called_once_with(tmp_path / "etc/sysforge/packages.toml", "gnome")
+
+    def test_bash_needs_no_chsh(self, tmp_path):
+        with patch.object(_cfg_mod, "_chroot") as chroot:
+            _cfg_mod._set_default_shell(make_cfg(target=str(tmp_path), shell="bash"))
+        chroot.assert_not_called()
+
+    def test_missing_shell_is_not_set(self, tmp_path):
+        with patch.object(_cfg_mod, "_chroot") as chroot:
+            _cfg_mod._set_default_shell(make_cfg(target=str(tmp_path), shell="zsh"))
+        chroot.assert_not_called()
+
+    def test_shell_is_set_for_root_and_the_user(self, tmp_path):
+        (tmp_path / "usr/bin").mkdir(parents=True)
+        (tmp_path / "usr/bin/zsh").touch()
+        cfg = make_cfg(target=str(tmp_path), shell="zsh", username="ada")
+        with patch.object(_cfg_mod, "_chroot") as chroot:
+            _cfg_mod._set_default_shell(cfg)
+        assert [c.args[1] for c in chroot.call_args_list] == [
+            ["chsh", "-s", "/usr/bin/zsh", "root"], ["chsh", "-s", "/usr/bin/zsh", "ada"]]

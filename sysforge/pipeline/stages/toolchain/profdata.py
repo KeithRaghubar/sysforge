@@ -360,6 +360,7 @@ def pgo_install(
         raise RuntimeError(
             f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for {label}"
         )
+    pacman.record_installed_artifacts(pkgs)
 
 
 def pgo_stage_instrumented(

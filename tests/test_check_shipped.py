@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "tools/check_shipped.py"
@@ -1133,3 +1135,17 @@ def test_completion_widths_reads_brace_form_option_names(tmp_path):
         (repo / "completions/_sysforge").read_text(encoding="utf-8"))
     names = {n for _, _, entries in blocks for _, n, _ in entries}
     assert names == {"-q", "--quiet"}
+
+
+@pytest.mark.parametrize("cfg_dir", ["etc/sysforge", "tests/data/etc/sysforge"])
+def test_no_shipped_profile_lists_a_flag_every_build_strips(cfg_dir):
+    """3.5.0-B112: --syncdeps/--install are stripped from every build since
+    3.4.0-F1, so a shipped profile listing them only misleads the reader."""
+    import tomllib
+
+    from sysforge.primitives.pacman import BATCH_STRIP_FLAGS
+
+    data = tomllib.loads((REPO / cfg_dir / "profiles.toml").read_text())
+    offenders = {name: sorted(set(prof.get("makepkg_flags", [])) & BATCH_STRIP_FLAGS)
+                 for name, prof in data.get("profiles", {}).items()}
+    assert {n: f for n, f in offenders.items() if f} == {}

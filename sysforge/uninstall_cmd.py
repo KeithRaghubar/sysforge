@@ -101,7 +101,7 @@ class UninstallVerb(Verb):
         if tracked:
             forget_packages(pre.ctx["state_dir"], tracked)
             bs = BuildState(pre.ctx["state_dir"])
-            demoted = bs.reconcile_external_installs(install_reconcile.external_install_targets())
+            demoted = install_reconcile.consume_external_installs(bs)
             if demoted:
                 bs.save()
         emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[uninstall] {line}"))

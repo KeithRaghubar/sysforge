@@ -1123,6 +1123,10 @@ def _invoke_with_retry(pkgbuild_path, conf_path, resolved_profile,
                                 + [str(p) for p in built_pkgs], preexec_fn=lift_for_child
                             )
                             if result.returncode == 0:
+                                from sysforge.primitives.pacman import (
+                                    record_installed_artifacts,
+                                )
+                                record_installed_artifacts(built_pkgs)
                                 _makepkg_log.ui("Install succeeded.")
                                 return
                             _makepkg_log.error(

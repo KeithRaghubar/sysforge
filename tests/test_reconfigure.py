@@ -1760,3 +1760,258 @@ def test_set_repo_mode_goes_through_set_toml_key(tmp_path, monkeypatch):
     p = tmp_path / "packages.toml"
     _set_repo_mode(p, "pacman")
     assert calls == [(p, "build", "repo_mode", "pacman")]
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-DEV2: the makepkg / sudo / disk / network / gpg steps
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess  # noqa: E402
+from types import SimpleNamespace as _NS  # noqa: E402
+
+from sysforge.pipeline.stages import reconfigure as _rc  # noqa: E402
+
+
+class _Log:
+    def __init__(self):
+        self.lines = []
+
+    def _rec(self, level):
+        return lambda msg: self.lines.append((level, msg))
+
+    def __getattr__(self, level):
+        return self._rec(level)
+
+    def text(self, level=None):
+        return "\n".join(m for lv, m in self.lines if level in (None, lv))
+
+
+@pytest.fixture
+def rlog(monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(_rc, "_log", log)
+    return log
+
+
+def _proc(rc=0, out="", err=""):
+    return _subprocess.CompletedProcess([], rc, stdout=out, stderr=err)
+
+
+@pytest.mark.parametrize("answers, expected", [
+    ({"user.name": "Ada", "user.email": "a@x"}, "Ada <a@x>"),
+    ({"user.name": "Ada"}, "Ada"),
+    ({}, ""),
+])
+def test_git_packager_default(monkeypatch, answers, expected):
+    def probe(argv, **kw):
+        key = argv[-1]
+        return _proc(0, answers[key] + "\n") if key in answers else _proc(1)
+    monkeypatch.setattr(_rc.run, "probe", probe)
+    assert _rc._git_packager_default() == expected
+
+
+def test_git_packager_default_without_git(monkeypatch):
+    monkeypatch.setattr(_rc.run, "probe", lambda argv, **kw: (_ for _ in ()).throw(OSError()))
+    assert _rc._git_packager_default() == ""
+
+
+def test_offer_makepkg_defaults_writes_packager_and_makeflags(tmp_path, monkeypatch, rlog):
+    monkeypatch.setattr(_rc, "_git_packager_default", lambda: "Ada <a@x>")
+    monkeypatch.setattr(_rc, "_prompt", lambda msg, default="": default)
+    monkeypatch.setattr(_rc, "_prompt_choice", lambda *a, **k: "y")
+    monkeypatch.setattr(_rc.os, "cpu_count", lambda: 16)
+    written = []
+    monkeypatch.setattr(_rc, "set_makepkg_conf_keys", lambda path, keys: written.append(keys))
+    _rc._offer_makepkg_defaults({"PACKAGER": '"Unknown Packager"'}, tmp_path / "makepkg.conf")
+    assert written == [{"PACKAGER": "Ada <a@x>", "MAKEFLAGS": "-j16"}]
+
+
+def test_offer_makepkg_defaults_skips_what_is_already_set(tmp_path, monkeypatch, rlog):
+    monkeypatch.setattr(_rc, "_prompt", lambda *a, **k: pytest.fail("prompted for PACKAGER"))
+    monkeypatch.setattr(_rc, "_prompt_choice", lambda *a, **k: pytest.fail("prompted"))
+    monkeypatch.setattr(_rc, "set_makepkg_conf_keys", lambda *a: pytest.fail("wrote"))
+    _rc._offer_makepkg_defaults({"PACKAGER": "Ada <a@x>", "MAKEFLAGS": "-j8"},
+                                tmp_path / "makepkg.conf")
+
+
+def test_offer_makepkg_defaults_write_failure_warns(tmp_path, monkeypatch, rlog):
+    monkeypatch.setattr(_rc, "_prompt", lambda *a, **k: "")
+    monkeypatch.setattr(_rc, "_prompt_choice", lambda *a, **k: "y")
+
+    def denied(path, keys):
+        raise OSError("permission denied")
+    monkeypatch.setattr(_rc, "set_makepkg_conf_keys", denied)
+    _rc._offer_makepkg_defaults({"PACKAGER": "Ada"}, tmp_path / "makepkg.conf")
+    assert "permission denied" in rlog.text("warn")
+
+
+@pytest.fixture
+def makepkg_conf(monkeypatch):
+    conf = {}
+    monkeypatch.setattr("sysforge.primitives.config.parse_system_makepkg_conf", lambda: conf)
+    return conf
+
+
+def test_step_makepkg_unreadable_conf_warns(makepkg_conf, rlog):
+    assert _rc._step_makepkg({}, None, make_options(), "vi") == "vi"
+    assert "Could not read" in rlog.text("warn")
+
+
+def test_step_makepkg_flags_a_missing_builddir(makepkg_conf, rlog, tmp_path, monkeypatch):
+    makepkg_conf.update({"CFLAGS": "-O2", "BUILDDIR": f'"{tmp_path / "gone"}"'})
+    monkeypatch.setattr(_rc, "_interactive", lambda: False)
+    _rc._step_makepkg({}, None, make_options(), "vi")
+    assert "does not exist" in rlog.text("warn")
+    assert "CFLAGS" in rlog.text("ui")
+
+
+def test_step_makepkg_reports_builddir_free_space(makepkg_conf, rlog, tmp_path, monkeypatch):
+    makepkg_conf["BUILDDIR"] = str(tmp_path)
+    monkeypatch.setattr(_rc.storage_probe, "probe_free_space", lambda p: (42.0, 100.0))
+    monkeypatch.setattr(_rc, "_interactive", lambda: False)
+    _rc._step_makepkg({}, None, make_options(), "vi")
+    assert "BUILDDIR free: 42.0 GB" in rlog.text("ui")
+
+
+@pytest.mark.parametrize("usable, rc, msg", [
+    (False, 0, "is not on PATH"),
+    (True, -1, "Editor not found"),
+    (True, 2, "exited with code 2"),
+])
+def test_step_makepkg_edit_failures_warn(makepkg_conf, rlog, monkeypatch, usable, rc, msg):
+    makepkg_conf["CFLAGS"] = "-O2"
+    monkeypatch.setattr(_rc, "_interactive", lambda: True)
+    monkeypatch.setattr(_rc, "_offer_makepkg_defaults", lambda conf, path: None)
+    monkeypatch.setattr(_rc, "_prompt_choice", lambda *a, **k: "e")
+    monkeypatch.setattr(_rc, "_editor_usable", lambda e: usable)
+    monkeypatch.setattr(_rc, "_run_editor_argv", lambda argv: rc)
+    _rc._step_makepkg({}, None, make_options(), "vi")
+    assert msg in rlog.text("warn")
+
+
+def test_step_sudo_as_root_warns(monkeypatch, rlog):
+    monkeypatch.setattr(_rc.os, "geteuid", lambda: 0)
+    _rc._step_sudo({}, None, make_options(), "vi")
+    assert "Running as root" in rlog.text("warn")
+
+
+@pytest.mark.parametrize("sudo_rc, groups, level, msg", [
+    (0, "", "ui", "passwordless"),
+    (1, "keith wheel", "ui", "requires password"),
+    (1, "keith users", "warn", "is not in wheel or sudo group"),
+])
+def test_step_sudo_classifies_access(monkeypatch, rlog, sudo_rc, groups, level, msg):
+    monkeypatch.setattr(_rc.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("USER", "keith")
+    monkeypatch.delenv("SUDO_USER", raising=False)
+    monkeypatch.setattr(_rc.run, "probe", lambda argv, **kw: (
+        _proc(sudo_rc) if argv[0] == "sudo" else _proc(0, groups)))
+    _rc._step_sudo({}, None, make_options(), "vi")
+    assert msg in rlog.text(level)
+
+
+@pytest.mark.parametrize("space, n_aur, level, msg", [
+    (None, 0, "warn", "Could not check disk space"),
+    ((5.0, 100.0), 0, "warn", "Only 5.0 GB free"),
+    ((25.0, 100.0), 10, "warn", "exceeds available space"),
+    ((500.0, 1000.0), 2, "ui", "Disk space: OK"),
+])
+def test_step_disk(tmp_path, monkeypatch, rlog, space, n_aur, level, msg):
+    pkgs = tmp_path / "packages.toml"
+    pkgs.write_text("".join(f'[[package]]\nname = "p{i}"\nsource = "aur"\n'
+                            for i in range(n_aur)))
+    monkeypatch.setattr(_rc.storage_probe, "probe_free_space", lambda p: space)
+    monkeypatch.setattr(_rc, "resolve_packages_path", lambda cfg: pkgs)
+    _rc._step_disk({"paths": {"pkgbuild_src_dir": str(tmp_path)}}, None, make_options(), "vi")
+    assert msg in rlog.text(level)
+
+
+def test_step_disk_survives_an_unreadable_packages_toml(tmp_path, monkeypatch, rlog):
+    pkgs = tmp_path / "packages.toml"
+    pkgs.write_text("not [toml")
+    monkeypatch.setattr(_rc.storage_probe, "probe_free_space", lambda p: (500.0, 1000.0))
+    monkeypatch.setattr(_rc, "resolve_packages_path", lambda cfg: pkgs)
+    _rc._step_disk({}, None, make_options(), "vi")
+    assert "Disk space: OK" in rlog.text("ui")
+
+
+def test_probe_host_answers_false_when_unreachable(monkeypatch):
+    def refuse(addr, timeout):
+        raise OSError("refused")
+    monkeypatch.setattr(_rc.socket, "create_connection", refuse)
+    assert _rc._probe_host("example.invalid") is False
+
+
+def test_step_network_warns_on_an_unreachable_endpoint(monkeypatch, rlog):
+    monkeypatch.setattr(_rc, "_probe_host", lambda host, port: host != "github.com")
+    _rc._step_network({}, None, make_options(), "vi")
+    assert "GitHub (github.com): unreachable" in rlog.text("warn")
+    assert "AUR (aur.archlinux.org)" in rlog.text("ui")
+
+
+@pytest.fixture
+def gpg(tmp_path, monkeypatch):
+    world = _NS(calls=[], import_rc=0, refresh_rc=0, interactive=False, answer="n")
+    monkeypatch.setattr(_rc.shutil, "which", lambda n: "/usr/bin/gpg")
+    monkeypatch.setattr(_rc, "CONFIG_DIR", tmp_path)
+
+    def probe(argv, **kw):
+        world.calls.append(argv)
+        if "--list-keys" in argv:
+            return _proc(0, "tru:\npub:a\npub:b\n")
+        return _proc(world.import_rc, err="bad key")
+    monkeypatch.setattr(_rc.run, "probe", probe)
+    monkeypatch.setattr(_rc.subprocess, "run", lambda argv, **kw: (
+        world.calls.append(argv), _proc(world.refresh_rc))[1])
+    monkeypatch.setattr(_rc, "_interactive", lambda: world.interactive)
+    monkeypatch.setattr(_rc, "_prompt_choice", lambda *a, **k: world.answer)
+    world.keys = tmp_path / "keys" / "pgp"
+    return world
+
+
+def test_step_gpg_without_gpg_warns(monkeypatch, rlog):
+    monkeypatch.setattr(_rc.shutil, "which", lambda n: None)
+    _rc._step_gpg({}, None, make_options(), "vi")
+    assert "gpg not found" in rlog.text("warn")
+
+
+def test_step_gpg_counts_keys_and_notes_a_missing_store(gpg, rlog):
+    _rc._step_gpg({}, None, make_options(), "vi")
+    assert "2 public key(s)" in rlog.text("ui") and "No global key store" in rlog.text("ui")
+
+
+def test_step_gpg_empty_store_imports_nothing(gpg, rlog):
+    gpg.keys.mkdir(parents=True)
+    _rc._step_gpg({}, None, make_options(), "vi")
+    assert "no .asc files" in rlog.text("ui")
+
+
+@pytest.mark.parametrize("import_rc, level, msg", [
+    (0, "ui", "global key import succeeded"),
+    (2, "warn", "GPG import failed"),
+])
+def test_step_gpg_imports_the_store(gpg, rlog, import_rc, level, msg):
+    gpg.keys.mkdir(parents=True)
+    (gpg.keys / "a.asc").write_text("key")
+    gpg.import_rc = import_rc
+    _rc._step_gpg({}, None, make_options(), "vi")
+    assert msg in rlog.text(level)
+    assert any("--import" in c for c in gpg.calls)
+
+
+def test_step_gpg_dry_run_imports_nothing(gpg, rlog):
+    gpg.keys.mkdir(parents=True)
+    (gpg.keys / "a.asc").write_text("key")
+    _rc._step_gpg({}, None, make_options(dry_run=True), "vi")
+    assert not any("--import" in c for c in gpg.calls)
+
+
+@pytest.mark.parametrize("refresh_rc, level, msg", [
+    (0, "info", "refresh complete"),
+    (1, "warn", "--refresh-keys failed"),
+])
+def test_step_gpg_refresh_on_request(gpg, rlog, refresh_rc, level, msg):
+    gpg.interactive, gpg.answer, gpg.refresh_rc = True, "y", refresh_rc
+    _rc._step_gpg({}, None, make_options(), "vi")
+    assert ["gpg", "--refresh-keys"] in gpg.calls
+    assert msg in rlog.text(level)

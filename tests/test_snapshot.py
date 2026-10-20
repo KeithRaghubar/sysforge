@@ -70,3 +70,163 @@ def test_ensure_non_btrfs_skips(monkeypatch):
     monkeypatch.setattr(snapshot, "create_raw_snapshot", lambda: calls.append("raw"))
     snapshot.ensure_pre_build_snapshot({"build": {"pre_build_snapshot": True}})
     assert calls == []
+
+
+# --- 3.5.0-DEV2: the failure paths (every one a non-fatal warn) ---
+
+import subprocess  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _probe_result(rc=0, out="", err=""):
+    return subprocess.CompletedProcess([], rc, stdout=out, stderr=err)
+
+
+class _Log:
+    """Stands in for the module logger (``Logger`` is slotted, so its methods
+    cannot be patched one at a time)."""
+
+    def __init__(self):
+        self.warned, self.shown = [], []
+
+    def warn(self, msg):
+        self.warned.append(msg)
+
+    def ui(self, msg):
+        self.shown.append(msg)
+
+    def info(self, msg):
+        pass
+
+
+def _record_log(monkeypatch):
+    log = _Log()
+    monkeypatch.setattr(snapshot, "_log", log)
+    return log
+
+
+def test_root_is_btrfs_unreadable_mounts_is_false(tmp_path):
+    assert snapshot.root_is_btrfs(str(tmp_path / "missing")) is False
+
+
+def test_root_is_btrfs_without_a_root_entry_is_false(tmp_path):
+    mounts = tmp_path / "mounts"
+    mounts.write_text("/dev/sda3 /home btrfs rw 0 0\n")
+    assert snapshot.root_is_btrfs(str(mounts)) is False
+
+
+def test_snapper_config_for_root_without_configs_dir(tmp_path):
+    assert snapshot.snapper_config_for_root(str(tmp_path / "none")) is None
+
+
+def test_snapper_config_for_root_skips_an_unreadable_entry(tmp_path):
+    cfgdir = tmp_path / "configs"
+    cfgdir.mkdir()
+    (cfgdir / "a-dir").mkdir()  # read_text raises IsADirectoryError (an OSError)
+    (cfgdir / "root").write_text('SUBVOLUME="/"\n')
+    assert snapshot.snapper_config_for_root(str(cfgdir)) == "root"
+
+
+def test_create_snapper_snapshot_without_snapper(monkeypatch):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: None)
+    assert snapshot.create_snapper_snapshot("root", "d") is None
+
+
+@pytest.mark.parametrize("probe", [
+    lambda argv: _probe_result(1, err="no permission"),
+    lambda argv: (_ for _ in ()).throw(OSError("exec failed")),
+])
+def test_create_snapper_snapshot_failure_warns_and_returns_none(monkeypatch, probe):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/snapper")
+    monkeypatch.setattr(snapshot.run, "probe", probe)
+    warned = _record_log(monkeypatch).warned
+    assert snapshot.create_snapper_snapshot("root", "d") is None
+    assert warned and "snapper snapshot failed" in warned[0]
+
+
+def test_create_snapper_snapshot_returns_the_number(monkeypatch):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/snapper")
+    seen = []
+    monkeypatch.setattr(snapshot.run, "probe",
+                        lambda argv: seen.append(argv) or _probe_result(0, out="42\n"))
+    assert snapshot.create_snapper_snapshot("root", "sysforge pre-build") == "42"
+    assert seen[0] == ["snapper", "-c", "root", "create", "-d", "sysforge pre-build", "-p"]
+
+
+def test_create_raw_snapshot_without_btrfs_warns(monkeypatch):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: None)
+    warned = _record_log(monkeypatch).warned
+    assert snapshot.create_raw_snapshot() is None
+    assert "btrfs command not found" in warned[0]
+
+
+@pytest.mark.parametrize("probe", [
+    lambda argv: _probe_result(1, err="Permission denied"),
+    lambda argv: (_ for _ in ()).throw(OSError("exec failed")),
+])
+def test_create_raw_snapshot_failure_warns_and_returns_none(monkeypatch, probe):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/btrfs")
+    monkeypatch.setattr(snapshot.Path, "mkdir", lambda self, **k: None)
+    monkeypatch.setattr(snapshot.run, "probe", probe)
+    warned = _record_log(monkeypatch).warned
+    assert snapshot.create_raw_snapshot() is None
+    assert "raw btrfs snapshot failed" in warned[0]
+
+
+def test_create_raw_snapshot_takes_a_read_only_snapshot_of_root(monkeypatch):
+    monkeypatch.setattr(snapshot.shutil, "which", lambda n: "/usr/bin/btrfs")
+    monkeypatch.setattr(snapshot.Path, "mkdir", lambda self, **k: None)
+    seen = []
+    monkeypatch.setattr(snapshot.run, "probe", lambda argv: seen.append(argv) or _probe_result())
+    dest = snapshot.create_raw_snapshot()
+    assert dest is not None and dest.parent == Path("/.snapshots")
+    assert dest.name.startswith("sysforge-pre-build-")
+    assert seen[0] == ["btrfs", "subvolume", "snapshot", "-r", "/", str(dest)]
+
+
+def _enabled(monkeypatch, *, snapper_cfg):
+    snapshot.reset_guard()
+    monkeypatch.setattr(snapshot, "root_is_btrfs", lambda *a: True)
+    monkeypatch.setattr(snapshot, "snapper_config_for_root", lambda *a: snapper_cfg)
+    return {"build": {"pre_build_snapshot": True}}, _record_log(monkeypatch).shown
+
+
+def test_ensure_interactive_decline_takes_nothing(monkeypatch):
+    cfg, shown = _enabled(monkeypatch, snapper_cfg=None)
+    calls = []
+    monkeypatch.setattr(snapshot, "create_raw_snapshot", lambda: calls.append("raw"))
+    monkeypatch.setattr("sysforge.primitives.prompt.prompt_choice", lambda *a, **k: "n")
+    snapshot.ensure_pre_build_snapshot(cfg, interactive=True)
+    assert calls == [] and "skipped by user" in shown[-1]
+
+
+def test_ensure_interactive_accept_takes_the_snapshot(monkeypatch):
+    cfg, shown = _enabled(monkeypatch, snapper_cfg=None)
+    monkeypatch.setattr(snapshot, "create_raw_snapshot", lambda: Path("/.snapshots/s"))
+    monkeypatch.setattr("sysforge.primitives.prompt.prompt_choice", lambda *a, **k: "y")
+    snapshot.ensure_pre_build_snapshot(cfg, interactive=True)
+    assert "/.snapshots/s" in shown[-1] and "you own its cleanup" in shown[-1]
+
+
+def test_ensure_prefers_snapper_and_reports_its_number(monkeypatch):
+    cfg, shown = _enabled(monkeypatch, snapper_cfg="root")
+    monkeypatch.setattr(snapshot, "create_raw_snapshot",
+                        lambda: pytest.fail("raw snapshot taken with snapper configured"))
+    monkeypatch.setattr(snapshot, "create_snapper_snapshot", lambda c, d: "7")
+    snapshot.ensure_pre_build_snapshot(cfg)
+    assert shown == ["  Pre-build snapshot created (snapper #7)"]
+
+
+def test_ensure_failed_snapshot_reports_no_success(monkeypatch):
+    cfg, shown = _enabled(monkeypatch, snapper_cfg="root")
+    monkeypatch.setattr(snapshot, "create_snapper_snapshot", lambda c, d: None)
+    snapshot.ensure_pre_build_snapshot(cfg)
+    assert shown == []
+
+
+def test_ensure_dry_run_names_the_plan(monkeypatch):
+    cfg, shown = _enabled(monkeypatch, snapper_cfg="root")
+    snapshot.ensure_pre_build_snapshot(cfg, dry_run=True)
+    assert shown == ["  [dry-run] would take a pre-build snapper snapshot (config 'root')"]

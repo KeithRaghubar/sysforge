@@ -129,3 +129,101 @@ def test_clear_sentinels(tmp_path):
     ir.clear_reconcile_sentinels(d)
     assert not (d / "buildstate").exists()
     assert not (d / "self-install").exists()
+
+
+# --- 3.5.0-B64: ordered window, one shared consumer ---
+
+def test_external_targets_counts_a_pacman_s_after_sysforge_s_own_install(tmp_path):
+    """``build foo``, then ``pacman -S foo``: foo is in both sentinels, and a
+    set difference kept it self-installed and rebuilt over the switch."""
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    (d / "buildstate").write_text(
+        "2026-06-21T20:08:00Z\nfoo\n\n"   # sysforge's own pacman -U
+        "2026-06-21T20:30:00Z\nfoo\n\n")  # the user's pacman -S
+    (d / "self-install").write_text("2026-06-21T20:08:00Z\nfoo\n\n")
+    assert ir.external_install_targets(d) == {"foo"}
+
+
+def test_external_targets_keeps_a_reinstall_by_sysforge_after_pacman_s(tmp_path):
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    (d / "buildstate").write_text(
+        "2026-06-21T20:08:00Z\nfoo\n\n2026-06-21T20:30:00Z\nfoo\n\n")
+    (d / "self-install").write_text("2026-06-21T20:31:00Z\nfoo\n\n")
+    assert ir.external_install_targets(d) == set()
+
+
+def test_external_targets_reads_a_hook_stamp_one_second_ahead_as_sysforge_s(tmp_path):
+    """The record lands after pacman returns, so its stamp is never earlier
+    than the hook's for the same transaction."""
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    (d / "buildstate").write_text("2026-06-21T20:08:00Z\nfoo\n\n")
+    (d / "self-install").write_text("2026-06-21T20:08:01Z\nfoo\n\n")
+    assert ir.external_install_targets(d) == set()
+
+
+class _FakeBuildState:
+    def __init__(self):
+        self.seen = None
+
+    def reconcile_external_installs(self, names):
+        self.seen = set(names)
+        return sorted(names)
+
+
+def _external_window(tmp_path):
+    d = tmp_path / "sentinels"
+    d.mkdir()
+    (d / "buildstate").write_text("2026-06-21T20:30:00Z\nmesa\nfoo-git\n\n")
+    return d
+
+
+def test_consume_external_installs_filters_to_sync_repo_packages_and_clears(tmp_path):
+    from unittest.mock import patch
+
+    d = _external_window(tmp_path)
+    bs = _FakeBuildState()
+    with patch("sysforge.primitives.pacman.get_pacman_sync_version",
+               side_effect=lambda n: "1-1" if n == "mesa" else None):
+        demoted = ir.consume_external_installs(bs, d)
+    assert bs.seen == {"mesa"} and demoted == ["mesa"]
+    assert not (d / "buildstate").exists()
+
+
+def test_consume_external_installs_read_only_keeps_the_window(tmp_path):
+    from unittest.mock import patch
+
+    d = _external_window(tmp_path)
+    with patch("sysforge.primitives.pacman.get_pacman_sync_version", return_value="1-1"):
+        ir.consume_external_installs(_FakeBuildState(), d, read_only=True)
+    assert (d / "buildstate").exists()
+
+
+def test_consume_external_installs_clears_the_window_when_reconcile_raises(tmp_path):
+    from unittest.mock import patch
+
+    import pytest
+
+    d = _external_window(tmp_path)
+    bs = _FakeBuildState()
+    bs.reconcile_external_installs = lambda names: (_ for _ in ()).throw(OSError("x"))
+    with patch("sysforge.primitives.pacman.get_pacman_sync_version", return_value="1-1"), \
+            pytest.raises(OSError):
+        ir.consume_external_installs(bs, d)
+    assert not (d / "buildstate").exists()
+
+
+def test_record_installed_artifacts_records_each_artifact_s_pkgname(tmp_path):
+    from unittest.mock import patch
+
+    from sysforge.primitives import pacman
+
+    d = tmp_path / "sentinels"
+    names = {"a.pkg.tar.zst": "foo", "b.pkg.tar.zst": None}
+    with patch.object(pacman, "read_pkgname_from_file",
+                      side_effect=lambda p: names[Path(p).name]):
+        pacman.record_installed_artifacts(
+            [tmp_path / "a.pkg.tar.zst", tmp_path / "b.pkg.tar.zst"], sentinel_dir=d)
+    assert ir._read_targets(d / "self-install") == {"foo"}

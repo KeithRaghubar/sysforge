@@ -18,7 +18,7 @@
 #
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
-#   profile = "standard"          # (required) fallback profile when no rule matches
+#   profile = "standard"          # fallback profile when no rule matches; "bare" when unset
 #   append_groups = ["sf-build"]  # (optional) groups added to every package
 #
 # ── [profiles.NAME] ──────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@
 #   STRIP    = "llvm-strip"
 #   CFLAGS   = "-march=native -O3 -pipe -fno-plt"
 #   CXXFLAGS = "$CFLAGS"
-#   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
+#   CPPFLAGS = "-DNDEBUG"
 #   LDFLAGS  = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 #             # Use -fuse-ld=lld to select lld. Flag guards in emit_makepkg_conf
 #             # handle incompatibilities automatically: lld-only flags (--icf=*)
@@ -81,15 +81,15 @@
 #   PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
-#   makepkg_flags = ["--noconfirm", "--syncdeps"]
-#                 # common flags: --noconfirm --syncdeps --rmdeps --install
-#                 #               --noprogressbar --log --cleanbuild --force
+#   makepkg_flags = ["--noconfirm"]
+#                 # common flags: --noconfirm --noprogressbar --log --cleanbuild
+#                 #               --force (--syncdeps/--install are always stripped)
 #
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode    = "source_built"      # "source_built" | "pgo_llvm_toolchain" | "kernel"
 #                                     # omit for standard builds; legacy
 #                                     # "patched_pkgbuild" still accepted on read
-#   clean_builddir = true             # wipe src/ before build (default: false)
+#   clean_builddir = true             # makepkg --cleanbuild: remove $srcdir first (default: false)
 #   batch          = true             # abort on failure without prompting (default: false)
 #   consumes       = ["makepkg", "rust", "cmake", "meson", "env"]
 #                  # override auto-inferred consumes set; controls which key
@@ -161,13 +161,13 @@ STRIP    = "llvm-strip"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
-makepkg_flags = ["--noconfirm", "--syncdeps"]
+makepkg_flags = ["--noconfirm"]
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 RUSTC_WRAPPER                = "sccache"
 
 [profiles.clean]
 extends = "standard"
-makepkg_flags = ["--noconfirm", "--syncdeps", "--cleanbuild"]
+makepkg_flags = ["--noconfirm", "--cleanbuild"]
 
 [profiles.optimized]
 extends = "clean"
@@ -197,12 +197,12 @@ CXX = "g++"
 extends = "bare"
 build_mode = "kernel"
 batch = true
-makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
+makepkg_flags = ["--noconfirm", "-f", "-c"]
 
 [profiles.batch]
 extends = "standard"
 batch = true
-makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprogressbar", "--log", "--cleanbuild"]
+makepkg_flags = ["--noconfirm", "--noprogressbar", "--log", "--cleanbuild"]
 clean_builddir = true
 
 [profiles.unattended]

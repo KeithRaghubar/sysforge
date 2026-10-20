@@ -72,7 +72,8 @@ Public API:
     host_only_packages(state_dir) -> set
     llvm_linked(names, graph) -> set
     needs_repo_rust(pkgbuild_path) -> bool
-    fetch_repo_packages(names) -> list[Path]          (raises SandboxUnavailable)
+    needs_multilib(pkgbuild_path) -> bool
+    fetch_repo_packages(names, why) -> list[Path]     (raises SandboxUnavailable)
     COPY_NAME; SandboxProvenance(cc_name, copy_identity)
     set_provenance(p) / take_provenance() / clear_provenance()
     copy_compiler(policy, cc_name) -> Path
@@ -1106,6 +1107,15 @@ def host_only_packages(state_dir=None) -> set:
 _LIBLLVM_PKG = "llvm-libs"
 _REPO_RUST_DEPS = frozenset({"rust", "cargo"})
 
+# Arch builds its multilib PKGBUILDs in a chroot carrying this package
+# (lib32-gcc-libs, lib32-glibc, …), so those PKGBUILDs never declare it; in a
+# plain base-devel container a 32-bit link finds only the 64-bit libgcc_s
+# (3.5.0-B109).
+MULTILIB_DEVEL = "multilib-devel"
+_RUST_WHY = "a rust build needs the repo LLVM that Arch's rust is linked against"
+_MULTILIB_WHY = ("a lib32 build needs Arch's multilib toolchain; enable "
+                 "[multilib] in /etc/pacman.conf, which the sandbox chroot mirrors")
+
 
 def llvm_linked(names, graph: dict, providers: dict | None = None) -> set:
     """The members of *names* that are host-built libLLVM or depend on it.
@@ -1156,6 +1166,26 @@ def needs_repo_rust(pkgbuild_path) -> bool:
     return bool({_strip_version(d) for d in deps} & _REPO_RUST_DEPS)
 
 
+def needs_multilib(pkgbuild_path) -> bool:
+    """True when *pkgbuild_path* builds a ``lib32-*`` package.
+
+    The pkgbase or any pkgname, read statically; an unreadable PKGBUILD answers
+    False, as :func:`needs_repo_rust` does, since the dep resolver refuses on it
+    first.
+    """
+    from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
+
+    try:
+        globals_ = parse_pkgbuild(Path(pkgbuild_path)).get("globals", {})
+    except Exception:  # noqa: BLE001 — unreadable PKGBUILD: not ours to refuse
+        return False
+    names = globals_.get("pkgname") or []
+    if isinstance(names, str):
+        names = [names]
+    names = [*names, globals_.get("pkgbase") or ""]
+    return any(str(n).startswith("lib32-") for n in names)
+
+
 def _pacman_cache_dirs() -> list[Path]:
     res = run.probe(["pacman-conf", "CacheDir"])
     dirs = [Path(line.strip()) for line in res.stdout.splitlines() if line.strip()] \
@@ -1163,14 +1193,15 @@ def _pacman_cache_dirs() -> list[Path]:
     return dirs or [Path("/var/cache/pacman/pkg")]
 
 
-def fetch_repo_packages(names) -> list[Path]:
+def fetch_repo_packages(names, why: str = _RUST_WHY) -> list[Path]:
     """Download the stock-repo builds of *names* into the pacman cache; return them.
 
     Repo-qualified (``extra/llvm-libs``), so the answer is the repo build even
     when the host runs a same-named one of its own; ``-Sw`` downloads only, so
     the host installs nothing. Sorted by name. Refuses rather than returning a
     partial set: a container holding half the repo LLVM and half the host's is
-    the mismatch this exists to avoid.
+    the mismatch this exists to avoid. *why* finishes the refusal: what the
+    build needed the packages for.
     """
     names = sorted(set(names))
     if not names:
@@ -1185,8 +1216,7 @@ def fetch_repo_packages(names) -> list[Path]:
     if missing:
         raise SandboxUnavailable(
             f"refusing to sandbox: no stock repo carries {', '.join(missing)} "
-            f"({(res.stderr or '').strip() or 'not found'}), and a rust build "
-            f"needs the repo LLVM that Arch's rust is linked against"
+            f"({(res.stderr or '').strip() or 'not found'}), and {why}"
         )
     try:
         run_privileged(["pacman", "-Sw", "--noconfirm",
@@ -1194,8 +1224,7 @@ def fetch_repo_packages(names) -> list[Path]:
     except Exception as exc:
         raise SandboxUnavailable(
             f"refusing to sandbox: could not download the repo build of "
-            f"{', '.join(names)} ({exc}), which a rust build needs in place "
-            f"of the host's LLVM"
+            f"{', '.join(names)} ({exc}): {why}"
         ) from exc
     out: list[Path] = []
     cache_dirs = _pacman_cache_dirs()
@@ -1421,6 +1450,9 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
     Only files that still exist: an artifact cleaned out between builds is a
     stale registry entry, not a reason to fail the build.
 
+    A ``lib32-*`` target also gets :data:`MULTILIB_DEVEL`, the toolchain Arch's
+    own multilib chroot carries and multilib PKGBUILDs therefore never declare.
+
     A target that pulls Arch's ``rust`` gets the *repo* LLVM instead of the
     host's (:func:`needs_repo_rust`): every host-built libLLVM-linked artifact
     leaves the list and the repo builds of the toolchain's LLVM packages are
@@ -1481,6 +1513,14 @@ def install_args(pkgbuild_path=None, *, search_dir=None,
             + (f" instead of this host's {', '.join(dropped)}" if dropped else "")
         )
         out.extend(fetch_repo_packages(swap))
+    if pkgbuild_path is not None and needs_multilib(pkgbuild_path):
+        # Into the working copy only, like the rust swap: the root stays the
+        # plain base-devel every other build gets. ``-U`` of the metapackage
+        # pulls its lib32 deps from [multilib], which ensure_chroot_multilib
+        # has enabled, and check_install_set dry-runs that transaction.
+        _log.info(f"sandbox: {Path(pkgbuild_path).parent.name} is a lib32 build; "
+                  f"adding {MULTILIB_DEVEL} to the container")
+        out.extend(fetch_repo_packages({MULTILIB_DEVEL}, why=_MULTILIB_WHY))
     return _last_per_pkgname(out)
 
 

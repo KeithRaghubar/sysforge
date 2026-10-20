@@ -658,6 +658,24 @@ def test_invoke_retry_sudo_reauth_and_install(tmp_path):
     assert str(pkg_file) in order[1]
 
 
+def test_invoke_retry_sudo_reauth_install_records_a_self_install(tmp_path):
+    """3.5.0-B64: the sudo-timeout recovery install is sysforge's own -U too."""
+    pkgbuild = _make_pkgbuild(tmp_path)
+    pkg_file = tmp_path / "foo-1.0-1-x86_64.pkg.tar.zst"
+    pkg_file.touch()
+    with (
+        patch("sysforge.primitives.makepkg_invoke.invoke_makepkg",
+              side_effect=subprocess.CalledProcessError(1, "makepkg")),
+        patch("sysforge.primitives.makepkg_invoke.ensure_credentials"),
+        patch("sysforge.primitives.makepkg_invoke.subprocess.run",
+              return_value=MagicMock(returncode=0)),
+        patch("sysforge.primitives.pacman.record_installed_artifacts") as rec,
+        patch("builtins.input", return_value="s"),
+    ):
+        _invoke_with_retry(pkgbuild, "/tmp/fake.conf", {}, extra_flags=["--install"])
+    rec.assert_called_once_with([pkg_file])
+
+
 def test_invoke_retry_sudo_install_fails_then_abort(tmp_path):
     """pacman -U fails → inner loop prompts; 'abort' raises RuntimeError."""
     pkgbuild = _make_pkgbuild(tmp_path)

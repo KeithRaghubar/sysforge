@@ -27,7 +27,6 @@ Public API (re-exported where the symbol now lives elsewhere):
     run(pkgbuild_path, options=None)
 """
 import os
-import shutil
 import subprocess
 import sys
 from contextlib import contextmanager, suppress
@@ -73,6 +72,7 @@ from sysforge.primitives.makepkg_conf import emit_makepkg_conf, serialize_effect
 from sysforge.primitives import build_sandbox
 from sysforge.primitives.makepkg_env import build_root, resolve_env_vars
 from sysforge.primitives.makepkg_flags import (
+    CLEANBUILD_FLAGS,
     INSTALL_FLAGS,
     expand_makepkg_flags,  # noqa: F401  (re-export)
     resolve_effective_linker,
@@ -508,6 +508,7 @@ def install_built_packages(pkgbuild_dir, *, noconfirm: bool = True) -> list:
         if tail:
             msg += "; last output:\n  " + "\n  ".join(tail)
         raise RuntimeError(msg)
+    _pacman.record_installed_artifacts(pkgs)
     # B9: the build-time manifest has served its purpose — drop it so a later
     # unrelated build in the same dir doesn't read a stale artifact list.
     manifest = Path(pkgbuild_dir) / _BUILT_MANIFEST_NAME
@@ -1743,15 +1744,17 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         active_consumes = resolve_consumes(resolved_profile, pkgmeta, inference_map)
         groups = resolve_groups(pkgmeta, matched_rules, config.get("defaults", {}))
 
+        # clean_builddir asks makepkg for --cleanbuild, which removes $srcdir
+        # wherever makepkg puts it: under $BUILDDIR/<pkgbase> after the
+        # -sysforge rename, or inside the sandbox container. It used to delete
+        # every entry of the PKGBUILD dir but the PKGBUILD itself: the
+        # checkout's .git, .SRCINFO and the local files source=() names
+        # (3.5.0-B118).
+        effective_extra_flags = options.extra_flags
         if resolved_profile.get("clean_builddir", False):
-            build_dir = pkgbuild_path.parent
-            for entry in build_dir.iterdir():
-                if entry.name != "PKGBUILD" and not entry.name.endswith(".PKGBUILD"):
-                    if entry.is_dir():
-                        shutil.rmtree(entry)
-                    else:
-                        entry.unlink()
-            _build_log.info(f"Cleaned build dir: {build_dir}")
+            effective_extra_flags = list(options.extra_flags or [])
+            if not set(effective_extra_flags) & CLEANBUILD_FLAGS:
+                effective_extra_flags.append("--cleanbuild")
 
         import_pgp_keys(pkgmeta, pkgbuild_path)
         run_dep_analysis(pkgmeta, config)
@@ -1783,7 +1786,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                     else None
                 ),
                 pkgmeta=pkgmeta,
-                extra_flags=options.extra_flags,
+                extra_flags=effective_extra_flags,
                 interactive=options.interactive,
                 cc_override=options.cc_override,
                 cxx_override=options.cxx_override,

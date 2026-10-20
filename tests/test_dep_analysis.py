@@ -410,3 +410,94 @@ def test_run_dep_analysis_includes_makedep_probes():
     )
     assert len(findings) == 1
     assert findings[0][0] == "libguestfs"
+
+
+# --- 3.5.0-DEV2: probe failure paths and the guestfs diagnosis ---
+
+import subprocess as _subprocess  # noqa: E402
+
+
+# Captured at import, before conftest swaps the module attribute for a stub.
+_REAL_FS_SONAMES = _da._filesystem_soname_set
+
+
+def test_seam_run_raises_file_not_found_for_a_missing_binary(monkeypatch):
+    monkeypatch.setattr(_da.run, "capture", lambda cmd, **kw: None)
+    with pytest.raises(FileNotFoundError, match="guestfish"):
+        _da._seam_run(["guestfish"])
+
+
+def test_default_ldconfig_without_ldconfig_is_empty(monkeypatch):
+    monkeypatch.setattr(_da.run, "capture", lambda cmd, **kw: None)
+    assert _da._default_ldconfig_fn() == ""
+
+
+def test_lib32_searches_only_usr_lib32():
+    _da._resolve_lib_dirs.cache_clear()
+    assert _da._resolve_lib_dirs(True) == (Path("/usr/lib32"),)
+
+
+def test_filesystem_sonames_list_so_files_and_skip_an_unreadable_dir(tmp_path, monkeypatch):
+    good = tmp_path / "lib"
+    good.mkdir()
+    (good / "libfoo.so.2").touch()
+    (good / "README").touch()
+    monkeypatch.setattr(_da, "_resolve_lib_dirs", lambda lib32: (tmp_path / "gone", good))
+    _REAL_FS_SONAMES.cache_clear()
+    try:
+        assert _REAL_FS_SONAMES(False) == frozenset({"libfoo.so.2"})
+    finally:
+        _REAL_FS_SONAMES.cache_clear()
+
+
+def test_diagnose_guestfs_names_each_missing_module():
+    cfg = {"CONFIG_VIRTIO": "y", "CONFIG_VIRTIO_PCI": "y", "CONFIG_SCSI_VIRTIO": "n",
+           "CONFIG_EXT4_FS": "y", "CONFIG_VIRTIO_NET": "m"}
+    issues = _da._diagnose_guestfs("waiting for root UUID ...", cfg)
+    assert len(issues) == 1 and "CONFIG_SCSI_VIRTIO=m" in issues[0]
+    assert "CONFIG_VIRTIO_PCI" not in issues[0]
+
+
+def test_diagnose_guestfs_without_a_kernel_config_says_it_cannot_verify():
+    issues = _da._diagnose_guestfs("waiting for root UUID", None)
+    assert "cannot verify" in issues[0]
+
+
+def test_diagnose_guestfs_with_every_module_on_suspects_a_stale_cache():
+    cfg = {k: "y" for k in _da._GUESTFS_REQUIRED_MODULES}
+    assert "stale appliance cache" in _da._diagnose_guestfs("waiting root UUID", cfg)[0]
+
+
+def test_diagnose_guestfs_other_output_has_no_diagnosis():
+    assert _da._diagnose_guestfs("kernel panic", {}) == []
+
+
+def test_parse_kernel_config_without_a_config_is_none(monkeypatch):
+    monkeypatch.setattr(_da, "read_running_kconfig_text", lambda: None)
+    assert _da._parse_kernel_config() is None
+
+
+def test_probe_libguestfs_timeout_is_diagnosed_from_its_output(monkeypatch):
+    def timeout(cmd, **kw):
+        raise _subprocess.TimeoutExpired(cmd, 1, output=b"waiting for root UUID",
+                                         stderr="tail")
+    monkeypatch.setattr(_da, "_parse_kernel_config", lambda: None)
+    failures = []
+    monkeypatch.setattr(_da, "handle_failure", lambda kind, msg, cfg: failures.append(kind))
+    out = _da._probe_libguestfs("pkg", {}, timeout)
+    assert out[0][0] == "libguestfs" and "cannot verify" in out[0][1]
+    assert failures == ["makedep_probe_failed"]
+
+
+def test_probe_libguestfs_undiagnosed_failure_gives_the_debug_command(monkeypatch):
+    monkeypatch.setattr(_da, "_parse_kernel_config", lambda: {})
+    monkeypatch.setattr(_da, "handle_failure", lambda *a: None)
+    res = _subprocess.CompletedProcess([], 1, stdout="boom", stderr="")
+    out = _da._probe_libguestfs("pkg", {}, lambda cmd, **kw: res)
+    assert "LIBGUESTFS_DEBUG=1" in out[0][1]
+
+
+def test_probe_libguestfs_without_guestfish_is_skipped(monkeypatch):
+    def missing(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+    assert _da._probe_libguestfs("pkg", {}, missing) == []

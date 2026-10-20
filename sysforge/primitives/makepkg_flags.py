@@ -34,6 +34,10 @@ INSTALL_FLAGS = frozenset({"-i", "--install"})
 # satisfy ``llvm=<ver>`` from a stage prefix that isn't published anywhere.
 SYNC_FLAGS = frozenset({"--syncdeps", "-s"})
 
+# makepkg's "remove $srcdir before building" flag. What a profile's
+# ``clean_builddir = true`` asks for (3.5.0-B118).
+CLEANBUILD_FLAGS = frozenset({"-C", "--cleanbuild"})
+
 
 def expand_makepkg_flags(flags_str) -> list:
     """

@@ -364,6 +364,18 @@ def test_pgo_install_calls_pacman_u(tmp_path):
 
     assert any("pacman" in c and "-U" in c for c in pacman_calls)
 
+def test_pgo_install_records_a_self_install(tmp_path):
+    """3.5.0-B64: every pacman -U of sysforge's own artifacts is recorded."""
+    pkg_dir = tmp_path / "llvm"
+    pkg_dir.mkdir()
+    fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
+    fake_pkg.touch()
+    ok = MagicMock(returncode=0, stdout=str(fake_pkg), stderr="")
+    with patch("subprocess.run", return_value=ok), \
+            patch("sysforge.primitives.pacman.record_installed_artifacts") as rec:
+        pgo_install("test", {"llvm": pkg_dir / "PKGBUILD"}, dry_run=False)
+    rec.assert_called_once_with([fake_pkg])
+
 def test_pgo_install_dry_run_skips_pacman(tmp_path):
     pkgbuild_map = {"llvm": tmp_path / "llvm" / "PKGBUILD"}
     with patch("subprocess.run") as mock_run:

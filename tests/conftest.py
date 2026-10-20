@@ -143,6 +143,20 @@ class _PacmanTransactions:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_reconcile_sentinels(monkeypatch, tmp_path_factory):
+    """
+    Point the self-install sentinel at a scratch dir for every test.
+
+    Every ``pacman -U`` of sysforge's own artifacts records into
+    ``/var/lib/sysforge/sentinels`` (3.5.0-B64), and a test that drives one
+    with a real-looking artifact would otherwise append to the host's.
+    """
+    from sysforge.primitives import install_reconcile
+    monkeypatch.setattr(install_reconcile, "SENTINEL_DIR",
+                        tmp_path_factory.mktemp("sentinels"))
+
+
+@pytest.fixture(autouse=True)
 def pacman_tx(monkeypatch):
     """
     Never run a real pacman transaction on a pty (3.3.0-B21).

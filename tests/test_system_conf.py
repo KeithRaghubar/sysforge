@@ -680,8 +680,8 @@ def test_emit_variant_kernel_build_skips_lld_default(sys_conf_path):
 
 def test_emit_variant_lld_missing_skips_injection(sys_conf_path, monkeypatch):
     """Defensive: if lld is not on PATH, the soft default does not inject."""
-    import sysforge.build.makepkg_wrapper as mw
-    monkeypatch.setattr(mw.shutil, "which",
+    import sysforge.primitives.makepkg_conf as mc
+    monkeypatch.setattr(mc.shutil, "which",
                         lambda name: None if name == "lld" else "/usr/bin/" + name)
     profile = {}
     with emit_makepkg_conf(

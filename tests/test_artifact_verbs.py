@@ -510,3 +510,198 @@ def test_review_all_continues_past_a_failed_adopt(tmp_path, monkeypatch, capsys)
     assert "good.sh" in names
     assert "bad.sh" not in names
     assert "boom" in "".join(capsys.readouterr())
+
+
+# --- 3.5.0-DEV2: each verb's failure and reporting paths ---
+
+class _FakeRegistry:
+    """Stands in for ArtifactRegistry: ``entries`` is what ``load()`` returns,
+    or an ArtifactError to raise."""
+    entries: object = {}
+
+    def __init__(self, state_dir=None):
+        self.state_dir = state_dir
+
+    def load(self):
+        if isinstance(self.entries, Exception):
+            raise self.entries
+        return dict(self.entries)
+
+    def content_path(self, name):
+        return Path("/managed") / name
+
+
+def _art(name="a.sh", cls=artifacts.CLASS_SCRIPT):
+    return artifacts.Artifact(name=name, dest=Path("/live") / name, cls=cls,
+                              auth_hash="h", deployed_hash="h", deployed_at=None)
+
+
+@pytest.fixture
+def fake_registry(monkeypatch):
+    _FakeRegistry.entries = {}
+    monkeypatch.setattr(artifacts, "ArtifactRegistry", _FakeRegistry)
+    return _FakeRegistry
+
+
+def _out(capsys):
+    return "".join(capsys.readouterr())
+
+
+def test_list_prints_a_row_per_artifact_and_the_unmanaged_candidates(
+        fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactListVerb
+
+    monkeypatch.setattr(artifacts, "unified_rows", lambda reg: [
+        {"status": "ok", "owner": "user", "cls": "script", "name": "a.sh"}])
+    monkeypatch.setattr(artifacts, "script_root_on_path", lambda: True)
+    monkeypatch.setattr(artifacts, "iter_offerable", lambda reg: [
+        artifacts.Candidate(Path("/x/b.sh"), "script", artifacts.OWNER_UNKNOWN)])
+    res = ArtifactListVerb().execute(argparse.Namespace(unmanaged=True, state_dir=None), None)
+    out = _out(capsys)
+    assert res.exit_code == 0
+    assert "STATUS" in out and "a.sh" in out
+    assert "Unmanaged candidates (1)" in out and "[ownership unknown]" in out
+
+
+def test_list_with_nothing_managed_or_unmanaged(fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactListVerb
+
+    monkeypatch.setattr(artifacts, "unified_rows", lambda reg: [])
+    monkeypatch.setattr(artifacts, "script_root_on_path", lambda: None)
+    monkeypatch.setattr(artifacts, "iter_offerable", lambda reg: [])
+    ArtifactListVerb().execute(argparse.Namespace(unmanaged=True, state_dir=None), None)
+    out = _out(capsys)
+    assert "No managed artifacts." in out and "No unmanaged candidates found." in out
+
+
+def test_review_corrupt_ignore_list_exits_1(fake_registry, monkeypatch):
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    monkeypatch.setattr(artifacts, "IgnoreList", lambda state_dir=None: None)
+    monkeypatch.setattr(artifacts, "iter_offerable",
+                        lambda reg, ign: (_ for _ in ()).throw(artifacts.ArtifactError("bad")))
+    assert ArtifactReviewVerb().execute(
+        argparse.Namespace(state_dir=None), None).exit_code == 1
+
+
+def test_review_with_no_candidates(fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    monkeypatch.setattr(artifacts, "IgnoreList", lambda state_dir=None: None)
+    monkeypatch.setattr(artifacts, "iter_offerable", lambda reg, ign: [])
+    assert ArtifactReviewVerb().execute(argparse.Namespace(state_dir=None), None).exit_code == 0
+    assert "No candidates to review." in _out(capsys)
+
+
+def test_review_interactive_adopt_failure_moves_on(fake_registry, monkeypatch, capsys):
+    from sysforge.primitives import prompt
+    from sysforge.verbs.artifact import ArtifactReviewVerb
+
+    cands = [artifacts.Candidate(Path("/x/a.sh"), "script", "user"),
+             artifacts.Candidate(Path("/x/b.sh"), "script", "user")]
+    monkeypatch.setattr(artifacts, "IgnoreList", lambda state_dir=None: None)
+    monkeypatch.setattr(artifacts, "iter_offerable", lambda reg, ign: cands)
+    monkeypatch.setattr(prompt, "is_interactive", lambda: True)
+    monkeypatch.setattr(prompt, "prompt_choice", lambda *a, **k: "a")
+
+    def adopt(reg, path, cls):
+        if path.name == "a.sh":
+            raise artifacts.ArtifactError("a.sh: unreadable")
+        return _art("b.sh")
+    monkeypatch.setattr(artifacts, "adopt", adopt)
+    assert ArtifactReviewVerb().execute(
+        argparse.Namespace(state_dir=None, all=False), None).exit_code == 0
+    out = _out(capsys)
+    assert "a.sh: unreadable" in out and "Adopted b.sh" in out
+
+
+def test_adopt_verb_reports_success_and_failure(fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactAdoptVerb
+
+    monkeypatch.setattr(artifacts, "adopt", lambda reg, path, cls: _art())
+    ok = ArtifactAdoptVerb().execute(argparse.Namespace(path="/live/a.sh", cls=None), None)
+    assert ok.exit_code == 0 and "Adopted a.sh (script) from /live/a.sh" in _out(capsys)
+
+    monkeypatch.setattr(artifacts, "adopt", lambda reg, path, cls: (_ for _ in ()).throw(
+        artifacts.ArtifactError("no such file")))
+    bad = ArtifactAdoptVerb().execute(argparse.Namespace(path="/nope", cls=None), None)
+    assert bad.exit_code == 1 and "no such file" in _out(capsys)
+
+
+@pytest.mark.parametrize("entries, editor_bin, rc, msg", [
+    (artifacts.ArtifactError("registry corrupt"), "vi", 0, "registry corrupt"),
+    ({}, "vi", 0, "is not managed"),
+    ({"a.sh": _art()}, None, 0, "no editor available"),
+    ({"a.sh": _art()}, "vi", 3, "editor exited with status 3; not re-hashing"),
+])
+def test_edit_verb_refusals(fake_registry, monkeypatch, capsys, entries, editor_bin, rc, msg):
+    from sysforge.primitives import editor
+    from sysforge.verbs.artifact import ArtifactEditVerb
+
+    fake_registry.entries = entries
+    monkeypatch.setattr(editor, "resolve_editor", lambda: (editor_bin, "env"))
+    monkeypatch.setattr(editor, "run_tty_argv", lambda argv: rc)
+    monkeypatch.setattr(artifacts, "rehash",
+                        lambda reg, name: pytest.fail("re-hashed after a refusal"))
+    assert ArtifactEditVerb().execute(argparse.Namespace(name="a.sh"), None).exit_code == 1
+    assert msg in _out(capsys)
+
+
+def test_edit_verb_rehashes_and_points_at_deploy(fake_registry, monkeypatch, capsys):
+    from sysforge.primitives import editor
+    from sysforge.verbs.artifact import ArtifactEditVerb
+
+    fake_registry.entries = {"a.sh": _art()}
+    seen = []
+    monkeypatch.setattr(editor, "resolve_editor", lambda: ("vi", "env"))
+    monkeypatch.setattr(editor, "run_tty_argv", lambda argv: seen.append(argv) or 0)
+    monkeypatch.setattr(artifacts, "rehash", lambda reg, name: _art())
+    monkeypatch.setattr(artifacts, "status_of", lambda reg, art: artifacts.STATUS_PENDING)
+    assert ArtifactEditVerb().execute(argparse.Namespace(name="a.sh"), None).exit_code == 0
+    assert seen == [["vi", "/managed/a.sh"]]
+    assert "sysforge artifact deploy a.sh" in _out(capsys)
+
+
+def test_deploy_corrupt_registry_exits_1(fake_registry):
+    from sysforge.verbs.artifact import ArtifactDeployVerb
+
+    fake_registry.entries = artifacts.ArtifactError("corrupt")
+    args = argparse.Namespace(name="a.sh", all=False, force=False, adopt_live=False)
+    assert ArtifactDeployVerb().execute(args, None).exit_code == 1
+
+
+def test_deploy_all_reports_unchanged_and_written(fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactDeployVerb
+
+    fake_registry.entries = {"a.sh": _art("a.sh"), "b.sh": _art("b.sh")}
+    monkeypatch.setattr(artifacts, "status_of", lambda reg, art: (
+        artifacts.STATUS_OK if art.name == "a.sh" else artifacts.STATUS_PENDING))
+    monkeypatch.setattr(artifacts, "deploy", lambda reg, name, **kw: None)
+    monkeypatch.setattr(artifacts, "script_root_on_path", lambda: True)
+    args = argparse.Namespace(name=None, all=True, force=False, adopt_live=False)
+    assert ArtifactDeployVerb().execute(args, None).exit_code == 0
+    out = _out(capsys)
+    assert "a.sh: ok (unchanged)" in out and "Deployed b.sh" in out
+
+
+def test_remove_verb_refusals_and_hook_warning(fake_registry, monkeypatch, capsys):
+    from sysforge.verbs.artifact import ArtifactRemoveVerb
+
+    args = argparse.Namespace(name="x.hook", purge=True, force=False)
+    fake_registry.entries = artifacts.ArtifactError("corrupt")
+    assert ArtifactRemoveVerb().execute(args, None).exit_code == 1
+
+    fake_registry.entries = {}
+    assert ArtifactRemoveVerb().execute(args, None).exit_code == 1
+    assert "x.hook is not managed" in _out(capsys)
+
+    fake_registry.entries = {"x.hook": _art("x.hook", artifacts.CLASS_HOOK)}
+    monkeypatch.setattr(artifacts, "remove", lambda reg, name, **kw: (_ for _ in ()).throw(
+        artifacts.ArtifactError("live file changed")))
+    assert ArtifactRemoveVerb().execute(args, None).exit_code == 1
+    out = _out(capsys)
+    assert "is a pacman hook" in out and "live file changed" in out
+
+    monkeypatch.setattr(artifacts, "remove", lambda reg, name, **kw: None)
+    assert ArtifactRemoveVerb().execute(args, None).exit_code == 0
+    assert "Removed x.hook (purged)" in _out(capsys)

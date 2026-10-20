@@ -349,3 +349,76 @@ def test_state_profiles_rehashes_a_changed_corpus(tmp_path, monkeypatch, capsys)
     (corpus / "a.c").write_text("int a(void) { return 2 + 2; }\n")
     state_cmd.cmd_state_profiles(_args())
     assert _gain(capsys.readouterr().out, "instr-pgo") == "1.20x (stale)"
+
+
+# --- 3.5.0-DEV2: loose store files, purge-target refusals, the profdata gate ---
+
+def test_list_profile_stores_counts_loose_files_beside_the_targets(tmp_path):
+    root = tmp_path / "root"
+    _file(root / "autofdo" / "stray.afdo", 7)
+    rows = {(r.method, r.target): r for r in mp.list_profile_stores(_tcfg(tmp_path))}
+    assert rows[("autofdo", None)].size_bytes == 7
+
+
+@pytest.mark.parametrize("spec", ["pgo/..", "pgo/.", "pgo/a/b", "pgo/ "])
+def test_resolve_purge_target_refuses_a_path_outside_the_store(tmp_path, spec):
+    with pytest.raises(ValueError, match="invalid profile store target"):
+        mp.resolve_purge_target(_tcfg(tmp_path), spec)
+
+
+def test_resolve_purge_target_maps_method_and_target(tmp_path):
+    tc = _tcfg(tmp_path)
+    assert mp.resolve_purge_target(tc, "pgo/htop") == mp.resolve_method_store(
+        tc, "pgo", target="htop")
+
+
+def test_try_load_toml_answers_none_on_bad_input(tmp_path):
+    bad = tmp_path / "x.toml"
+    bad.write_text("not [toml")
+    assert mp._try_load_toml(bad) is None
+    assert mp._try_load_toml(tmp_path / "missing.toml") is None
+
+
+@pytest.fixture
+def pgo_world(tmp_path, monkeypatch):
+    """A toolchain.toml naming a pgo_store, and an LLVM 22 PKGBUILD."""
+    store = tmp_path / "store"
+    store.mkdir()
+    tc = tmp_path / "toolchain.toml"
+    tc.write_text(f'pgo_store = "{store}"\n')
+    monkeypatch.setattr(mp, "TOOLCHAIN_PATH", tc)
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text("pkgname=llvm\npkgver=22.1.0\n")
+    return SimpleNamespace(store=store, toolchain=tc, pkgbuild=pb)
+
+
+def test_pgo_state_ready_when_profdata_matches(pgo_world):
+    (pgo_world.store / "clang.profdata").write_bytes(b"p")
+    (pgo_world.store / "clang.profdata.version").write_text("22\n")
+    assert mp._resolve_pgo_state(pgo_world.pkgbuild) == (
+        "ready", str(pgo_world.store / "clang.profdata"))
+
+
+def test_pgo_state_mismatch_names_both_majors(pgo_world):
+    (pgo_world.store / "clang.profdata").write_bytes(b"p")
+    (pgo_world.store / "clang.profdata.version").write_text("21")
+    assert mp._resolve_pgo_state(pgo_world.pkgbuild) == (
+        "mismatch", "profdata is from LLVM 21, building LLVM 22")
+
+
+@pytest.mark.parametrize("setup, reason", [
+    (lambda w: w.toolchain.unlink(), "toolchain.toml not found"),
+    (lambda w: w.toolchain.write_text("not [toml"), "cannot read toolchain.toml"),
+    (lambda w: None, "no profdata at"),
+    (lambda w: (w.store / "clang.profdata").write_bytes(b"p"), "version sidecar missing"),
+    (lambda w: ((w.store / "clang.profdata").write_bytes(b"p"),
+                (w.store / "clang.profdata.version").write_text("22"),
+                w.pkgbuild.write_text("pkgname=llvm\n")), "cannot determine pkgver"),
+    (lambda w: ((w.store / "clang.profdata").write_bytes(b"p"),
+                (w.store / "clang.profdata.version").write_text("22"),
+                w.pkgbuild.unlink()), "cannot read PKGBUILD"),
+])
+def test_pgo_state_absent_says_why(pgo_world, setup, reason):
+    setup(pgo_world)
+    state, why = mp._resolve_pgo_state(pgo_world.pkgbuild)
+    assert state == "absent" and reason in why

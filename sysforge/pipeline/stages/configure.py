@@ -466,6 +466,11 @@ def _install_sysforge(cfg: BootstrapConfig) -> None:
                 f"(exit {result.returncode}). Built packages remain at "
                 f"{build_chroot} for inspection."
             )
+        # Into the target's sentinels, not the host's: that is the system
+        # whose reconcile will read them (3.5.0-B64).
+        from sysforge.primitives import pacman
+        pacman.record_installed_artifacts(
+            built_pkgs, sentinel_dir=Path(cfg.target) / "var/lib/sysforge/sentinels")
     finally:
         sudoers_drop.unlink(missing_ok=True)
 

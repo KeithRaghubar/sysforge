@@ -5,7 +5,7 @@
         roadmap-table check-roadmap-table roadmap-view \
         sync-config \
         preflight release-major release-minor release-patch release-resume \
-        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-root vm-ssh-builder vm-stop vm-clean \
+        vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
         container-build container-smoke container-smoke-cachyos container-shell container-clean \
         ci-local
@@ -92,6 +92,9 @@ help: ## List every target, grouped (this list)
 	@echo "Variables: ARGS= (test/audit)  SORT=/REVERSE=/WIDTH= (roadmap-view)"
 	@echo "           TYPE= (next-id)  BUMP= (check-bump)  VERSION= (check-standards-at)"
 	@echo "           PACMAN_FLAGS= (dev-deps*, e.g. --noconfirm for unattended runs)"
+	@echo "           TESTS= (coverage-ratchet-update)  NAME= (vm-loadvm/vm-savevm)  GUI= (vm-loadvm)"
+	@echo "           DISTRO= (container-*)  VM_USER= (vm-ssh, default root)"
+	@echo "           RUN_COVERAGE=0 RUN_VM_SMOKE=0 RUN_DISTRO_SMOKE=0 (preflight skips)"
 
 # ---------------------------------------------------------------------------
 # Python dev
@@ -135,12 +138,14 @@ dev-deps-list: ## Show each tier's deps and whether they are present
 	@echo "Python tooling (pyright, reuse, pip-audit, pytest-cov, tomlkit) is"
 	@echo "resolved per-invocation by 'uv run --with' and needs no install."
 
-# The core tier plus the editable install of sysforge itself.
-dev: dev-deps-core ## Core tier + editable install of sysforge
+# The core tier plus the editable install of sysforge itself, into the project
+# venv (created first if missing: `uv pip install` refuses without one).
+dev: dev-deps-core venv ## Core tier + editable install of sysforge
 	uv pip install -e .
 
-venv: ## Create the project virtualenv
-	uv venv
+# Kept if present, so `dev` can depend on it; `make distclean` removes it.
+venv: ## Create the project virtualenv (if missing)
+	@[ -d .venv ] || uv venv
 
 build: ## Build the wheel/sdist into dist/
 	uv build
@@ -236,13 +241,16 @@ coverage-ratchet-update: coverage ## Re-stamp the coverage floor (TESTS=<n>)
 # Type-check gate. Layers pyright into an ephemeral uv overlay (same
 # `uv run --no-sync` pattern as coverage/check-shipped) so nothing is added to
 # the system or the venv. Pyright config lives in pyproject [tool.pyright].
+# The package only, on purpose, though lint-py covers tests/ and tools/ too:
+# the tests hand duck-typed fakes (SimpleNamespace runs, MagicMock paths) to
+# typed signatures, and tools/ are standalone scripts outside the import graph.
 typecheck: ## Type-check the package with pyright
 	uv run --no-sync --with pyright==$(PYRIGHT_VERSION) pyright sysforge/
 
-# Pre-release shipped-file validator. Runs the seven check groups in
-# tools/check_shipped.py (configs, pkgbuild, pkgbuild_parity, hooks,
-# completions, versions, manpage). tools/release.sh invokes this from
-# preflight; also runnable standalone.
+# Pre-release shipped-file validator. Runs every check group in
+# tools/check_shipped.py's GROUPS (configs, config_comments, pkgbuild,
+# pkgbuild_parity, provisioning, hooks, completions, …); `--list` prints them.
+# tools/release.sh invokes this from preflight; also runnable standalone.
 ##@ Docs, roadmap & gates
 check-shipped: ## Gate: shipped-file parity (etc/, PKGBUILD, hooks…)
 	uv run --no-sync python tools/check_shipped.py
@@ -297,7 +305,7 @@ check-standards: ## Gate: standards compliance (docs/design/21-standards.md)
 	uv run --no-sync --with reuse==$(REUSE_VERSION) python tools/check_standards.py
 
 # Allocate the next free ROADMAP ID for the CURRENT release cycle. TYPE is one
-# of F/B/Q/STD; the version prefix is derived from pyproject.toml (counter
+# of B/DEV/DOC/F/Q/STD; the version prefix is derived from pyproject.toml (counter
 # resets on a minor/major bump), so a new item can't be misattributed to a
 # stale cycle. Always run this before adding a ROADMAP entry.
 #   make next-id TYPE=F   ->  e.g. 2.4.0-F1
@@ -376,7 +384,8 @@ man: ## Render the man page from the scdoc source
 	scdoc < man/sysforge.1.scd > man/sysforge.1
 
 clean: ## Remove build artefacts
-	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .coverage coverage.json
+	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .ruff_cache/ .coverage coverage.json
+	rm -f man/sysforge.1.scd
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 distclean: clean ## clean, plus the venv and caches
@@ -435,9 +444,6 @@ VM_USER ?= root
 
 vm-ssh: ## SSH into the VM (VM_USER=, defaults to root)
 	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) $(VM_USER)@localhost
-
-vm-ssh-root: ## SSH into the VM as root
-	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) root@localhost
 
 vm-ssh-builder: ## SSH into the VM as the builder user
 	ssh-keygen -R '[localhost]:10022' -f $(VM_DIR)/known_hosts 2>/dev/null; $(VM_SSH) builder@localhost

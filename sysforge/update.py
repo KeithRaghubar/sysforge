@@ -85,6 +85,7 @@ from sysforge.primitives.flag_drift import (
 )
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
+    preflight_suppressed,
 )
 from sysforge.primitives.llvm_state import (
     render_preflight as render_llvm_preflight,
@@ -462,52 +463,27 @@ def _consume_artifact_sentinel(silent: bool = False) -> None:
 def _reconcile_external_demotions(bs: BuildState, *, read_only: bool = False) -> None:
     """Demote source-built packages reinstalled externally via ``pacman -S``.
 
-    Reads the buildstate + self-install sentinels (the diff is the set of
-    externally-installed packages), demotes any matching ``source_built``
-    build_state entry to a ``pacman`` marker, saves if anything changed, then
-    unlinks both sentinels. Best-effort — a sentinel/IO error never aborts the
+    Through ``install_reconcile.consume_external_installs`` (the sync-repo
+    filter, the demotion and the sentinel clear), then saves if anything
+    changed. Best-effort — a sentinel/IO error never aborts the
     update. Stage-owned packages are exempt (handled in BuildState).
 
     ``read_only`` (``--dry-run`` and the reports) demotes in memory only, so
     the preview matches what a real run would do, and neither saves nor
     unlinks the sentinels the real run still needs (3.5.0-B97).
     """
-    from sysforge.primitives.install_reconcile import (
-        clear_reconcile_sentinels,
-        external_install_targets,
-    )
+    from sysforge.primitives.install_reconcile import consume_external_installs
     try:
-        external = external_install_targets(_SENTINEL_DIR)
-        if external:
-            # B1: only a package that actually exists in a sync repo could have
-            # been "reinstalled from the repo" via ``pacman -S``. A source-built
-            # ``-git`` package has no repo counterpart, so its presence in the
-            # buildstate sentinel is sysforge's own ``pacman -U`` (recorded by
-            # the root-run libalpm hook) — not an external install. Without this
-            # filter a missing/incomplete self-install sentinel (e.g. the state
-            # dir was created root:root by the hook's mkdir before the group
-            # provisioning took effect) makes ``external`` the entire buildstate
-            # and mass-demotes every source-built ``-git`` package.
-            # ``get_pacman_sync_version`` reads local sync DBs (offline-safe),
-            # returning None for anything not in a repo.
-            from sysforge.primitives.pacman import get_pacman_sync_version
-            external = {
-                n for n in external if get_pacman_sync_version(n) is not None
-            }
-        if external:
-            demoted = bs.reconcile_external_installs(external)
-            if demoted and not read_only:
-                bs.save()
-                _log.info(
-                    "demoted "
-                    f"{len(demoted)} source-built package(s) reinstalled from "
-                    f"the repo: {', '.join(sorted(demoted))}"
-                )
+        demoted = consume_external_installs(bs, _SENTINEL_DIR, read_only=read_only)
+        if demoted and not read_only:
+            bs.save()
+            _log.info(
+                "demoted "
+                f"{len(demoted)} source-built package(s) reinstalled from "
+                f"the repo: {', '.join(sorted(demoted))}"
+            )
     except Exception as e:
         _log.info(f"external-install reconcile skipped (non-fatal): {e}")
-    finally:
-        if not read_only:
-            clear_reconcile_sentinels(_SENTINEL_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -1021,7 +997,7 @@ def _phase_assemble(run: UpdateRun) -> int | None:
 
 def _phase_llvm_preflight(run: UpdateRun) -> int | None:
     """Phase 1.5: LLVM safety pre-flight (informational)."""
-    if not getattr(run.args, "no_llvm_preflight", False):
+    if not preflight_suppressed(run.args):
         llvm_report = collect_llvm_state(list(run.pkgbase_map.keys()), run.config)
         if llvm_report.states:
             _log.ui(render_llvm_preflight(llvm_report))

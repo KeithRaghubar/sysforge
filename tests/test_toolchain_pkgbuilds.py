@@ -324,3 +324,112 @@ def test_install_names_adds_installed_members_only(tmp_path, monkeypatch):
                         lambda: {"llvm": "1", "llvm-libs": "1", "lldb": "1", "zlib": "1"})
     names = install_names({"llvm": d / "PKGBUILD", "clang": d / "PKGBUILD"})
     assert names == {"llvm", "llvm-libs", "clang", "lldb"}
+
+
+# --- 3.5.0-DEV2: the LLVM pre-flight gate and resolution edge paths ---
+
+from types import SimpleNamespace  # noqa: E402
+
+from sysforge.pipeline.stages.toolchain import pkgbuilds as pb  # noqa: E402
+
+
+# --- run_llvm_preflight: the strict gate ---
+
+@pytest.fixture
+def preflight(monkeypatch):
+    """A report with one state; strict on; blockers set per test."""
+    world = SimpleNamespace(states=["llvm"], mismatch=False, strict=True,
+                            blockers=["llvm: dirty tree"], interactive=False, answer="n")
+    monkeypatch.setattr(pb, "collect_llvm_state", lambda names, cfg, probe_fetch: SimpleNamespace(
+        states=world.states, has_pgo_profdata_mismatch=world.mismatch))
+    monkeypatch.setattr(pb, "render_preflight", lambda report, verbose: "table")
+    monkeypatch.setattr(pb, "_llvm_strict_enabled", lambda: world.strict)
+    monkeypatch.setattr(pb, "evaluate_strict", lambda report, allow_dirty: world.blockers)
+    monkeypatch.setattr(pb.prompt, "is_interactive", lambda: world.interactive)
+    monkeypatch.setattr(pb.prompt, "prompt_choice", lambda *a, **k: world.answer)
+    return world
+
+
+def _run(**opts):
+    pb.run_llvm_preflight(["llvm"], {}, SimpleNamespace(**opts))
+
+
+def test_preflight_with_no_llvm_in_scope_does_nothing(preflight):
+    preflight.states = []
+    preflight.blockers = ["would refuse"]
+    _run()
+
+
+def test_preflight_strict_off_lets_dirty_trees_through(preflight):
+    preflight.strict = False
+    _run()
+
+
+def test_preflight_strict_off_still_refuses_a_profdata_mismatch(preflight):
+    preflight.strict = False
+    preflight.mismatch = True
+    with pytest.raises(RuntimeError, match="pre-flight refused"):
+        _run()
+
+
+def test_preflight_non_interactive_refuses_with_the_bypass_hint(preflight):
+    with pytest.raises(RuntimeError, match="--allow-dirty-llvm") as exc:
+        _run()
+    assert "llvm: dirty tree" in str(exc.value)
+
+
+def test_preflight_interactive_decline_aborts(preflight):
+    preflight.interactive = True
+    with pytest.raises(RuntimeError, match="aborted by user"):
+        _run()
+
+
+def test_preflight_interactive_accept_proceeds(preflight):
+    preflight.interactive = True
+    preflight.answer = "yes"
+    _run()
+
+
+def test_preflight_without_blockers_proceeds(preflight):
+    preflight.blockers = []
+    _run()
+
+
+# --- resolve_all_pkgbuilds: the clone pass ---
+
+def _pkgbuild(d, body):
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "PKGBUILD"
+    p.write_text(body)
+    return p
+
+
+@pytest.fixture
+def no_sync_pkgbase(monkeypatch):
+    monkeypatch.setattr(pb.pacman, "get_sync_pkgbase", lambda name: None)
+
+
+
+
+
+
+def test_split_scan_survives_an_unparsable_pkgbuild(tmp_path, monkeypatch, no_sync_pkgbase):
+    src = tmp_path / "src"
+    llvm = _pkgbuild(src / "llvm", "pkgname=llvm\n")
+    monkeypatch.setattr(pb.pkgbuild_meta, "parse_pkgbuild", lambda p: 1 / 0)
+    monkeypatch.setattr("sysforge.primitives.pkgbuild_meta.parse_pkgbuild", lambda p: 1 / 0)
+    other = _pkgbuild(tmp_path / "clone" / "clang", "pkgname=clang\n")
+    monkeypatch.setattr(pb.prim_config, "find_pkgbuild", lambda name, cfg: other)
+    got = pb.resolve_all_pkgbuilds(["llvm", "clang"],
+                                   {"paths": {"pkgbuild_src_dir": str(src)}}, update=False)
+    assert got == {"llvm": llvm.resolve(), "clang": other}
+
+
+def test_resolve_syncs_the_trees_when_asked(tmp_path, monkeypatch, no_sync_pkgbase):
+    src = tmp_path / "src"
+    _pkgbuild(src / "llvm", "pkgname=llvm\n")
+    seen = []
+    monkeypatch.setattr(pb, "sync_pkgbuild_dirs", lambda resolved, **kw: seen.append(kw))
+    pb.resolve_all_pkgbuilds(["llvm"], {"paths": {"pkgbuild_src_dir": str(src)}},
+                             update=False, cleansrc=True)
+    assert seen == [{"cleansrc": True, "cleansrc_force": False}]

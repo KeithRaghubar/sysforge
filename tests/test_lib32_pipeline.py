@@ -426,7 +426,7 @@ def test_step5_lib32_scrubs_icf_from_profile_ldflags(is_lib32, expect_icf):
         # Force lld to be "found" so effective_linker == lld and the
         # linker-gated lld-flag strip is skipped — isolating the lib32 scrub.
         with patch(
-            "sysforge.build.makepkg_wrapper.shutil.which",
+            "sysforge.primitives.makepkg_conf.shutil.which",
             side_effect=lambda n: f"/usr/bin/{n}" if n == "lld" else None,
         ), emit_makepkg_conf(
             resolved, frozenset({"makepkg", "env"}),

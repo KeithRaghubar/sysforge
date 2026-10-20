@@ -2,7 +2,7 @@
 # profiles.toml — compiler flag profiles, package matching rules, and
 # flag-resolution reference data (conflict groups + consumes inference)
 #
-# Everything down to line 220 ("END OF HEADER") is documentation;
+# Everything down to line 225 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # SysForge resolves a profile for each package by evaluating [[rules]] in
@@ -41,7 +41,7 @@
 #
 # ── [defaults] ───────────────────────────────────────────────────────────────
 #
-#   profile — (required) fallback when no rule matches
+#   profile — fallback when no rule matches; "bare" when unset
 #   profile = "standard"
 #
 #   append_groups — (optional) groups added to every package
@@ -80,7 +80,9 @@
 #   # STRIP  = "llvm-strip"
 #   CFLAGS   = "-march=native -O3 -pipe -fno-plt"
 #   CXXFLAGS = "$CFLAGS"
-#   CPPFLAGS = "-D_FORTIFY_SOURCE=2"
+#   CPPFLAGS = "-DNDEBUG"
+#     Arch's makepkg.conf sets _FORTIFY_SOURCE in CFLAGS (-Wp,…=3, kept by
+#     [preserved_system_tokens]); defining it here again defines it twice.
 #
 #   LDFLAGS — use -fuse-ld=lld to select lld. Flag guards in
 #     emit_makepkg_conf handle incompatibilities automatically: lld-only
@@ -129,9 +131,11 @@
 #   PKG_CONFIG_PATH              = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
-#   makepkg_flags — common: --noconfirm --syncdeps --rmdeps --install
-#     --noprogressbar --log --cleanbuild --force
-#   makepkg_flags = ["--noconfirm", "--syncdeps"]
+#   makepkg_flags — common: --noconfirm --noprogressbar --log --cleanbuild
+#     --force. sysforge installs dependencies and the built packages itself,
+#     so it strips --syncdeps/-s and --install/-i from every build, and
+#     --rmdeps has nothing to remove.
+#   makepkg_flags = ["--noconfirm"]
 #
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode — "source_built" | "pgo_llvm_toolchain" | "kernel"; omit for
@@ -141,7 +145,8 @@
 #     build time, not set here.
 #   build_mode    = "source_built"
 #
-#   clean_builddir — wipe src/ before build (default: false)
+#   clean_builddir — pass makepkg --cleanbuild, which removes $srcdir before
+#     the build; the checkout itself is never touched (default: false)
 #   clean_builddir = true
 #
 #   preserve_system_tokens — re-add the [preserved_system_tokens] flags from
@@ -248,13 +253,13 @@ CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 RUSTC_WRAPPER                = "sccache"
-makepkg_flags = ["--noconfirm", "--syncdeps"]
+makepkg_flags = ["--noconfirm"]
 
 [profiles.optimized]
 extends = "standard"
 CFLAGS  = "-march=native -O3 -pipe -fno-plt"
 LDFLAGS = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
-makepkg_flags = ["--noconfirm", "--syncdeps", "--cleanbuild"]
+makepkg_flags = ["--noconfirm", "--cleanbuild"]
 
 # hardened: standard's -O2 build plus compiler hardening beyond what
 #   [preserved_system_tokens] restores from /etc/makepkg.conf, from the OpenSSF
@@ -284,17 +289,20 @@ build_mode = "pgo_llvm_toolchain"
 extends = "optimized"
 build_mode = "source_built"   # extracts the PKGBUILD's embedded profile (was "patched_pkgbuild")
 
+# kernel: for a kernel built with `sysforge build`. `sysforge run kernel` never
+#   selects a profile for it: the stage stamps owner_stage = "kernel", which
+#   turns on the same kernel handling, so it needs neither this nor a rule.
 [profiles.kernel]
 extends = "bare"
 build_mode = "kernel"
 batch = true
-makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
+makepkg_flags = ["--noconfirm", "-f", "-c"]
 
 [profiles.batch]
 extends = "standard"
 batch = true
 clean_builddir = true
-makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprogressbar", "--log", "--cleanbuild"]
+makepkg_flags = ["--noconfirm", "--noprogressbar", "--log", "--cleanbuild"]
 
 # =============================================================================
 # Rules — add your own below
@@ -319,7 +327,8 @@ makepkg_flags = ["--noconfirm", "--syncdeps", "--rmdeps", "--install", "--noprog
 #priority = 20
 #append_groups = ["pgo"]
 
-# Example: custom kernel (pkgnames must match kernel.toml's pkgname default)
+# Example: a kernel built with `sysforge build` (`sysforge run kernel` needs
+# no rule; see [profiles.kernel])
 #[[rules]]
 #pkgnames = ["linux-sysforge"]
 #profile  = "kernel"

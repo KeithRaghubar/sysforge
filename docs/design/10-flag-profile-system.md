@@ -18,7 +18,7 @@ extends = "bare"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
-makepkg_flags = ["--noconfirm", "--syncdeps"]
+makepkg_flags = ["--noconfirm"]
 
 [profiles.optimized]
 extends = "standard"
@@ -37,7 +37,7 @@ build_mode = "source_built"   # legacy "patched_pkgbuild" read-accepted, warns, 
 extends = "bare"
 build_mode = "kernel"
 batch = true
-makepkg_flags = ["--noconfirm", "--syncdeps", "-f", "-c"]
+makepkg_flags = ["--noconfirm", "-f", "-c"]
 ```
 
 ### `build_mode` vocabulary

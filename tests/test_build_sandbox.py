@@ -2209,6 +2209,61 @@ def test_install_args_keeps_host_llvm_for_c_targets(tmp_path):
     assert set(out) == {arts["llvm-libs"], arts["clang"]}
 
 
+# --- 3.5.0-B109: lib32 targets get the multilib toolchain ---
+
+def _multilib_install_args(tmp_path, pkgbuild_text):
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text(pkgbuild_text)
+    devel = tmp_path / "cache" / "multilib-devel-1-1-x86_64.pkg.tar.zst"
+    with patch.object(bs, "_source_built_packages", return_value=set()), \
+            patch("sysforge.primitives.pacman.collect_builddeps",
+                  return_value=["gcc"]), \
+            patch.object(bs, "fetch_repo_packages",
+                         return_value=[devel]) as fetch:
+        out = bs.install_args(pb, search_dir=tmp_path)
+    return out, fetch, devel
+
+
+def test_install_args_adds_multilib_devel_for_a_lib32_target(tmp_path):
+    """The 2026-10-19 lib32-libvdpau link: ``libgcc_s.so.1 is incompatible with
+    elf32-i386``. Arch's multilib chroot carries multilib-devel, so multilib
+    PKGBUILDs never declare it, and the base-devel container had none."""
+    out, fetch, devel = _multilib_install_args(
+        tmp_path, "pkgname=lib32-libvdpau\npkgver=1.5\npkgrel=1\n")
+    fetch.assert_called_once()
+    assert fetch.call_args.args[0] == {bs.MULTILIB_DEVEL}
+    assert "multilib" in fetch.call_args.kwargs["why"]
+    assert out == [devel]
+
+
+def test_install_args_adds_multilib_devel_for_a_lib32_split_pkgbase(tmp_path):
+    out, fetch, devel = _multilib_install_args(
+        tmp_path, "pkgbase=lib32-libdbusmenu\n"
+                  "pkgname=(lib32-libdbusmenu-glib lib32-libdbusmenu-gtk3)\n"
+                  "pkgver=1\npkgrel=1\n")
+    assert out == [devel]
+
+
+def test_install_args_leaves_multilib_devel_out_of_a_64_bit_target(tmp_path):
+    out, fetch, _ = _multilib_install_args(
+        tmp_path, "pkgname=libvdpau\npkgver=1.5\npkgrel=1\n")
+    assert not fetch.called
+    assert out == []
+
+
+def test_needs_multilib_answers_false_on_an_unreadable_pkgbuild(tmp_path):
+    assert bs.needs_multilib(tmp_path / "missing" / "PKGBUILD") is False
+
+
+def test_fetch_repo_packages_refusal_names_the_multilib_remedy(tmp_path):
+    """No host repo carries multilib-devel when [multilib] is off on the host,
+    which is also what leaves it off in the chroot: say how to turn it on."""
+    with patch("sysforge.primitives.build_sandbox.run.probe",
+               return_value=MagicMock(returncode=1, stdout="", stderr="target not found")):
+        with pytest.raises(bs.SandboxUnavailable, match=r"enable \[multilib\]"):
+            bs.fetch_repo_packages({bs.MULTILIB_DEVEL}, why=bs._MULTILIB_WHY)
+
+
 def test_fetch_repo_packages_downloads_repo_qualified(tmp_path):
     """Repo-qualified, because a bare name would be just as happy with a
     same-named host build; download-only, so the host installs nothing."""

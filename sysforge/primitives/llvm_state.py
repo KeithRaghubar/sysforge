@@ -708,6 +708,24 @@ def is_actionable_state(s: LlvmPackageState) -> bool:
     return bool(s.build_mode) and s.build_mode != "pacman"
 
 
+def preflight_suppressed(args, sysforge_cfg: dict | None = None) -> bool:
+    """True when ``fetch``/``update``/``build`` should skip the pre-flight table.
+
+    ``--no-llvm-preflight`` wins; otherwise ``[safety] llvm_preflight = false``
+    (3.5.0-B110: the key was documented and shipped but never read). The key
+    reads the other way round from the flag, so the resolver is handed its
+    negation. *sysforge_cfg* defaults to the loaded ``sysforge.toml``.
+    """
+    from sysforge.primitives.config import load_sysforge_toml, resolve_flag_default
+
+    if sysforge_cfg is None:
+        sysforge_cfg = load_sysforge_toml()
+    safety = sysforge_cfg.get("safety", {}) or {}
+    return resolve_flag_default(
+        args, "no_llvm_preflight",
+        {"off": not safety.get("llvm_preflight", True)}, "off")
+
+
 def render_preflight(report: LlvmPreflightReport, *, verbose: bool = False) -> str:
     """Render a human-readable pre-flight table.
 

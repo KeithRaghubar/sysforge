@@ -116,11 +116,19 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV2` — the modules where the review found bugs are now covered.** The ten least-covered modules were the ones the 2026-10-18 review found bugs in. Their failure and resume paths now have tests: the packages stage's resume prompt and retry, each `artifact` verb's refusals, `packages list`, the pre-build snapshot's failure paths, the toolchain's PGO profdata gate and LLVM pre-flight, and `run reconfigure`'s makepkg, sudo, disk, network and GPG steps. Branch coverage rose from 89.6% to 91.2% overall (`snapshot.py` 53% → 99%, `packages_cmd.py` 60% → 93%, `reconfigure.py` 64% → 82%, `verbs/artifact.py` 70% → 95%, `dep_analysis.py` 71% → 82%, `pipeline/stages/packages.py` 72% → 93%, `configure.py` 78% → 90%, `makepkg_pgo.py` 77% → 99%, `toolchain/pkgbuilds.py` 80% → 88%, `makepkg_wrapper.py` 82% → 84%). The ratchet floor is re-stamped at 91.2% and now tracks these modules, with the two rows that pointed at the pre-package `kernel.py`/`toolchain.py` paths corrected. Writing the tests surfaced three bugs, filed for a later fix. Every pacman `-U` in the suite now records into a scratch sentinel dir, never the host's (`tests/conftest.py`).
+
+---
+
 - **`3.5.0-DEV3` — the toolchain rollback tests no longer depend on what the test machine has installed.** Since `3.5.0-B76` the toolchain stage's install snapshot keeps only the packages installed now, and it asks the system's pacman database. Three tests in `tests/test_stage_toolchain.py` (`test_gate3_failure_auto_restores_and_clears_sentinel`, `test_gate3_consumer_symbol_brick_triggers_rollback`, `test_install_and_snapshot_cover_installed_pkgbase_members`) therefore passed on a workstation with the LLVM packages installed and failed in the CI container, which lacks them; a fourth (`test_gate3_failure_restore_fails_keeps_sentinel`) passed there for the wrong reason, an empty snapshot rather than a failed restore. Each now states which packages count as installed.
 
 ---
 
 - **`3.5.0-DEV4` — a test that reads the host's pacman database fails, naming where.** A test whose code ran a real `pacman` query passed or failed by what the machine had installed, which is how `3.5.0-DEV3`'s tests were green on a workstation and red in CI. `tests/conftest.py` now fails any such test with `HostStateError: test reached the host pacman DB via primitives/pacman.py:971 get_installed_version (pacman -Q llvm)`, and fails it at teardown even when the code under test catches the error, as the best-effort probes do. A stub at any level above the subprocess, or a pacman pointed at a fixture `--dbpath`, passes; `@pytest.mark.host_pacman` opts out the tests of the query functions themselves. The fence caught 67 tests in 8 files; each now stubs its answer as the clean CI container gives it. Eleven of them failed only in the container: the kernel stage's bootloader probe answers from `/boot` on a workstation and asks pacman only when `/boot` has no bootloader files, so the fence, like the original bug, needs a CI run to see everything. One had a stub that never applied: `test_dep_versions_excludes_build_set_members` patched a re-export the code doesn't call. And `tests/test_doctor.py`'s package-walk tests ran the opt-in rust and integrity axes, which probe the host's Rust toolchain and package files, because nothing stubbed them. `tests/test_host_fence.py` covers the fence.
+
+---
+
+- **`3.5.0-DEV9` — the Makefile's comments and help match what it does.** `make help` now lists every variable a target reads (`TESTS=`, `NAME=`, `GUI=`, `DISTRO=`, `VM_USER=` and `preflight`'s `RUN_*` skips). `make dev` creates the project venv first, so it works on a fresh checkout; before, `uv pip install` used whatever venv `python` on `PATH` belonged to. `make clean` also removes `.ruff_cache/` and the generated `man/sysforge.1.scd`. `vm-ssh-root` is gone, since `vm-ssh` already connects as root. The `check-shipped` and `next-id` comments name the current check groups and ID types, and the `typecheck` comment says why it covers `sysforge/` only.
 
 ---
 
@@ -442,6 +450,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B64` — every package sysforge installs is recognised as its own.** `update` stops rebuilding a package you reinstalled from the repo with `pacman -S`, and tells that apart from sysforge's own installs by a record sysforge writes at each install. Only one install path wrote it, so a package installed by the kernel stage, the toolchain stage's PGO passes, the retry after a sudo timeout, or the bootstrap's install of sysforge itself looked like your `pacman -S`, and `update` could switch it back to the repo build. The check also only asked whether sysforge had installed a package at all since the last `update`, so `sysforge build foo` followed by `pacman -S foo` kept `foo` on the source build and rebuilt it over your choice; it now compares which came last. `revert-to-stock` and `uninstall` ran the same check without `update`'s rule that only a package some repo carries can have been reinstalled from one, and now share `update`'s check.
+
+---
+
 - **`3.5.0-B65` — `--cleansrc` no longer deletes a checkout it cannot download again.** `update --offline --cleansrc` deleted every clean checkout and then skipped the packages because it was offline, and under a source freeze `--cleansrc` deleted a checkout before the freeze refused to clone it again, leaving the package unbuildable either way. `--cleansrc` now keeps the checkout when it is offline or the freeze would refuse the new clone, and says why.
 
 ---
@@ -578,6 +590,18 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B109` — `lib32-*` packages build in the sandbox.** Arch builds its 32-bit packages in a build root that already holds the 32-bit compiler libraries (`multilib-devel`), so their PKGBUILDs never list them. sysforge's build sandbox installed only what the PKGBUILD lists, so a 32-bit build failed at link time with `libgcc_s.so.1 is incompatible with elf32-i386`. sysforge now adds `multilib-devel` to the sandbox for a `lib32-*` package, and only for one. If `[multilib]` is not enabled in `/etc/pacman.conf`, the build is refused with a message that says so.
+
+---
+
+- **`3.5.0-B110` — `[safety] llvm_preflight = false` turns the LLVM pre-flight table off.** The setting was documented in `sysforge.toml` but nothing read it, so only `--no-llvm-preflight` hid the table. `fetch`, `update` and `build` now honour it; the flag still works and wins over the setting.
+
+---
+
+- **`3.5.0-B112` — the shipped config files no longer give stale advice.** The shipped profiles listed `--syncdeps`, `--install` and `--rmdeps` among their `makepkg_flags`, and `profiles.toml` recommended them, although sysforge installs dependencies and built packages itself and removes the first two from every build; they are gone, and the comment says why. `profiles.toml` called `[defaults] profile` required, but the `bare` profile is used when it is unset. Its example `CPPFLAGS = "-D_FORTIFY_SOURCE=2"` would define a macro Arch already sets in `CFLAGS`, and is replaced. `kernel.toml` and `profiles.toml` said `sysforge run kernel` needs a `profile = "kernel"` rule; it needs neither the rule nor the profile, which stays as an example for a kernel built with `sysforge build`. `sysforge.toml` and `bootstrap.toml` named a `converge` command that no longer exists and said `sysforge reconfigure` for what is now `sysforge run reconfigure`. A file installed with an earlier version keeps its text until you adopt the new defaults (`sysforge config merge`).
+
+---
+
 - **`3.5.0-B114` — a failed toolchain install that cannot be rolled back says why.** When the new toolchain failed its post-install check and none of its packages had been installed before the run, as on a first toolchain install, there was no earlier version to put back, but the error said only that the automatic rollback "could not complete". sysforge now says that nothing was installed before, so there is no prior version to reinstall. The rest is unchanged: the recovery command is still printed, and the next run still offers it.
 
 ---
@@ -587,6 +611,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B116` — the Python package no longer lists a dependency that can never apply.** sysforge's package metadata named `tomli`, a TOML reader for Python versions before 3.11, although sysforge requires Python 3.11 or newer, whose standard library reads TOML itself. The entry could never be installed and only made sysforge look as if it had a dependency. sysforge now declares none; `pyalpm` remains an optional extra.
+
+---
+
+- **`3.5.0-B118` — `clean_builddir = true` no longer deletes the package's checkout.** The profile setting, which the shipped `batch` profile sets, is documented as clearing `src/` before a build. It deleted everything in the PKGBUILD's directory except the PKGBUILD: the checkout's `.git`, its `.SRCINFO`, and any patches or other files the PKGBUILD lists as sources, so the build failed and an AUR checkout could no longer sync. It now asks makepkg to clean its own source directory (`--cleanbuild`), wherever makepkg puts it, and leaves the checkout alone. A checkout already damaged this way needs a fresh clone (`sysforge fetch <package> --cleansrc`).
 
 ## Security
 

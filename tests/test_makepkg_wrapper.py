@@ -56,6 +56,29 @@ def test_install_built_packages_escalates_via_seam(monkeypatch, _capture_run, tm
     ]
 
 
+def test_install_built_packages_records_a_self_install(monkeypatch, _capture_run, tmp_path):
+    """3.5.0-B64: the kernel stage's install path, which used to look external
+    to the next update's reconcile."""
+    pkg = Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")
+    _fake_artifacts(monkeypatch, [pkg])
+    seen = []
+    monkeypatch.setattr(makepkg_wrapper._pacman, "record_installed_artifacts",
+                        lambda pkgs: seen.append(list(pkgs)))
+    makepkg_wrapper.install_built_packages(tmp_path)
+    assert seen == [[pkg]]
+
+
+def test_install_built_packages_failure_records_nothing(monkeypatch, _capture_run, tmp_path):
+    _capture_run["rc"] = 1
+    _fake_artifacts(monkeypatch, [Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")])
+    seen = []
+    monkeypatch.setattr(makepkg_wrapper._pacman, "record_installed_artifacts",
+                        lambda pkgs: seen.append(pkgs))
+    with pytest.raises(RuntimeError):
+        makepkg_wrapper.install_built_packages(tmp_path)
+    assert seen == []
+
+
 def test_install_built_packages_no_noconfirm(monkeypatch, _capture_run, tmp_path):
     pkg = Path("/pkgdest/foo-1-1-x86_64.pkg.tar.zst")
     _fake_artifacts(monkeypatch, [pkg])
