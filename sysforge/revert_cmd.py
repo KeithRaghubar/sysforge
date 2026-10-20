@@ -297,8 +297,7 @@ class RevertToStockVerb(Verb):
 
         # Demote any that pacman now owns (belt-and-suspenders alongside forget).
         bs = BuildState(pre.ctx["state_dir"])
-        demoted = install_reconcile.consume_external_installs(bs)
-        if demoted:
+        if install_reconcile.consume_external_installs(bs).changed:
             bs.save()
         emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[revert] {line}"))
         return ExecResult(exit_code=0)

@@ -51,7 +51,7 @@ def test_execute_removes_then_forgets_and_reconciles(tmp_path, monkeypatch):
                         lambda state_dir, pkgnames: order.append(
                             ("forget", list(pkgnames))))
     monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
-                        lambda bs: [])
+                        lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
 
     verb = uninstall_cmd.UninstallVerb()
     args = SimpleNamespace(packages=["mesa"], pacman_flags=[], state_dir=str(tmp_path))
@@ -77,7 +77,7 @@ def test_execute_names_a_profile_store_the_uninstall_leaves_behind(
                         lambda names, extra_flags=None: None)
     monkeypatch.setattr(uninstall_cmd, "forget_packages", lambda state_dir, pkgnames: None)
     monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
-                        lambda bs: [])
+                        lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
     seen = []
     monkeypatch.setattr(state_cmd, "orphaned_profile_lines",
                         lambda names: seen.append(set(names)) or ["profile store kept: /s"])

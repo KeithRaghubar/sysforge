@@ -121,6 +121,10 @@ def collect_state_result(state_dir: Path | str | None = None,
 
     # --- recorded build failures -------------------------------------------
     roster.ran.append("build_failures")
+    # In memory only (never saved here): a package removed since the last
+    # reconcile is not reported as failing (3.5.0-B120).
+    from sysforge.primitives import install_reconcile
+    install_reconcile.clear_removed_failures(bs, install_reconcile.window_targets())
     for pkgbase, rec in sorted(bs.all_failures().items()):
         msg = _short_error(rec.get("error", ""))
         when = rec.get("failed_at", "?")
@@ -132,7 +136,8 @@ def collect_state_result(state_dir: Path | str | None = None,
         if msg:
             detail += f": {msg}"
         remediation = fix_cmd or (
-            f"inspect with `sysforge log {pkgbase}`; clears on next successful build"
+            f"inspect with `sysforge log {pkgbase}`; clears on the next successful build "
+            "or once the package is removed"
         )
         # Intentional-revert escape hatch: the warning is correct but
         # dead-ends a user who deliberately went back to the repo package.

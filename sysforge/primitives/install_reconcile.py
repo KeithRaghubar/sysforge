@@ -29,6 +29,12 @@ then ``pacman -S foo`` puts ``foo`` in both sentinels, and a set difference
 kept it self-installed. Every consumer goes through :func:`consume_external_installs`,
 which also clears the window.
 
+The same window is the removal signal (3.5.0-B120): a ``buildstate`` target
+no longer installed was removed, by sysforge or a plain ``pacman -R``, and
+:func:`clear_removed_failures` drops its pkgbase's recorded build failure once
+no member is left. Only the event counts: a package whose first build failed
+was never installed either, and keeps its failure.
+
 Event format (shared with ``tools/pacman-hook-helper.sh``): each transaction is
 a timestamp line followed by zero or more pkgname lines, then a blank line.
 This is the single home for that format; do not parse the sentinels elsewhere.
@@ -39,6 +45,7 @@ import contextlib
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from sysforge import log
 
@@ -178,7 +185,74 @@ def external_install_targets(sentinel_dir=None) -> set[str]:
             if stamp > own.get(name, "")}
 
 
-def consume_external_installs(bs, sentinel_dir=None, *, read_only: bool = False) -> list[str]:
+def window_targets(sentinel_dir=None) -> set[str]:
+    """Every pkgname a pacman transaction touched since the last reconcile."""
+    return _read_targets(_dir(sentinel_dir) / _BUILDSTATE_NAME)
+
+
+def _failure_keys(bs, name: str) -> set[str]:
+    """The pkgbases a failure for removed package *name* may be keyed on.
+
+    Its tracked entry's ``pkgbase`` and ``origin_pkgbase`` (reaching a
+    ``-sysforge`` build through :func:`resolve_installed_name`), else the name
+    itself, each also without the rename suffix: a renamed build's failure is
+    recorded under the base the build started from.
+    """
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+
+    entry = bs.get(resolve_installed_name(bs, name)) or {}
+    keys = {name, entry.get("pkgbase"), entry.get("origin_pkgbase")} - {None, ""}
+    suffix = f"-{RENAME_SUFFIX}"
+    return keys | {k[: -len(suffix)] for k in keys if k.endswith(suffix)}
+
+
+def clear_removed_failures(bs, removed, *, fields=None) -> list[str]:
+    """Clear *bs*'s failures for pkgbases that *removed* left with no member installed.
+
+    *removed* is a set of pkgnames a transaction touched (the window, or the
+    names an ``uninstall`` just removed); one still installed was reinstalled
+    or upgraded, not removed, and is skipped. A pkgbase keeps its failure
+    while any member, under its stock or ``-sysforge`` name, is installed,
+    which the local DB's ``%BASE%`` shows for packages build_state only marks.
+    ``fields`` is a ``pacman.get_all_package_fields("%BASE%")`` result, read
+    here when omitted. Returns the cleared pkgbases; the caller saves.
+    """
+    failures = bs.all_failures()
+    if not failures or not removed:
+        return []
+    if fields is None:
+        from sysforge.primitives.pacman import get_all_package_fields
+        fields = get_all_package_fields("%BASE%")
+    if not fields:
+        # An unreadable local DB would make every upgraded target look removed.
+        return []
+    from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
+
+    present = set(fields) | {b for f in fields.values() for b in f.get("%BASE%", [])[:1]}
+    cleared: list[str] = []
+    for name in sorted(set(removed) - set(fields)):
+        for base in sorted(_failure_keys(bs, name)):
+            if base not in failures or base in cleared:
+                continue
+            if base in present or f"{base}-{RENAME_SUFFIX}" in present:
+                continue
+            bs.clear_failure(base)
+            cleared.append(base)
+    return cleared
+
+
+class Reconciled(NamedTuple):
+    """What :func:`consume_external_installs` changed in build state."""
+
+    demoted: list[str]
+    cleared_failures: list[str]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.demoted or self.cleared_failures)
+
+
+def consume_external_installs(bs, sentinel_dir=None, *, read_only: bool = False) -> Reconciled:
     """Demote *bs*'s externally reinstalled entries, then clear the window.
 
     The one consumer of the sentinels, shared by ``update``, ``revert`` and
@@ -191,18 +265,23 @@ def consume_external_installs(bs, sentinel_dir=None, *, read_only: bool = False)
     mass-demote every ``-git`` package. ``get_pacman_sync_version`` reads the
     local sync DBs (offline-safe), returning None for anything not in a repo.
 
-    Returns the demoted pkgnames; the caller saves *bs*. ``read_only``
-    (``--dry-run`` and the reports) demotes in memory and leaves the sentinels
-    for the real run (3.5.0-B97); otherwise they are cleared even when the
-    reconcile raises.
+    The window's removals also clear their stale build failures
+    (:func:`clear_removed_failures`, 3.5.0-B120).
+
+    Returns what changed; the caller saves *bs* when it did. ``read_only``
+    (``--dry-run`` and the reports) changes it in memory and leaves the
+    sentinels for the real run (3.5.0-B97); otherwise they are cleared even
+    when the reconcile raises.
     """
     try:
+        cleared = clear_removed_failures(bs, window_targets(sentinel_dir))
         external = external_install_targets(sentinel_dir)
         if not external:
-            return []
+            return Reconciled([], cleared)
         from sysforge.primitives.pacman import get_pacman_sync_version
         external = {n for n in external if get_pacman_sync_version(n) is not None}
-        return bs.reconcile_external_installs(external) if external else []
+        demoted = bs.reconcile_external_installs(external) if external else []
+        return Reconciled(demoted, cleared)
     finally:
         if not read_only:
             clear_reconcile_sentinels(sentinel_dir)

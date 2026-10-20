@@ -231,6 +231,11 @@ def forget_packages(state_dir, pkgnames: list[str], *,
     callers are not the ``forget`` verb and were synthesising a fake namespace
     to call it.
 
+    Tracking ends with the record, so a recorded build failure of a pkgbase
+    left with no tracked member is cleared too, as is one keyed on a
+    requested name (3.5.0-B120): ``state failed`` would otherwise keep
+    listing a package nothing builds any more.
+
     ``opt_out`` (``opt_out.VIA_REVERT`` / ``VIA_FORGET``, 3.4.0-F4) also records
     the decision in ``opted-out.toml``, one record per stock pkgbase covering
     every forgotten member (renamed and stock spellings), so ``update`` does
@@ -256,7 +261,11 @@ def forget_packages(state_dir, pkgnames: list[str], *,
             if bs.delete(pn):
                 forgotten.append(pn)
 
-    if forgotten:
+    cleared = _clear_untracked_failures(
+        bs, set(pkgnames or []) | {
+            k for pn in forgotten
+            for k in (all_pkgs[pn].get("pkgbase"), all_pkgs[pn].get("origin_pkgbase")) if k})
+    if forgotten or cleared:
         # Opt-out first: it is idempotent, so a failure or Ctrl-C between the
         # two writes leaves the package still tracked (retry the command)
         # rather than forgotten but adoptable by the next update (3.5.0-B57).
@@ -264,6 +273,15 @@ def forget_packages(state_dir, pkgnames: list[str], *,
             _record_opt_out(state_dir, {pn: all_pkgs[pn] for pn in forgotten}, opt_out)
         bs.save()
     return forgotten, missing
+
+
+def _clear_untracked_failures(bs, pkgbases: set[str]) -> list[str]:
+    """Clear the failures of *pkgbases* no remaining build_state entry belongs to."""
+    remaining = bs.all_packages()
+    owned = set(remaining) | {
+        k for e in remaining.values()
+        for k in (e.get("pkgbase"), e.get("origin_pkgbase")) if k}
+    return [b for b in sorted(pkgbases - owned) if bs.clear_failure(b)]
 
 
 def _record_opt_out(state_dir, entries: dict[str, dict], via: str) -> None:

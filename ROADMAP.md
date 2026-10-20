@@ -117,7 +117,6 @@ canonical ordering.
 | `3.5.0-DEV8` | make make test the complete suite, so pre-release matches CI | med | small | patch |
 | `3.5.0-B54` | the PGO staging dirs in /var/tmp are used without an ownership check | med | medium | patch |
 | `3.5.0-B59` | kernel Gate 2 audits the wrong config when a stale package is reused | med | medium | patch |
-| `3.5.0-B120` | a removed package's build failure stays in build_state.toml | med | medium | patch |
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
 | `3.5.0-B117` | the pre-build snapshot runs unprivileged, so the raw fallback never works | low | small | patch |
 | `3.5.0-B119` | run reconfigure's GPG step refreshes keys past a source freeze | low | small | patch |
@@ -245,29 +244,6 @@ canonical ordering.
   Tests: a frozen policy skips the refresh with a message; the warning names sysforge's install
   step.
   *Priority: low · Effort: small · Bump: patch* — one keyserver contact the freeze does not cover.
-
----
-
-- **`3.5.0-B120` — a removed package's build failure stays in `build_state.toml`.**
-  `[failures]` (keyed by pkgbase) is cleared only by a successful build (`BuildState.record`)
-  or `sysforge state failed --clear`, so once a package is removed, by `sysforge uninstall`, a
-  plain `pacman -R`, or anything else, `state failed`, `doctor` and the `state_probe` summary
-  keep reporting it. Removal is the trigger, whoever does it, and it has to be seen as an event:
-  "no member installed" alone would also erase the failure of a package whose first build
-  failed and so was never installed, which is the case `state failed` exists for. The shipped
-  `sysforge-buildstate.hook` already records every `Remove` transaction's targets. In
-  `install_reconcile.consume_external_installs` (the one sentinel consumer, run by `update`,
-  `revert-to-stock` and `uninstall`), treat a window target that is no longer installed as
-  removed, map it to its pkgbase (its build_state entry's `pkgbase`, reaching a `-sysforge`
-  build through `resolve_installed_name`; else the name itself), and clear that pkgbase's
-  failure once no member of it is installed. `state failed` and `doctor` apply the same pass
-  read-only, so the listing is right before the next `update` clears the window; `uninstall`
-  and `forget_packages` also clear their targets' pkgbases directly, which covers a host
-  without the hook. Reported by the user 2026-10-20. Tests: a failure is cleared after a
-  `pacman -R` recorded only by the hook (no sysforge verb), after `uninstall` of a tracked and
-  of an untracked package, and after `forget`/`revert`; a never-installed failed package keeps
-  its failure; removing one split member keeps the failure while a sibling is installed.
-  *Priority: med · Effort: medium · Bump: patch* — `state failed` lists packages that are gone.
 
 ### Developer tooling
 

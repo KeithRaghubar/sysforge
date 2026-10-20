@@ -24,7 +24,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import journal
+from sysforge.primitives import install_reconcile, journal
 from sysforge.primitives.build_state import BUILD_MODE_SOURCE
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
@@ -499,7 +499,9 @@ def cmd_state_failed(args):
 
     With ``--clear PKGBASE`` / ``--clear-all`` the matching entries are removed
     instead of listed. Failures otherwise auto-clear on the next successful
-    build of the same pkgbase (see BuildState.record).
+    build of the same pkgbase (see BuildState.record), or once the package is
+    removed (3.5.0-B120): the listing drops a removal the next ``update``
+    will clear, without saving.
     """
     from sysforge.pipeline.state import resolve_state_dir
     from sysforge.primitives.build_state import BuildState
@@ -524,6 +526,7 @@ def cmd_state_failed(args):
             print(f"No recorded failure for {clear_one!r}.")
         return
 
+    install_reconcile.clear_removed_failures(bs, install_reconcile.window_targets())
     failures = bs.all_failures()
     if getattr(args, "names", False):
         # Machine-readable, verb-local (3.1.0-F2): pkgbases only, one per line,
@@ -575,7 +578,7 @@ def cmd_state_failed(args):
                 )
         print(f"\n  {len(rows)} failed package(s)")
         print(
-            "  (entries clear on the next successful build; "
+            "  (entries clear on the next successful build or on removal; "
             "or use --clear PKGBASE / --clear-all)"
         )
 
@@ -962,7 +965,8 @@ class StateFailedVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("failed",
             help="List packages whose last build failed (recorded in build_state.toml), "
-                 "with any diagnosed fix. Entries auto-clear on the next successful build.")
+                 "with any diagnosed fix. Entries auto-clear on the next successful build, "
+                 "or once the package is removed.")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",

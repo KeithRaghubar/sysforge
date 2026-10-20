@@ -127,7 +127,7 @@ def test_uninstall_writes_no_record(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
                         lambda names, extra_flags=None: None)
     monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
-                        lambda bs: [])
+                        lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
     bs = BuildState(tmp_path)
     args = SimpleNamespace(packages=["htop"], pacman_flags=[], state_dir=str(tmp_path))
     pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, ["htop"]),

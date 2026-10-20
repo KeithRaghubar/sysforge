@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-19"
+.TH "sysforge" "1" "2026\-10\-20"
 .PP
 .PP
 .SH NAME
@@ -924,7 +924,7 @@ Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 \fBsysforge state failed\fR [\fIOPTIONS\fR]
 .PP
-List packages whose last build failed (recorded in build_state.\&toml), with any diagnosed fix.\& Entries auto\-clear on the next successful build.\&
+List packages whose last build failed (recorded in build_state.\&toml), with any diagnosed fix.\& Entries auto\-clear on the next successful build, or once the package is removed.\&
 .PP
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4

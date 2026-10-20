@@ -464,7 +464,8 @@ def _reconcile_external_demotions(bs: BuildState, *, read_only: bool = False) ->
     """Demote source-built packages reinstalled externally via ``pacman -S``.
 
     Through ``install_reconcile.consume_external_installs`` (the sync-repo
-    filter, the demotion and the sentinel clear), then saves if anything
+    filter, the demotion, the removed packages' failure clear and the
+    sentinel clear), then saves if anything
     changed. Best-effort — a sentinel/IO error never aborts the
     update. Stage-owned packages are exempt (handled in BuildState).
 
@@ -474,13 +475,20 @@ def _reconcile_external_demotions(bs: BuildState, *, read_only: bool = False) ->
     """
     from sysforge.primitives.install_reconcile import consume_external_installs
     try:
-        demoted = consume_external_installs(bs, _SENTINEL_DIR, read_only=read_only)
-        if demoted and not read_only:
+        result = consume_external_installs(bs, _SENTINEL_DIR, read_only=read_only)
+        if result.changed and not read_only:
             bs.save()
+        if result.demoted and not read_only:
             _log.info(
                 "demoted "
-                f"{len(demoted)} source-built package(s) reinstalled from "
-                f"the repo: {', '.join(sorted(demoted))}"
+                f"{len(result.demoted)} source-built package(s) reinstalled from "
+                f"the repo: {', '.join(sorted(result.demoted))}"
+            )
+        if result.cleared_failures and not read_only:
+            _log.info(
+                "cleared the build failure of "
+                f"{len(result.cleared_failures)} removed package(s): "
+                f"{', '.join(result.cleared_failures)}"
             )
     except Exception as e:
         _log.info(f"external-install reconcile skipped (non-fatal): {e}")

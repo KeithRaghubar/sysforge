@@ -95,14 +95,21 @@ class UninstallVerb(Verb):
             _log.error(f"[uninstall] pacman removal failed ({exc}); nothing demoted")
             return ExecResult(exit_code=1)
 
+        # The removed packages' build failures go, tracked or not, without
+        # waiting on the hook's window, which a host without it never fills
+        # (3.5.0-B120). Before the forget: a removed member's record is what
+        # maps it to the pkgbase its failure is keyed on.
+        bs = BuildState(pre.ctx["state_dir"])
+        removed = {n for it in items for n in (it.target, it.installed_name)}
+        if install_reconcile.clear_removed_failures(bs, removed):
+            bs.save()
         # Demote tracked packages: forget their build_state records (handles
         # split-package siblings by pkgbase), then reconcile as belt-and-braces.
         tracked = [it.installed_name for it in items if it.tracked]
         if tracked:
             forget_packages(pre.ctx["state_dir"], tracked)
             bs = BuildState(pre.ctx["state_dir"])
-            demoted = install_reconcile.consume_external_installs(bs)
-            if demoted:
+            if install_reconcile.consume_external_installs(bs).changed:
                 bs.save()
         emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[uninstall] {line}"))
         return ExecResult(exit_code=0)

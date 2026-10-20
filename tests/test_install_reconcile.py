@@ -172,6 +172,9 @@ class _FakeBuildState:
         self.seen = set(names)
         return sorted(names)
 
+    def all_failures(self):
+        return {}
+
 
 def _external_window(tmp_path):
     d = tmp_path / "sentinels"
@@ -188,7 +191,7 @@ def test_consume_external_installs_filters_to_sync_repo_packages_and_clears(tmp_
     with patch("sysforge.primitives.pacman.get_pacman_sync_version",
                side_effect=lambda n: "1-1" if n == "mesa" else None):
         demoted = ir.consume_external_installs(bs, d)
-    assert bs.seen == {"mesa"} and demoted == ["mesa"]
+    assert bs.seen == {"mesa"} and demoted.demoted == ["mesa"]
     assert not (d / "buildstate").exists()
 
 
