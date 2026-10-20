@@ -251,6 +251,18 @@ def _walked(args) -> list[str]:
     return [r.pkgname for r in walk.results]
 
 
+@pytest.fixture(autouse=True)
+def _host_probing_axes_inert(monkeypatch):
+    """The rust and integrity axes are opt-in, but a package walk runs both for
+    its targets, and they probe the host: cargo/rustc/rustup with
+    ``pacman -Qo``, and ``pacman -Qkk <pkg>`` (3.5.0-DEV4). Their behaviour is
+    test_rust_probe's, test_pkgfiles_probe's and test_doctor_roster's; a test
+    here re-patches either to inject a finding."""
+    monkeypatch.setattr(doctor, "_collect_rust_findings", lambda config, args: [])
+    monkeypatch.setattr(doctor.pkgfiles_probe, "collect_integrity_findings",
+                        lambda packages=None: [])
+
+
 def _patch_axes_clean(monkeypatch):
     """Neutralise the system-state axes so package-walk tests stay fast and
     deterministic (they otherwise probe real hardware/toolchain/graphics/

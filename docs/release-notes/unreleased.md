@@ -120,6 +120,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV4` — a test that reads the host's pacman database fails, naming where.** A test whose code ran a real `pacman` query passed or failed by what the machine had installed, which is how `3.5.0-DEV3`'s tests were green on a workstation and red in CI. `tests/conftest.py` now fails any such test with `HostStateError: test reached the host pacman DB via primitives/pacman.py:971 get_installed_version (pacman -Q llvm)`, and fails it at teardown even when the code under test catches the error, as the best-effort probes do. A stub at any level above the subprocess, or a pacman pointed at a fixture `--dbpath`, passes; `@pytest.mark.host_pacman` opts out the tests of the query functions themselves. The fence caught 67 tests in 8 files; each now stubs its answer as the clean CI container gives it. Eleven of them failed only in the container: the kernel stage's bootloader probe answers from `/boot` on a workstation and asks pacman only when `/boot` has no bootloader files, so the fence, like the original bug, needs a CI run to see everything. One had a stub that never applied: `test_dep_versions_excludes_build_set_members` patched a re-export the code doesn't call. And `tests/test_doctor.py`'s package-walk tests ran the opt-in rust and integrity axes, which probe the host's Rust toolchain and package files, because nothing stubbed them. `tests/test_host_fence.py` covers the fence.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
@@ -571,6 +575,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B107` — the `hardened` profile warns about old C code.** The comment above `[profiles.hardened]` in the shipped `profiles.toml` now explains that `-fstrict-flex-arrays=3`, together with the `-D_FORTIFY_SOURCE=3` sysforge keeps from your system `makepkg.conf`, makes the fortified string functions treat an old-style `[0]` or `[1]` trailing array as its declared size, so a program that writes past one aborts at run time, and that a `[[rules]]` entry choosing another profile opts such a package out.
+
+---
+
+- **`3.5.0-B114` — a failed toolchain install that cannot be rolled back says why.** When the new toolchain failed its post-install check and none of its packages had been installed before the run, as on a first toolchain install, there was no earlier version to put back, but the error said only that the automatic rollback "could not complete". sysforge now says that nothing was installed before, so there is no prior version to reinstall. The rest is unchanged: the recovery command is still printed, and the next run still offers it.
 
 ## Security
 

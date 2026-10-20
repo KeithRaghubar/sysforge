@@ -43,6 +43,9 @@ pythonpath = ["."]
 # SYSFORGE_CONFIG_DIR is set in tests/conftest.py before any imports.
 # Verbose output so rule parametrize IDs are readable.
 addopts = "-v"
+markers = [
+    "host_pacman: may run the real pacman (tests of the query functions); exempts the 3.5.0-DEV4 fence",
+]
 
 [tool.pyright]
 # Ruff owns lint-style diagnostics; disable the pyright checks that overlap

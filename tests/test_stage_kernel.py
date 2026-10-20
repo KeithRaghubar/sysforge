@@ -110,6 +110,12 @@ def _neutralize_kernel_gates(monkeypatch):
                         lambda *a, **k: [])
     monkeypatch.setattr(device_probe, "enumerate_devices", lambda *a, **k: [])
     monkeypatch.setattr(_km.stage, "install_built_packages", lambda *a, **k: [])
+    # 3.5.0-DEV4: the bootloader probe reads /boot, then falls back to
+    # `pacman -Qq systemd grub`; a workstation answers from /boot, the CI
+    # container from pacman. Both say systemd-boot, so pin that. The probe's
+    # own tests import it through the package re-export, which this leaves.
+    from sysforge.pipeline.stages.kernel import source as _ksrc
+    monkeypatch.setattr(_ksrc, "probe_installed_bootloader", lambda: {"systemd-boot"})
     # B4/B5: the stage now warms sudo credentials at build entry and probes
     # them again before the install sentinel. Both shell out to `sudo -v`;
     # neutralize them so run()-flow tests stay hermetic. The dedicated B4 tests

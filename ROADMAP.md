@@ -121,6 +121,9 @@ canonical ordering.
 | `3.5.0-DEV1` | test the branches mutation testing showed are unchecked | med | medium | patch |
 | `3.5.0-B110` | [safety] llvm_preflight = false has no effect | low | small | patch |
 | `3.5.0-B112` | the shipped configs carry stale and dead guidance | low | small | patch |
+| `3.5.0-DEV5` | name the failing gate on the CI run page | low | small | patch |
+| `3.5.0-DEV6` | report test failures in full in CI | low | small | patch |
+| `3.5.0-DEV7` | print the container's environment at the top of the CI log | low | small | patch |
 | `3.5.0-B81` | state files share a fixed temp name and skip fsync | low | medium | patch |
 | `3.5.0-DEV2` | raise test coverage where this review's bugs clustered | low | medium | patch |
 <!-- END roadmap-table -->
@@ -305,5 +308,38 @@ canonical ordering.
   ratchet. Found in the 2026-10-18 whole-repo review; confirmed in the code. Tests: each listed
   module's coverage rises and the ratchet floor is re-stamped.
   *Priority: low · Effort: medium · Bump: patch* — test debt.
+
+---
+
+- **`3.5.0-DEV5` — name the failing gate on the CI run page.** `tools/ci.sh` runs every gate
+  in one `make -k` inside the one "Lint, suite and gates" step, so a red run shows only that the
+  step failed and the gate has to be found in roughly ten minutes of log. Wrap each gate in
+  `::group::<gate>`/`::endgroup::` and append a pass/fail table to `$GITHUB_STEP_SUMMARY`,
+  keeping the `-k` behaviour (every gate runs, the job still fails) and leaving `make ci-local`
+  output unchanged outside Actions. Found while debugging the 2026-10-19 red run.
+  Tests: `make ci-local` still exits non-zero on a failing gate; `shellcheck` passes.
+  *Priority: low · Effort: small · Bump: patch* — the run page says which gate broke.
+
+---
+
+- **`3.5.0-DEV6` — report test failures in full in CI.** The `coverage` target, which CI runs
+  as the suite, passes `-q` with `addopts` cleared, so the short summary truncates each failure
+  to one line and there is no machine-readable result. Add `-rfE --tb=short` and a
+  `--junitxml` report, and annotate each failure with its file and line in Actions (a small
+  reporter over the JUnit file, or a pytest plugin added the way `pytest-cov` is). Found while
+  debugging the 2026-10-19 red run. Tests: a deliberately failing test shows its full assertion
+  in the summary and an annotation in a CI run.
+  *Priority: low · Effort: small · Bump: patch* — failures readable without the raw log.
+
+---
+
+- **`3.5.0-DEV7` — print the container's environment at the top of the CI log.** A test that
+  depends on the host (`3.5.0-DEV3`) fails only where the environment differs, and the log does
+  not say how it differs. Have `tools/ci.sh` print, before the gates, the package count from
+  `pacman -Q`, whether the LLVM suite and `clang` are installed, and the Python, pytest and
+  `uv` versions, so a CI-only failure becomes a comparison with the local machine. Found while
+  debugging the 2026-10-19 red run. Tests: `make ci-local` output starts with the block;
+  `shellcheck` passes.
+  *Priority: low · Effort: small · Bump: patch* — a CI-only failure is a diff, not a guess.
 
 ### Open questions

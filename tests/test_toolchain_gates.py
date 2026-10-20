@@ -221,3 +221,18 @@ def test_snapshot_skips_names_that_were_never_installed(tmp_path, monkeypatch):
     assert set(snap) == {"llvm", "clang"}
     monkeypatch.setattr(pacman, "batch_install_pkgs", lambda files: True)
     assert gates.rollback_to_snapshot(snap) is True
+
+
+def test_empty_snapshot_rollback_says_why(monkeypatch, capsys):
+    """3.5.0-B114: an empty snapshot (a first toolchain install) refused the
+    rollback with no reason, so the stage reported only that it 'could not
+    complete'. It now names the cause and never runs pacman."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import pacman
+    calls = []
+    monkeypatch.setattr(pacman, "batch_install_pkgs", lambda files: calls.append(files))
+    assert gates.rollback_to_snapshot({}) is False
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "snapshot is empty" in err
+    assert "none of the toolchain packages was installed before this run" in err

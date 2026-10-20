@@ -770,7 +770,10 @@ def test_default_script_root_reflects_configured_roots(tmp_path, monkeypatch):
     assert artifacts.default_script_root() == tmp_path / "bin"
 
 
-def test_scan_excludes_symlinks(tmp_path):
+def test_scan_excludes_symlinks(tmp_path, monkeypatch):
+    # Unowned, as any tmp path is (3.5.0-DEV4: not the host's answer).
+    monkeypatch.setattr(artifacts.pacman, "owners_of",
+                        lambda c: {p: None for p in c})
     root = tmp_path / "hooks"
     root.mkdir()
     (root / "real.hook").write_text("y")
@@ -788,9 +791,11 @@ def test_scan_excludes_symlinks(tmp_path):
 # Real-pacman integration tests (Task 14)
 # ---------------------------------------------------------------------------
 
-pacman_required = pytest.mark.skipif(
-    shutil.which("pacman") is None, reason="requires a live pacman"
-)
+# Deliberately real (3.5.0-DEV4 opt-out): they pin pacman's own -Qo output
+# format, asserting only what holds on any Arch host.
+def pacman_required(fn):
+    return pytest.mark.host_pacman(pytest.mark.skipif(
+        shutil.which("pacman") is None, reason="requires a live pacman")(fn))
 
 
 @pacman_required

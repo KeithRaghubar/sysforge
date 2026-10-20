@@ -289,8 +289,10 @@ def test_dep_versions_excludes_build_set_members(monkeypatch):
     (cmake/…) come from the live /usr and stay."""
     from sysforge.pipeline.stages import toolchain
 
+    # The owning module: reuse calls verify.query_pacman_versions, so a patch
+    # of the package re-export never applied and the host answered (3.5.0-DEV4).
     monkeypatch.setattr(
-        toolchain, "query_pacman_versions",
+        toolchain.verify, "query_pacman_versions",
         lambda names: {n: "9.9-9" for n in names},
     )
     globals_ = {
@@ -300,7 +302,7 @@ def test_dep_versions_excludes_build_set_members(monkeypatch):
     result = toolchain.reuse._dep_versions_from_globals(
         globals_, exclude={"llvm", "llvm-libs"},
     )
-    assert set(result) == {"cmake", "ninja"}  # build-set members dropped
+    assert result == {"cmake": "9.9-9", "ninja": "9.9-9"}  # build-set members dropped
 
 def test_pkg_fingerprint_stable_across_build_set_member_install(tmp_path, monkeypatch):
     """2.5.1-B2: a sanity re-run after installing the built suite must still hit

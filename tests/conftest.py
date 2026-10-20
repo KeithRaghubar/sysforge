@@ -179,6 +179,101 @@ def _isolate_local_pacman_db(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(_pacman, "_LOCAL_DB_ROOT", empty_db)
 
 
+class HostStateError(BaseException):
+    """A test reached the host's pacman database through a real subprocess.
+
+    ``BaseException``, not ``AssertionError``: sysforge's best-effort probes
+    catch ``Exception`` and fall back, which would swallow the fence and leave
+    the test passing on whatever the fallback produced.
+    """
+
+
+def _host_pacman_caller() -> str:
+    """The innermost repo frame that asked, e.g. ``primitives/pacman.py:971
+    get_installed_version`` (a test calling pacman itself names the test)."""
+    import traceback
+    repo = str(REPO_ROOT) + "/"
+    for frame in reversed(traceback.extract_stack()[:-3]):
+        path = frame.filename
+        if not path.startswith(repo) or path.endswith(("/primitives/run.py", "/conftest.py")):
+            continue
+        rel = path[len(repo):]
+        rel = rel.removeprefix("sysforge/")
+        return f"{rel}:{frame.lineno} {frame.name}"
+    return "an unknown caller"
+
+
+def _targets_host_db(argv) -> bool:
+    """A pacman argv that reads the host DB: one with no ``--dbpath``/``-b``,
+    or one pointing it at the host's. A fixture DB is hermetic by construction."""
+    args = [str(a) for a in argv]
+    for i, a in enumerate(args):
+        if a in ("--dbpath", "-b") and i + 1 < len(args):
+            return args[i + 1].rstrip("/") in ("/var/lib/pacman", "")
+        if a.startswith("--dbpath="):
+            return a.split("=", 1)[1].rstrip("/") in ("/var/lib/pacman", "")
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _fence_host_pacman_queries(request, monkeypatch):
+    """
+    Fail a test whose code runs a real ``pacman`` (3.5.0-DEV4).
+
+    ``_isolate_local_pacman_db`` covers reads of the local DB's files; the
+    queries (``pacman -Q``/``-Qm``/``-Si``/``-T``, ``get_installed_version``,
+    ``get_all_installed_packages``) go through a subprocess and answered with
+    whatever the machine has installed, so a test passed on a workstation with
+    LLVM and failed in the CI container without it (3.5.0-DEV3).
+
+    The fence wraps ``subprocess.run``, the one spawn under ``run.capture``/
+    ``probe``, so a stub at any layer above it (``subprocess.run`` itself,
+    ``run.probe``, a ``pacman`` function) replaces it and the test stays
+    hermetic. A hit is also recorded and fails the test at teardown, in case a
+    caller swallowed even the ``BaseException``. Privileged pacman
+    (``sudo pacman …``) is ``pacman_tx``'s concern.
+    Tests of the query functions themselves opt out with
+    ``@pytest.mark.host_pacman``.
+    """
+    if request.node.get_closest_marker("host_pacman"):
+        yield []
+        return
+    import subprocess
+    real_run = subprocess.run
+    hits: list[str] = []
+
+    def fenced_run(cmd, *args, **kwargs):
+        argv = cmd if isinstance(cmd, (list, tuple)) else [cmd]
+        if (argv and str(argv[0]).rsplit("/", 1)[-1] == "pacman"
+                and _targets_host_db(argv)):
+            msg = (
+                f"test reached the host pacman DB via {_host_pacman_caller()} "
+                f"({' '.join(str(a) for a in argv)}); stub it, or mark the "
+                "test @pytest.mark.host_pacman"
+            )
+            hits.append(msg)
+            raise HostStateError(msg)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fenced_run)
+    # Yields the hit list: the fence's own tests request this fixture by name
+    # and clear the hits they provoked on purpose.
+    yield hits
+    # Only when the test body passed: a fence that propagated already failed it.
+    call = getattr(request.node, "_sf_call_report", None)
+    if hits and call is not None and call.passed:
+        pytest.fail(f"{hits[0]} (swallowed by the code under test)", pytrace=False)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Keep the call-phase report on the item for teardown-time fixtures."""
+    rep = yield
+    if rep.when == "call":
+        item._sf_call_report = rep
+    return rep
+
+
 @pytest.fixture(autouse=True)
 def _isolate_state_dir(monkeypatch, tmp_path_factory):
     """

@@ -450,7 +450,9 @@ def test_cmd_resolve_show_flags_produces_flag_lines(capsys):
     assert "Resolved profile:" in out
 
 
-def test_cmd_resolve_missing_pkgbuild_exits(tmp_path):
+def test_cmd_resolve_missing_pkgbuild_exits(tmp_path, monkeypatch):
+    # Not in any repo, as the name guarantees anywhere (3.5.0-DEV4).
+    monkeypatch.setattr("sysforge.primitives.aur.is_repo_package", lambda name: False)
     with patch("sysforge.primitives.config.Path.cwd", return_value=tmp_path):
         with pytest.raises(SystemExit):
             cmd_resolve(_make_args("nonexistent_pkg_xyz"))

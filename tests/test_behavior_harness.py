@@ -71,7 +71,9 @@ def test_run_cli_unknown_verb_errors(run_cli):
     assert "invalid choice" in r.output or "usage" in r.output.lower()
 
 
-def test_run_cli_real_readonly_verb(run_cli, state_dir):
+def test_run_cli_real_readonly_verb(run_cli, state_dir, monkeypatch):
     # `state list` is read-only; against an empty state dir it must exit 0.
+    # It lists untracked foreign packages: none, not the host's (3.5.0-DEV4).
+    monkeypatch.setattr("sysforge.primitives.pacman.get_foreign_packages", lambda: {})
     r = run_cli(["state", "list"])
     assert r.exit_code == 0

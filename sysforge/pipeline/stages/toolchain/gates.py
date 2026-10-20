@@ -659,6 +659,14 @@ def rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:
         )
         return False
     if not files:
+        # Nothing of the suite or the built set was installed before this run
+        # (a first toolchain install), so there is no prior-good archive. Say
+        # so: a bare False reads as "rollback could not complete" (3.5.0-B114).
+        _log.error(
+            "Cannot roll back: the snapshot is empty, because none of the "
+            "toolchain packages was installed before this run, so there is no "
+            "prior version to reinstall."
+        )
         return False
     _log.warn(f"Rolling back to {len(files)} cached package(s) via pacman -U")
     return pacman.batch_install_pkgs(files)

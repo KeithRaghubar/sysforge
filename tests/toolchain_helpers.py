@@ -73,6 +73,17 @@ def _toolchain_gates_clean(monkeypatch, tmp_path):
     # fixture tree; pkgbase tests re-patch it.
     from sysforge.primitives import pacman as _pacman
     monkeypatch.setattr(_pacman, "get_sync_pkgbase", lambda name: None, raising=True)
+    # 3.5.0-DEV4: the host's foreign packages (sandbox host-only set, the LLVM
+    # preflight) and the sync-DB lookup that labels each synced toolchain
+    # PKGBUILD repo vs AUR, and what is installed (the version table, the LLVM
+    # preflight, the install set, the snapshot). Answered as the clean CI
+    # container answers: nothing foreign, nothing of the suite installed, every
+    # toolchain pkgbase in the repos. Tests of any of them re-patch.
+    monkeypatch.setattr(_pacman, "get_foreign_packages", lambda: {}, raising=True)
+    monkeypatch.setattr(_pacman, "get_installed_version", lambda name: None, raising=True)
+    monkeypatch.setattr(_pacman, "get_all_installed_packages", lambda: {}, raising=True)
+    from sysforge.primitives import aur as _aur
+    monkeypatch.setattr(_aur, "repo_packages", lambda names: set(names), raising=True)
     # 3.4.0-F1: a staged_deps=False pass pre-installs missing repo deps itself
     # (pacman -T against the host, then sudo pacman -S). Never from a test;
     # tests of that step re-patch it.
