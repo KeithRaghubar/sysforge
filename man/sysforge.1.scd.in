@@ -163,23 +163,19 @@ bench.toml (under the state directory)
 
 # ENVIRONMENT
 
-SYSFORGE_STATE_DIR
-	Override the state directory (stage progress, build_state.toml,
-	logs, sentinels). Read by every command that touches build state:
-	*build*, *update*, *state*, *log*, *doctor*, and the *run* stages.
+@ENVIRONMENT@
 
-SYSFORGE_CONFIG_DIR
-	Override the configuration directory searched before
-	/etc/sysforge. Read by every command that loads a config file (see
-	FILES).
+# JOURNAL
 
-SYSFORGE_EDITOR
-	Editor for the interactive config review in *run reconfigure*.
-	Falls back to $EDITOR, then $VISUAL.
+Commands that change installed packages or build state (*build*, *update*,
+*revert-to-stock*, *uninstall*, *artifact deploy*/*remove*, *state
+repair*/*forget*) write one record to the systemd journal when they finish, with SYSLOG_IDENTIFIER=sysforge and these
+fields, so runs can be queried rather than grepped:
 
-PAGER
-	Pager for *sysforge log*, *state* listings, and PKGBUILD review
-	diffs in *build*/*update* (falls back to less -RFX, then more).
+@JOURNAL@
+
+For example, *journalctl SYSFORGE_VERB=update* lists every update, and
+*journalctl SYSLOG_IDENTIFIER=sysforge PRIORITY=3* the failed runs.
 
 # DISTRIBUTIONS
 

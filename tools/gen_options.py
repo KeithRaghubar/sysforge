@@ -34,6 +34,8 @@ from sysforge.verbs.registry import build_parser, tiered_command_order  # noqa: 
 
 MARKER = "@OPTIONS@"
 SHARED_MARKER = "@SHARED_OPTIONS@"
+ENV_MARKER = "@ENVIRONMENT@"
+JOURNAL_MARKER = "@JOURNAL@"
 
 # Per-command configuration/environment summary, rendered as a trailer after
 # each command's option blocks. Values are raw scdoc (not escaped). Keyed by
@@ -277,6 +279,43 @@ def _fill(template: str, marker: str, lines: list[str]) -> str | None:
     return rendered
 
 
+def _wrap(text: str) -> list[str]:
+    """Tab-indented scdoc paragraph lines. scdoc reads a line starting with
+    `[`, `|` or `-` as a table or list, so such a word is kept on the line
+    before it."""
+    import textwrap
+    lines: list[str] = []
+    for line in textwrap.wrap(text, width=66):
+        if lines and line[:1] in "[|-":
+            lines[-1] += " " + line
+        else:
+            lines.append(line)
+    return ["\t" + line for line in lines]
+
+
+def render_environment() -> list[str]:
+    """The ENVIRONMENT section body, from primitives/env_vars.ENV_VARS
+    (3.5.0-B128): user settings first, then the diagnostic switches."""
+    from sysforge.primitives.env_vars import ENV_VARS
+    lines: list[str] = []
+    ordered = [v for v in ENV_VARS if v.audience == "user"] + \
+              [v for v in ENV_VARS if v.audience == "diagnostic"]
+    for var in ordered:
+        label = var.name + (" (diagnostic)" if var.audience == "diagnostic" else "")
+        lines += [label, *_wrap(var.text), ""]
+    return lines[:-1]
+
+
+def render_journal() -> list[str]:
+    """The JOURNAL section's field list, from primitives/journal.JOURNAL_FIELDS
+    (3.5.0-DOC13)."""
+    from sysforge.primitives.journal import JOURNAL_FIELDS
+    lines: list[str] = []
+    for name, text in JOURNAL_FIELDS:
+        lines += [name, *_wrap(text), ""]
+    return lines[:-1]
+
+
 def main() -> int:
     ap_ = argparse.ArgumentParser(description=__doc__)
     ap_.add_argument("--template", required=True)
@@ -286,7 +325,9 @@ def main() -> int:
     shared_lines, command_lines = render(build_parser(), tiered_command_order())
 
     rendered = Path(ns.template).read_text(encoding="utf-8")
-    for marker, lines in ((SHARED_MARKER, shared_lines), (MARKER, command_lines)):
+    for marker, lines in ((SHARED_MARKER, shared_lines), (MARKER, command_lines),
+                          (ENV_MARKER, render_environment()),
+                          (JOURNAL_MARKER, render_journal())):
         filled = _fill(rendered, marker, lines)
         if filled is None:
             print(f"error: marker {marker} not found in {ns.template}",

@@ -1515,16 +1515,91 @@ FILES).\&
 .RE
 SYSFORGE_EDITOR
 .RS 4
-Editor for the interactive config review in \fBrun reconfigure\fR.\&
-Falls back to $EDITOR, then $VISUAL.\&
+Editor sysforge opens: \fBrun reconfigure\fR'\&s config review,
+\fBartifact edit\fR and \fBconfig merge\fR.\& Checked first, then
+sysforge.\&toml [ui] editor, $EDITOR and $VISUAL.\&
+.PP
+.RE
+SYSFORGE_MERGE
+.RS 4
+Merge tool for \fBconfig merge\fR.\& Checked first, then sysforge.\&toml [ui] merge, $DIFFPROG, then vimdiff.\&
+.PP
+.RE
+SYSFORGE_ASCII
+.RS 4
+Any non\-empty value prints ASCII in place of decorative glyphs
+(arrows, bullets, progress fills), for terminals and fonts without
+them.\&
+.PP
+.RE
+SYSFORGE_PGO_STORE
+.RS 4
+Directory for the toolchain'\&s PGO profiles, used when
+toolchain.\&toml sets no pgo_store.\&
+.PP
+.RE
+SYSFORGE_PROFILE_STORE
+.RS 4
+Root directory of every other profile store (pgo/<pkgbase>,
+autofdo, propeller, bolt), used when toolchain.\&toml sets no
+profile_store.\&
 .PP
 .RE
 PAGER
 .RS 4
 Pager for \fBsysforge log\fR, \fBstate\fR listings, and PKGBUILD review
-diffs in \fBbuild\fR/\fBupdate\fR (falls back to less \-RFX, then more).\&
+diffs in \fBbuild\fR/\fBupdate\fR (falls back to less \-RF, then more).\&
 .PP
 .RE
+SYSFORGE_PTY_RAW_DUMP (diagnostic)
+.RS 4
+A file path: every byte a build writes to its terminal is appended
+there, after a line giving the terminal size sysforge handed it.\&
+For reports about garbled build output.\&
+.PP
+.RE
+SYSFORGE_PROGRESS_TRACE (diagnostic)
+.RS 4
+A file path: the progress bar logs each repaint, resize and
+handover there.\& For reports about the progress bar.\&
+.PP
+.RE
+SYSFORGE_PACMAN_NO_PYALPM (diagnostic)
+.RS 4
+Any non\-empty value makes sysforge query pacman through the pacman
+command rather than pyalpm, to tell a pyalpm problem from a
+sysforge one.\&
+.PP
+.RE
+.SH JOURNAL
+.PP
+Commands that change installed packages or build state (\fBbuild\fR, \fBupdate\fR,
+\fBrevert\-to\-stock\fR, \fBuninstall\fR, \fBartifact deploy\fR/\fBremove\fR, \fBstate
+repair\fR/\fBforget\fR) write one record to the systemd journal when they finish, with SYSLOG_IDENTIFIER=sysforge and these
+fields, so runs can be queried rather than grepped:
+.PP
+SYSFORGE_VERB
+.RS 4
+The command, with spaces as dashes for subcommands (build, update,
+state\-forget, artifact\-deploy).\&
+.PP
+.RE
+SYSFORGE_TARGET
+.RS 4
+What it acted on, when it has a subject: pkg:<names> for packages
+(space\-separated), mode:<name> for a state operation.\& Absent
+otherwise.\&
+.PP
+.RE
+SYSFORGE_EXIT
+.RS 4
+The exit status.\& Records of a failed run are also logged at
+PRIORITY=3 (err), the others at 6 (info).\&
+.PP
+.RE
+For example, \fBjournalctl SYSFORGE_VERB=update\fR lists every update, and
+\fBjournalctl SYSLOG_IDENTIFIER=sysforge PRIORITY=3\fR the failed runs.\&
+.PP
 .SH DISTRIBUTIONS
 .PP
 SysForge assumes \fBpacman\fR(8) and \fBmakepkg\fR(8), and nothing narrower.\& It has no

@@ -228,6 +228,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DOC13` — the man page documents the journal records.** Commands that change installed packages or build state write a record to the systemd journal, queryable by field, but no user document said so. A new JOURNAL section names the fields (`SYSFORGE_VERB`, `SYSFORGE_TARGET`, `SYSFORGE_EXIT`), which commands write them, and two `journalctl` queries; it is generated from the field list the records are built from.
+
+---
+
 - **`3.5.0-F2` — `run toolchain` builds the LLVM toolchain from upstream's single `llvm` package.** The repos now build clang, lld, polly, compiler-rt and openmp, along with lldb, libclc and others, as part of the `llvm` package. With PGO on, the whole set now goes through the profiling build together, which also means clang's own code (`libclang-cpp`) is optimized with the profile for the first time; before, only libLLVM was. Building them separately would have meant building the entire llvm source tree two extra times. When it installs, the toolchain stage now also replaces the other packages that come from the same build and that you already have installed (for example lldb and libclc), so they match the new libLLVM, and the rollback covers them too. Packages from that build you never installed, such as the WebAssembly runtimes, are built but not installed. Your `[packages]` lists in `toolchain.toml` keep working unchanged.
 
 ---
@@ -766,6 +770,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B127` — bash completes the values of `run toolchain --rebuild-soname-consumers`.** zsh offered `prompt`, `auto` and `off` after the flag; bash offered nothing. It now offers the same three.
+
+---
+
+- **`3.5.0-B128` — the man page lists every environment variable sysforge reads.** Its ENVIRONMENT section named three of eleven. Now it also covers `SYSFORGE_MERGE` (the merge tool for `config merge`), `SYSFORGE_ASCII` (ASCII in place of decorative glyphs), `SYSFORGE_PGO_STORE` and `SYSFORGE_PROFILE_STORE` (where profiles are kept, the second documented nowhere before), and three diagnostic switches for bug reports. The `SYSFORGE_EDITOR` entry now gives the whole lookup order, which includes `sysforge.toml [ui] editor`, and the pager entry the right fallback flags. The section is generated from one list in the code, and a test fails on a variable missing from it.
 
 ## Security
 
