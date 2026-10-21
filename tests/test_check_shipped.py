@@ -519,7 +519,7 @@ def _config_dataclass_reads() -> set[str]:
     keys |= {"packages", "bolt", "llvm"}
     # Keys the dataclass carries but resolves through a helper that takes the
     # whole table (asserted separately in the test that calls this).
-    keys |= {"pgo_store", "drift_detect"}
+    keys |= {"pgo_store", "drift_detect", "profile_store"}
     # [bolt]/[packages] member keys belong to their section, not the top level.
     return keys - {"enabled", "libllvm", "training_workload", "pgo", "non_pgo",
                    "lib32", "training_corpus"} | {"enabled", "pgo"}
@@ -563,7 +563,7 @@ class TestAllowlistCodeParity:
         compared as sets instead of one-way containment plus a hand-maintained
         set of helper exemptions.
 
-        Two keys are still resolved elsewhere, by helpers that take the whole
+        Three keys are still resolved elsewhere, by helpers that take the whole
         table by design, and the indirection is asserted rather than assumed.
         """
         cs = _load_check_shipped()
@@ -576,6 +576,9 @@ class TestAllowlistCodeParity:
         # wrapper's orphan-profraw guard.
         helper = (REPO / "sysforge/primitives/makepkg_pgo.py").read_text()
         assert 'get("pgo_store")' in helper
+        # profile_store likewise, in resolve_profile_store_root(raw), the root of
+        # the pgo/autofdo/propeller/bolt stores (allowlisted by 3.5.0-F18).
+        assert 'get("profile_store")' in helper
         # drift_detect configures *update*'s same-variant drift fingerprint, not
         # anything the toolchain stage does; ToolchainConfig carries it so the
         # key is not orphaned, and config.resolve_drift_detect is the reader.

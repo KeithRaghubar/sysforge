@@ -80,6 +80,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from sysforge.primitives import config_schema  # noqa: E402
 
 
 @dataclass
@@ -94,48 +97,10 @@ class Finding:
 # Group: configs
 # ===========================================================================
 
-# Top-level sections accepted in each shipped TOML. Adding a section here is
-# the deliberate signal that the schema changed; the schema and the file are
-# always edited together.
-_KNOWN_SECTIONS: dict[str, set[str]] = {
-    "sysforge.toml":  {"ui", "log", "git", "aur", "build", "failure_handling",
-                       "safety", "mesa", "pgo", "update", "doctor", "artifacts",
-                       "security"},
-    "profiles.toml":  {"paths", "defaults", "profiles", "rules",
-                       "append_conflict_groups", "preserved_system_tokens",
-                       "consumes_inference",
-                       "package_compiler_overrides"},
-    "packages.toml":  {"build", "package", "group"},
-    "kernel.toml":    {"kconfig", "fdo"},
-    "toolchain.toml": {"packages", "llvm", "bolt", "bench"},
-    "bootstrap.toml": {"partition", "system", "mirror", "desktop", "makepkg"},
-}
-
-# Top-level scalar keys (in addition to sections).
-_KNOWN_TOP_KEYS: dict[str, set[str]] = {
-    "sysforge.toml":  set(),
-    "profiles.toml":  {"extends_system"},
-    "packages.toml":  set(),
-    # Kept in lockstep with what KernelStage actually reads via
-    # kernel_cfg.get(...) — enforced by tests/test_check_shipped.py's
-    # test_kernel_allowlist_matches_stage_reads. The kernel stage does NO
-    # PGO, so the toolchain's pgo/skip_build/pgo_staging/pgo_store keys are
-    # deliberately absent here.
-    "kernel.toml":    {"enabled", "compiler", "pkgname", "upstream_pkgname",
-                       "srcdir", "boot_entries", "boot_entries_prefix",
-                       "bootloader", "interactive", "pkgbuild_src_dir",
-                       "source", "base_config", "base_config_merge",
-                       "require_fallback_kernel", "boot_audit", "min_boot_free_mb",
-                       "capture_lsmod_snapshot", "device_kconfig",
-                       "kconfig_merge", "build_headers", "build_docs",
-                       "kconfig_targets", "keep_hotplug_drivers", "hardening"},
-    "toolchain.toml": {"enabled", "compiler", "pgo", "skip_build",
-                       "drift_detect",
-                       "pgo_staging", "pgo_staging1", "pgo_staging3",
-                       "pgo_store", "min_build_free_gb", "require_multilib",
-                       "rebuild_soname_consumers", "reuse_unchanged"},
-    "bootstrap.toml": {"target"},
-}
+# The config schema lives in the package (3.5.0-F18), so `sysforge config
+# check` at runtime and this release gate read one definition.
+_KNOWN_SECTIONS = config_schema.KNOWN_SECTIONS
+_KNOWN_TOP_KEYS = config_schema.KNOWN_TOP_KEYS
 
 
 def check_configs(repo: Path) -> list[Finding]:

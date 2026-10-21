@@ -179,6 +179,10 @@ Mechanism lives in the cited §DESIGN section.
   A pair's jump-size tint is `version_pair(..., classify=True)` (`3.4.0-F8`, order via the pure
   `version.vercmp_local`); only on a `ui()`/`print()` line, never in text that can reach `error()`.
 - **LLVM source-state**: `llvm_state.collect_llvm_state` — don't call `git_is_dirty`+URL-parse.
+- **Live-config schema and repair**: `primitives/config_schema.py` (`KNOWN_SECTIONS`/`KNOWN_TOP_KEYS`,
+  `OPEN_SECTIONS`, `RETIRED_KEYS`/`RETIRED_VALUES`, `shipped_text`, `inspect`, `clean_text`,
+  `reset_keys_text`); `tools/check_shipped.py` imports its schema. A retired config key or value
+  gets a row there in the same change; a new key is valid once the shipped default documents it.
 - **Editor/merge-tool launch**: `primitives/editor.py` (`resolve_editor`, `resolve_merge_tool`,
   `run_tty_argv`); `.sfnew` adoption in `config_cmd.ConfigMergeVerb`. §Config Layer.
 - **Dir/group provisioning**: `primitives/fs_provision.py` (`root:sysforge` setgid 2775); `/etc/

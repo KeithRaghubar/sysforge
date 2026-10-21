@@ -82,6 +82,11 @@ drift_detect = "fingerprint"
 #   major) skips passes 1-3. Use --rebuild-profdata to force a full 4-pass
 #   build. Needs ~500 MB free during pass 3.
 #pgo_store = "/var/cache/sysforge/llvm-pgo"
+#
+# profile_store — root directory of the other profile stores: build --pgo's
+#   pgo/<pkgbase>, the kernel's autofdo/ and propeller/, and bolt/. Overridden
+#   by SYSFORGE_PROFILE_STORE when unset here.
+#profile_store = "/var/cache/sysforge"
 
 # ---------------------------------------------------------------------------
 # Build-safety gates (LLVM path only — the GCC path is register-only and skips

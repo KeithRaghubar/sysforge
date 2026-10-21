@@ -34,6 +34,7 @@ _PRODUCERS = {
     "gfxperf": doctor._collect_gfxperf_findings,
     "pacman": doctor._collect_pacman_findings,
     "state": doctor._collect_state_findings,
+    "config": doctor._collect_config_findings,
     "boot": doctor._collect_boot_findings,
     "restart": doctor._collect_restart_findings,
     "storage": doctor._collect_storage_findings,
@@ -140,3 +141,22 @@ def test_render_no_longer_says_not_reported(monkeypatch, capsys):
     out = "".join(capsys.readouterr())
     assert "not reported by this axis" not in out
     assert "default_route" in out
+
+
+def test_system_help_names_every_default_axis_and_their_count():
+    """`doctor system --help` lists the sweep's axes and says how many run;
+    adding the config axis (3.5.0-F18) showed both were hand-kept."""
+    import argparse
+    import re
+
+    from sysforge import doctor
+    from sysforge.verbs.registry import build_parser
+    sub = next(a for a in build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    doctor_p = sub.choices["doctor"]
+    group = next(a for a in doctor_p._actions if isinstance(a, argparse._SubParsersAction))
+    help_text = next(c.help for c in group._choices_actions if c.dest == "system")
+    defaults = [a for a in doctor._SYSTEM_AXIS_ORDER
+                if a not in doctor._OPT_IN_AXES and a != "abi"]
+    listed = re.search(r"axes: ([^.]+)\.", help_text).group(1).replace(" ", "").split(",")
+    assert sorted(listed) == sorted(defaults)
+    assert f"all {len(defaults)} non-opt-in axes" in help_text

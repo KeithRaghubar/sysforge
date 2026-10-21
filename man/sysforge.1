@@ -157,6 +157,12 @@ Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local
 Used by: \fBbuild\fR, \fBupdate\fR, \fBfetch\fR, \fBrun toolchain\fR, \fBrun kernel\fR.\&
 .PP
 .RE
+\fB\-\-config\-dir\fR \fIDIR\fR
+.RS 4
+Live config dir (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).\&
+Used by: \fBconfig check\fR, \fBconfig clean\fR, \fBconfig reset\fR.\&
+.PP
+.RE
 \fB\-\-dry\-run\fR
 .RS 4
 Show what would run without executing anything.\&
@@ -221,6 +227,12 @@ Used by: \fBrun pipeline\fR, \fBrun packages\fR.\&
 .RS 4
 Override state directory.\&
 Used by: \fBbuild\fR, \fBupdate\fR, \fBstate list\fR, \fBstate repair\fR, \fBstate failed\fR, \fBstate forget\fR, \fBrun pipeline\fR, \fBrun hardware\fR, \fBrun reconfigure\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR, \fBrevert\-to\-stock\fR, \fBuninstall\fR.\&
+.PP
+.RE
+\fB\-\-yes\fR
+.RS 4
+Write without asking (needed without a terminal).\&
+Used by: \fBconfig clean\fR, \fBconfig reset\fR.\&
 .PP
 .RE
 .SH COMMANDS
@@ -537,7 +549,7 @@ Diagnose system health (`doctor system`) or package health (`doctor pkg`).\& Bar
 .PP
 \fBsysforge doctor system\fR [\fIOPTIONS\fR]
 .PP
-System\-state axes: toolchain, cache, hardware, graphics, pacman, state, boot, restart, storage, services, audio, network, distro.\& With no axis flag, runs all 13 non\-opt\-in axes.\&
+System\-state axes: toolchain, cache, hardware, graphics, pacman, state, config, boot, restart, storage, services, audio, network, distro.\& With no axis flag, runs all 14 non\-opt\-in axes.\&
 .PP
 \fB\-\-graphics\fR
 .RS 4
@@ -582,6 +594,11 @@ Check local package\-database integrity (read\-only, never syncs): `pacman \-Dk`
 \fB\-\-state\fR
 .RS 4
 Check sysforge'\&s own state integrity: recorded build failures, an interrupted stage sentinel from a prior run, and build_state drift vs the live pacman database.\& Read\-only (does not recover).\&
+.PP
+.RE
+\fB\-\-config\fR
+.RS 4
+Check the live config files for settings sysforge retired or does not know (the same report as `sysforge config check`).\&
 .PP
 .RE
 \fB\-\-boot\fR
@@ -1047,7 +1064,56 @@ Apply a config preset without asking: defaults, performance (faster binaries), l
 .PP
 \fBsysforge config\fR \fISUBCOMMAND\fR
 .PP
-Manage live sysforge config files (adopt shipped\-default drift).\&
+Check, clean or reset the live sysforge config files, or merge shipped\-default changes into them.\&
+.PP
+.SS config check
+.PP
+\fBsysforge config check\fR [\fIOPTIONS\fR]
+.PP
+Report settings in the live config files that sysforge retired (renamed keys, refused values) or does not know (misspelt or no longer used).\& Exits 1 when it finds any.\&
+.PP
+\fBShared options:\fR \fB\-\-config\-dir\fR (see SHARED OPTIONS)
+.PP
+.SS config clean
+.PP
+\fBsysforge config clean\fR [\fIOPTIONS\fR]
+.PP
+Rewrite retired settings in the live config files: a renamed key takes its new name (or is dropped when the new one is already set), a retired value its replacement.\& Comments are kept.\& Shows the diff and asks first.\&
+.PP
+\fB\-\-unknown\fR
+.RS 4
+Also remove settings sysforge does not know (see `config check`).\&
+.PP
+.RE
+\fB\-\-dry\-run\fR
+.RS 4
+Show the diff without writing anything.\&
+.PP
+.RE
+\fBShared options:\fR \fB\-\-config\-dir\fR, \fB\-\-yes\fR (see SHARED OPTIONS)
+.PP
+.SS config reset
+.PP
+\fBsysforge config reset\fR [\fIOPTIONS\fR] \fIFILE\fR \fI[KEY.\&.\&.\&]\fR
+.PP
+Put settings back to the shipped default: each KEY given as SECTION.\&KEY (or KEY for a top\-level one), or with no KEY the whole FILE, keeping the current one as FILE.\&bak\-<time>.\& Shows the diff and asks first.\&
+.PP
+\fBFILE\fR
+.RS 4
+Config file to reset (sysforge.\&toml, profiles.\&toml, packages.\&toml, kernel.\&toml or toolchain.\&toml).\&
+.PP
+.RE
+\fBKEY\fR
+.RS 4
+Keys to reset, such as build.\&jobs; omit to reset the whole file.\&
+.PP
+.RE
+\fB\-\-dry\-run\fR
+.RS 4
+Show the diff without writing anything.\&
+.PP
+.RE
+\fBShared options:\fR \fB\-\-config\-dir\fR, \fB\-\-yes\fR (see SHARED OPTIONS)
 .PP
 .SS config merge
 .PP

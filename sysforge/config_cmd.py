@@ -3,7 +3,14 @@
 # SPDX-License-Identifier: MIT
 
 """
-config_cmd.py — `sysforge config merge` verb: interactive .sfnew adoption.
+config_cmd.py — `sysforge config` verbs: check, clean, reset (3.5.0-F18) and
+merge (interactive .sfnew adoption).
+
+`check` reports settings sysforge retired or does not know, `clean` rewrites
+the retired ones (and with ``--unknown`` removes the unknown), and `reset` puts
+keys, or a whole file, back to the shipped default. The schema and the edits
+are primitives/config_schema.py; this module adds the reporting, the diff and
+the consent. The rest of this docstring is about `merge`.
 
 `make sync-config` adopts new shipped config defaults into the live config dir
 via an add-only, key-anchored merge (tools/sync_config.py), but it cannot carry
@@ -22,18 +29,20 @@ hunks, then drop the ``.sfnew``. ``[o]verwrite`` exists for the ``.pacnew``
 default action.
 
 Public API:
+    cmd_config_check(args), cmd_config_clean(args), cmd_config_reset(args)
     cmd_config_merge(args)
-    ConfigMergeVerb
+    ConfigCheckVerb, ConfigCleanVerb, ConfigResetVerb, ConfigMergeVerb
 """
 from __future__ import annotations
 
 import difflib
 import re
 import shutil
+import time
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import paths
+from sysforge.primitives import atomic_write, config_schema, paths, prompt
 from sysforge.primitives.editor import resolve_merge_tool, run_tty_argv
 from sysforge.primitives.pager import maybe_pager
 from sysforge.primitives.prompt import prompt_choice, prompt_key
@@ -213,6 +222,246 @@ def cmd_config_merge(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# check / clean / reset (3.5.0-F18)
+# ---------------------------------------------------------------------------
+
+_HINTS = {
+    "retired_key": "sysforge config clean",
+    "retired_value": "sysforge config clean",
+    "unknown_key": "check the spelling, or sysforge config clean --unknown",
+    "unknown_section": "check the spelling, or sysforge config clean --unknown",
+    "parse_error": "fix it by hand",
+}
+
+
+def cmd_config_check(args) -> int:
+    """Report retired and unknown settings. 0 when there are none, else 1."""
+    config_dir = _resolve_config_dir(args)
+    issues = config_schema.inspect(config_dir)
+    if not issues:
+        _log.ui(f"config check: nothing retired or unknown in {config_dir}")
+        return 0
+    for name in config_schema.CONFIG_FILES:
+        mine = [i for i in issues if i.file == name]
+        if not mine:
+            continue
+        _log.ui(f"{config_dir / name}")
+        for i in mine:
+            where = f"{i.where}: " if i.where else ""
+            _log.ui(f"  line {i.line}  {where}{i.message}  ({_HINTS[i.kind]})")
+    kinds = {i.kind for i in issues}
+    _log.ui(f"config check: {len(issues)} setting(s) to review"
+            + ("; `sysforge config clean` fixes the retired ones"
+               if kinds & {"retired_key", "retired_value"} else ""))
+    return 1
+
+
+def _show_diff(path: Path, old: str, new: str) -> None:
+    for line in difflib.unified_diff(old.splitlines(), new.splitlines(),
+                                     f"{path} (now)", f"{path} (after)", lineterm=""):
+        _log.ui(line)
+
+
+def _consent(args, question: str) -> bool | None:
+    """True to write, False when declined, None when it cannot ask."""
+    if getattr(args, "yes", False):
+        return True
+    if not prompt.is_interactive():
+        return None
+    return prompt.prompt_choice(f"{question} [y/N] ", ["y", "n"], default="n",
+                                retry_on_invalid=False) == "y"
+
+
+def _write_all(args, writes: list[tuple[Path, str, str]], question: str) -> int:
+    """Show each (path, old, new) diff, then write them all with consent."""
+    for path, old, new in writes:
+        _show_diff(path, old, new)
+    if getattr(args, "dry_run", False):
+        _log.ui("Dry run: nothing written.")
+        return 0
+    answer = _consent(args, question)
+    if answer is None:
+        _log.error("refusing to edit config files without a terminal to confirm on; "
+                   "pass --yes (or --dry-run to only look)")
+        return 2
+    if not answer:
+        _log.ui("Aborted: nothing written.")
+        return 2
+    for path, _old, new in writes:
+        written = atomic_write.replace_file(path, new, tag="CONFIG")
+        _log.ui(f"Wrote {written}")
+    return 0
+
+
+def cmd_config_clean(args) -> int:
+    config_dir = _resolve_config_dir(args)
+    unknown = getattr(args, "unknown", False)
+    writes, fixed, left = [], [], []
+    for name in config_schema.CONFIG_FILES:
+        path = config_dir / name
+        if not path.is_file():
+            continue
+        old = path.read_text(encoding="utf-8")
+        try:
+            new, done = config_schema.clean_text(name, old, unknown=unknown)
+        except config_schema.ConfigEditError as e:
+            _log.error(f"{path}: {e}")
+            return 1
+        fixed += done
+        left += config_schema.inspect_text(name, new)
+        if new != old:
+            writes.append((path, old, new))
+    for i, action in fixed:
+        _log.ui(f"{i.file} line {i.line}  {i.where}: {action} ({i.message})")
+    if left:
+        _log.ui(f"{len(left)} unknown setting(s) left in place; `sysforge config check` "
+                "lists them, and --unknown removes them")
+    if not writes:
+        _log.ui("config clean: nothing to change")
+        return 0
+    return _write_all(args, writes, f"Apply these changes to {len(writes)} file(s)?")
+
+
+def cmd_config_reset(args) -> int:
+    config_dir = _resolve_config_dir(args)
+    name = args.file
+    path = config_dir / name
+    keys = list(getattr(args, "keys", None) or [])
+    shipped = config_schema.shipped_text(name)
+    if shipped is None:
+        _log.error(f"no shipped default for {name} is installed")
+        return 1
+    old = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if keys:
+        try:
+            new, changes = config_schema.reset_keys_text(name, old, keys)
+        except config_schema.ConfigEditError as e:
+            _log.error(str(e))
+            return 2
+        for line in changes:
+            _log.ui(line)
+        if new == old:
+            return 0
+        return _write_all(args, [(path, old, new)], f"Reset {len(keys)} key(s) in {path}?")
+    if old == shipped:
+        _log.ui(f"{path} is already the shipped default")
+        return 0
+    backup = path.with_name(f"{name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    _log.ui(f"{path} will be replaced by the shipped default; the current file is "
+            f"kept as {backup}")
+    if getattr(args, "dry_run", False):
+        _show_diff(path, old, shipped)
+        _log.ui("Dry run: nothing written.")
+        return 0
+    answer = _consent(args, f"Replace {path} with the shipped default?")
+    if answer is None:
+        _log.error("refusing to replace a config file without a terminal to confirm on; "
+                   "pass --yes (or --dry-run to only look)")
+        return 2
+    if not answer:
+        _log.ui("Aborted: nothing written.")
+        return 2
+    if old:
+        atomic_write.replace_file(backup, old, tag="CONFIG")
+    written = atomic_write.replace_file(path, shipped, tag="CONFIG")
+    _log.ui(f"Wrote {written}" + (f" (previous copy: {backup})" if old else ""))
+    return 0
+
+
+def _add_config_dir(p) -> None:
+    p.add_argument("--config-dir", metavar="DIR", dest="config_dir",
+        help="Live config dir (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).")
+
+
+class ConfigCheckVerb(Verb):
+    """Read-only: report retired and unknown settings in the live config."""
+
+    name = "config-check"
+    requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("check",
+            help="Report settings in the live config files that sysforge retired "
+                 "(renamed keys, refused values) or does not know (misspelt or "
+                 "no longer used). Exits 1 when it finds any.")
+        _add_config_dir(p)
+        p.set_defaults(verb_cls=cls)
+        return p
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_config_check(args))
+
+
+class ConfigCleanVerb(Verb):
+    """Rewrite retired settings in place; reversible and never builds."""
+
+    name = "config-clean"
+    wants_run_log = True
+    requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("clean",
+            help="Rewrite retired settings in the live config files: a renamed key "
+                 "takes its new name (or is dropped when the new one is already "
+                 "set), a retired value its replacement. Comments are kept. Shows "
+                 "the diff and asks first.")
+        _add_config_dir(p)
+        p.add_argument("--unknown", action="store_true", dest="unknown",
+            help="Also remove settings sysforge does not know (see `config check`).")
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Show the diff without writing anything.")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="Write without asking (needed without a terminal).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_config_clean(args))
+
+
+class ConfigResetVerb(Verb):
+    """Put keys, or a whole file, back to the shipped default."""
+
+    name = "config-reset"
+    wants_run_log = True
+    requires_sentinel = False
+
+    @classmethod
+    def add_parser(cls, sub):
+        p = sub.add_parser("reset",
+            help="Put settings back to the shipped default: each KEY given as "
+                 "SECTION.KEY (or KEY for a top-level one), or with no KEY the whole "
+                 "FILE, keeping the current one as FILE.bak-<time>. Shows the diff "
+                 "and asks first.")
+        p.add_argument("file", metavar="FILE", choices=config_schema.CONFIG_FILES,
+            help="Config file to reset (sysforge.toml, profiles.toml, packages.toml, "
+                 "kernel.toml or toolchain.toml).")
+        p.add_argument("keys", nargs="*", metavar="KEY",
+            help="Keys to reset, such as build.jobs; omit to reset the whole file.")
+        _add_config_dir(p)
+        p.add_argument("--dry-run", action="store_true", dest="dry_run",
+            help="Show the diff without writing anything.")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="Write without asking (needed without a terminal).")
+        p.set_defaults(verb_cls=cls)
+        return p
+
+    def pre_check(self, args) -> PreCheckResult:
+        return PreCheckResult()
+
+    def execute(self, args, pre: PreCheckResult) -> ExecResult:
+        return ExecResult(exit_code=cmd_config_reset(args))
+
+
 class ConfigMergeVerb(Verb):
     """Interactive .sfnew/.pacnew adoption. Edits config files in place but is
     fully reversible and never builds/installs, so it carries no sentinel."""
@@ -248,10 +497,11 @@ class ConfigMergeVerb(Verb):
         return ExecResult(exit_code=cmd_config_merge(args))
 
 
-#: `sysforge config`: merge (subcommand required).
+#: `sysforge config`: check, clean, reset, merge (subcommand required).
 CONFIG_GROUP = VerbGroup(
     name="config",
-    help="Manage live sysforge config files (adopt shipped-default drift).",
+    help="Check, clean or reset the live sysforge config files, or merge "
+         "shipped-default changes into them.",
     dest="config_cmd",
-    members=(ConfigMergeVerb,),
+    members=(ConfigCheckVerb, ConfigCleanVerb, ConfigResetVerb, ConfigMergeVerb),
 )

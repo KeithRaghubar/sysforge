@@ -85,6 +85,9 @@ allow = [
     "docs/design/10-flag-profile-system.md",
     "docs/design/21-standards.md",
     "etc/sysforge/profiles.toml",
+    # the live-config repair that rewrites it (3.5.0-F18)
+    "sysforge/primitives/config_schema.py",
+    "docs/design/06-config-layer.md",
 ]
 
 # --- 3.5.0-F17: mesa PGO is generic -----------------------------------------

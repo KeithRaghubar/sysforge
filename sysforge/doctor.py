@@ -943,6 +943,27 @@ def _collect_hook_findings() -> list[diag.Finding]:
     return out
 
 
+def _collect_config_findings() -> diag.AxisResult:
+    """Retired and unknown settings in the live config files (3.5.0-F18).
+
+    Read-only; the same inspection as `sysforge config check`. A file that does
+    not parse is an error (every command reading it fails); a retired or
+    unknown setting is a warning, since sysforge runs on, ignoring it."""
+    from sysforge.primitives import config_schema
+    from sysforge.primitives.paths import CONFIG_DIR
+    out = []
+    for i in config_schema.inspect(CONFIG_DIR):
+        retired = i.kind in ("retired_key", "retired_value")
+        out.append(diag.Finding(
+            "config", diag.SEV_ERROR if i.kind == "parse_error" else diag.SEV_WARN,
+            f"config:{i.file}:{i.line}",
+            f"{i.file} line {i.line}" + (f" {i.where}" if i.where else "") + f": {i.message}",
+            remediation=("fix the file by hand" if i.kind == "parse_error" else
+                         "sysforge config clean" if retired else
+                         "check the spelling, or sysforge config clean --unknown")))
+    return _ran(out, "retired_and_unknown_settings")
+
+
 def _collect_state_findings(args) -> diag.AxisResult:
     """sysforge's own state integrity: recorded build failures, an interrupted
     stage sentinel, build_state drift. Read-only — does not recover or save.
@@ -1138,7 +1159,7 @@ def _collect_integrity_findings(args) -> diag.AxisResult:
 # Canonical order every KNOWN axis renders in (explicit flags select from here).
 _SYSTEM_AXIS_ORDER: tuple[str, ...] = (
     "distro", "toolchain", "rust", "cache", "hardware", "graphics", "gfxperf",
-    "pacman", "state", "boot", "restart", "storage", "services", "audio",
+    "pacman", "state", "config", "boot", "restart", "storage", "services", "audio",
     "network", "integrity",
     # `abi` is registered here so axis lookup/selection is uniform, but it is
     # package-scoped: it never runs in a system sweep (_resolve_axis_names
@@ -1163,6 +1184,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "gfxperf": "gfxperf",
     "pacman": "pacman",
     "state": "state",
+    "config": "config",
     "boot": "boot",
     "restart": "restart",
     "storage": "storage",
@@ -1234,6 +1256,10 @@ def _system_axes(config, args=None) -> dict[str, diag.Axis]:
             "state", "sysforge state integrity",
             lambda: _collect_state_findings(args),
             clean_msg="no build failures, stale sentinel, or state drift"),
+        "config": diag.Axis(
+            "config", "live config settings",
+            lambda: _collect_config_findings(),
+            clean_msg="no retired or unknown settings in the live config files"),
         "boot": diag.Axis(
             "boot", "boot / kernel runtime",
             lambda: _collect_boot_findings(),
@@ -1273,7 +1299,7 @@ _PKG_AXES: tuple[str, ...] = ("abi", "rust", "integrity")
 
 def _resolve_axis_names(args) -> list[str]:
     """Which system axes to run, in canonical order. Explicit axis flags select
-    exactly those; otherwise the 13 non-opt-in axes (the full sweep).
+    exactly those; otherwise the 14 non-opt-in axes (the full sweep).
 
     ``abi`` is never part of a system sweep — a package walk is `doctor pkg`'s
     job and package targets no longer reach this function (2.6.1-F1).
@@ -1682,6 +1708,9 @@ def _add_system_axis_flags(p):
         help="Check sysforge's own state integrity: recorded build failures, an "
              "interrupted stage sentinel from a prior run, and build_state drift "
              "vs the live pacman database. Read-only (does not recover).")
+    p.add_argument("--config", action="store_true",
+        help="Check the live config files for settings sysforge retired or does "
+             "not know (the same report as `sysforge config check`).")
     p.add_argument("--boot", action="store_true",
         help="Check running-system boot readiness (reusing the kernel stage's "
              "safety primitives): per-kernel boot artifacts (vmlinuz + initramfs "
@@ -1754,8 +1783,8 @@ class DoctorSystemVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("system",
             help="System-state axes: toolchain, cache, hardware, graphics, pacman, "
-                 "state, boot, restart, storage, services, audio, network, distro. "
-                 "With no axis flag, runs all 13 non-opt-in axes.")
+                 "state, config, boot, restart, storage, services, audio, network, distro. "
+                 "With no axis flag, runs all 14 non-opt-in axes.")
         _add_system_axis_flags(p)
         p.set_defaults(verb_cls=cls, packages=[])
         return p
