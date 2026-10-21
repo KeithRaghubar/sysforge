@@ -499,6 +499,10 @@ def _resolve_module_file(repo: Path, name: str) -> Path | None:
 
 # Things cited on purpose after their removal, in a passage about that history.
 _CITATION_HISTORY = {"doctor.flat_flags"}
+# The repo's own top-level and package directories: a path into one of these is
+# a citation even if that whole directory is gone.
+_REPO_TOP_DIRS = {"tools", "tests", "docs", "sysforge", "etc", "completions", "man",
+                  "primitives", "pipeline", "verbs", "build", "ui"}
 # Local variables the design prose names attributes of: `run.plan` is update's
 # UpdateRun record, not primitives/run.py.
 _CITATION_LOCALS = {"run", "self", "args", "options", "opts", "state", "registry"}
@@ -561,7 +565,8 @@ def _check_citation(repo: Path, token: str) -> str | None:
         # Only a path into this repo can be stale; `root/usr/bin`, `and/or` and
         # runtime paths start with a segment the repo does not have.
         first = rel.split("/")[0]
-        if not ((repo / first).exists() or (repo / "sysforge" / first).exists()):
+        if first not in _REPO_TOP_DIRS and not (
+                (repo / first).exists() or (repo / "sysforge" / first).exists()):
             return None
         # `etc/pam.d`, `etc/sudoers.d`: system paths; the repo's etc/ holds
         # only what it ships.
