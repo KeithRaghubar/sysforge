@@ -29,7 +29,9 @@ from sysforge import log
 
 _log = log.get_logger("CLI")
 
-from sysforge.verbs import registry, run_verb
+# The verb registry imports every command module (~110 ms), so it loads on
+# first use: `sysforge completions` runs on every Tab press and never needs it
+# (3.5.0-B124, tests/test_completions_speed.py).
 
 
 # ---------------------------------------------------------------------------
@@ -47,13 +49,10 @@ def _hoist_verbosity_flags(argv):
     verbose_tokens = []
     rest = []
     # The global --quiet is hoisted like -v so users can place it after the
-    # subcommand (sysforge update --quiet). It is NOT hoisted when the command
-    # is `doctor`, which owns a *local* --quiet/-q with different semantics
-    # (suppress clean lines) — hoisting would let the global parser eat it. The
-    # short -q is doctor-only and never hoisted.
-    hoist_quiet = "doctor" not in argv
+    # subcommand (sysforge update --quiet). No command owns a local --quiet
+    # (doctor's clean-line filter is --findings-only), so it always hoists.
     for tok in argv:
-        if tok in ("-v", "-vv", "-vvv", "--verbose") or tok == "--quiet" and hoist_quiet:
+        if tok in ("-v", "-vv", "-vvv", "--verbose", "--quiet"):
             verbose_tokens.append(tok)
         else:
             rest.append(tok)
@@ -246,8 +245,19 @@ def _patch_makepkg_argv(argv):
 
 # The parser is assembled from the verb registry (3.2.0-F7). These names stay
 # importable from cli for main(), the tests and tools/preflight.sh.
-_build_parser = registry.build_parser
-tiered_command_order = registry.tiered_command_order
+def _build_parser():
+    from sysforge.verbs import registry
+    return registry.build_parser()
+
+
+def tiered_command_order(*args, **kwargs):
+    from sysforge.verbs import registry
+    return registry.tiered_command_order(*args, **kwargs)
+
+
+def run_verb(verb, args) -> int:
+    from sysforge.verbs import run_verb as _run_verb
+    return _run_verb(verb, args)
 
 
 _INSTALL_BEARING_COMMANDS = frozenset(
@@ -310,6 +320,15 @@ def main():
     # The progress bar's one lifecycle owner (3.3.0-F2): session() releases
     # the terminal however _main ends, and it exits before these handlers run,
     # so the region is gone before `aborted (Ctrl-C)` prints.
+    # Shell completion fast path (3.5.0-B124): a Tab press only needs names
+    # printed, so skip the parser, the runner and startup logging entirely.
+    if sys.argv[1:2] == ["completions"]:
+        import sysforge.completions_data as completions_data
+        try:
+            sys.exit(completions_data.main(sys.argv[2:]))
+        except BrokenPipeError:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+            sys.exit(141)
     from sysforge.ui import progress
     try:
         with progress.session():

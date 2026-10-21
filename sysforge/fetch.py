@@ -96,7 +96,6 @@ def cmd_fetch(args) -> int:
                 result = scheduler.request(SyncRequest(
                     pkgbase=pkgbase,
                     pkgbuild_dir=pkgbuild_dir,
-                    force_fetch=getattr(args, "force_fetch", False),
                 ))
                 if result.status in _BLOCKERS:
                     _log.error(f"{pkgbase}: {result.error or result.status}")
@@ -115,6 +114,7 @@ def cmd_fetch(args) -> int:
 # ---------------------------------------------------------------------------
 
 from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+from sysforge.verbs.helpers import CLEANSRC_FORCE_HELP  # noqa: E402
 
 
 class FetchVerb(Verb):
@@ -145,8 +145,7 @@ class FetchVerb(Verb):
                  "if the existing clone has uncommitted changes, ahead-of-upstream "
                  "commits, or no upstream tracking branch.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
-            help="Like --cleansrc but bypasses the dirty/diverged guard and "
-                 "overwrites the local tree unconditionally.")
+            help=CLEANSRC_FORCE_HELP)
         p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
             help="Suppress the LLVM source pre-flight summary.")
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",

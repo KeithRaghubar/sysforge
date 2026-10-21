@@ -192,11 +192,38 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DOC11` — a shorter, current sysforge(1).** The man page opened with a table of the `doctor` flags removed in 3.0.0, describing a hint that sysforge stopped printing in 3.1.0; it is gone. DESCRIPTION is now a short overview instead of repeating options each command documents itself, and the FILES entry for `toolchain.toml`/`kernel.toml` no longer carries a long explanation of individual keys (`kconfig_targets`, `hardening`, `[bench]`), which the shipped files already document in their comments.
+
+---
+
+- **`3.5.0-DOC12` — sysforge(1) lists shared options once.** An option several commands accept with the same meaning, such as `--state-dir`, `--profile-conf` or `--no-pager`, was printed in full under every one of them (`--state-dir` thirteen times). They now appear once in a new SHARED OPTIONS section, with the commands that accept each, and every command names its shared options in one line. `--packages` and `--cleansrc-force` now have the same help text everywhere, so they are shared too. Options that take one of a fixed set of values now show those values (`--pgo record|use`) instead of an internal name such as `PGO_MODE`. The page is about 180 lines shorter.
+
+---
+
 - **`3.5.0-F2` — `run toolchain` builds the LLVM toolchain from upstream's single `llvm` package.** The repos now build clang, lld, polly, compiler-rt and openmp, along with lldb, libclc and others, as part of the `llvm` package. With PGO on, the whole set now goes through the profiling build together, which also means clang's own code (`libclang-cpp`) is optimized with the profile for the first time; before, only libLLVM was. Building them separately would have meant building the entire llvm source tree two extra times. When it installs, the toolchain stage now also replaces the other packages that come from the same build and that you already have installed (for example lldb and libclc), so they match the new libLLVM, and the rollback covers them too. Packages from that build you never installed, such as the WebAssembly runtimes, are built but not installed. Your `[packages]` lists in `toolchain.toml` keep working unchanged.
 
 ---
 
 - **`3.5.0-F3` — `[bolt] enabled` can now run, and optimizes clang's library inside the toolchain build.** The BOLT option in `toolchain.toml` could never work: it tried to build the BOLT tools in a way the LLVM packages cannot support, then would have rewritten the 117 KB `clang` launcher instead of the library that holds clang's code, and it relied on a CPU feature (branch sampling) that Zen 3 processors lack. It now runs during `sysforge run toolchain`, right after the optimized LLVM is built and before anything is installed: it profiles `libclang-cpp` (and `libLLVM`, with `libllvm = true`) while compiling a sample of LLVM's own source, rewrites them, checks the result still compiles, and packages it. It uses the BOLT tools from the same build, so it needs the repos' single `llvm` package, and it no longer needs `perf`. Any failure warns and the toolchain installs without BOLT. Still experimental and off by default: it has not yet been through a full toolchain build.
+
+## Removed
+
+- **`3.5.0-F15` — one spelling per flag across every command.** **Breaking:** these spellings no longer parse; each has a direct replacement.
+
+  | Old | New | Commands |
+  |-----|-----|----------|
+  | `--no-pkg-logs` | `--no-pkg-log` | `run pipeline`, `run packages`, `run kernel` (now the same as `build` and `update`) |
+  | `--no-confirm` | `--yes` | `doctor pkg`, `state orphans` |
+  | `--force` | `--yes` | `revert-to-stock` (`--force` elsewhere overrides a guard; skipping a question is `--yes`, as on `update`) |
+  | `--quiet`, `-q` | `--findings-only` | `doctor system`, `doctor pkg` |
+  | `--non-interactive` | `--no-interactive` | `run kernel` |
+  | `--list` | `--dry-run` | `config merge` (they were aliases) |
+  | `sysforge doctor -q` / `--json` | `sysforge doctor system --findings-only` / `--json` | bare `doctor` |
+  | `sysforge packages --packages FILE` / `--orphans` | `sysforge packages list --packages FILE` / `--orphans` | bare `packages` |
+
+  The last two rows fix a bug as well as a spelling. An option given before a subcommand was silently dropped once the subcommand was named: `sysforge packages --packages /x.toml add foo` wrote to the default `packages.toml`, and `sysforge doctor --json system` printed text. Options now live only on the subcommand, the way `state` and `artifact` already worked, so a misplaced one is an error instead of being ignored. A bare `sysforge doctor` still runs the full system check and a bare `sysforge packages` still lists.
+
+  `doctor`'s old `--quiet` shared its name with the global `--quiet` (show errors only), which sysforge therefore could not accept after the word `doctor`, or after a package named `doctor`. With the rename, the global `--quiet` works after any command. `state orphans --yes` now says it applies with `--prune`: its old help said `--no-confirm` implied `--prune`, but it never did. Help text across `artifact`, `revert-to-stock`, `uninstall` and `search` is now written as sentences, like every other command's. **Migration:** scripts using any old spelling fail with "unrecognized arguments"; replace it as above.
 
 ## Fixed
 
@@ -667,6 +694,18 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B120` — a removed package's build failure is cleared.** A failed build stayed in `sysforge state failed`, `sysforge doctor` and the state summary until the package next built, so once the package was removed, whether by `sysforge uninstall`, a plain `pacman -R` or anything else, it was listed as failing indefinitely. sysforge now clears the failure when the package is removed and no other package built from the same PKGBUILD is still installed: `uninstall` clears it at once, a removal by pacman is cleared by the next `update`, and `state failed` and `doctor` already leave it out before then. `state forget` also clears the failure of a package it stops tracking. A package whose first build failed, and so was never installed, keeps its failure, since nothing removed it.
+
+---
+
+- **`3.5.0-B122` — wrong or outdated help text.** `build --pgo` said it applied only to mesa and did nothing for other packages; it works on any package and warns for one outside mesa and `sysforge.toml` `[pgo] allow`. `doctor pkg --apply` referred to "v1.x". `config merge` said its companion files come from `make sync-config`, a developer command; it now names pacman's `.pacnew`/`.pacsave`. `doctor pkg --rust` read like a changelog entry. In sysforge(1), `log` said per-package logs live under the state directory; they live beside each PKGBUILD under `[paths] pkgbuild_src_dir`.
+
+---
+
+- **`3.5.0-B123` — shell completion gaps.** bash completed nothing for `sysforge log` (its flags or a package name); zsh completed nothing after `sysforge help bench`; and both offered only `pkgbuild`/`running` for `run kernel --base-config`, which also takes a path to a `.config` file, so they now offer files too.
+
+---
+
+- **`3.5.0-B124` — Tab completion is several times faster.** Every Tab press started a full `sysforge` that loaded every command before printing a single name, and completing a package name also ran `pacman -Ssq` and piped about 140,000 names through `grep`, about half a second per press. Completion lookups now skip the rest of the CLI, the merged repo and AUR name list is cached and rebuilt only after a sync database, the AUR name list or your PKGBUILD directory changes, and sysforge filters the list to what you have typed before printing it. A package-name lookup now takes about 0.1 s and the others well under that. Completing a package from the build state also no longer tries to create the state directory, which could ask for your password. For contributors, `make bench-completions` prints the time of each lookup.
 
 ## Security
 

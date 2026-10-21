@@ -149,7 +149,7 @@ REMOTE_SCRIPT='
     # through the doctor axis over primitives/os_release.py.
     printf "OS_ID=%s\n" "$(. /etc/os-release 2>/dev/null; printf "%s" "${ID:-}")"
     printf "OS_ID_LIKE=%s\n" "$(. /etc/os-release 2>/dev/null; printf "%s" "${ID_LIKE:-}")"
-    sysforge doctor system --distro --quiet >/dev/null 2>&1; printf "DISTRO_AXIS_RC=%s\n" "$?"
+    sysforge doctor system --distro --findings-only >/dev/null 2>&1; printf "DISTRO_AXIS_RC=%s\n" "$?"
 
     # Sync repos: every [section] in pacman.conf must reach the alpm handle. A
     # derivative carries extra repos ahead of core/extra, and a hardcoded repo

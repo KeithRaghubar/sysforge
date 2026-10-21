@@ -60,9 +60,9 @@ class UninstallVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("uninstall",
-            help="remove package(s); demote any sysforge-tracked ones out of build state")
+            help="Remove package(s); demote any sysforge-tracked ones out of build state.")
         p.add_argument("packages", nargs="+", metavar="PKG",
-            help="package name(s) to remove (stock or -sysforge name)")
+            help="Package name(s) to remove (stock or -sysforge name).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.set_defaults(verb_cls=cls)

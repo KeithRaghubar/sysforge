@@ -1963,6 +1963,7 @@ def _cmd_update_body(args) -> int:
 # ---------------------------------------------------------------------------
 
 from sysforge.verbs import ExecResult, PreCheckResult, Verb  # noqa: E402
+from sysforge.verbs.helpers import CLEANSRC_FORCE_HELP, PACKAGES_FILE_HELP  # noqa: E402
 
 
 class UpdateVerb(Verb):
@@ -2007,9 +2008,7 @@ class UpdateVerb(Verb):
                  "--makepkg, --no-cleanbuild, --cleansrc, --cleansrc-force, --interactive, and "
                  "--cache-report.")
         p.add_argument("--packages", metavar="FILE", dest="packages",
-            help="Path to packages.toml for override rules "
-                 "(default: /etc/sysforge/packages.toml; override the dir with "
-                 "$SYSFORGE_CONFIG_DIR).")
+            help=PACKAGES_FILE_HELP)
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -2048,10 +2047,7 @@ class UpdateVerb(Verb):
                  "ahead-of-upstream commits, or no upstream. That package is "
                  "reported failed and the run continues.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
-            help="Like --cleansrc but bypasses the dirty/diverged guard and "
-                 "overwrites every local tree unconditionally. Use when the "
-                 "upstream rewrote history (e.g. Arch packaging repos force-push "
-                 "every release) and local commits have no value to preserve.")
+            help=CLEANSRC_FORCE_HELP)
         p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
             help="Suppress the LLVM source pre-flight summary.")
         review_group = p.add_mutually_exclusive_group()

@@ -26,11 +26,11 @@ class ArtifactListVerb(Verb):
 
     @classmethod
     def add_parser(cls, sub):
-        p = sub.add_parser("list", help="list managed artifacts")
+        p = sub.add_parser("list", help="List managed artifacts.")
         p.add_argument(
             "--unmanaged",
             action="store_true",
-            help="also show discovered candidates not yet adopted",
+            help="Also show discovered candidates not yet adopted.",
         )
         p.set_defaults(verb_cls=cls)
         return p
@@ -105,14 +105,14 @@ class ArtifactReviewVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser(
-            "review", help="interactively offer discovered candidates for adoption")
+            "review", help="Interactively offer discovered candidates for adoption.")
         p.add_argument(
             "--all", action="store_true",
-            help="adopt every offerable candidate without prompting",
+            help="Adopt every offerable candidate without prompting.",
         )
         p.add_argument(
             "--include-unknown", dest="include_unknown", action="store_true",
-            help="with --all, also adopt candidates of unknown ownership",
+            help="With --all, also adopt candidates of unknown ownership.",
         )
         p.set_defaults(verb_cls=cls)
         return p
@@ -235,11 +235,11 @@ class ArtifactAdoptVerb(Verb):
 
     @classmethod
     def add_parser(cls, sub):
-        p = sub.add_parser("adopt", help="bring a live artifact under management")
-        p.add_argument("path", help="path to the artifact to adopt")
+        p = sub.add_parser("adopt", help="Bring a live artifact under management.")
+        p.add_argument("path", metavar="PATH", help="Path to the artifact to adopt.")
         p.add_argument(
             "--class", dest="cls", choices=list(artifacts.ARTIFACT_CLASSES),
-            default=None, help="artifact class (inferred from the scan root if omitted)",
+            default=None, help="Artifact class (inferred from the scan root if omitted).",
         )
         p.set_defaults(verb_cls=cls)
         return p
@@ -270,8 +270,8 @@ class ArtifactEditVerb(Verb):
 
     @classmethod
     def add_parser(cls, sub):
-        p = sub.add_parser("edit", help="edit the managed copy of an artifact")
-        p.add_argument("name", help="registry name of the artifact")
+        p = sub.add_parser("edit", help="Edit the managed copy of an artifact.")
+        p.add_argument("name", metavar="NAME", help="Registry name of the artifact.")
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -321,15 +321,15 @@ class ArtifactDeployVerb(Verb):
 
     @classmethod
     def add_parser(cls, sub):
-        p = sub.add_parser("deploy", help="push managed content to the live system")
+        p = sub.add_parser("deploy", help="Push managed content to the live system.")
         grp = p.add_mutually_exclusive_group(required=True)
-        grp.add_argument("name", nargs="?", help="registry name of the artifact")
-        grp.add_argument("--all", action="store_true", help="deploy every managed artifact")
+        grp.add_argument("name", nargs="?", metavar="NAME", help="Registry name of the artifact.")
+        grp.add_argument("--all", action="store_true", help="Deploy every managed artifact.")
         res = p.add_mutually_exclusive_group()
         res.add_argument("--force", action="store_true",
-            help="managed copy wins, discarding the live edit")
+            help="Managed copy wins, discarding the live edit.")
         res.add_argument("--adopt-live", dest="adopt_live", action="store_true",
-            help="live file wins, updating the managed copy")
+            help="Live file wins, updating the managed copy.")
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -404,13 +404,13 @@ class ArtifactRemoveVerb(Verb):
 
     @classmethod
     def add_parser(cls, sub):
-        p = sub.add_parser("remove", help="remove an artifact from the live system")
-        p.add_argument("name", help="registry name of the artifact")
+        p = sub.add_parser("remove", help="Remove an artifact from the live system.")
+        p.add_argument("name", metavar="NAME", help="Registry name of the artifact.")
         p.add_argument("--purge", action="store_true",
-            help="also delete the managed copy and registry entry")
+            help="Also delete the managed copy and registry entry.")
         p.add_argument("--force", action="store_true",
-            help="remove even though the live file changed outside sysforge "
-                 "(discards those live-only edits)")
+            help="Remove even though the live file changed outside sysforge "
+                 "(discards those live-only edits).")
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -455,7 +455,7 @@ class ArtifactRemoveVerb(Verb):
 #: `sysforge artifact`: list (default), review, adopt, edit, deploy, remove.
 ARTIFACT_GROUP = VerbGroup(
     name="artifact",
-    help="inventory user-authored scripts, units, and pacman hooks",
+    help="Inventory user-authored scripts, units, and pacman hooks.",
     dest="artifact_cmd",
     members=(ArtifactListVerb, ArtifactReviewVerb, ArtifactAdoptVerb,
              ArtifactEditVerb, ArtifactDeployVerb, ArtifactRemoveVerb),

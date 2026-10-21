@@ -8,15 +8,17 @@ completions_cmd.py — ``sysforge completions`` verb.
 A shell-completion data sink: prints candidate names for a requested resource
 (``makepkg-flags`` / ``state`` / ``manifest`` / ``local`` / the default
 repo+AUR package universe), one per line, for the ``_sysforge`` completion
-script to consume. Not user-facing. Dispatched through the Verb framework; the
-argparse surface is ``CompletionsVerb.add_parser``.
-"""
-from pathlib import Path
+script to consume. Not user-facing.
 
-from sysforge.primitives.config import expand_package_groups, load_config
-from sysforge.primitives.paths import resolve_packages_path
+A bare ``sysforge completions …`` never reaches this verb: ``cli.main`` sends it
+to :func:`sysforge.completions_data.main` before the registry loads
+(3.5.0-B124). The verb keeps the command in the parser, so it is still hidden
+from ``--help``, and serves the rare call that puts a global flag first
+(``sysforge -v completions local``). Both routes print through
+:func:`completions_data.emit`.
+"""
+import sysforge.completions_data as completions_data
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
-from sysforge.primitives import run
 
 
 class CompletionsVerb(Verb):
@@ -28,10 +30,7 @@ class CompletionsVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("completions")
-        p.add_argument(
-            "resource",
-            choices=["packages", "manifest", "local", "state", "makepkg-flags"],
-        )
+        completions_data.add_arguments(p)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -39,82 +38,4 @@ class CompletionsVerb(Verb):
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
-        config = load_config() or {}
-
-        if args.resource == "makepkg-flags":
-            r = run.probe(["makepkg", "--help"])
-            text = r.stdout or r.stderr or ""
-            _exclude = {"-h", "--help", "-V", "--version", "-p", "-m", "--nocolor"}
-            import re
-            for line in text.splitlines():
-                m = re.match(r"^\s+(-\w),\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
-                if m:
-                    short, long, desc = m.group(1), m.group(2), m.group(3).strip()
-                    if short not in _exclude:
-                        print(f"{short}:{desc}")
-                    if long not in _exclude:
-                        print(f"{long}:{desc}")
-                    continue
-                m = re.match(r"^\s+(--\w[\w-]*)\s+(?:<\w+>\s+)?(.*)", line)
-                if m:
-                    long, desc = m.group(1), m.group(2).strip()
-                    if long not in _exclude:
-                        print(f"{long}:{desc}")
-            return ExecResult()
-
-        if args.resource == "state":
-            from sysforge.pipeline.state import resolve_state_dir
-            from sysforge.primitives.build_state import BuildState
-            state_dir, _ = resolve_state_dir(None)
-            bs = BuildState(state_dir)
-            for name in sorted(bs.all_packages()):
-                print(name)
-            return ExecResult()
-
-        if args.resource == "manifest":
-            import tomllib as _tomllib
-            pkg_path = resolve_packages_path(config)
-            if pkg_path.exists():
-                with pkg_path.open("rb") as _f:
-                    data = _tomllib.load(_f)
-                for entry in expand_package_groups(data):
-                    name = entry.get("name")
-                    if name:
-                        print(name)
-            return ExecResult()
-
-        if args.resource == "local":
-            raw = config.get("paths", {}).get("pkgbuild_src_dir")
-            if raw:
-                d = Path(raw).expanduser()
-                if d.is_dir():
-                    for sub in sorted(d.iterdir()):
-                        if sub.is_dir() and (sub / "PKGBUILD").exists():
-                            print(sub.name)
-            return ExecResult()
-
-        seen: set[str] = set()
-        raw = config.get("paths", {}).get("pkgbuild_src_dir")
-        if raw:
-            d = Path(raw).expanduser()
-            if d.is_dir():
-                for sub in sorted(d.iterdir()):
-                    if sub.is_dir() and (sub / "PKGBUILD").exists() and sub.name not in seen:
-                        seen.add(sub.name)
-                        print(sub.name)
-
-        r = run.probe(["pacman", "-Ssq"])
-        if r.returncode == 0:
-            for name in r.stdout.splitlines():
-                if name and name not in seen:
-                    seen.add(name)
-                    print(name)
-
-        from sysforge.primitives.aur import AUR_CACHE_PATH
-        aur_cache = AUR_CACHE_PATH.expanduser()
-        if aur_cache.exists():
-            for name in aur_cache.read_text().splitlines():
-                if name and name not in seen:
-                    seen.add(name)
-                    print(name)
-        return ExecResult()
+        return ExecResult(exit_code=completions_data.emit(args))

@@ -24,56 +24,19 @@ update, drift detection, and diagnostics.
 
 *sysforge update* is the steady-state entry point: it walks the live install
 set (all foreign packages, plus repo packages selected by overrides or
-repo_mode = "build_from_source"), syncs sources through a rate-limited scheduler,
-compares versions, reports toolchain-variant and compiler-flag drift, and
-rebuilds what changed. Before any changed source is built, the PKGBUILD
-review gate presents the full source-tree diff since the last accepted
-build for approval; with no terminal to ask, it refuses that package and
-the run exits non-zero (see *--review*, *--no-review* and [build] review).
-At a terminal it shows the plan and asks before changing anything (see
-*--yes* and [build] confirm_plan).
-Builds run through a managed
-makepkg invocation with dependencies pre-installed, per-package logs, build
-failure diagnosis with deterministic auto-repair for known failure modes,
-and a single bulk install at the end.
+repo_mode = "build_from_source"), syncs sources, reports drift, and rebuilds
+what changed. A changed source is shown as a diff for approval before it is
+built (the PKGBUILD review gate), and at a terminal the whole plan is shown
+before anything changes.
 
-*sysforge run* builds what a running system rebuilds by stage: *run
-toolchain* an optionally PGO- and BOLT-optimized LLVM toolchain, *run
-kernel* a custom kernel under boot-safety gates, and *run packages*
-everything in packages.toml. Its other stages are the fresh-install
-bootstrap: *run pipeline* takes an Arch ISO environment to a configured
-system (install via archinstall, hardware detection, configure) and goes on
-through the build stages; *run hardware* and *run reconfigure* repeat its
-hardware detection and pre-build checks on their own.
+*sysforge run* builds by stage: *run toolchain* an optionally PGO- and
+BOLT-optimized LLVM toolchain, *run kernel* a custom kernel under boot-safety
+gates, and *run packages* everything in packages.toml. *run pipeline* is the
+fresh-install bootstrap, from an Arch ISO environment through every stage.
 
-*sysforge doctor* is the read-only health surface, split into two scopes.
-*doctor system* runs the system-state axes (hardware, toolchain, pacman db,
-state, boot, storage, services, graphics); bare *sysforge doctor* is that
-sweep. *doctor pkg* runs the package-scoped axes over one or more targets:
-*--abi* (depends + ABI linkage), *--rust* (rust-toolchain.toml pins), and
-*--integrity* (pacman -Qkk). With no axis flag each scope runs its defaults;
-a broad target selector (*--all*, *--repo*) suppresses the opt-in axes unless
-named explicitly.
-
-The flat *doctor* flags were removed in 3.0.0. Each one now prints its
-replacement and exits 2; that hint table is itself removed in 3.1.0.
-
-[[ *removed*
-:< *replacement*
-|  _--boot_, _--hardware_, _--toolchain_, _--cache_, _--pacman_, _--state_, _--restart_, _--storage_, _--services_, _--audio_, _--network_, _--distro_, _--gfxperf_
-:< *sysforge doctor system* _<same flag>_
-|  _--all_
-:< *sysforge doctor system* then *sysforge doctor pkg --all*
-|  _--repo_
-:< *sysforge doctor pkg --repo*
-|  _--graphics_
-:< *sysforge doctor system --graphics* (probes) or *sysforge doctor pkg --graphics* (targets)
-|  _--rust_
-:< *sysforge doctor system --rust* (effective toolchain) or *sysforge doctor pkg* _PKG_ *--rust* (pin)
-|  _--integrity_
-:< *sysforge doctor system --integrity* or *sysforge doctor pkg* _PKG_ *--integrity*
-|  _PKG_ (bare positional)
-:< *sysforge doctor pkg* _PKG_
+*sysforge doctor* is the read-only health check: *doctor system* for the
+running system (bare *sysforge doctor* is the same sweep), *doctor pkg* for
+individual packages.
 
 Install-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded
@@ -143,6 +106,13 @@ recovery command.
 	frozen. Repeatable, and accepts a comma-separated list. Run-scoped only:
 	there is no persistent trust list.
 
+# SHARED OPTIONS
+
+Options that mean the same in every command that takes them. Each command
+under COMMANDS names the ones it accepts in its *Shared options* line.
+
+@SHARED_OPTIONS@
+
 # COMMANDS
 
 @OPTIONS@
@@ -171,36 +141,11 @@ recovery command.
 
 /etc/sysforge/toolchain.toml, /etc/sysforge/kernel.toml
 	Opt-in toolchain and kernel stage configuration (enabled = false by
-	default in both). kernel.toml *kconfig_targets* (default: unset)
-	names an explicit *make* kconfig-generation sequence, replacing the
-	PKGBUILD's own kconfig steps (the sysforge.config fragment merge
-	still applies first): silent targets
-	(olddefconfig, defconfig, allmodconfig, alldefconfig, savedefconfig,
-	listnewconfig) always run; prompting targets (oldconfig,
-	localmodconfig, localyesconfig, mod2yesconfig) require an
-	interactive stage run and are rejected otherwise (oldconfig names
-	its silent equivalent olddefconfig); at most one UI target (config,
-	nconfig, menuconfig, xconfig, gconfig) is allowed and it always
-	runs last; randconfig is never allowed. localmodconfig/
-	localyesconfig are warned against as high-risk/low-reward: they
-	over-minimize to modules currently loaded and accumulate the lsmod
-	snapshot at <state_dir>/lsmod.snapshot (delete it to reset).
-	kernel.toml *hardening* (default: false) merges a curated
-	compile-time hardening set into the fragment at the lowest
-	precedence (any other entry for the same option wins, with a
-	warning). It never enforces module signatures or a lockdown mode,
-	and a manual entry that does is refused before the build while
-	DKMS modules are registered. Runtime hardening (sysctl.d, the
-	kernel command line) is not covered.
+	default in both). Every key is documented in the shipped file's
+	comments.
 	Read by: *run toolchain* / *run kernel*, *run pipeline*,
-	*run reconfigure*, *state boot-entries*, and *doctor* on the matching axes.
-	toolchain.toml [bench] *corpus* (default: unset) names the source
-	files or directories *bench toolchain* compiles; unset uses its
-	built-in workload. Each file is compiled on its own with only -O2 -c
-	(-std=c++17 for C++), so it must not need include paths or defines.
-	The [bench] *after_build* key (default: false) runs *bench toolchain*
-	at the end of a *run toolchain* that built and installed clang from
-	source; off, that stage prints a one-line hint instead. Also read by *bench toolchain* and *state profiles*.
+	*run reconfigure*, *state boot-entries*, *bench toolchain*,
+	*state profiles*, and *doctor* on the matching axes.
 
 build_state.toml (under the state directory)
 	Per-package build records (a superset of pacman -Q) plus the table

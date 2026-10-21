@@ -436,7 +436,7 @@ def cmd_state_orphans(args):
     install) and we can't safely tell the difference.
 
     Without ``--prune`` the command is read-only. With ``--prune`` the user
-    is asked y/N (skip with ``--no-confirm``) before the files are removed.
+    is asked y/N (skip with ``--yes``) before the files are removed.
     """
     from sysforge.primitives.pacman import (
         detect_orphan_artifacts,
@@ -475,7 +475,7 @@ def cmd_state_orphans(args):
         print("\nRun `sysforge state orphans --prune` to delete.")
         return
 
-    if not getattr(args, "no_confirm", False):
+    if not getattr(args, "yes", False):
         answer = prompt_choice(
             f"\nDelete {len(superseded)} file(s)? [y/N] ", ["y", "yes"],
             default="", retry_on_invalid=False,
@@ -931,8 +931,8 @@ class StateOrphansVerb(Verb):
                  "older than installed) so --prune is always safe.")
         p.add_argument("--prune", action="store_true",
             help="Delete the listed superseded artifacts (prompts for confirmation).")
-        p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
-            help="Skip the y/N prompt when pruning. Implies --prune.")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="With --prune: delete without the y/N prompt.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.set_defaults(verb_cls=cls)

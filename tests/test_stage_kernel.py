@@ -139,7 +139,7 @@ def make_options(**kwargs):
     defaults = dict(
         resume=False, start_from=None, force_retry=False,
         dry_run=False, state_dir=None,
-        no_unified_log=False, no_pkg_logs=False,
+        no_unified_log=False, no_pkg_log=False,
         log_dir=None, purge_log=False, persist_log=False,
         # Stage-level tests are not exercising the scheduler — default to
         # --no-update so the kernel pre-sync is a no-op. Sync-specific tests
@@ -1591,7 +1591,7 @@ def test_gate1_no_strip_warning_without_configured_minimizer(monkeypatch, tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Interactive default, --non-interactive, BuildOptions plumbing
+# Interactive default, --no-interactive, BuildOptions plumbing
 # ---------------------------------------------------------------------------
 
 
@@ -3656,7 +3656,7 @@ def test_already_built_interactive_install_proceeds(tmp_path):
 
 
 def test_already_built_unattended_proceeds_without_prompt(tmp_path):
-    """--non-interactive keeps today's behaviour: proceed, never prompt."""
+    """--no-interactive keeps today's behaviour: proceed, never prompt."""
     mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
         tmp_path, non_interactive=True)
     assert exc is None
@@ -3706,7 +3706,7 @@ def test_already_built_install_failure_suggests_fresh_build(tmp_path):
 # ---------------------------------------------------------------------------
 # Unified interactivity resolution (2.5.1-B8)
 #
-# The kconfig gate resolved interactive from config + --non-interactive only,
+# The kconfig gate resolved interactive from config + --no-interactive only,
 # never consulting the TTY — so a piped/captured run "promised" an nconfig
 # review that could never render, then silently EOF'd through it. The gate
 # now matches the stage's sibling decisions (collision/diverged prompts):
@@ -3750,7 +3750,7 @@ def test_kernel_stage_tty_keeps_interactive(tmp_path):
 
 
 def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
-    """--non-interactive is an explicit request — no downgrade warn."""
+    """--no-interactive is an explicit request — no downgrade warn."""
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")

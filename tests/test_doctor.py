@@ -227,8 +227,8 @@ def _make_args(**overrides) -> SimpleNamespace:
         cache=False, gfxperf=False,
         pacman=False, state=False, boot=False, restart=False, storage=False, services=False,
         audio=False, network=False, integrity=False, all=False, repo=False,
-        shallow=False, quiet=False, suggest=False, config={},
-        apply=False, no_confirm=False, dry_run=False, state_dir=None,
+        shallow=False, findings_only=False, suggest=False, config={},
+        apply=False, yes=False, dry_run=False, state_dir=None,
         # 2.6.1-F1: `abi` is the package walk's axis flag; `derived_targets` is
         # the broad-selector target list DoctorPkgVerb.pre_check records.
         abi=False, derived_targets=[],
@@ -668,7 +668,7 @@ def test_cmd_doctor_not_installed(tmp_path, monkeypatch, capsys):
     assert rc == 1
 
 
-def test_cmd_doctor_quiet_hides_clean(tmp_path, monkeypatch, capsys):
+def test_cmd_doctor_findings_only_hides_clean(tmp_path, monkeypatch, capsys):
     db = tmp_path / "local"
     db.mkdir()
     _mk_pkg(db, "cleanpkg", "1.0-1", depends=[], files=[])
@@ -679,7 +679,7 @@ def test_cmd_doctor_quiet_hides_clean(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pacman_mod, "get_foreign_packages", lambda: {})
     monkeypatch.setattr(doctor, "_default_ldconfig_fn", lambda: "")
 
-    rc = doctor.cmd_doctor_pkg(_make_args(packages=["cleanpkg"], quiet=True))
+    rc = doctor.cmd_doctor_pkg(_make_args(packages=["cleanpkg"], findings_only=True))
     err = capsys.readouterr().err
     # Clean package header suppressed
     assert "cleanpkg 1.0-1" not in err
@@ -1614,7 +1614,7 @@ def test_apply_dry_run_does_not_invoke_update(tmp_path, monkeypatch, capsys):
                         lambda args: (called.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, dry_run=True, no_confirm=True,
+        packages=["driftpkg"], apply=True, dry_run=True, yes=True,
     ))
 
     assert called == []
@@ -1634,7 +1634,7 @@ def test_apply_invokes_cmd_update_with_eligible_pkgnames(tmp_path, monkeypatch, 
                         lambda args: (captured.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, no_confirm=True,
+        packages=["driftpkg"], apply=True, yes=True,
     ))
 
     assert rc == 0
@@ -1663,7 +1663,7 @@ def test_apply_repo_candidate_only_suggests_pacman(tmp_path, monkeypatch, capsys
                         lambda args: (called.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, no_confirm=True,
+        packages=["driftpkg"], apply=True, yes=True,
     ))
 
     # Update is never invoked — candidate is repo-not-foreign so it lands in
@@ -1692,7 +1692,7 @@ def test_apply_prompt_decline_skips_rebuild(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, no_confirm=False,
+        packages=["driftpkg"], apply=True, yes=False,
     ))
 
     assert called == []
@@ -1711,7 +1711,7 @@ def test_apply_prompt_y_invokes_update(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, no_confirm=False,
+        packages=["driftpkg"], apply=True, yes=False,
     ))
 
     assert rc == 0
@@ -1728,7 +1728,7 @@ def test_apply_implies_suggest(tmp_path, monkeypatch, capsys):
                         lambda args: (captured.append(args), 0)[1])
 
     rc = doctor.cmd_doctor_pkg(_make_args(
-        packages=["driftpkg"], apply=True, no_confirm=True, suggest=False,
+        packages=["driftpkg"], apply=True, yes=True, suggest=False,
     ))
 
     err = capsys.readouterr().err
@@ -1971,7 +1971,7 @@ def test_abiwalk_results_is_none_before_run():
 
 def test_abiwalk_emits_findings_with_package_subject(monkeypatch):
     args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
-                              repo=False, shallow=True, quiet=False)
+                              repo=False, shallow=True, findings_only=False)
     monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
                         lambda: {"mesa": "25.1"})
     monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
@@ -1990,7 +1990,7 @@ def test_abiwalk_emits_findings_with_package_subject(monkeypatch):
 
 def test_abiwalk_populates_results_after_run(monkeypatch):
     args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
-                              repo=False, shallow=True, quiet=False)
+                              repo=False, shallow=True, findings_only=False)
     monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
                         lambda: {"mesa": "25.1"})
     monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
@@ -2008,7 +2008,7 @@ def test_abiwalk_populates_results_after_run(monkeypatch):
 
 def test_abiwalk_clean_package_yields_no_findings(monkeypatch):
     args = argparse.Namespace(packages=["mesa"], graphics=False, all=False,
-                              repo=False, shallow=True, quiet=False)
+                              repo=False, shallow=True, findings_only=False)
     monkeypatch.setattr(doctor.pacman, "get_all_installed_packages",
                         lambda: {"mesa": "25.1"})
     monkeypatch.setattr(doctor.pacman, "get_foreign_packages", lambda: {})
@@ -2191,7 +2191,7 @@ def test_graphics_axis_prints_roster_at_vv(monkeypatch, capsys):
     saved = log.get_verbosity()
     try:
         log.set_verbosity(2)
-        doctor._run_system_axes(SimpleNamespace(quiet=False), {}, ["graphics"])
+        doctor._run_system_axes(SimpleNamespace(findings_only=False), {}, ["graphics"])
     finally:
         log.set_verbosity(saved)
     err = capsys.readouterr().err

@@ -10,7 +10,7 @@ its "what now?" decision through :func:`resolve_already_built` instead of
 interpreting the exception locally — 2.5.1-B3/B4/B5 were all divergences
 between sites that each re-derived the answer (in particular the unattended
 arbitration, which needs *three* signals: the caller's resolved interactive
-flag, the ``--non-interactive`` override, and TTY presence).
+flag, the ``--no-interactive`` override, and TTY presence).
 
 Decide-only: callers execute the chosen action (artifact reuse, ``-f``
 retry). The manifest capture in ``makepkg_wrapper``'s except-path is a

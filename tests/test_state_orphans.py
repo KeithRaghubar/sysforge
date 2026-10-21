@@ -12,8 +12,8 @@ from unittest.mock import patch
 from sysforge.state_cmd import cmd_state_orphans
 
 
-def _args(prune: bool = False, no_confirm: bool = False, no_pager: bool = True):
-    return SimpleNamespace(prune=prune, no_confirm=no_confirm, no_pager=no_pager)
+def _args(prune: bool = False, yes: bool = False, no_pager: bool = True):
+    return SimpleNamespace(prune=prune, yes=yes, no_pager=no_pager)
 
 
 def _mk_pkg(pkgdest: Path, name: str, ver: str, rel: str = "1") -> Path:
@@ -105,7 +105,7 @@ def test_prune_only_removes_superseded(tmp_path, capsys):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                side_effect=fake_read):
-        cmd_state_orphans(_args(prune=True, no_confirm=True))
+        cmd_state_orphans(_args(prune=True, yes=True))
 
     out = capsys.readouterr().out
     assert kept.exists()             # NOT touched
@@ -124,7 +124,7 @@ def test_prune_declined_keeps_files(tmp_path, capsys, monkeypatch):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                return_value="htop"):
-        cmd_state_orphans(_args(prune=True, no_confirm=False))
+        cmd_state_orphans(_args(prune=True, yes=False))
 
     out = capsys.readouterr().out
     assert stale.exists()
@@ -144,7 +144,7 @@ def test_prune_eof_treated_as_decline(tmp_path, capsys, monkeypatch):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                return_value="htop"):
-        cmd_state_orphans(_args(prune=True, no_confirm=False))
+        cmd_state_orphans(_args(prune=True, yes=False))
 
     out = capsys.readouterr().out
     assert stale.exists()

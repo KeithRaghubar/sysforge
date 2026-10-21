@@ -18,6 +18,15 @@ PACKAGES_FILE_HELP = (
     "override the dir with $SYSFORGE_CONFIG_DIR)."
 )
 
+#: Help text for ``--cleansrc-force``, the same on every verb that syncs
+#: sources (one wording, so sysforge(1) lists it once under SHARED OPTIONS).
+CLEANSRC_FORCE_HELP = (
+    "Like --cleansrc but bypasses the dirty/diverged guard and overwrites the "
+    "local clone unconditionally. Use when the upstream rewrote history (e.g. "
+    "Arch packaging repos force-push every release) and the local commits have "
+    "no value to preserve."
+)
+
 
 def load_config_with_overrides(args) -> dict:
     """Load flag_profiles config and apply CLI overrides (--packages, --profile-conf)."""

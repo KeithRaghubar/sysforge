@@ -91,7 +91,7 @@ from unittest.mock import patch
 
 
 def _args(**kw):
-    ns = argparse.Namespace(packages=["mesa"], force=True, dry_run=False)
+    ns = argparse.Namespace(packages=["mesa"], yes=True, dry_run=False)
     ns.__dict__.update(kw)
     return ns
 
@@ -149,7 +149,7 @@ def test_execute_coexist_derename_removes_then_reinstalls(tmp_path, monkeypatch)
     reinstall.assert_called_once_with(["linux"])
 
 
-def test_execute_noninteractive_without_force_aborts(tmp_path, monkeypatch):
+def test_execute_noninteractive_without_yes_aborts(tmp_path, monkeypatch):
     verb = revert_cmd.RevertToStockVerb()
     monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
     monkeypatch.setattr(revert_cmd.prompt, "is_interactive", lambda: False)
@@ -157,8 +157,8 @@ def test_execute_noninteractive_without_force_aborts(tmp_path, monkeypatch):
     bs._data["mesa"] = {"build_mode": "source_built", "pkgbase": "mesa"}
     bs.save()
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs") as reinstall:
-        pre = verb.pre_check(_args(force=False))
-        res = verb.execute(_args(force=False), pre)
+        pre = verb.pre_check(_args(yes=False))
+        res = verb.execute(_args(yes=False), pre)
     reinstall.assert_not_called()
     assert res.exit_code == 2
 
@@ -198,7 +198,7 @@ def test_failed_derename_keeps_the_sentinel(tmp_path, monkeypatch):
     bs._data["linux-sysforge"] = {"build_mode": "autofdo_kernel",
                                   "pkgbase": "linux-sysforge", "origin_pkgbase": "linux"}
     bs.save()
-    args = _args(packages=["linux-sysforge"], force=True)
+    args = _args(packages=["linux-sysforge"], yes=True)
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs",
                       side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
          patch.object(revert_cmd.pacman, "remove_pkgs"):

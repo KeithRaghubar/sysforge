@@ -1322,7 +1322,7 @@ def _run_options(**kw):
     """A RunOptions with distinctive non-default values for the four fields the
     factory maps, so a dropped/renamed mapping shows up as a wrong value."""
     base = dict(
-        no_pkg_logs=True,            # → pkg_log=False
+        no_pkg_log=True,            # → pkg_log=False
         persist_log=True,
         state_dir=Path("/tmp/sf-state-parity"),
         abi_check=True,
@@ -1346,7 +1346,7 @@ def test_make_build_options_kernel_parity():
         toolchain_variant="pgo_llvm",
     )
     # Common mapping
-    assert bo.pkg_log is False          # not no_pkg_logs (True)
+    assert bo.pkg_log is False          # not no_pkg_log (True)
     assert bo.persist_log is True
     assert bo.state_dir == Path("/tmp/sf-state-parity")
     assert bo.abi_check is True
@@ -1436,7 +1436,7 @@ def test_make_build_options_override_wins_over_stage_default():
 
 def test_make_build_options_abi_check_defaults_false_when_absent():
     """A run-options object lacking abi_check degrades to False, not error."""
-    opts = SimpleNamespace(no_pkg_logs=False, persist_log=False, state_dir=None)
+    opts = SimpleNamespace(no_pkg_log=False, persist_log=False, state_dir=None)
     bo = make_build_options("packages", opts)
     assert bo.abi_check is False
     assert bo.pkg_log is True

@@ -29,7 +29,7 @@ class RunOptions:
     state_dir: Path | None = None    # overrides env var and default
     # Logging
     no_unified_log: bool = False     # disable unified log file
-    no_pkg_logs: bool = False        # disable per-package log files
+    no_pkg_log: bool = False        # disable per-package log files
     log_dir: Path | None = None      # override log file directory (default: state_dir)
     purge_log: bool = False          # truncate unified log before run
     persist_log: bool = False        # don't clear logs on successful completion

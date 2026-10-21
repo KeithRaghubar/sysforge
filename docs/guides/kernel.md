@@ -73,7 +73,7 @@ scrolled past it.
 For a timer or a script, turn the review off for one run:
 
 ```bash
-sysforge run kernel --non-interactive
+sysforge run kernel --no-interactive
 ```
 
 or for good, in `kernel.toml`:
@@ -267,7 +267,7 @@ mkinitcpio -P`), the step whose absence would leave the kernel unbootable.
 | --- | --- |
 | build and review interactively | `sysforge run kernel` |
 | see the plan without building | `sysforge run kernel --dry-run` |
-| build from a timer or script | `sysforge run kernel --non-interactive` |
+| build from a timer or script | `sysforge run kernel --no-interactive` |
 | start from my running kernel's config | `base_config = "running"` or `--base-config running` |
 | force a config option | a `[[kconfig]]` entry in `kernel.toml` |
 | add the compile-time hardening set | `hardening = true` |

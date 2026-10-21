@@ -16,7 +16,7 @@ from sysforge.primitives import editor
 
 
 def _args(config_dir: Path, **kw) -> argparse.Namespace:
-    base = dict(config_dir=str(config_dir), no_pager=True, list=False, dry_run=False)
+    base = dict(config_dir=str(config_dir), no_pager=True, dry_run=False)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -78,14 +78,14 @@ def test_missing_config_dir_returns_one(tmp_path):
     assert config_cmd.cmd_config_merge(_args(tmp_path / "absent")) == 1
 
 
-def test_list_mode_reports_without_prompting(tmp_path, capsys, monkeypatch):
+def test_dry_run_reports_without_prompting(tmp_path, capsys, monkeypatch):
     config_dir = tmp_path / "cfg"
     _make_pair(config_dir)
-    # prompt_key must never be called in --list mode.
+    # prompt_key must never be called in --dry-run mode.
     def _boom(*a, **k):
-        pytest.fail("prompt_key called in --list mode")
+        pytest.fail("prompt_key called in --dry-run mode")
     monkeypatch.setattr(config_cmd, "prompt_key", _boom)
-    assert config_cmd.cmd_config_merge(_args(config_dir, list=True)) == 0
+    assert config_cmd.cmd_config_merge(_args(config_dir, dry_run=True)) == 0
     out = capsys.readouterr().out
     assert "sysforge.toml.sfnew" in out and "live present" in out
 

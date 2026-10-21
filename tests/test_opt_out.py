@@ -113,7 +113,7 @@ def test_revert_records_a_revert_opt_out(tmp_path, monkeypatch):
     monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
     _seed(tmp_path, "htop", "htop")
     verb = revert_cmd.RevertToStockVerb()
-    args = SimpleNamespace(packages=["htop"], dry_run=False, force=True, state_dir=None)
+    args = SimpleNamespace(packages=["htop"], dry_run=False, yes=True, state_dir=None)
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs"):
         pre = verb.pre_check(args)
         assert verb.execute(args, pre).exit_code == 0

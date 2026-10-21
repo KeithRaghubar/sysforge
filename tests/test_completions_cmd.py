@@ -19,6 +19,15 @@ from sysforge.completions_cmd import CompletionsVerb
 from sysforge.verbs import PreCheckResult
 
 
+@pytest.fixture(autouse=True)
+def _isolated_universe_cache(monkeypatch, tmp_path):
+    """Keep the `packages` cache and sync-DB key off the real system."""
+    monkeypatch.setattr(
+        "sysforge.completions_data.PACKAGES_CACHE", tmp_path / "cache" / "pkgs.txt"
+    )
+    monkeypatch.setattr("sysforge.completions_data._SYNC_DB_DIR", tmp_path / "sync")
+
+
 def _lines(capsys) -> list[str]:
     return [ln for ln in capsys.readouterr().out.splitlines() if ln]
 
@@ -42,7 +51,7 @@ def test_completions_local_lists_only_pkgbuild_dirs(monkeypatch, tmp_path, capsy
     (tmp_path / "baz").mkdir()  # no PKGBUILD → excluded
     (tmp_path / "note.txt").write_text("x", encoding="utf-8")  # not a dir → excluded
     monkeypatch.setattr(
-        "sysforge.completions_cmd.load_config",
+        "sysforge.completions_data.load_config",
         lambda: {"paths": {"pkgbuild_src_dir": str(tmp_path)}},
     )
 
@@ -53,7 +62,7 @@ def test_completions_local_lists_only_pkgbuild_dirs(monkeypatch, tmp_path, capsy
 
 def test_completions_local_empty_when_dir_missing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
-        "sysforge.completions_cmd.load_config",
+        "sysforge.completions_data.load_config",
         lambda: {"paths": {"pkgbuild_src_dir": str(tmp_path / "nope")}},
     )
 
@@ -68,9 +77,9 @@ def test_completions_manifest_lists_package_names(monkeypatch, tmp_path, capsys)
         '[[package]]\nname = "mesa"\n\n[[package]]\nname = "linux-custom"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr("sysforge.completions_cmd.load_config", lambda: {})
+    monkeypatch.setattr("sysforge.completions_data.load_config", lambda: {})
     monkeypatch.setattr(
-        "sysforge.completions_cmd.resolve_packages_path", lambda _cfg: manifest
+        "sysforge.completions_data.resolve_packages_path", lambda _cfg: manifest
     )
 
     _exec("manifest")
@@ -79,9 +88,9 @@ def test_completions_manifest_lists_package_names(monkeypatch, tmp_path, capsys)
 
 
 def test_completions_manifest_silent_when_file_absent(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr("sysforge.completions_cmd.load_config", lambda: {})
+    monkeypatch.setattr("sysforge.completions_data.load_config", lambda: {})
     monkeypatch.setattr(
-        "sysforge.completions_cmd.resolve_packages_path",
+        "sysforge.completions_data.resolve_packages_path",
         lambda _cfg: tmp_path / "missing.toml",
     )
 
@@ -97,7 +106,7 @@ def test_completions_makepkg_flags_parses_help_and_excludes_meta(monkeypatch, ca
         "      --nocolor        Disable colorized output\n"
         "  -h, --help           Show this help message and exit\n"
     )
-    monkeypatch.setattr("sysforge.completions_cmd.load_config", lambda: {})
+    monkeypatch.setattr("sysforge.completions_data.load_config", lambda: {})
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -117,9 +126,10 @@ def test_completions_makepkg_flags_parses_help_and_excludes_meta(monkeypatch, ca
 
 
 def test_completions_state_lists_build_state_packages(monkeypatch, tmp_path, capsys):
-    monkeypatch.setattr("sysforge.completions_cmd.load_config", lambda: {})
+    monkeypatch.setattr("sysforge.completions_data.load_config", lambda: {})
     monkeypatch.setattr(
-        "sysforge.pipeline.state.resolve_state_dir", lambda _x: (tmp_path, None)
+        "sysforge.primitives.paths.resolve_state_dir",
+        lambda _x, provision=True: (tmp_path, None),
     )
 
     class _FakeBuildState:
@@ -146,7 +156,7 @@ def test_completions_default_universe_dedups_across_sources(
     # source order: local, then pacman, then AUR.
     _mkpkgdir(tmp_path, "foo")
     monkeypatch.setattr(
-        "sysforge.completions_cmd.load_config",
+        "sysforge.completions_data.load_config",
         lambda: {"paths": {"pkgbuild_src_dir": str(tmp_path)}},
     )
     monkeypatch.setattr(
@@ -168,7 +178,7 @@ def test_completions_default_universe_dedups_across_sources(
 def test_completions_default_survives_pacman_failure(monkeypatch, tmp_path, capsys):
     _mkpkgdir(tmp_path, "foo")
     monkeypatch.setattr(
-        "sysforge.completions_cmd.load_config",
+        "sysforge.completions_data.load_config",
         lambda: {"paths": {"pkgbuild_src_dir": str(tmp_path)}},
     )
     # non-zero pacman → its output is skipped, local names still emitted

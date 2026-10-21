@@ -27,7 +27,7 @@ Decision test for each site: *is this the answer, or narration about producing t
 
 **Configurable default verbosity.** The stderr level when no flag is passed is resolved once at CLI entry by `cli._resolve_verbosity(args)` (mirroring `_resolve_color_mode`), which calls the single `log.set_verbosity` seam — no resolution logic leaks into `log.py`. Precedence (highest first):
 
-1. Global `--quiet` → level 0 (wins over everything; distinct `quiet_global` dest so it never clobbers `doctor`'s local `--quiet/-q`, and it is not hoisted ahead of the `doctor` subcommand).
+1. Global `--quiet` → level 0 (wins over everything; `quiet_global` dest). It is hoisted from anywhere on the command line like `-v`; no command defines a local `--quiet` (`doctor`'s clean-line filter is `--findings-only`, `3.5.0-F15`), so the hoist has no exceptions.
 2. Else `-v/-vv/-vvv` (argparse `count` > 0) → that level.
 3. Else the `[log] verbosity` key in `sysforge.toml` (integer 0–3, clamped; non-int/unreadable ignored → never aborts startup).
 4. Else 0.
@@ -82,15 +82,14 @@ The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the si
 - Path: `<pkgbuild_src_dir>/<pkgname>/sysforge_<pkgname>.log`
 - Same lifecycle as the unified log: appends across builds, cleared on success unless `--persist-log`.
 - Written by both `sysforge pipeline` (via the packages stage) and `sysforge build`.
-- `--no-pkg-logs` disables per-package logs for `sysforge pipeline`.
+- `--no-pkg-log` disables per-package logs for `sysforge pipeline`.
 
 **CLI flag summary:**
 
 | Flag | Command | Effect |
 |---|---|---|
 | `--no-unified-log` | `run pipeline` | Disable unified log for this run |
-| `--no-pkg-logs` | `run pipeline`, `run packages`, `run kernel` | Disable per-package logs for this run |
-| `--no-pkg-log` | `build` | Disable the per-package log for this build |
+| `--no-pkg-log` | `build`, `update`, `run pipeline`, `run packages`, `run kernel` | Disable per-package logs for this run (one spelling everywhere since `3.5.0-F15`; the `run` stages used to take `--no-pkg-logs`) |
 | `--log-dir <path>` | `run pipeline`, `run packages`, `run kernel`, `build` | Override log file directory |
 | `--purge-log` | `run pipeline` | Truncate unified log before run |
 | `--persist-log` | `run pipeline`, `run toolchain`, `run packages`, `run kernel`, `build` | Keep log files after success |

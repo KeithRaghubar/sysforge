@@ -92,7 +92,7 @@ def test_hoist_mixed_verbose_and_other_flags():
 
 
 # ---------------------------------------------------------------------------
-# --quiet hoisting (global flag, distinct from doctor's local --quiet/-q)
+# --quiet hoisting (global flag; no command owns a local --quiet)
 # ---------------------------------------------------------------------------
 
 def test_hoist_quiet_before_subcommand():
@@ -100,16 +100,18 @@ def test_hoist_quiet_before_subcommand():
     assert result == ["--quiet", "update"]
 
 
-def test_hoist_quiet_not_hoisted_for_doctor():
-    # doctor owns a *local* --quiet/-q; hoisting would clobber it.
-    result = _hoist_verbosity_flags(["doctor", "--quiet"])
-    assert result == ["doctor", "--quiet"]
+def test_hoist_quiet_for_doctor_too():
+    # 3.5.0-F15: doctor's clean-line filter became --findings-only, so the
+    # global --quiet hoists for doctor like every other command.
+    result = _hoist_verbosity_flags(["doctor", "system", "--quiet"])
+    assert result == ["--quiet", "doctor", "system"]
 
 
-def test_hoist_short_q_never_hoisted():
-    # -q is doctor's short form only; global --quiet has no short alias.
-    result = _hoist_verbosity_flags(["doctor", "-q"])
-    assert result == ["doctor", "-q"]
+def test_hoist_quiet_ignores_a_doctor_positional():
+    # The old guard skipped the hoist whenever the token `doctor` appeared
+    # anywhere, including as a package name.
+    result = _hoist_verbosity_flags(["build", "doctor", "--quiet"])
+    assert result == ["--quiet", "build", "doctor"]
 
 
 # ---------------------------------------------------------------------------

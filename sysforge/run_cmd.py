@@ -22,7 +22,11 @@ from pathlib import Path
 from sysforge.primitives.config import load_config
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup
-from sysforge.verbs.helpers import PACKAGES_FILE_HELP, load_config_with_overrides
+from sysforge.verbs.helpers import (
+    CLEANSRC_FORCE_HELP,
+    PACKAGES_FILE_HELP,
+    load_config_with_overrides,
+)
 
 
 class _RunVerbBase(Verb):
@@ -69,7 +73,7 @@ class RunPipelineVerb(_RunVerbBase):
             help="Resume from the last checkpoint.")
         p.add_argument("--start-from", metavar="STAGE", dest="start_from",
             help="Start from this stage, marking all prior stages as skipped. "
-                 "Useful on a live system: --start-from reconfigure")
+                 "Useful on a live system: --start-from reconfigure.")
         p.add_argument("--force-retry", action="store_true", dest="force_retry",
             help="Retry all failed packages without prompting.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
@@ -80,7 +84,7 @@ class RunPipelineVerb(_RunVerbBase):
             help="Override state directory.")
         p.add_argument("--no-unified-log", action="store_true", dest="no_unified_log",
             help="Disable the unified log file.")
-        p.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
+        p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
             help="Disable per-package log files.")
         p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
             help="Directory for log files.")
@@ -91,7 +95,7 @@ class RunPipelineVerb(_RunVerbBase):
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
             help="Path to a profiles.toml to use instead of the default.")
         p.add_argument("--cache-report", action="store_true", dest="cache_report",
-            help="Print a structured cache summary after the run completes.")
+            help="Print a structured cache summary after the run.")
         p.add_argument("--abi-check", action="store_true", dest="abi_check",
             help="Run a post-build ABI compatibility check on built shared libraries.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
@@ -111,7 +115,7 @@ class RunPipelineVerb(_RunVerbBase):
             dry_run=args.dry_run,
             state_dir=Path(args.state_dir) if args.state_dir else None,
             no_unified_log=args.no_unified_log,
-            no_pkg_logs=args.no_pkg_logs,
+            no_pkg_log=args.no_pkg_log,
             log_dir=Path(args.log_dir) if args.log_dir else None,
             purge_log=args.purge_log,
             persist_log=args.persist_log,
@@ -146,7 +150,7 @@ class RunHardwareVerb(_RunVerbBase):
             dry_run=args.dry_run,
             state_dir=Path(args.state_dir) if args.state_dir else None,
             no_unified_log=False,
-            no_pkg_logs=True,
+            no_pkg_log=True,
         )
         run_stage_standalone(HardwareStage(), config, options)
         return ExecResult()
@@ -177,7 +181,7 @@ class RunReconfigureVerb(_RunVerbBase):
             dry_run=args.dry_run,
             state_dir=Path(args.state_dir) if args.state_dir else None,
             no_unified_log=False,
-            no_pkg_logs=True,
+            no_pkg_log=True,
         )
         run_stage_standalone(ReconfigureStage(), config, options)
         return ExecResult()
@@ -270,10 +274,7 @@ class RunToolchainVerb(_RunVerbBase):
                  "building. Refuses (per package) if the existing clone has "
                  "uncommitted changes, ahead-of-upstream commits, or no upstream.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
-            help="Like --cleansrc but bypasses the dirty/diverged guard and "
-                 "overwrites every local toolchain tree unconditionally. Use when "
-                 "the upstream rewrote history (e.g. Arch packaging repos "
-                 "force-push every release) and local commits have no value.")
+            help=CLEANSRC_FORCE_HELP)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -355,7 +356,7 @@ class RunPackagesVerb(_RunVerbBase):
         p.add_argument("--no-update", action="store_true", dest="no_update",
             help="Skip the source sync (fetch and fast-forward) of each package "
                  "and build it as checked out.")
-        p.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
+        p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
             help="Disable per-package log files.")
         p.add_argument("--persist-log", action="store_true", dest="persist_log",
             help="Keep log files after successful completion.")
@@ -381,7 +382,7 @@ class RunPackagesVerb(_RunVerbBase):
             dry_run=args.dry_run,
             force_retry=args.force_retry,
             no_update=args.no_update,
-            no_pkg_logs=args.no_pkg_logs,
+            no_pkg_log=args.no_pkg_log,
             persist_log=args.persist_log,
             log_dir=Path(args.log_dir) if args.log_dir else None,
             cache_report=args.cache_report,
@@ -410,9 +411,8 @@ class RunKernelVerb(_RunVerbBase):
                  "Refuses if the existing clone has uncommitted changes, "
                  "ahead-of-upstream commits, or no upstream.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
-            help="Like --cleansrc but bypasses the dirty/diverged guard and "
-                 "overwrites the local tree unconditionally.")
-        p.add_argument("--non-interactive", action="store_true", dest="non_interactive",
+            help=CLEANSRC_FORCE_HELP)
+        p.add_argument("--no-interactive", action="store_true", dest="non_interactive",
             help="Disable interactive kconfig (default is interactive: the PKGBUILD's "
                  "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
                  "interactive targets are patched to `make olddefconfig` for unattended runs.")
@@ -469,7 +469,7 @@ class RunKernelVerb(_RunVerbBase):
                  "profile, which it pins. Requires --autofdo; run record, capture and "
                  "use again with --propeller. The use build installs as e.g. "
                  "linux-sysforge-propeller. Recommended over BOLT for the kernel.")
-        p.add_argument("--no-pkg-logs", action="store_true", dest="no_pkg_logs",
+        p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
             help="Disable per-package log files.")
         p.add_argument("--persist-log", action="store_true", dest="persist_log",
             help="Keep log files after successful completion.")
@@ -508,7 +508,7 @@ class RunKernelVerb(_RunVerbBase):
             no_update=args.no_update,
             cleansrc=getattr(args, "cleansrc", False),
             cleansrc_force=getattr(args, "cleansrc_force", False),
-            no_pkg_logs=args.no_pkg_logs,
+            no_pkg_log=args.no_pkg_log,
             persist_log=args.persist_log,
             log_dir=Path(args.log_dir) if args.log_dir else None,
             cache_report=args.cache_report,

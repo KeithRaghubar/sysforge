@@ -9,7 +9,9 @@ gen_options.py — generate the COMMANDS sections of sysforge(1) from argparse.
 
 Reads the hand-written scdoc template (man/sysforge.1.scd.in), replaces the
 @OPTIONS@ marker line with per-command scdoc sections derived from
-``sysforge.verbs.registry.build_parser()``, and writes the complete scdoc source
+``sysforge.verbs.registry.build_parser()`` and the @SHARED_OPTIONS@ marker with
+the options several commands carry verbatim (written once, each command naming
+them in a ``Shared options`` line), and writes the complete scdoc source
 (man/sysforge.1.scd — an intermediate, not committed; ``scdoc`` then renders
 man/sysforge.1, which is committed).
 
@@ -31,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sysforge.verbs.registry import build_parser, tiered_command_order  # noqa: E402
 
 MARKER = "@OPTIONS@"
+SHARED_MARKER = "@SHARED_OPTIONS@"
 
 # Per-command configuration/environment summary, rendered as a trailer after
 # each command's option blocks. Values are raw scdoc (not escaped). Keyed by
@@ -76,7 +79,7 @@ _VERB_CONFIG: dict[str, tuple[str, str]] = {
         "$SYSFORGE_CONFIG_DIR",
     ),
     "log": (
-        "per-package logs under the state directory",
+        "profiles.toml ([paths] pkgbuild\\_src\\_dir, for per-package logs)",
         "$SYSFORGE_STATE_DIR, $PAGER",
     ),
     "run pipeline": (
@@ -127,6 +130,63 @@ def _pos_token(action) -> str:
     return mv
 
 
+def _value_token(action) -> str:
+    """The placeholder for an option's value: its metavar, else its choices as
+    ``a|b`` (what --help shows), else argparse's dest-derived name."""
+    if action.metavar:
+        return f"_{action.metavar}_"
+    if action.choices:
+        return "|".join(f"_{c}_" for c in action.choices)
+    return f"_{action.dest.upper()}_"
+
+
+def _option_head(action) -> str:
+    head = ", ".join(f"*{o}*" for o in action.option_strings)
+    if action.nargs != 0:  # store/append take a value; store_true/count don't
+        head += f" {_value_token(action)}"
+    return head
+
+
+def _split_actions(parser):
+    """(positionals, optionals, has_subcommands) for one parser."""
+    positionals, optionals = [], []
+    has_subcommands = False
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            has_subcommands = True
+        elif a.dest == "help":
+            continue
+        elif a.option_strings:
+            optionals.append(a)
+        else:
+            positionals.append(a)
+    return positionals, optionals, has_subcommands
+
+
+def _shared_options(commands) -> dict[tuple[str, str], list[str]]:
+    """The options written once in SHARED OPTIONS: ``(head, help)`` -> the
+    commands that carry it.
+
+    An option is shared when two or more commands carry it with the same head
+    and the same help text. A flag whose help differs between commands shares
+    only its most common text (first-seen on a tie), so SHARED OPTIONS never
+    lists one flag twice; the other texts stay inline where they mean
+    something different.
+    """
+    users: dict[tuple[str, str], list[str]] = {}
+    for name, sub, _ in commands:
+        for a in _split_actions(sub)[1]:
+            users.setdefault((_option_head(a), a.help or ""), []).append(name)
+    best: dict[str, tuple[str, str]] = {}
+    for key, names in users.items():
+        if len(names) < 2:
+            continue
+        held = best.get(key[0])
+        if held is None or len(names) > len(users[held]):
+            best[key[0]] = key
+    return {key: users[key] for key in best.values()}
+
+
 def _iter_commands(parser, prefix="", order=None):
     """Yield (qualified name, subparser, help) depth-first.
 
@@ -152,18 +212,8 @@ def _iter_commands(parser, prefix="", order=None):
             yield from _iter_commands(sub, prefix=f"{prefix}{name} ")
 
 
-def _command_section(name, parser, help_txt) -> list[str]:
-    positionals, optionals = [], []
-    has_subcommands = False
-    for a in parser._actions:
-        if isinstance(a, argparse._SubParsersAction):
-            has_subcommands = True
-        elif a.dest == "help":
-            continue
-        elif a.option_strings:
-            optionals.append(a)
-        else:
-            positionals.append(a)
+def _command_section(name, parser, help_txt, shared) -> list[str]:
+    positionals, optionals, has_subcommands = _split_actions(parser)
 
     synopsis = f"*sysforge {name}*"
     if optionals:
@@ -183,16 +233,48 @@ def _command_section(name, parser, help_txt) -> list[str]:
         if a.help:
             lines += [f"*{a.metavar or a.dest.upper()}*",
                       f"\t{_esc(a.help)}", ""]
+    shared_here = []
     for a in optionals:
-        head = ", ".join(f"*{o}*" for o in a.option_strings)
-        if a.nargs != 0:  # store/append take a value; store_true/count don't
-            head += f" _{a.metavar or a.dest.upper()}_"
+        head = _option_head(a)
+        if (head, a.help or "") in shared:
+            shared_here.append(", ".join(f"*{o}*" for o in a.option_strings))
+            continue
         lines += [head, f"\t{_esc(a.help or '')}", ""]
+    if shared_here:
+        lines += [f"*Shared options:* {', '.join(shared_here)} "
+                  "(see SHARED OPTIONS)", ""]
     if name in _VERB_CONFIG:
         config_txt, env_txt = _VERB_CONFIG[name]
         lines += [f"*Configuration:* {config_txt}", "",
                   f"*Environment:* {env_txt}", ""]
     return lines
+
+
+def render(parser, order) -> tuple[list[str], list[str]]:
+    """(SHARED OPTIONS lines, COMMANDS lines) for the parser tree."""
+    commands = list(_iter_commands(parser, order=order))
+    shared = _shared_options(commands)
+
+    shared_lines: list[str] = []
+    for (head, help_txt), names in sorted(shared.items()):
+        used_by = ", ".join(f"*{n}*" for n in names)
+        shared_lines += [head, f"\t{_esc(help_txt)}", f"\tUsed by: {used_by}.", ""]
+
+    command_lines: list[str] = []
+    for name, sub, help_txt in commands:
+        command_lines += _command_section(name, sub, help_txt, shared)
+    return shared_lines, command_lines
+
+
+def _fill(template: str, marker: str, lines: list[str]) -> str | None:
+    """Replace ``marker`` (alone on its line) with ``lines``; None if absent."""
+    if marker not in template:
+        return None
+    body = "\n".join(lines).rstrip() + "\n"
+    rendered = template.replace(marker + "\n", body, 1)
+    if marker in rendered:  # marker had no trailing newline form
+        rendered = rendered.replace(marker, body, 1)
+    return rendered
 
 
 def main() -> int:
@@ -201,20 +283,16 @@ def main() -> int:
     ap_.add_argument("--out", required=True)
     ns = ap_.parse_args()
 
-    parser = build_parser()
-    body_lines: list[str] = []
-    for name, sub, help_txt in _iter_commands(parser, order=tiered_command_order()):
-        body_lines += _command_section(name, sub, help_txt)
-    body = "\n".join(body_lines).rstrip() + "\n"
+    shared_lines, command_lines = render(build_parser(), tiered_command_order())
 
-    template = Path(ns.template).read_text(encoding="utf-8")
-    if MARKER not in template:
-        print(f"error: marker {MARKER} not found in {ns.template}",
-              file=sys.stderr)
-        return 1
-    rendered = template.replace(MARKER + "\n", body, 1)
-    if MARKER in rendered:  # marker had no trailing newline form
-        rendered = rendered.replace(MARKER, body, 1)
+    rendered = Path(ns.template).read_text(encoding="utf-8")
+    for marker, lines in ((SHARED_MARKER, shared_lines), (MARKER, command_lines)):
+        filled = _fill(rendered, marker, lines)
+        if filled is None:
+            print(f"error: marker {marker} not found in {ns.template}",
+                  file=sys.stderr)
+            return 1
+        rendered = filled
     Path(ns.out).write_text(rendered, encoding="utf-8")
     return 0
 

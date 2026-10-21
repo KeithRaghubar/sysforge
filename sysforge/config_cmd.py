@@ -193,7 +193,7 @@ def cmd_config_merge(args) -> int:
     use_pager = not getattr(args, "no_pager", False)
 
     # Non-interactive listing for scripting / CI.
-    if getattr(args, "list", False) or getattr(args, "dry_run", False):
+    if getattr(args, "dry_run", False):
         _log.ui(f"{len(pairs)} companion(s) in {config_dir}:")
         for new_path, target in pairs:
             state = "live present" if target.exists() else "no live target"
@@ -224,19 +224,18 @@ class ConfigMergeVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("merge",
-            help="Interactively adopt or clear .sfnew companions (and pacman's "
-                 ".pacnew/.pacsave for sysforge config) left by `make sync-config`. "
+            help="Interactively adopt or clear the companions a config upgrade "
+                 "leaves beside sysforge's config files (pacman's .pacnew/.pacsave, "
+                 "or .sfnew). "
                  "pacdiff-style: view diff, merge in a tool, skip, remove, or "
                  "overwrite. Merge tool: SYSFORGE_MERGE > sysforge.toml [ui].merge "
                  "> $DIFFPROG > vimdiff.")
         p.add_argument("--config-dir", metavar="DIR", dest="config_dir",
             help="Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else "
                  "/etc/sysforge).")
-        p.add_argument("--list", action="store_true", dest="list",
-            help="List companion files and their live targets without prompting "
-                 "(non-interactive; for scripting/CI). Alias: --dry-run.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
-            help="Same as --list: report companions without merging.")
+            help="List companion files and their live targets without prompting "
+                 "or merging (non-interactive; for scripting/CI).")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe diffs through $PAGER (default: paginate when stdout is a TTY).")
         p.set_defaults(verb_cls=cls)

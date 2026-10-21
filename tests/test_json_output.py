@@ -118,7 +118,7 @@ def test_state_list_json_validates(tmp_path, capsys, monkeypatch, verbose):
 
 def _doctor_args(**kw):
     return SimpleNamespace(**{
-        "config": {}, "quiet": False, "json": True, "packages": [],
+        "config": {}, "findings_only": False, "json": True, "packages": [],
         "state_dir": None, **{a: False for a in (
             "abi", "distro", "toolchain", "rust", "cache", "hardware", "graphics",
             "gfxperf", "pacman", "state", "boot", "restart", "storage",

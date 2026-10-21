@@ -56,7 +56,7 @@ _sysforge() {
 }
 
 # The -h/--help spec for verbs whose `_arguments` holds a short/long alias pair
-# ('(-q --quiet)'{-q,--quiet}). zsh renders that pair as one aliased row, and a
+# ('(-s --suggest)'{-s,--suggest}). zsh renders that pair as one aliased row, and a
 # separate `_describe` group beside it splits the listing into a block of names
 # and a block of descriptions (3.3.0-B15). Such a verb expands this array into
 # its own `_arguments` call and sets `_sysforge_help_inline=1` so
@@ -107,7 +107,8 @@ _sysforge_pkg_names() {
     _describe 'package' pkgs
     return
   fi
-  pkgs=("${(@f)$(sysforge completions packages 2>/dev/null | grep -m $((limit + 1)) -- "^${PREFIX}")}")
+  # sysforge filters and caps the ~140k-name universe itself (3.5.0-B124).
+  pkgs=("${(@f)$(sysforge completions packages --prefix="${PREFIX}" --limit=$((limit + 1)) 2>/dev/null)}")
   if (( $#pkgs > limit )); then
     zle -M "${limit}+ candidates; type more characters to narrow"
     _sysforge_clear_msg() {
@@ -248,8 +249,6 @@ _sysforge_doctor() {
   _arguments -C \
     $_sysforge_help_spec \
     '1: :_sysforge_doctor_subcommands' \
-    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
-    '--json[print one JSON document on stdout instead of the report]' \
     '*:: :->args'
 
   case $state in
@@ -285,12 +284,12 @@ _sysforge_doctor_system() {
     '--state[state integrity: failures, sentinel, drift]' \
     '--boot[boot readiness: kernel artifacts, space, DKMS]' \
     '--restart[processes running superseded code after upgrade]' \
-    '--storage[storage/filesystem: build-dir free space + /etc/fstab integrity]' \
+    '--storage[build-dir free space + /etc/fstab integrity]' \
     '--services[failed units, missing firmware, boot errors]' \
     '--audio[failed audio services + vanished output sink]' \
     '--network[default route, manager and DNS conflicts]' \
-    '--integrity[verify package-owned files vs alpm mtree via pacman -Qkk (opt-in)]' \
-    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only findings]' \
+    '--integrity[verify package files via pacman -Qkk (opt-in)]' \
+    '--findings-only[suppress clean lines; print only findings]' \
     '--json[print one JSON document on stdout instead of the report]'
 }
 
@@ -298,17 +297,17 @@ _sysforge_doctor_pkg() {
   _sysforge_help_inline=1
   _arguments \
     $_sysforge_help_spec \
-    '--abi[depends-satisfaction + soname/ABI linkage walk over the targets]' \
+    '--abi[unsatisfied depends + soname/ABI linkage of the targets]' \
     '--rust[per-target rust-toolchain.toml pin + install]' \
     '--integrity[verify target files vs alpm mtree (pacman -Qkk)]' \
     '--all[target every installed package (no opt-in axes)]' \
     '--repo[target every native repo package (no opt-in axes)]' \
     '--graphics[target the installed graphics stack; a peer of --all / --repo]' \
     '--shallow[do not recurse into transitive dependencies]' \
-    '(-q --quiet)'{-q,--quiet}'[suppress clean lines; print only packages with issues]' \
+    '--findings-only[suppress clean lines; print only packages with issues]' \
     '(-s --suggest)'{-s,--suggest}'[look up packages for each missing soname]' \
     '--apply[hand REBUILD candidates to sysforge update; implies --suggest]' \
-    '--no-confirm[skip the y/N prompt before --apply rebuilds]' \
+    '--yes[skip the y/N prompt before --apply rebuilds]' \
     '--dry-run[report --apply work without rebuilding]' \
     '(--apply)--json[print one JSON document on stdout instead of the report]' \
     '*:installed package:_sysforge_installed_pkg_names'
@@ -396,8 +395,6 @@ _sysforge_packages() {
   typeset -A opt_args
 
   _arguments -C \
-    '--packages[path to packages.toml]:file:_files' \
-    '--orphans[with list: only entries not installed]' \
     '1: :_sysforge_packages_subcommands' \
     '*:: :->args'
 
@@ -528,7 +525,7 @@ _sysforge_state_list() {
 _sysforge_state_orphans() {
   _arguments \
     '--prune[delete the listed superseded artifacts]' \
-    '--no-confirm[skip the y/N prompt when pruning]' \
+    '--yes[with --prune: delete without the y/N prompt]' \
     '--no-pager[do not pipe output through $PAGER]'
 }
 
@@ -567,7 +564,7 @@ _sysforge_state_forget() {
 
 _sysforge_revert() {
   _arguments \
-    '--force[skip the confirmation prompt]' \
+    '--yes[skip the confirmation prompt]' \
     '--state-dir[override state directory]:dir:_directories' \
     '--dry-run[show planned revert without making changes]' \
     '*: :_sysforge_pkg_names'
@@ -634,7 +631,7 @@ _sysforge_run_pipeline() {
     '--state-dir[override state directory]:directory:_files -/' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--no-unified-log[disable unified log file]' \
-    '--no-pkg-logs[disable per-package log files]' \
+    '--no-pkg-log[disable per-package log files]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--purge-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
@@ -682,7 +679,7 @@ _sysforge_run_packages() {
     '--dry-run[show what would run without executing]' \
     '--force-retry[retry failed packages without prompting]' \
     '--no-update[skip the source sync, build as checked out]' \
-    '--no-pkg-logs[disable per-package log files]' \
+    '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
@@ -697,10 +694,10 @@ _sysforge_run_kernel() {
     '--no-update[skip the source sync, build as checked out]' \
     '--cleansrc[purge the kernel src dir and re-clone]' \
     '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
-    '--non-interactive[use olddefconfig, no interactive kconfig]' \
+    '--no-interactive[use olddefconfig, no interactive kconfig]' \
     '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
-    '--base-config[override kernel.toml base_config]:source:(pkgbuild running)' \
+    '--base-config[override kernel.toml base_config]:source:_sysforge_base_config_source' \
     '--base-config-merge[override kernel.toml base_config_merge]:mode:(replace overlay)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
     '--skip-boot-audit[override the Gate-2 boot audit; dangerous]' \
@@ -712,7 +709,7 @@ _sysforge_run_kernel() {
     '--no-keep-hotplug-drivers[leave hotplug drivers off (default)]' \
     '--autofdo[sample-based kernel FDO step (LLVM only)]:step:(record capture use)' \
     '--propeller[round 2: Propeller on the pinned AutoFDO profile]' \
-    '--no-pkg-logs[disable per-package log files]' \
+    '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
     '--log-dir[directory for log files]:directory:_files -/' \
     '--cache-report[print ccache/sccache summary after run]' \
@@ -744,9 +741,15 @@ _sysforge_help() {
         packages) _sysforge_packages_subcommands ;;
         run)      _sysforge_run_stages           ;;
         state)    _sysforge_state_subcommands    ;;
+        bench)    _sysforge_bench_targets        ;;
       esac
       ;;
   esac
+}
+
+# --base-config takes a keyword or a path to a .config file.
+_sysforge_base_config_source() {
+  _alternative 'keywords:keyword:(pkgbuild running)' 'files:.config file:_files'
 }
 
 _sysforge_log() {
@@ -783,8 +786,7 @@ _sysforge_config_subcommands() {
 _sysforge_config_merge() {
   _arguments \
     '--config-dir[live config dir to scan]:directory:_files -/' \
-    '--list[list companion files without prompting (non-interactive)]' \
-    '--dry-run[same as --list: report companions without merging]' \
+    '--dry-run[list companion files without prompting or merging]' \
     '--no-pager[do not pipe diffs through $PAGER]'
 }
 

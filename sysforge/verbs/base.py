@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import argparse
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -192,8 +192,11 @@ class Verb(ABC):
 class VerbGroup:
     """A namespace verb (``sysforge state …``) over a fixed set of leaf verbs.
 
-    ``build`` adds the parent parser, then ``add_arguments`` (flags accepted on
-    the bare namespace), then one subparser per ``members`` entry in order.
+    ``build`` adds the parent parser, then one subparser per ``members`` entry
+    in order. The parent takes no options of its own: argparse lets a
+    subparser's defaults overwrite a value parsed on the parent, so a parent
+    flag is silently dropped once a subcommand is named (3.5.0-F15). A bare run
+    of a defaulted namespace gets its leaf's flag values through ``defaults``.
     ``defaults`` is applied *after* the subparsers action exists. argparse gives
     that action its own ``default=None`` for ``dest``, which beats an earlier
     ``set_defaults`` for the same key, so this order is the only one in which a
@@ -209,12 +212,9 @@ class VerbGroup:
     default: type[Verb] | None = None
     defaults: Mapping[str, Any] = field(default_factory=dict)
     metavar: str | None = None
-    add_arguments: Callable[[argparse.ArgumentParser], None] | None = None
 
     def build(self, sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         p = sub.add_parser(self.name, help=self.help)
-        if self.add_arguments is not None:
-            self.add_arguments(p)
         group_sub = p.add_subparsers(dest=self.dest, metavar=self.metavar)
         group_sub.required = self.default is None
         if self.default is not None:

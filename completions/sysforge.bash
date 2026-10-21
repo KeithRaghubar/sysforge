@@ -8,7 +8,7 @@
 # alternatives do not preserve compgen's word splitting on the candidates.
 #
 # Mirrors completions/_sysforge (zsh). Source of truth for the CLI surface is
-# sysforge/cli.py.
+# sysforge/verbs/registry.py build_parser() plus each verb's add_parser.
 #
 # Installed by PKGBUILD to /usr/share/bash-completion/completions/sysforge.
 # Requires the `bash-completion` package (declared as an optdep).
@@ -81,6 +81,7 @@ _sysforge() {
         setup)       _sysforge_setup       ;;
         uninstall)   _sysforge_uninstall   ;;
         env)         _sysforge_env         ;;
+        log)         _sysforge_log         ;;
         help)        _sysforge_help        ;;
         config)      _sysforge_config      ;;
         completions) _sysforge_completions ;;
@@ -130,7 +131,9 @@ _sysforge_flag_arg() {
             return 0
             ;;
         --base-config)
-            COMPREPLY=( $(compgen -W "pkgbuild running" -- "$cur") )
+            # A keyword or a path to a .config file.
+            _filedir
+            COMPREPLY+=( $(compgen -W "pkgbuild running" -- "$cur") )
             return 0
             ;;
         --base-config-merge)
@@ -158,7 +161,8 @@ _sysforge_pkg_names() {
     if [[ -z $cur ]]; then
         pkgs=$(sysforge completions local 2>/dev/null)
     else
-        pkgs=$(sysforge completions packages 2>/dev/null | grep -m 201 -- "^$cur")
+        # sysforge filters and caps the ~140k-name universe itself (3.5.0-B124).
+        pkgs=$(sysforge completions packages --prefix="$cur" --limit=201 2>/dev/null)
     fi
     COMPREPLY=( $(compgen -W "$pkgs" -- "$cur") )
 }
@@ -237,26 +241,31 @@ _sysforge_resolve() {
     fi
 }
 
+_sysforge_log() {
+    _sysforge_flag_arg && return
+    if [[ $cur == -* ]]; then
+        COMPREPLY=( $(compgen -W "--state-dir --no-pager" -- "$cur") )
+    else
+        _sysforge_local_pkg_names
+    fi
+}
+
 _sysforge_doctor() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-q --quiet --json" -- "$cur") )
-        else
-            COMPREPLY=( $(compgen -W "system pkg" -- "$cur") )
-        fi
+        COMPREPLY=( $(compgen -W "system pkg" -- "$cur") )
         return
     fi
     case "$subverb" in
         system)
             local sys_flags="--distro --graphics --gfxperf --hardware --toolchain \
                 --rust --cache --pacman --state --boot --restart --storage \
-                --services --audio --network --integrity -q --quiet --json"
+                --services --audio --network --integrity --findings-only --json"
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "$sys_flags" -- "$cur") )
             ;;
         pkg)
             local pkg_flags="--abi --rust --integrity --all --repo --graphics \
-                --shallow -q --quiet -s --suggest --apply --no-confirm --dry-run --json"
+                --shallow --findings-only -s --suggest --apply --yes --dry-run --json"
             if [[ $cur == -* ]]; then
                 COMPREPLY=( $(compgen -W "$pkg_flags" -- "$cur") )
             else
@@ -300,11 +309,7 @@ _sysforge_artifact() {
 _sysforge_packages() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "--packages --orphans" -- "$cur") )
-        else
-            COMPREPLY=( $(compgen -W "list add add-group remove" -- "$cur") )
-        fi
+        COMPREPLY=( $(compgen -W "list add add-group remove" -- "$cur") )
         return
     fi
     case "$subverb" in
@@ -361,7 +366,7 @@ _sysforge_state() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --json" -- "$cur") )
             ;;
         orphans)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --no-confirm --no-pager" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --yes --no-pager" -- "$cur") )
             ;;
         profiles)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager --state-dir" -- "$cur") )
@@ -387,7 +392,7 @@ _sysforge_state() {
 
 _sysforge_revert() {
     if [[ $cur == -* ]]; then
-        COMPREPLY=( $(compgen -W "--force --state-dir --dry-run" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--yes --state-dir --dry-run" -- "$cur") )
     else
         _sysforge_pkg_names
     fi
@@ -415,7 +420,7 @@ _sysforge_run() {
         pipeline)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --resume --start-from --force-retry --dry-run --packages \
-                --state-dir --profile-conf --no-unified-log --no-pkg-logs \
+                --state-dir --profile-conf --no-unified-log --no-pkg-log \
                 --log-dir --purge-log --persist-log --cache-report --abi-check \
                 --no-update" -- "$cur") )
             ;;
@@ -434,19 +439,19 @@ _sysforge_run() {
             ;;
         packages)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
-                --packages --dry-run --force-retry --no-update --no-pkg-logs \
+                --packages --dry-run --force-retry --no-update --no-pkg-log \
                 --persist-log --log-dir --cache-report --abi-check --state-dir \
                 --profile-conf" -- "$cur") )
             ;;
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --non-interactive --compiler --bootloader --base-config \
+                --no-interactive --compiler --bootloader --base-config \
                 --base-config-merge \
                 --allow-no-fallback --skip-boot-audit \
                 --headers --no-headers --docs --no-docs \
                 --keep-hotplug-drivers --no-keep-hotplug-drivers \
-                --autofdo --propeller --no-pkg-logs \
+                --autofdo --propeller --no-pkg-log \
                 --persist-log --log-dir --cache-report --abi-check \
                 --state-dir --profile-conf" -- "$cur") )
             ;;
@@ -494,7 +499,7 @@ _sysforge_config() {
     fi
     case "$subverb" in
         merge)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --list --dry-run --no-pager" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --dry-run --no-pager" -- "$cur") )
             ;;
     esac
 }

@@ -150,8 +150,8 @@ class SearchVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("search",
-            help="search installed, repo, and AUR packages for a term")
-        p.add_argument("term", metavar="TERM", help="search term (name + description)")
+            help="Search installed, repo, and AUR packages for a term.")
+        p.add_argument("term", metavar="TERM", help="Search term (matches name and description).")
         p.set_defaults(verb_cls=cls)
         return p
 

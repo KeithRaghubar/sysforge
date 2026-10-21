@@ -112,6 +112,8 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.5.0-F13` | sysforge log cannot page the standalone verb logs | med | small | minor |
+| `3.5.0-F14` | a per-package toolchain can only be chosen half-way, and only kept after a failure | med | medium | minor |
+| `3.5.0-B121` | cargo's progress bar is overwritten by its own crate-name lines | low | small | patch |
 <!-- END roadmap-table -->
 
 ### Features
@@ -132,7 +134,38 @@ canonical ordering.
   *Priority: med · Effort: small · Bump: minor* — observability: the most-run verb's log is only
   findable from its own terminal output.
 
+- **`3.5.0-F14` — a per-package toolchain can only be chosen half-way, and only kept after a failure.**
+  `build --cc`/`--cxx` set only `CC`/`CXX` (`makepkg_conf.emit_makepkg_conf`), so `--cc gcc --cxx
+  g++` on an llvm profile keeps `llvm-ar`/`llvm-nm`/`llvm-ranlib` and `-fuse-ld=lld`, while the
+  recovery menu's retry swaps the whole bundle (`makepkg_wrapper._reemit_for_swap` →
+  `profile.swap_toolchain`, `3.5.0-F12`). And the only writer of a `[package_compiler_overrides]`
+  row is `makepkg_wrapper._persist_recovery_overrides`, so keeping a toolchain for a package means
+  failing a build first or hand-editing `profiles.toml`. Add `build --toolchain {gcc,llvm}` (a
+  unit swap through `swap_toolchain`); route a `--cc`/`--cxx` pair that
+  `profile.toolchain_for_compilers` maps to a bundle through the same swap, keeping raw `--cc`/
+  `--cxx` as the escape hatch for a non-bundle compiler (removing them would be `major`); add a
+  persist flag that upserts the row via `profile_writer.write_package_compiler_override` before
+  the build, plus a clear flag backed by a row-delete in that same writer (it upserts only today).
+  Name the flag to match `run kernel --compiler {gcc,llvm}` (same values): reuse `--compiler`,
+  or rename both (§CLI Verb Framework, *Flag conventions*). Completions, man page, §Flag/Profile
+  and the toolchain guide in the same change. Dual-toolchain
+  tests: `--toolchain gcc` on an llvm profile and `--toolchain llvm` on a gcc profile each emit
+  the full bundle; a bundle-matching `--cc`/`--cxx` pair swaps, a raw pair does not; persist
+  writes the row with no failure; clear removes it and leaves other rows intact.
+  *Priority: med · Effort: medium · Bump: minor* — a CLI compiler choice silently mixes
+  toolchains, and keeping one costs a failed build.
+
 ### Bugs
+
+- **`3.5.0-B121` — cargo's progress bar is overwritten by its own crate-name lines.**
+  During a forwarded cargo build the `Building [===> ] n/m: crates…` bar renders, but as output
+  scrolls, earlier bar rows are left partly overwritten by the "Compiling …" / crate-list text.
+  Display only: the run log is unaffected. Candidate causes, unconfirmed: the forwarding painter's
+  `refresh()` landing between cargo's `\r` + erase-line and its redraw, or a pty width that makes
+  the bar wrap so `\r` returns only to the wrapped row (`pty_runner.run_with_pty` winsize). First
+  step: capture with `SYSFORGE_PTY_RAW_DUMP` on a Rust package to see which. Tests: a recorded
+  cargo byte stream replayed through the forwarder leaves no bar fragment above the live row.
+  *Priority: low · Effort: small · Bump: patch* — cosmetic, terminal only.
 
 ### Developer tooling
 

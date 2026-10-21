@@ -19,7 +19,8 @@ sysforge/
 │   ├── run_cmd.py                     # sysforge run namespace verbs (pipeline/hardware/reconfigure/toolchain/packages/kernel)
 │   ├── env_cmd.py                     # sysforge env subcommand (read-only env-chain inspector)
 │   ├── help_cmd.py                    # sysforge help subcommand (read-only alias for --help)
-│   ├── completions_cmd.py             # sysforge completions data sink (consumed by _sysforge)
+│   ├── completions_cmd.py             # sysforge completions verb (parser entry only)
+│   ├── completions_data.py            # completion candidates + packages cache; cli.main fast path
 │   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
 │   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
 │   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
@@ -167,6 +168,7 @@ sysforge/
     profiles.toml                    # user overrides (optional; merges with system via extends_system)
 ~/.cache/sysforge/                   # $XDG_CACHE_HOME/sysforge
     aur-packages.txt                 # AUR name cache (regenerable, refreshed every 24h)
+    completion-packages.txt          # merged local+repo+AUR names for Tab (regenerable, keyed on inputs)
 ~/.local/state/sysforge/             # $XDG_STATE_HOME/sysforge
     (state files)                    # fallback runtime state when /var/lib/sysforge is not writable
 /var/cache/sysforge/                 # regenerable build cache (override via SYSFORGE_PGO_STORE); provisioned 0777 by tmpfiles.d, sudo-created at runtime if absent

@@ -1334,7 +1334,7 @@ def _run_system_axes(args, config, axis_names: list[str]) -> int:
         res = results[ax.name]
         errors += diag.render_axis(
             _log, ax.label, res.findings,
-            clean_msg=ax.clean_msg, quiet=args.quiet, roster=res.roster,
+            clean_msg=ax.clean_msg, quiet=args.findings_only, roster=res.roster,
         )
     return errors
 
@@ -1366,7 +1366,7 @@ def _render_pkg_axes(args, config, axis_names: list[str], walk: AbiWalk,
             continue
         errors += diag.render_axis(
             _log, ax.label, res.findings,
-            clean_msg=ax.clean_msg, quiet=args.quiet,
+            clean_msg=ax.clean_msg, quiet=args.findings_only,
             grouped=(name == "abi"), roster=res.roster,
         )
     return errors
@@ -1460,7 +1460,7 @@ def cmd_doctor_pkg(args):
         quiet: bool               — suppress clean lines in output
         suggest: bool             — look up candidate packages per soname
         apply: bool               — hand REBUILD candidates to sysforge update
-        no_confirm: bool          — skip the y/N prompt before --apply
+        yes: bool                 — skip the y/N prompt before --apply
         dry_run: bool             — report --apply work without rebuilding
     """
     config = getattr(args, "config", None) or {}
@@ -1559,7 +1559,7 @@ def _apply_rebuilds(
         return 0
 
     dry_run = bool(getattr(args, "dry_run", False))
-    no_confirm = bool(getattr(args, "no_confirm", False))
+    skip_prompt = bool(getattr(args, "yes", False))
 
     _log.ui(f"\n--apply: would rebuild {len(eligible)} package(s):")
     for name in eligible:
@@ -1569,7 +1569,7 @@ def _apply_rebuilds(
         _log.ui("\n(--dry-run: nothing rebuilt)")
         return 0
 
-    if not no_confirm:
+    if not skip_prompt:
         answer = prompt_choice(
             "Proceed with rebuild? [y/N] ", ["y", "yes"],
             default="", retry_on_invalid=False,
@@ -1602,7 +1602,7 @@ def _apply_rebuilds(
         cache_report=False,
         skip_sync_check=False,
         cc=None, cxx=None, ld=None,
-        # doctor already confirmed (or --no-confirm skipped it): update must
+        # doctor already confirmed (or --yes skipped it): update must
         # not ask a second time (3.1.0-F4).
         yes=True,
     )
@@ -1627,8 +1627,9 @@ from sysforge.primitives import run
 def _add_system_axis_flags(p):
     """Register the system-state axis flags on the `doctor system` subparser.
 
-    The bare `doctor` parser takes only `--quiet` (`_add_doctor_group_flags`);
-    the flat axis flags there were removed in 3.0.0 (2.6.1-F1).
+    The bare `doctor` parser takes no options: a bare run is `doctor system`
+    with its defaults, and every flag lives on the subcommand (a flag on the
+    parent would be dropped when a subcommand is named).
     """
     p.add_argument("--graphics", action="store_true",
         help="Run graphics system-state probes: nvidia-drm modeset, driver "
@@ -1721,7 +1722,7 @@ def _add_system_axis_flags(p):
              "from the bare/full sweep because a whole-system scan re-hashes "
              "every packaged file); scope it with `doctor pkg PKG --integrity`. "
              "Read-only; never restores.")
-    p.add_argument("--quiet", "-q", action="store_true",
+    p.add_argument("--findings-only", action="store_true", dest="findings_only",
         help="Suppress clean lines; print only findings.")
     _add_json_flag(p)
 
@@ -1796,8 +1797,7 @@ class DoctorPkgVerb(Verb):
         p.add_argument("--rust", action="store_true",
             help="Report each target's rust-toolchain.toml pin and whether that "
                  "toolchain is installed (uninstalled = mid-build network fetch). "
-                 "A named target with no PKGBUILD or no pin now says so explicitly "
-                 "instead of staying silent.")
+                 "A named target with no PKGBUILD or no pin is reported as such.")
         p.add_argument("--integrity", action="store_true",
             help="Verify each target's package-owned files against alpm's recorded "
                  "mtree via `pacman -Qkk`. Read-only; never restores.")
@@ -1816,7 +1816,7 @@ class DoctorPkgVerb(Verb):
                  "probes use `doctor system --graphics`.")
         p.add_argument("--shallow", action="store_true",
             help="Do not recurse into transitive dependencies of each target.")
-        p.add_argument("--quiet", "-q", action="store_true",
+        p.add_argument("--findings-only", action="store_true", dest="findings_only",
             help="Suppress clean lines; print only packages with issues.")
         p.add_argument("--suggest", "-s", action="store_true",
             help="For each unsatisfied soname, look up candidate packages "
@@ -1828,9 +1828,9 @@ class DoctorPkgVerb(Verb):
                  "not reinstall). Requires a synced files db (`sudo pacman -Fy`).")
         p.add_argument("--apply", action="store_true",
             help="Hand the rebuild candidates from --suggest off to `sysforge "
-                 "update` and rebuild them. Implies --suggest. Drift-rebuild only "
-                 "in v1.x: install candidates are printed but not invoked.")
-        p.add_argument("--no-confirm", action="store_true", dest="no_confirm",
+                 "update` and rebuild them. Implies --suggest. Rebuilds only: "
+                 "install candidates are printed but not installed.")
+        p.add_argument("--yes", action="store_true", dest="yes",
             help="Skip the y/N prompt before --apply rebuilds.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Report what --apply would rebuild without invoking the build.")
@@ -1865,17 +1865,6 @@ class DoctorPkgVerb(Verb):
         return ExecResult(exit_code=cmd_doctor_pkg(args) or 0)
 
 
-def _add_doctor_group_flags(p):
-    # Bare `sysforge doctor` is `doctor system`, the everyday full sweep. The
-    # flat axis flags are NOT registered here: they were removed in 3.0.0, and
-    # 3.1.0 retired the migration hint that used to translate them, so argparse
-    # now reports them as unrecognized. Only `--quiet` survives at this level,
-    # since it modifies the sweep rather than selecting one.
-    p.add_argument("--quiet", "-q", action="store_true",
-        help="Suppress clean lines; print only findings.")
-    _add_json_flag(p)
-
-
 #: `sysforge doctor`: system / pkg. Bare `doctor` is `doctor system` (2.6.1-F1);
 #: `packages=[]` keeps the shared target helpers happy at system scope.
 DOCTOR_GROUP = VerbGroup(
@@ -1885,6 +1874,5 @@ DOCTOR_GROUP = VerbGroup(
     dest="doctor_cmd",
     members=(DoctorSystemVerb, DoctorPkgVerb),
     default=DoctorSystemVerb,
-    defaults={"packages": []},
-    add_arguments=_add_doctor_group_flags,
+    defaults={"packages": [], "findings_only": False, "json": False},
 )

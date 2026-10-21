@@ -100,7 +100,7 @@ exit 13 and fails hard instead (3.0.0-B9);
 `"review-gated"` (kernel stage) preserves the B5 semantics — the skipped build
 also skipped the promised in-prepare() kconfig review, so interactive runs get
 an install-as-built / rebuild-with-`-f` / abort prompt while unattended runs
-proceed. The unattended arbitration (caller interactivity ∧ `--non-interactive`
+proceed. The unattended arbitration (caller interactivity ∧ `--no-interactive`
 ∧ TTY) lives only in the seam. `makepkg_wrapper`'s own `except AlreadyBuilt`
 (manifest capture for renamed builds) is a side-effect that fires regardless of
 policy, then re-raises.

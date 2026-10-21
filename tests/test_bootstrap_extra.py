@@ -53,7 +53,7 @@ def make_options(**kwargs):
     defaults = dict(
         resume=False, start_from=None, force_retry=False,
         dry_run=False, state_dir=None,
-        no_unified_log=False, no_pkg_logs=False,
+        no_unified_log=False, no_pkg_log=False,
         log_dir=None, purge_log=False, persist_log=False,
     )
     defaults.update(kwargs)

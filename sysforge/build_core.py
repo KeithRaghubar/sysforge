@@ -688,7 +688,7 @@ _STAGE_BUILD_DEFAULTS: dict[str, dict] = {
 def make_build_options(stage: str, options, **overrides):
     """Assemble a ``BuildOptions`` for a pipeline stage's makepkg invocation.
 
-    Maps the fields common to every stage's run-options object — ``no_pkg_logs``
+    Maps the fields common to every stage's run-options object — ``no_pkg_log``
     → ``pkg_log``, plus ``persist_log`` / ``state_dir`` / ``abi_check`` — then
     layers in the stage's constant defaults from ``_STAGE_BUILD_DEFAULTS`` and
     finally the caller's per-call ``overrides`` (which win over both). Fields
@@ -708,7 +708,7 @@ def make_build_options(stage: str, options, **overrides):
     if stage not in _STAGE_BUILD_DEFAULTS:
         raise ValueError(f"unknown build stage {stage!r}")
     fields: dict = {
-        "pkg_log": not options.no_pkg_logs,
+        "pkg_log": not options.no_pkg_log,
         "persist_log": options.persist_log,
         "state_dir": options.state_dir,
         "abi_check": getattr(options, "abi_check", False),

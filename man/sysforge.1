@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-20"
+.TH "sysforge" "1" "2026\-10\-21"
 .PP
 .PP
 .SH NAME
@@ -28,91 +28,20 @@ update, drift detection, and diagnostics.\&
 .PP
 \fBsysforge update\fR is the steady\-state entry point: it walks the live install
 set (all foreign packages, plus repo packages selected by overrides or
-repo_mode = "build_from_source"), syncs sources through a rate\-limited scheduler,
-compares versions, reports toolchain\-variant and compiler\-flag drift, and
-rebuilds what changed.\& Before any changed source is built, the PKGBUILD
-review gate presents the full source\-tree diff since the last accepted
-build for approval; with no terminal to ask, it refuses that package and
-the run exits non\-zero (see \fB\-\-review\fR, \fB\-\-no\-review\fR and [build] review).\&
-At a terminal it shows the plan and asks before changing anything (see
-\fB\-\-yes\fR and [build] confirm_plan).\&
-Builds run through a managed
-makepkg invocation with dependencies pre\-installed, per\-package logs, build
-failure diagnosis with deterministic auto\-repair for known failure modes,
-and a single bulk install at the end.\&
+repo_mode = "build_from_source"), syncs sources, reports drift, and rebuilds
+what changed.\& A changed source is shown as a diff for approval before it is
+built (the PKGBUILD review gate), and at a terminal the whole plan is shown
+before anything changes.\&
 .PP
-\fBsysforge run\fR builds what a running system rebuilds by stage: \fBrun
-toolchain\fR an optionally PGO\- and BOLT\-optimized LLVM toolchain, \fBrun
-kernel\fR a custom kernel under boot\-safety gates, and \fBrun packages\fR
-everything in packages.\&toml.\& Its other stages are the fresh\-install
-bootstrap: \fBrun pipeline\fR takes an Arch ISO environment to a configured
-system (install via archinstall, hardware detection, configure) and goes on
-through the build stages; \fBrun hardware\fR and \fBrun reconfigure\fR repeat its
-hardware detection and pre\-build checks on their own.\&
+\fBsysforge run\fR builds by stage: \fBrun toolchain\fR an optionally PGO\- and
+BOLT\-optimized LLVM toolchain, \fBrun kernel\fR a custom kernel under boot\-safety
+gates, and \fBrun packages\fR everything in packages.\&toml.\& \fBrun pipeline\fR is the
+fresh\-install bootstrap, from an Arch ISO environment through every stage.\&
 .PP
-\fBsysforge doctor\fR is the read\-only health surface, split into two scopes.\&
-\fBdoctor system\fR runs the system\-state axes (hardware, toolchain, pacman db,
-state, boot, storage, services, graphics); bare \fBsysforge doctor\fR is that
-sweep.\& \fBdoctor pkg\fR runs the package\-scoped axes over one or more targets:
-\fB\-\-abi\fR (depends + ABI linkage), \fB\-\-rust\fR (rust\-toolchain.\&toml pins), and
-\fB\-\-integrity\fR (pacman \-Qkk).\& With no axis flag each scope runs its defaults;
-a broad target selector (\fB\-\-all\fR, \fB\-\-repo\fR) suppresses the opt\-in axes unless
-named explicitly.\&
+\fBsysforge doctor\fR is the read\-only health check: \fBdoctor system\fR for the
+running system (bare \fBsysforge doctor\fR is the same sweep), \fBdoctor pkg\fR for
+individual packages.\&
 .PP
-The flat \fBdoctor\fR flags were removed in 3.\&0.\&0.\& Each one now prints its
-replacement and exits 2; that hint table is itself removed in 3.\&1.\&0.\&
-.PP
-.TS
-allbox;l lx
-l lx
-l lx
-l lx
-l lx
-l lx
-l lx
-l lx.
-T{
-\fBremoved\fR
-T}	T{
-\fBreplacement\fR
-T}
-T{
-\fI\-\-boot\fR, \fI\-\-hardware\fR, \fI\-\-toolchain\fR, \fI\-\-cache\fR, \fI\-\-pacman\fR, \fI\-\-state\fR, \fI\-\-restart\fR, \fI\-\-storage\fR, \fI\-\-services\fR, \fI\-\-audio\fR, \fI\-\-network\fR, \fI\-\-distro\fR, \fI\-\-gfxperf\fR
-T}	T{
-\fBsysforge doctor system\fR \fI<same flag>\fR
-T}
-T{
-\fI\-\-all\fR
-T}	T{
-\fBsysforge doctor system\fR then \fBsysforge doctor pkg \-\-all\fR
-T}
-T{
-\fI\-\-repo\fR
-T}	T{
-\fBsysforge doctor pkg \-\-repo\fR
-T}
-T{
-\fI\-\-graphics\fR
-T}	T{
-\fBsysforge doctor system \-\-graphics\fR (probes) or \fBsysforge doctor pkg \-\-graphics\fR (targets)
-T}
-T{
-\fI\-\-rust\fR
-T}	T{
-\fBsysforge doctor system \-\-rust\fR (effective toolchain) or \fBsysforge doctor pkg\fR \fIPKG\fR \fB\-\-rust\fR (pin)
-T}
-T{
-\fI\-\-integrity\fR
-T}	T{
-\fBsysforge doctor system \-\-integrity\fR or \fBsysforge doctor pkg\fR \fIPKG\fR \fB\-\-integrity\fR
-T}
-T{
-\fIPKG\fR (bare positional)
-T}	T{
-\fBsysforge doctor pkg\fR \fIPKG\fR
-T}
-.TE
-.sp 1
 Install\-bearing commands write a stage sentinel before mutating the system;
 an interrupted run is detected on the next invocation and offers a recorded
 recovery command.\&
@@ -205,6 +134,95 @@ frozen.\& Repeatable, and accepts a comma\-separated list.\& Run\-scoped only:
 there is no persistent trust list.\&
 .PP
 .RE
+.SH SHARED OPTIONS
+.PP
+Options that mean the same in every command that takes them.\& Each command
+under COMMANDS names the ones it accepts in its \fBShared options\fR line.\&
+.PP
+\fB\-\-abi\-check\fR
+.RS 4
+Run a post\-build ABI compatibility check on built shared libraries.\&
+Used by: \fBrun pipeline\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-cache\-report\fR
+.RS 4
+Print a structured cache summary after the run.\&
+Used by: \fBrun pipeline\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-cleansrc\-force\fR
+.RS 4
+Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local clone unconditionally.\& Use when the upstream rewrote history (e.\&g.\& Arch packaging repos force\-push every release) and the local commits have no value to preserve.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBfetch\fR, \fBrun toolchain\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-dry\-run\fR
+.RS 4
+Show what would run without executing anything.\&
+Used by: \fBrun pipeline\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-force\-retry\fR
+.RS 4
+Retry all failed packages without prompting.\&
+Used by: \fBrun pipeline\fR, \fBrun packages\fR.\&
+.PP
+.RE
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
+Used by: \fBdoctor system\fR, \fBdoctor pkg\fR.\&
+.PP
+.RE
+\fB\-\-log\-dir\fR \fIDIR\fR
+.RS 4
+Directory for log files.\&
+Used by: \fBrun pipeline\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-no\-llvm\-preflight\fR
+.RS 4
+Suppress the LLVM source pre\-flight summary.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBfetch\fR.\&
+.PP
+.RE
+\fB\-\-no\-pager\fR
+.RS 4
+Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+Used by: \fBlog\fR, \fBstate list\fR, \fBstate orphans\fR, \fBstate profiles\fR, \fBstate boot\-entries\fR, \fBstate failed\fR.\&
+.PP
+.RE
+\fB\-\-no\-pkg\-log\fR
+.RS 4
+Disable per\-package log files.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBrun pipeline\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-packages\fR \fIFILE\fR
+.RS 4
+Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
+Used by: \fBupdate\fR, \fBpackages list\fR, \fBpackages add\fR, \fBpackages add\-group\fR, \fBpackages remove\fR, \fBrun pipeline\fR, \fBrun packages\fR.\&
+.PP
+.RE
+\fB\-\-persist\-log\fR
+.RS 4
+Keep log files after successful completion.\&
+Used by: \fBupdate\fR, \fBrun pipeline\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-profile\-conf\fR \fIFILE\fR
+.RS 4
+Path to a profiles.\&toml to use instead of the default.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBfetch\fR, \fBresolve\fR, \fBrun pipeline\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
+.PP
+.RE
+\fB\-\-state\-dir\fR \fIDIR\fR
+.RS 4
+Override state directory.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBstate list\fR, \fBstate repair\fR, \fBstate failed\fR, \fBstate forget\fR, \fBrun pipeline\fR, \fBrun hardware\fR, \fBrun reconfigure\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR, \fBrevert\-to\-stock\fR, \fBuninstall\fR.\&
+.PP
+.RE
 .SH COMMANDS
 .PP
 .SS build
@@ -233,19 +251,9 @@ Strip \-\-noconfirm from profile makepkg_flags and hand stdout/stderr to makepkg
 Keep the per\-package log file after a successful build.\& Also settable via [build] persist_log = true in packages.\&toml.\&
 .PP
 .RE
-\fB\-\-no\-pkg\-log\fR
-.RS 4
-Disable the per\-package log file.\&
-.PP
-.RE
 \fB\-\-log\-dir\fR \fIDIR\fR
 .RS 4
 Directory for the per\-package log file (default: alongside the PKGBUILD).\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
 \fB\-\-cc\fR \fICOMPILER\fR
@@ -283,16 +291,6 @@ Skip the source sync (fetch and fast\-forward) and build the PKGBUILD as checked
 Purge the package src dir and re\-clone before building.\& Refuses (per package) if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream tracking branch.\&
 .PP
 .RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local tree unconditionally.\& Use when the upstream rewrote history (e.\&g.\& Arch packaging repos force\-push every release) and the local commits have no value to preserve.\&
-.PP
-.RE
-\fB\-\-no\-llvm\-preflight\fR
-.RS 4
-Suppress the LLVM source pre\-flight summary.\&
-.PP
-.RE
 \fB\-\-review\fR
 .RS 4
 Review changed sources of every type, including those trusted by [build] review_trusted_sources (by default Arch'\&s own packaging repos).\&
@@ -313,16 +311,13 @@ Unconditionally build all arguments from source for this run only, including rep
 Force makepkg to rebuild even when a matching package already exists in PKGDEST (passes \-f).\& Use after a toolchain or build\-flag change, where the version is unchanged so makepkg would otherwise skip the build and reinstall the stale artifact.\& Note \-\-force is unrelated: it only waives the repo\-package opt\-in gate.\&
 .PP
 .RE
-\fB\-\-pgo\fR \fIPGO_MODE\fR
+\fB\-\-pgo\fR \fIrecord\fR|\fIuse\fR
 .RS 4
-Mesa instrumentation PGO (LLVM toolchain only).\& \-\-pgo=record builds+installs an instrumented mesa that writes profile data to the sysforge store as you run graphics workloads; \-\-pgo=use merges the collected profiles and rebuilds an optimized mesa\-sysforge (conflicts/replaces stock mesa).\& No\-op for non\-mesa targets.\&
+Instrumentation PGO (LLVM toolchain only).\& \-\-pgo=record builds+installs an instrumented package that writes profile data to the sysforge store as you run its workloads; \-\-pgo=use merges the collected profiles and rebuilds an optimized <pkg>\-sysforge (conflicts/replaces the stock package).\& Aimed at mesa; any other target warns unless listed in sysforge.\&toml [pgo] allow.\&
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory for build_state.\&toml.\&
+\fBShared options:\fR \fB\-\-no\-pkg\-log\fR, \fB\-\-profile\-conf\fR, \fB\-\-cleansrc\-force\fR, \fB\-\-no\-llvm\-preflight\fR, \fB\-\-state\-dir\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml ([build]), sysforge.\&toml ([git])
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
@@ -363,34 +358,9 @@ No network: skip the source sync, clones, and AUR RPC.\& Pure local version chec
 Skip rebuild; install only those locally\-built artifacts in PKGDEST that are newer than the installed version.\& Implies \-\-offline.\& Mutually exclusive with \-\-makepkg, \-\-no\-cleanbuild, \-\-cleansrc, \-\-cleansrc\-force, \-\-interactive, and \-\-cache\-report.\&
 .PP
 .RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml for override rules (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
-.PP
-.RE
 \fB\-\-cache\-report\fR
 .RS 4
 Print a structured cache summary after the run.\& Builds run in the build sandbox show n/a: they never use the host caches.\&
-.PP
-.RE
-\fB\-\-no\-pkg\-log\fR
-.RS 4
-Disable per\-package log files.\&
-.PP
-.RE
-\fB\-\-persist\-log\fR
-.RS 4
-Keep log files after successful completion.\&
 .PP
 .RE
 \fB\-\-log\-dir\fR \fIDIR\fR
@@ -421,16 +391,6 @@ Skip the automatic \-\-cleanbuild (\-C) added for update runs.\& Useful when pac
 \fB\-\-cleansrc\fR
 .RS 4
 Purge each package'\&s src dir and re\-clone before building.\& Per\-package fatal if the clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.\& That package is reported failed and the run continues.\&
-.PP
-.RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites every local tree unconditionally.\& Use when the upstream rewrote history (e.\&g.\& Arch packaging repos force\-push every release) and local commits have no value to preserve.\&
-.PP
-.RE
-\fB\-\-no\-llvm\-preflight\fR
-.RS 4
-Suppress the LLVM source pre\-flight summary.\&
 .PP
 .RE
 \fB\-\-review\fR
@@ -493,6 +453,8 @@ Treat flag drift as an upgrade trigger: profiled packages whose flags now resolv
 Umbrella for both \-\-rebuild\-on\-toolchain\-drift and \-\-rebuild\-on\-flag\-drift: rebuild anything that has drifted.\& Also settable via [update] rebuild_on_drift = true in sysforge.\&toml.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-packages\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-cleansrc\-force\fR, \fB\-\-no\-llvm\-preflight\fR (see SHARED OPTIONS)
+.PP
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml, sysforge.\&toml ([git], failure_handling)
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $PAGER (review diffs)
@@ -518,21 +480,8 @@ Skip the source sync (fetch and fast\-forward) for packages that are already clo
 Purge each package'\&s src dir and re\-clone.\& Refuses (per package) if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream tracking branch.\&
 .PP
 .RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local tree unconditionally.\&
+\fBShared options:\fR \fB\-\-cleansrc\-force\fR, \fB\-\-no\-llvm\-preflight\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
 .PP
-.RE
-\fB\-\-no\-llvm\-preflight\fR
-.RS 4
-Suppress the LLVM source pre\-flight summary.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
-.PP
-.RE
 \fBConfiguration:\fR profiles.\&toml ([paths]), sysforge.\&toml ([git])
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
@@ -545,7 +494,7 @@ Search installed, repo, and AUR packages for a term.\&
 .PP
 \fBTERM\fR
 .RS 4
-search term (name + description)
+Search term (matches name and description).\&
 .PP
 .RE
 .SS help
@@ -561,20 +510,10 @@ Command (and optional subcommand) to describe, e.\&g.\& `sysforge help state fai
 .RE
 .SS doctor
 .PP
-\fBsysforge doctor\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
+\fBsysforge doctor\fR \fISUBCOMMAND\fR
 .PP
 Diagnose system health (`doctor system`) or package health (`doctor pkg`).\& Bare `doctor` runs the full system sweep.\&
 .PP
-\fB\-\-quiet\fR, \fB\-q\fR
-.RS 4
-Suppress clean lines; print only findings.\&
-.PP
-.RE
-\fB\-\-json\fR
-.RS 4
-Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
-.PP
-.RE
 \fBConfiguration:\fR profiles.\&toml; toolchain.\&toml and kernel.\&toml on their axes
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
@@ -665,16 +604,13 @@ Check network/connectivity configuration: no default route, connection\-manager 
 Verify package\-owned files against alpm'\&s recorded mtree via `pacman \-Qkk`: files an admin or a misbehaving install script altered or removed outside a pacman transaction.\& Opt\-in (excluded from the bare/full sweep because a whole\-system scan re\-hashes every packaged file); scope it with `doctor pkg PKG \-\-integrity`.\& Read\-only; never restores.\&
 .PP
 .RE
-\fB\-\-quiet\fR, \fB\-q\fR
+\fB\-\-findings\-only\fR
 .RS 4
 Suppress clean lines; print only findings.\&
 .PP
 .RE
-\fB\-\-json\fR
-.RS 4
-Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
+\fBShared options:\fR \fB\-\-json\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS doctor pkg
 .PP
 \fBsysforge doctor pkg\fR [\fIOPTIONS\fR] \fI[PKG.\&.\&.\&]\fR
@@ -693,7 +629,7 @@ Walk each target'\&s depends and ABI linkage: unsatisfied dependencies and unres
 .RE
 \fB\-\-rust\fR
 .RS 4
-Report each target'\&s rust\-toolchain.\&toml pin and whether that toolchain is installed (uninstalled = mid\-build network fetch).\& A named target with no PKGBUILD or no pin now says so explicitly instead of staying silent.\&
+Report each target'\&s rust\-toolchain.\&toml pin and whether that toolchain is installed (uninstalled = mid\-build network fetch).\& A named target with no PKGBUILD or no pin is reported as such.\&
 .PP
 .RE
 \fB\-\-integrity\fR
@@ -721,7 +657,7 @@ Target the installed graphics stack (mesa, vulkan, libglvnd, wayland, libdrm, li
 Do not recurse into transitive dependencies of each target.\&
 .PP
 .RE
-\fB\-\-quiet\fR, \fB\-q\fR
+\fB\-\-findings\-only\fR
 .RS 4
 Suppress clean lines; print only packages with issues.\&
 .PP
@@ -733,10 +669,10 @@ For each unsatisfied soname, look up candidate packages via `pacman \-Fq`.\& Fin
 .RE
 \fB\-\-apply\fR
 .RS 4
-Hand the rebuild candidates from \-\-suggest off to `sysforge update` and rebuild them.\& Implies \-\-suggest.\& Drift\-rebuild only in v1.\&x: install candidates are printed but not invoked.\&
+Hand the rebuild candidates from \-\-suggest off to `sysforge update` and rebuild them.\& Implies \-\-suggest.\& Rebuilds only: install candidates are printed but not installed.\&
 .PP
 .RE
-\fB\-\-no\-confirm\fR
+\fB\-\-yes\fR
 .RS 4
 Skip the y/N prompt before \-\-apply rebuilds.\&
 .PP
@@ -746,11 +682,8 @@ Skip the y/N prompt before \-\-apply rebuilds.\&
 Report what \-\-apply would rebuild without invoking the build.\&
 .PP
 .RE
-\fB\-\-json\fR
-.RS 4
-Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
+\fBShared options:\fR \fB\-\-json\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS resolve
 .PP
 \fBsysforge resolve\fR [\fIOPTIONS\fR] \fIPKG\fR
@@ -772,11 +705,8 @@ Print the full resolved flag set.\&
 Show transitive dependency tree with build order instead of profile info.\&
 .PP
 .RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
+\fBShared options:\fR \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR profiles.\&toml
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
@@ -807,12 +737,9 @@ Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.\&log).\& Omit
 Override state directory (used to locate the unified log).\&
 .PP
 .RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+\fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
 .PP
-.RE
-\fBConfiguration:\fR per\-package logs under the state directory
+\fBConfiguration:\fR profiles.\&toml ([paths] pkgbuild_src_dir, for per\-package logs)
 .PP
 \fBEnvironment:\fR $SYSFORGE_STATE_DIR, $PAGER
 .PP
@@ -832,37 +759,26 @@ Inspect or repair build_state.\&toml (live install\-state mirror).\&
 .PP
 Tabulate build_state.\&toml entries.\&
 .PP
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
 \fB\-\-json\fR
 .RS 4
 Print one JSON document (schema 1) on stdout instead of the table: recorded packages, opted\-out packages and untracked foreign packages.\& Never paged.\&
 .PP
 .RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+\fBShared options:\fR \fB\-\-state\-dir\fR, \fB\-\-no\-pager\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS state repair
 .PP
 \fBsysforge state repair\fR [\fIOPTIONS\fR]
 .PP
 Repair build_state.\&toml: re\-parse PKGBUILDs to rewrite entries with unexpanded shell variables (e.\&g.\& '\&$_pkgname\-git'\&), and normalize known legacy build_mode tokens ('\&profiled'\& \-> '\&source_built'\&).\&
 .PP
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
 \fB\-\-dry\-run\fR
 .RS 4
 Show the planned repair without writing.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
+.PP
 .SS state orphans
 .PP
 \fBsysforge state orphans\fR [\fIOPTIONS\fR]
@@ -874,16 +790,13 @@ List (and optionally prune) stale .\&pkg.\&tar* artifacts in PKGDEST.\& Only sur
 Delete the listed superseded artifacts (prompts for confirmation).\&
 .PP
 .RE
-\fB\-\-no\-confirm\fR
+\fB\-\-yes\fR
 .RS 4
-Skip the y/N prompt when pruning.\& Implies \-\-prune.\&
+With \-\-prune: delete without the y/N prompt.\&
 .PP
 .RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+\fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS state profiles
 .PP
 \fBsysforge state profiles\fR [\fIOPTIONS\fR]
@@ -895,27 +808,21 @@ List the collected optimization profiles (PGO, AutoFDO, Propeller, BOLT) with si
 Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo\-mesa, pgo/htop); asks for confirmation, refuses without a TTY.\& A later rebuild is then unprofiled until you collect again.\&
 .PP
 .RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
-.PP
-.RE
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
 Override state directory (where `bench toolchain` recorded the GAIN figure).\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
+.PP
 .SS state boot\-entries
 .PP
 \fBsysforge state boot\-entries\fR [\fIOPTIONS\fR]
 .PP
 Show which systemd\-boot loader entry boots each installed kernel, who owns it (you / sysforge / none) and the entry sysforge cloned it from.\& Read\-only.\&
 .PP
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
+\fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR kernel.\&toml (bootloader, boot_entries)
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $PAGER
@@ -926,16 +833,6 @@ Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
 .PP
 List packages whose last build failed (recorded in build_state.\&toml), with any diagnosed fix.\& Entries auto\-clear on the next successful build, or once the package is removed.\&
 .PP
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
-\fB\-\-no\-pager\fR
-.RS 4
-Don'\&t pipe output through $PAGER (default: paginate when stdout is a TTY).\&
-.PP
-.RE
 \fB\-\-names\fR
 .RS 4
 Print only the failed pkgbases, one per line, with no header and no pager (empty when none), for retrying them: sysforge build $(sysforge state failed \-\-names).\&
@@ -951,6 +848,8 @@ Clear the recorded failure for PKGBASE and exit.\&
 Clear all recorded failures and exit.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-state\-dir\fR, \fB\-\-no\-pager\fR (see SHARED OPTIONS)
+.PP
 .SS state forget
 .PP
 \fBsysforge state forget\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
@@ -962,11 +861,8 @@ Stop maintaining PKG(s): delete their build_state record so `sysforge update` no
 Package name(s) or pkgbase(s) to stop tracking.\& A pkgbase forgets every split\-package member sharing it.\&
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS bench
 .PP
 \fBsysforge bench\fR \fISUBCOMMAND\fR
@@ -1008,7 +904,7 @@ List managed artifacts.\&
 .PP
 \fB\-\-unmanaged\fR
 .RS 4
-also show discovered candidates not yet adopted
+Also show discovered candidates not yet adopted.\&
 .PP
 .RE
 .SS artifact review
@@ -1019,12 +915,12 @@ Interactively offer discovered candidates for adoption.\&
 .PP
 \fB\-\-all\fR
 .RS 4
-adopt every offerable candidate without prompting
+Adopt every offerable candidate without prompting.\&
 .PP
 .RE
 \fB\-\-include\-unknown\fR
 .RS 4
-with \-\-all, also adopt candidates of unknown ownership
+With \-\-all, also adopt candidates of unknown ownership.\&
 .PP
 .RE
 .SS artifact adopt
@@ -1035,12 +931,12 @@ Bring a live artifact under management.\&
 .PP
 \fBPATH\fR
 .RS 4
-path to the artifact to adopt
+Path to the artifact to adopt.\&
 .PP
 .RE
-\fB\-\-class\fR \fICLS\fR
+\fB\-\-class\fR \fIscript\fR|\fIsystemd\-unit\fR|\fIpacman\-hook\fR
 .RS 4
-artifact class (inferred from the scan root if omitted)
+Artifact class (inferred from the scan root if omitted).\&
 .PP
 .RE
 .SS artifact edit
@@ -1051,7 +947,7 @@ Edit the managed copy of an artifact.\&
 .PP
 \fBNAME\fR
 .RS 4
-registry name of the artifact
+Registry name of the artifact.\&
 .PP
 .RE
 .SS artifact deploy
@@ -1062,22 +958,22 @@ Push managed content to the live system.\&
 .PP
 \fBNAME\fR
 .RS 4
-registry name of the artifact
+Registry name of the artifact.\&
 .PP
 .RE
 \fB\-\-all\fR
 .RS 4
-deploy every managed artifact
+Deploy every managed artifact.\&
 .PP
 .RE
 \fB\-\-force\fR
 .RS 4
-managed copy wins, discarding the live edit
+Managed copy wins, discarding the live edit.\&
 .PP
 .RE
 \fB\-\-adopt\-live\fR
 .RS 4
-live file wins, updating the managed copy
+Live file wins, updating the managed copy.\&
 .PP
 .RE
 .SS artifact remove
@@ -1088,17 +984,17 @@ Remove an artifact from the live system.\&
 .PP
 \fBNAME\fR
 .RS 4
-registry name of the artifact
+Registry name of the artifact.\&
 .PP
 .RE
 \fB\-\-purge\fR
 .RS 4
-also delete the managed copy and registry entry
+Also delete the managed copy and registry entry.\&
 .PP
 .RE
 \fB\-\-force\fR
 .RS 4
-remove even though the live file changed outside sysforge (discards those live\-only edits)
+Remove even though the live file changed outside sysforge (discards those live\-only edits).\&
 .PP
 .RE
 .SS setup
@@ -1112,7 +1008,7 @@ Configure system integration (pacman IgnoreGroup for sf\-build; sysforge'\&s pac
 Path to pacman.\&conf (default: /etc/pacman.\&conf).\&
 .PP
 .RE
-\fB\-\-preset\fR \fIPRESET\fR
+\fB\-\-preset\fR \fIdefaults\fR|\fIperformance\fR|\fIlow\-friction\fR|\fIsecure\fR
 .RS 4
 Apply a config preset without asking: defaults, performance (faster binaries), low\-friction (fewest prompts) or secure (hardened builds and sources).\&
 .PP
@@ -1127,21 +1023,16 @@ Manage live sysforge config files (adopt shipped\-default drift).\&
 .PP
 \fBsysforge config merge\fR [\fIOPTIONS\fR]
 .PP
-Interactively adopt or clear .\&sfnew companions (and pacman'\&s .\&pacnew/.\&pacsave for sysforge config) left by `make sync\-config`.\& pacdiff\-style: view diff, merge in a tool, skip, remove, or overwrite.\& Merge tool: SYSFORGE_MERGE > sysforge.\&toml [ui].\&merge > $DIFFPROG > vimdiff.\&
+Interactively adopt or clear the companions a config upgrade leaves beside sysforge'\&s config files (pacman'\&s .\&pacnew/.\&pacsave, or .\&sfnew).\& pacdiff\-style: view diff, merge in a tool, skip, remove, or overwrite.\& Merge tool: SYSFORGE_MERGE > sysforge.\&toml [ui].\&merge > $DIFFPROG > vimdiff.\&
 .PP
 \fB\-\-config\-dir\fR \fIDIR\fR
 .RS 4
 Live config dir to scan (default: $SYSFORGE_CONFIG_DIR, else /etc/sysforge).\&
 .PP
 .RE
-\fB\-\-list\fR
-.RS 4
-List companion files and their live targets without prompting (non\-interactive; for scripting/CI).\& Alias: \-\-dry\-run.\&
-.PP
-.RE
 \fB\-\-dry\-run\fR
 .RS 4
-Same as \-\-list: report companions without merging.\&
+List companion files and their live targets without prompting or merging (non\-interactive; for scripting/CI).\&
 .PP
 .RE
 \fB\-\-no\-pager\fR
@@ -1151,20 +1042,10 @@ Don'\&t pipe diffs through $PAGER (default: paginate when stdout is a TTY).\&
 .RE
 .SS packages
 .PP
-\fBsysforge packages\fR [\fIOPTIONS\fR] \fISUBCOMMAND\fR
+\fBsysforge packages\fR \fISUBCOMMAND\fR
 .PP
 Manage packages.\&toml override entries (list, add, add\-group, remove).\&
 .PP
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
-.PP
-.RE
-\fB\-\-orphans\fR
-.RS 4
-With list: show only entries whose package is not currently installed.\&
-.PP
-.RE
 \fBConfiguration:\fR packages.\&toml (read/write)
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR
@@ -1175,16 +1056,13 @@ With list: show only entries whose package is not currently installed.\&
 .PP
 Show override entries in packages.\&toml.\&
 .PP
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
-.PP
-.RE
 \fB\-\-orphans\fR
 .RS 4
 Show only entries whose package is not currently installed.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-packages\fR (see SHARED OPTIONS)
+.PP
 .SS packages add
 .PP
 \fBsysforge packages add\fR [\fIOPTIONS\fR] \fIPKG\fR
@@ -1196,7 +1074,7 @@ Add or update an override entry.\& Requires at least one of \-\-enable\-build\-f
 Package name to add or update.\&
 .PP
 .RE
-\fB\-\-source\fR \fISOURCE\fR
+\fB\-\-source\fR \fIrepo\fR|\fIaur\fR|\fIlocal\fR
 .RS 4
 Pin routing (metadata; doesn'\&t satisfy validation on its own).\& `local` marks a hand\-maintained PKGBUILD with no remote to sync from.\&
 .PP
@@ -1216,11 +1094,8 @@ Disable ccache/sccache for this package (required for PGO).\&
 Free\-form note attached to the entry.\&
 .PP
 .RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
+\fBShared options:\fR \fB\-\-packages\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS packages add\-group
 .PP
 \fBsysforge packages add\-group\fR [\fIOPTIONS\fR] \fIDESKTOP\fR
@@ -1232,11 +1107,8 @@ Write a curated desktop\-environment package group (installs via '\&sysforge run
 Desktop environment to add (gnome | kde | xfce | mate | cinnamon | lxqt | budgie | cosmic).\&
 .PP
 .RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
+\fBShared options:\fR \fB\-\-packages\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS packages remove
 .PP
 \fBsysforge packages remove\fR [\fIOPTIONS\fR] \fIPKG\fR
@@ -1248,11 +1120,8 @@ Remove an override entry.\&
 Package name to remove.\&
 .PP
 .RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml.\&
+\fBShared options:\fR \fB\-\-packages\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SS run
 .PP
 \fBsysforge run\fR \fISUBCOMMAND\fR
@@ -1272,27 +1141,7 @@ Resume from the last checkpoint.\&
 .RE
 \fB\-\-start\-from\fR \fISTAGE\fR
 .RS 4
-Start from this stage, marking all prior stages as skipped.\& Useful on a live system: \-\-start\-from reconfigure
-.PP
-.RE
-\fB\-\-force\-retry\fR
-.RS 4
-Retry all failed packages without prompting.\&
-.PP
-.RE
-\fB\-\-dry\-run\fR
-.RS 4
-Show what would run without executing anything.\&
-.PP
-.RE
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+Start from this stage, marking all prior stages as skipped.\& Useful on a live system: \-\-start\-from reconfigure.\&
 .PP
 .RE
 \fB\-\-no\-unified\-log\fR
@@ -1300,39 +1149,9 @@ Override state directory.\&
 Disable the unified log file.\&
 .PP
 .RE
-\fB\-\-no\-pkg\-logs\fR
-.RS 4
-Disable per\-package log files.\&
-.PP
-.RE
-\fB\-\-log\-dir\fR \fIDIR\fR
-.RS 4
-Directory for log files.\&
-.PP
-.RE
 \fB\-\-purge\-log\fR
 .RS 4
 Truncate the unified log before this run.\&
-.PP
-.RE
-\fB\-\-persist\-log\fR
-.RS 4
-Keep log files after successful completion.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
-.PP
-.RE
-\fB\-\-cache\-report\fR
-.RS 4
-Print a structured cache summary after the run completes.\&
-.PP
-.RE
-\fB\-\-abi\-check\fR
-.RS 4
-Run a post\-build ABI compatibility check on built shared libraries.\&
 .PP
 .RE
 \fB\-\-no\-update\fR
@@ -1340,6 +1159,8 @@ Run a post\-build ABI compatibility check on built shared libraries.\&
 Skip the source sync (fetch and fast\-forward) in every stage that builds, and build each tree as checked out.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-force\-retry\fR, \fB\-\-dry\-run\fR, \fB\-\-packages\fR, \fB\-\-state\-dir\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-persist\-log\fR, \fB\-\-profile\-conf\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR (see SHARED OPTIONS)
+.PP
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (per stage reached)
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
@@ -1355,11 +1176,8 @@ Re\-run hardware detection and refresh hardware_profile.\&toml.\&
 Show what would be written without writing.\&
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR writes the hardware profile under the state directory
 .PP
 \fBEnvironment:\fR $SYSFORGE_STATE_DIR
@@ -1380,11 +1198,8 @@ Run all steps non\-interactively without writing any changes.\&
 Path to packages.\&toml (used by disk and preview steps).\&
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (reviewed interactively)
 .PP
 \fBEnvironment:\fR $SYSFORGE_STATE_DIR, $SYSFORGE_EDITOR (then $EDITOR, $VISUAL)
@@ -1395,11 +1210,6 @@ Override state directory.\&
 .PP
 Build and install the LLVM/GCC toolchain from toolchain.\&toml.\&
 .PP
-\fB\-\-dry\-run\fR
-.RS 4
-Show what would run without executing anything.\&
-.PP
-.RE
 \fB\-\-no\-update\fR
 .RS 4
 Skip the source sync (fetch and fast\-forward) of the toolchain PKGBUILDs and build them as checked out.\&
@@ -1408,26 +1218,6 @@ Skip the source sync (fetch and fast\-forward) of the toolchain PKGBUILDs and bu
 \fB\-\-makepkg\fR, \fB\-m\fR \fIFLAGS\fR
 .RS 4
 Additional makepkg flags appended to each build.\& Example: \-m '\&\-f'\& to force rebuild of already\-built packages.\& Unlike build/update, \-m is required here: bare makepkg flags are not forwarded implicitly on run subcommands.\& Install flags (\-i/\-\-install) are ignored; the toolchain controls which passes install to the system.\&
-.PP
-.RE
-\fB\-\-persist\-log\fR
-.RS 4
-Keep log files after successful completion.\&
-.PP
-.RE
-\fB\-\-cache\-report\fR
-.RS 4
-Print a structured cache summary after the run.\&
-.PP
-.RE
-\fB\-\-abi\-check\fR
-.RS 4
-Run a post\-build ABI compatibility check on built shared libraries.\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
 .PP
 .RE
 \fB\-\-rebuild\-profdata\fR
@@ -1470,7 +1260,7 @@ Override the pre\-build Gate\-1 abort when the in\-tree LLVM PKGBUILDs disagree 
 Override the pre\-build Gate\-1 abort when a filesystem hosting the staging dirs / pgo_store / build output lacks min_build_free_gb free (default 40 GiB).\& Dangerous: the multi\-hour LLVM build may fail partway with no space left.\&
 .PP
 .RE
-\fB\-\-rebuild\-soname\-consumers\fR \fIREBUILD_SONAME_CONSUMERS\fR
+\fB\-\-rebuild\-soname\-consumers\fR \fIprompt\fR|\fIauto\fR|\fIoff\fR
 .RS 4
 What to do when the built libLLVM changes its soname and would break installed consumers (mesa, etc.\&): '\&prompt'\& (default) warns and asks before building; '\&auto'\& approves and rebuilds them after install; '\&off'\& builds the toolchain but leaves consumers for you to rebuild.\& Overrides toolchain.\&toml rebuild_soname_consumers.\&
 .PP
@@ -1480,11 +1270,8 @@ What to do when the built libLLVM changes its soname and would break installed c
 Purge each toolchain package'\&s src dir and re\-clone before building.\& Refuses (per package) if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.\&
 .PP
 .RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites every local toolchain tree unconditionally.\& Use when the upstream rewrote history (e.\&g.\& Arch packaging repos force\-push every release) and local commits have no value.\&
+\fBShared options:\fR \fB\-\-dry\-run\fR, \fB\-\-persist\-log\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-cleansrc\-force\fR (see SHARED OPTIONS)
 .PP
-.RE
 \fBConfiguration:\fR toolchain.\&toml, profiles.\&toml, sysforge.\&toml ([git], [aur], [safety])
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR, $RUSTUP_TOOLCHAIN
@@ -1495,61 +1282,13 @@ Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites every loc
 .PP
 Build and install non\-kernel packages from packages.\&toml.\&
 .PP
-\fB\-\-packages\fR \fIFILE\fR
-.RS 4
-Path to packages.\&toml (default: /etc/sysforge/packages.\&toml; override the dir with $SYSFORGE_CONFIG_DIR).\&
-.PP
-.RE
-\fB\-\-dry\-run\fR
-.RS 4
-Show what would run without executing anything.\&
-.PP
-.RE
-\fB\-\-force\-retry\fR
-.RS 4
-Retry all failed packages without prompting.\&
-.PP
-.RE
 \fB\-\-no\-update\fR
 .RS 4
 Skip the source sync (fetch and fast\-forward) of each package and build it as checked out.\&
 .PP
 .RE
-\fB\-\-no\-pkg\-logs\fR
-.RS 4
-Disable per\-package log files.\&
+\fBShared options:\fR \fB\-\-packages\fR, \fB\-\-dry\-run\fR, \fB\-\-force\-retry\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
 .PP
-.RE
-\fB\-\-persist\-log\fR
-.RS 4
-Keep log files after successful completion.\&
-.PP
-.RE
-\fB\-\-log\-dir\fR \fIDIR\fR
-.RS 4
-Directory for log files.\&
-.PP
-.RE
-\fB\-\-cache\-report\fR
-.RS 4
-Print a structured cache summary after the run.\&
-.PP
-.RE
-\fB\-\-abi\-check\fR
-.RS 4
-Run a post\-build ABI compatibility check on built shared libraries.\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
-.PP
-.RE
 \fBConfiguration:\fR packages.\&toml, profiles.\&toml
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
@@ -1560,11 +1299,6 @@ Path to a profiles.\&toml to use instead of the default.\&
 .PP
 Build and install the custom kernel configured in kernel.\&toml.\&
 .PP
-\fB\-\-dry\-run\fR
-.RS 4
-Show what would run without executing anything.\&
-.PP
-.RE
 \fB\-\-no\-update\fR
 .RS 4
 Skip the source sync (fetch and fast\-forward) of the kernel tree and build it as checked out.\&
@@ -1575,22 +1309,17 @@ Skip the source sync (fetch and fast\-forward) of the kernel tree and build it a
 Purge the kernel src dir and re\-clone before building.\& Refuses if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.\&
 .PP
 .RE
-\fB\-\-cleansrc\-force\fR
-.RS 4
-Like \-\-cleansrc but bypasses the dirty/diverged guard and overwrites the local tree unconditionally.\&
-.PP
-.RE
-\fB\-\-non\-interactive\fR
+\fB\-\-no\-interactive\fR
 .RS 4
 Disable interactive kconfig (default is interactive: the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& runs as written).\& With this flag, interactive targets are patched to `make olddefconfig` for unattended runs.\&
 .PP
 .RE
-\fB\-\-compiler\fR \fICOMPILER\fR
+\fB\-\-compiler\fR \fIgcc\fR|\fIllvm\fR
 .RS 4
 Kernel compiler override (gcc or llvm).\& Independent of `run toolchain`, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > the compiler the last `run toolchain` set up.\&
 .PP
 .RE
-\fB\-\-bootloader\fR \fIBOOTLOADER\fR
+\fB\-\-bootloader\fR \fIsystemd\-boot\fR|\fIgrub\fR|\fInone\fR
 .RS 4
 Override kernel.\&toml bootloader for this invocation (systemd\-boot is the default).\&
 .PP
@@ -1600,7 +1329,7 @@ Override kernel.\&toml bootloader for this invocation (systemd\-boot is the defa
 Override kernel.\&toml base_config for this run: the starting .\&config before the sysforge.\&config fragment overlay.\& One of '\&pkgbuild'\& (the PKGBUILD'\&s own base), '\&running'\& (the running kernel'\&s config), or a path to a .\&config file.\& Resolution order: this flag > kernel.\&toml base_config > '\&pkgbuild'\& default.\&
 .PP
 .RE
-\fB\-\-base\-config\-merge\fR \fIBASE_CONFIG_MERGE\fR
+\fB\-\-base\-config\-merge\fR \fIreplace\fR|\fIoverlay\fR
 .RS 4
 Override kernel.\&toml base_config_merge for this run: '\&replace'\& (default) copies the base over the PKGBUILD'\&s .\&config; '\&overlay'\& merges it on top, so symbols the base does not mention (e.\&g.\& new in this kernel) keep the PKGBUILD'\&s values instead of kconfig defaults.\&
 .PP
@@ -1620,7 +1349,7 @@ Build the kernel \-docs subpackage (default: off, per kernel.\&toml build_docs).
 Re\-enable hotplug driver classes (USB, USB4/Thunderbolt, MMC/SD, hot\-plug PCI/CardBus, hot\-plug HID) as modules AFTER config minimization, so devices plugged in later still work (default: off, per kernel.\&toml keep_hotplug_drivers).\& Only meaningful when a minimizing kconfig_targets sequence (e.\&g.\& localmodconfig) is set.\&
 .PP
 .RE
-\fB\-\-autofdo\fR \fIKERNEL_FDO\fR
+\fB\-\-autofdo\fR \fIrecord\fR|\fIcapture\fR|\fIuse\fR
 .RS 4
 Sample\-based kernel optimization (AutoFDO; LLVM toolchain only), in steps spanning reboots.\& '\&record'\& builds+installs the profiling kernel (e.\&g.\& linux\-sysforge\-profiling); '\&capture'\&, run on that booted kernel, prints the perf and converter commands (no build); '\&use'\& builds the optimized kernel (e.\&g.\& linux\-sysforge\-fdo) beside the plain one.\& Add \-\-propeller for the optional round 2.\& kernel.\&toml [fdo] mode makes a plain run a '\&use'\& build.\&
 .PP
@@ -1628,41 +1357,6 @@ Sample\-based kernel optimization (AutoFDO; LLVM toolchain only), in steps spann
 \fB\-\-propeller\fR
 .RS 4
 Round 2: layer Propeller (basic\-block layout) on round 1'\&s AutoFDO profile, which it pins.\& Requires \-\-autofdo; run record, capture and use again with \-\-propeller.\& The use build installs as e.\&g.\& linux\-sysforge\-propeller.\& Recommended over BOLT for the kernel.\&
-.PP
-.RE
-\fB\-\-no\-pkg\-logs\fR
-.RS 4
-Disable per\-package log files.\&
-.PP
-.RE
-\fB\-\-persist\-log\fR
-.RS 4
-Keep log files after successful completion.\&
-.PP
-.RE
-\fB\-\-log\-dir\fR \fIDIR\fR
-.RS 4
-Directory for log files.\&
-.PP
-.RE
-\fB\-\-cache\-report\fR
-.RS 4
-Print a structured cache summary after the run.\&
-.PP
-.RE
-\fB\-\-abi\-check\fR
-.RS 4
-Run a post\-build ABI compatibility check on built shared libraries.\&
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
-.PP
-.RE
-\fB\-\-profile\-conf\fR \fIFILE\fR
-.RS 4
-Path to a profiles.\&toml to use instead of the default.\&
 .PP
 .RE
 \fB\-\-allow\-no\-fallback\fR
@@ -1675,6 +1369,8 @@ Override the boot\-safety guarantee that a fallback kernel (stock linux/linux\-l
 Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous: it can leave the system unbootable.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-dry\-run\fR, \fB\-\-cleansrc\-force\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
+.PP
 \fBConfiguration:\fR kernel.\&toml, profiles.\&toml
 .PP
 \fBEnvironment:\fR $SYSFORGE_CONFIG_DIR, $SYSFORGE_STATE_DIR
@@ -1687,17 +1383,12 @@ Undo a source\-built/optimized package back to the repo version; update will not
 .PP
 \fBPKG\fR
 .RS 4
-package name(s) to revert (stock or \-sysforge name)
+Package name(s) to revert (stock or \-sysforge name).\&
 .PP
 .RE
-\fB\-\-force\fR
+\fB\-\-yes\fR
 .RS 4
-skip the confirmation prompt
-.PP
-.RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+Skip the confirmation prompt.\&
 .PP
 .RE
 \fB\-\-dry\-run\fR
@@ -1705,6 +1396,8 @@ Override state directory.\&
 Show the planned revert without making changes.\&
 .PP
 .RE
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
+.PP
 .SS uninstall
 .PP
 \fBsysforge uninstall\fR [\fIOPTIONS\fR] \fIPKG.\&.\&.\&\fR
@@ -1713,14 +1406,11 @@ Remove package(s); demote any sysforge\-tracked ones out of build state.\&
 .PP
 \fBPKG\fR
 .RS 4
-package name(s) to remove (stock or \-sysforge name)
+Package name(s) to remove (stock or \-sysforge name).\&
 .PP
 .RE
-\fB\-\-state\-dir\fR \fIDIR\fR
-.RS 4
-Override state directory.\&
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
 .PP
-.RE
 .SH FILES
 .PP
 /etc/sysforge/profiles.\&toml
@@ -1752,36 +1442,11 @@ Read by: \fBbuild\fR, \fBfetch\fR, \fBupdate\fR (git/clone settings),
 /etc/sysforge/toolchain.\&toml, /etc/sysforge/kernel.\&toml
 .RS 4
 Opt\-in toolchain and kernel stage configuration (enabled = false by
-default in both).\& kernel.\&toml \fBkconfig_targets\fR (default: unset)
-names an explicit \fBmake\fR kconfig\-generation sequence, replacing the
-PKGBUILD'\&s own kconfig steps (the sysforge.\&config fragment merge
-still applies first): silent targets
-(olddefconfig, defconfig, allmodconfig, alldefconfig, savedefconfig,
-listnewconfig) always run; prompting targets (oldconfig,
-localmodconfig, localyesconfig, mod2yesconfig) require an
-interactive stage run and are rejected otherwise (oldconfig names
-its silent equivalent olddefconfig); at most one UI target (config,
-nconfig, menuconfig, xconfig, gconfig) is allowed and it always
-runs last; randconfig is never allowed.\& localmodconfig/
-localyesconfig are warned against as high\-risk/low\-reward: they
-over\-minimize to modules currently loaded and accumulate the lsmod
-snapshot at <state_dir>/lsmod.\&snapshot (delete it to reset).\&
-kernel.\&toml \fBhardening\fR (default: false) merges a curated
-compile\-time hardening set into the fragment at the lowest
-precedence (any other entry for the same option wins, with a
-warning).\& It never enforces module signatures or a lockdown mode,
-and a manual entry that does is refused before the build while
-DKMS modules are registered.\& Runtime hardening (sysctl.\&d, the
-kernel command line) is not covered.\&
+default in both).\& Every key is documented in the shipped file'\&s
+comments.\&
 Read by: \fBrun toolchain\fR / \fBrun kernel\fR, \fBrun pipeline\fR,
-\fBrun reconfigure\fR, \fBstate boot\-entries\fR, and \fBdoctor\fR on the matching axes.\&
-toolchain.\&toml [bench] \fBcorpus\fR (default: unset) names the source
-files or directories \fBbench toolchain\fR compiles; unset uses its
-built\-in workload.\& Each file is compiled on its own with only \-O2 \-c
-(\-std=c++17 for C++), so it must not need include paths or defines.\&
-The [bench] \fBafter_build\fR key (default: false) runs \fBbench toolchain\fR
-at the end of a \fBrun toolchain\fR that built and installed clang from
-source; off, that stage prints a one\-line hint instead.\& Also read by \fBbench toolchain\fR and \fBstate profiles\fR.\&
+\fBrun reconfigure\fR, \fBstate boot\-entries\fR, \fBbench toolchain\fR,
+\fBstate profiles\fR, and \fBdoctor\fR on the matching axes.\&
 .PP
 .RE
 build_state.\&toml (under the state directory)

@@ -226,7 +226,7 @@ def warn_and_confirm_diverged(pkgbuild_dir, options):
     case where the old silent WARN was too easy to miss, so:
 
       * interactive run  → require an explicit y/N confirmation;
-      * unattended run (``--non-interactive`` or no TTY) → abort (safe default).
+      * unattended run (``--no-interactive`` or no TTY) → abort (safe default).
 
     ``classify_head_vs_upstream`` enriches the message with ahead/behind counts
     so the common "upstream has new commits but the local repo is dirty" case is

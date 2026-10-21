@@ -180,13 +180,13 @@ class RevertToStockVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser(
             "revert-to-stock",
-            help="undo a source-built/optimized package back to the repo version; "
-                 "update will not re-adopt it until you `build` or `packages add` it",
+            help="Undo a source-built/optimized package back to the repo version; "
+                 "update will not re-adopt it until you `build` or `packages add` it.",
         )
         p.add_argument("packages", nargs="+", metavar="PKG",
-            help="package name(s) to revert (stock or -sysforge name)")
-        p.add_argument("--force", action="store_true",
-            help="skip the confirmation prompt")
+            help="Package name(s) to revert (stock or -sysforge name).")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="Skip the confirmation prompt.")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
@@ -227,9 +227,9 @@ class RevertToStockVerb(Verb):
             _log.ui("[revert] dry-run: no changes made")
             return ExecResult(exit_code=0)
 
-        if not getattr(args, "force", False):
+        if not getattr(args, "yes", False):
             if not prompt.is_interactive():
-                _log.error("[revert] refusing without a TTY; pass --force")
+                _log.error("[revert] refusing without a TTY; pass --yes")
                 return ExecResult(exit_code=2)
             ans = prompt.prompt_choice(
                 "Proceed with revert? [y/N] ", ["y", "n"],

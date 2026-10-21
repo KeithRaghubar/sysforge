@@ -245,13 +245,13 @@ class KernelStage(Stage):
         install.prune_boot_entries(manage=manage_entries, dry_run=options.dry_run)
 
         # Interactive kconfig is the kernel-stage default — flipped off by
-        # --non-interactive (or `interactive = false` in kernel.toml). When
+        # --no-interactive (or `interactive = false` in kernel.toml). When
         # interactive=True is passed into BuildOptions, makepkg_wrapper skips
         # the plan's non-interactive rewrite so the user's PKGBUILD kconfig target
         # (typically `make nconfig`) runs as written, and the makepkg
         # subprocess inherits the parent's stdout/stderr so ncurses-driven
         # kconfig UIs render on the controlling TTY.
-        # B8: interactive requires config ∧ ¬--non-interactive ∧ TTY — the
+        # B8: interactive requires config ∧ ¬--no-interactive ∧ TTY — the
         # same three-way resolution the stage's sibling prompts (repo-pkgname
         # collision, diverged-source confirm) already use. Without the TTY leg
         # the stage promised an nconfig review that a piped/captured run could
@@ -265,7 +265,7 @@ class KernelStage(Stage):
                 "interactive kconfig review requested (kernel.toml "
                 "interactive = true) but no TTY is attached: running "
                 "unattended; the config review will NOT run. Pass "
-                "--non-interactive to make this explicit."
+                "--no-interactive to make this explicit."
             )
 
         # F37: configured kconfig_targets sequence — resolved/validated here
@@ -431,12 +431,12 @@ class KernelStage(Stage):
         _log.info(f"Kernel kconfig target: {kconfig_target}")
 
         # C3: standalone interactive runs require the operator to drive the
-        # PKGBUILD's kconfig UI. Pipeline / --non-interactive / dry-run paths
+        # PKGBUILD's kconfig UI. Pipeline / --no-interactive / dry-run paths
         # don't, so only nudge for a real interactive run.
         if interactive and not options.dry_run:
             _log.info(
                 "Running interactively (the PKGBUILD's `make nconfig`/etc. runs "
-                "as written); pass --non-interactive for unattended builds."
+                "as written); pass --no-interactive for unattended builds."
             )
 
         skip_boot_audit = bool(getattr(options, "skip_boot_audit", False))

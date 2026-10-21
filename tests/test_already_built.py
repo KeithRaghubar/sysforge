@@ -26,7 +26,7 @@ def test_unknown_posture_raises_value_error():
     ("interactive", "non_interactive", "tty"),
     [
         (False, False, True),   # caller says non-interactive
-        (True, True, True),     # --non-interactive override
+        (True, True, True),     # --no-interactive override
         (True, False, False),   # no TTY
     ],
 )

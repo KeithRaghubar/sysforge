@@ -1,7 +1,7 @@
 .PHONY: all help dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
-        check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
+        bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
         roadmap-table check-roadmap-table roadmap-view \
         sync-config \
         preflight release-major release-minor release-patch release-resume \
@@ -236,6 +236,13 @@ coverage-ratchet: coverage ## Compare coverage against the recorded floor
 # a release so the floor tracks the shipped suite. Commit the updated baseline.
 coverage-ratchet-update: coverage ## Re-stamp the coverage floor (TESTS=<n>)
 	uv run --no-sync python tools/coverage_ratchet.py --update $(if $(TESTS),--tests $(TESTS),)
+
+# Shell-completion timings (3.5.0-B124). Prints each `sysforge completions`
+# call the completion scripts make, timed in a fresh interpreter the way a Tab
+# press runs it. Report only, never a gate: wall time is machine-dependent, so
+# the pass/fail guards are the structural ones in tests/test_completions_speed.py.
+bench-completions: ## Time each shell-completion lookup (RUNS=n, report only)
+	uv run --no-sync python tools/bench_completions.py $(if $(RUNS),--runs $(RUNS),)
 
 # Type-check gate. Layers pyright into an ephemeral uv overlay (same
 # `uv run --no-sync` pattern as coverage/check-shipped) so nothing is added to

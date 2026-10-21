@@ -240,7 +240,7 @@ class PackagesListVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("list", help="Show override entries in packages.toml.")
         p.add_argument("--packages", metavar="FILE", dest="packages",
-            help="Path to packages.toml.")
+            help=PACKAGES_FILE_HELP)
         p.add_argument("--orphans", action="store_true", dest="orphans",
             help="Show only entries whose package is not currently installed.")
         p.set_defaults(verb_cls=cls)
@@ -283,7 +283,7 @@ class PackagesAddVerb(Verb):
         p.add_argument("--reason", metavar="TEXT", dest="reason",
             help="Free-form note attached to the entry.")
         p.add_argument("--packages", metavar="FILE", dest="packages",
-            help="Path to packages.toml.")
+            help=PACKAGES_FILE_HELP)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -325,7 +325,7 @@ class PackagesAddGroupVerb(Verb):
         p.add_argument("desktop", metavar="DESKTOP", choices=valid_desktops(),
             help=f"Desktop environment to add ({' | '.join(valid_desktops())}).")
         p.add_argument("--packages", metavar="FILE", dest="packages",
-            help="Path to packages.toml.")
+            help=PACKAGES_FILE_HELP)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -348,7 +348,7 @@ class PackagesRemoveVerb(Verb):
         p = sub.add_parser("remove", help="Remove an override entry.")
         p.add_argument("pkg", metavar="PKG", help="Package name to remove.")
         p.add_argument("--packages", metavar="FILE", dest="packages",
-            help="Path to packages.toml.")
+            help=PACKAGES_FILE_HELP)
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -360,15 +360,6 @@ class PackagesRemoveVerb(Verb):
         return ExecResult()
 
 
-def _add_packages_group_flags(p):
-    # --packages on the parent so bare 'sysforge packages' and
-    # 'sysforge packages --packages foo.toml' both work
-    p.add_argument("--packages", metavar="FILE", dest="packages",
-        help=PACKAGES_FILE_HELP)
-    p.add_argument("--orphans", action="store_true", dest="orphans",
-        help="With list: show only entries whose package is not currently installed.")
-
-
 #: `sysforge packages`: list (default) / add / add-group / remove.
 PACKAGES_GROUP = VerbGroup(
     name="packages",
@@ -377,5 +368,7 @@ PACKAGES_GROUP = VerbGroup(
     members=(PackagesListVerb, PackagesAddVerb, PackagesAddGroupVerb,
              PackagesRemoveVerb),
     default=PackagesListVerb,
-    add_arguments=_add_packages_group_flags,
+    # Bare `packages` is `packages list` with its defaults; every flag lives on
+    # a subcommand (a flag on the parent would be dropped once one is named).
+    defaults={"packages": None, "orphans": False},
 )

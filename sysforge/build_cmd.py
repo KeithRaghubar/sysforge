@@ -29,7 +29,7 @@ from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.pkgbuild_review import resolve_review_policy
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
-from sysforge.verbs.helpers import load_config_with_overrides
+from sysforge.verbs.helpers import CLEANSRC_FORCE_HELP, load_config_with_overrides
 
 # The build verb logs under its own name, matching every other verb command
 # module (update -> [UPDATE], packages -> [PACKAGES])
@@ -229,7 +229,7 @@ class BuildVerb(Verb):
             help="Keep the per-package log file after a successful build. "
                  "Also settable via [build] persist_log = true in packages.toml.")
         p.add_argument("--no-pkg-log", action="store_true", dest="no_pkg_log",
-            help="Disable the per-package log file.")
+            help="Disable per-package log files.")
         p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
             help="Directory for the per-package log file (default: alongside the PKGBUILD).")
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
@@ -255,10 +255,7 @@ class BuildVerb(Verb):
                  "Refuses (per package) if the existing clone has uncommitted changes, "
                  "ahead-of-upstream commits, or no upstream tracking branch.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
-            help="Like --cleansrc but bypasses the dirty/diverged guard and "
-                 "overwrites the local tree unconditionally. Use when the upstream "
-                 "rewrote history (e.g. Arch packaging repos force-push every release) "
-                 "and the local commits have no value to preserve.")
+            help=CLEANSRC_FORCE_HELP)
         p.add_argument("--no-llvm-preflight", action="store_true", dest="no_llvm_preflight",
             help="Suppress the LLVM source pre-flight summary.")
         review_group = p.add_mutually_exclusive_group()
@@ -280,14 +277,15 @@ class BuildVerb(Verb):
                  "skip the build and reinstall the stale artifact. Note --force is "
                  "unrelated: it only waives the repo-package opt-in gate.")
         p.add_argument("--pgo", choices=("record", "use"), dest="pgo_mode",
-            help="Mesa instrumentation PGO (LLVM toolchain only). "
-                 "--pgo=record builds+installs an instrumented mesa that writes "
-                 "profile data to the sysforge store as you run graphics workloads; "
+            help="Instrumentation PGO (LLVM toolchain only). "
+                 "--pgo=record builds+installs an instrumented package that writes "
+                 "profile data to the sysforge store as you run its workloads; "
                  "--pgo=use merges the collected profiles and rebuilds an optimized "
-                 "mesa-sysforge (conflicts/replaces stock mesa). No-op for non-mesa "
-                 "targets.")
+                 "<pkg>-sysforge (conflicts/replaces the stock package). Aimed at "
+                 "mesa; any other target warns unless listed in sysforge.toml "
+                 "[pgo] allow.")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
-            help="Override state directory for build_state.toml.")
+            help="Override state directory.")
         p.set_defaults(verb_cls=cls)
         return p
 

@@ -29,7 +29,7 @@ import time
 
 
 def make_options(**kwargs):
-    opts = RunOptions(no_pkg_logs=True)
+    opts = RunOptions(no_pkg_log=True)
     for k, v in kwargs.items():
         setattr(opts, k, v)
     return opts
