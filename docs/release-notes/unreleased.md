@@ -176,6 +176,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV14` — completions are checked command by command.** `make check-shipped` gains a `completion_commands` group. The old check looked only at top-level commands, so once group commands such as `state` and `run` stopped taking flags of their own, none of their subcommands' flags were checked, and a flag counted as present if it appeared anywhere in the file. Now each command's flags must be offered where that command is completed, in both zsh and bash; no flag the command lacks may be offered; every value a flag accepts must be offered; and lists copied from the code (desktops, profile-store methods) must match it.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
@@ -758,6 +762,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B126` — A kernel built with the other compiler is recorded as such, and stops warning about it.** `run kernel` recorded the system toolchain's variant whatever compiler built the kernel, so a kernel kept on gcc (`compiler = "gcc"` in `kernel.toml`, or `--toolchain gcc`) on an LLVM system was recorded as `pgo_llvm`. The record now names the compiler that built it, as `3.5.0-B125` does for other packages. The kernel stage's "Rebuilding will switch toolchains" warning now compares the record with the compiler this run will use rather than the system one, so it appears only when the kernel's compiler actually changes, and it names that compiler.
+
+---
+
+- **`3.5.0-B127` — bash completes the values of `run toolchain --rebuild-soname-consumers`.** zsh offered `prompt`, `auto` and `off` after the flag; bash offered nothing. It now offers the same three.
 
 ## Security
 

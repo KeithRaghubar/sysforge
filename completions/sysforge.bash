@@ -138,6 +138,10 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "systemd-boot grub none" -- "$cur") )
             return 0
             ;;
+        --rebuild-soname-consumers)
+            COMPREPLY=( $(compgen -W "prompt auto off" -- "$cur") )
+            return 0
+            ;;
         --base-config)
             # A keyword or a path to a .config file.
             _filedir

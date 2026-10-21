@@ -1149,3 +1149,54 @@ def test_no_shipped_profile_lists_a_flag_every_build_strips(cfg_dir):
     offenders = {name: sorted(set(prof.get("makepkg_flags", [])) & BATCH_STRIP_FLAGS)
                  for name, prof in data.get("profiles", {}).items()}
     assert {n: f for n, f in offenders.items() if f} == {}
+
+
+# ---------------------------------------------------------------------------
+# completion_commands (3.5.0-DEV14)
+# ---------------------------------------------------------------------------
+
+_REAL = Path(__file__).resolve().parent.parent
+
+
+def _completion_repo(tmp_path, edit=None):
+    """A repo whose completion scripts are the real ones, optionally edited."""
+    shutil.copytree(_REAL / "completions", tmp_path / "completions")
+    shutil.copytree(_REAL / "etc/sysforge", tmp_path / "etc/sysforge")
+    if edit:
+        script, old, new = edit
+        path = tmp_path / "completions" / script
+        text = path.read_text()
+        assert old in text, old
+        path.write_text(text.replace(old, new, 1))
+    return tmp_path
+
+
+def _completion_findings(repo):
+    return [f.message for f in _load_check_shipped().check_completion_commands(repo)]
+
+
+def test_completion_commands_clean_against_real_repo(tmp_path):
+    assert _completion_findings(_completion_repo(tmp_path)) == []
+
+
+@pytest.mark.parametrize("edit, expect", [
+    # a subcommand's flag dropped from its own zsh function
+    (("_sysforge", "'--delete[delete one profile store", "'--nope[delete one profile store"),
+     "state profiles: --delete not offered in _sysforge_state_profiles"),
+    # the same in bash's case arm
+    (("sysforge.bash", '"--delete --yes --no-pager --state-dir"', '"--yes --no-pager --state-dir"'),
+     "state profiles: --delete not offered"),
+    # a flag the command no longer has, still offered
+    (("sysforge.bash", '"--state-dir --dry-run" -- "$cur"',
+      '"--state-dir --dry-run --prune" -- "$cur"'),
+     "state repair: offers --prune"),
+    # a choice value missing from bash's value case (3.5.0-B127's shape)
+    (("sysforge.bash", 'compgen -W "prompt auto off"', 'compgen -W "auto"'),
+     "run toolchain --rebuild-soname-consumers: value 'prompt' not offered"),
+    # a hand-copied list drifting from its code constant
+    (("_sysforge", ":store:(instr-pgo pgo autofdo propeller bolt)", ":store:(pgo autofdo)"),
+     "list differs from makepkg_pgo.PROFILE_METHODS"),
+])
+def test_completion_commands_flags(tmp_path, edit, expect):
+    found = _completion_findings(_completion_repo(tmp_path, edit))
+    assert any(expect in m for m in found), found

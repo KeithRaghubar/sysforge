@@ -36,6 +36,13 @@ Default groups (each runs in order, all surface to a single summary):
     completions      every verb and long-flag in the argparse parser appears
                      in both completions/_sysforge and completions/sysforge.bash;
                      no stale verb entries in the zsh case statement.
+    completion_commands  per command, in both scripts (3.5.0-DEV14): each
+                     long flag is offered where that command is completed
+                     (its zsh function, its bash case arm), no flag it lacks
+                     is offered there, every argparse choice value is offered
+                     (bash: in _sysforge_flag_arg or the command's own body),
+                     and lists copied from code constants (desktop catalog,
+                     profile-store methods) equal them.
     versions         pyproject.toml == PKGBUILD pkgver == PKGBUILD-git leading
                      pkgver == README.md / DESIGN.md <!--version--> markers.
     manpage          `make man` regen output (tools/gen_options.py splice +
@@ -1057,6 +1064,170 @@ def check_completions(repo: Path) -> list[Finding]:
 
 
 # ===========================================================================
+# Group: completion_commands (3.5.0-DEV14)
+# ===========================================================================
+
+# Both scripts are laid out per command, which is what makes this check
+# possible: zsh has one function per command path (`_sysforge_state_orphans`),
+# bash one function per top-level command with a `case` arm per subcommand,
+# and every bash option value is offered from one `_sysforge_flag_arg` case
+# keyed by flag. A flag is therefore checked where it is offered, not anywhere
+# in the file.
+_FN_ALIASES = {"revert-to-stock": "revert"}
+_LONG_FLAG_RE = re.compile(r"(?<![\w-])--[a-z][\w-]*")
+
+
+def _fn_bodies(text: str) -> dict[str, str]:
+    """Shell function name -> body (up to the closing `}` in column 0)."""
+    bodies = {}
+    for m in re.finditer(r"^(\w+)\s*\(\)\s*\{\n(.*?)^\}", text, re.MULTILINE | re.DOTALL):
+        bodies[m.group(1)] = m.group(2)
+    return bodies
+
+
+def _with_helpers(body: str, bodies: dict[str, str]) -> str:
+    """A body plus the bodies of the `_sysforge_*` helpers it calls (one level)."""
+    called = set(re.findall(r"\b(_sysforge_\w+)\b", body))
+    return body + "".join(bodies.get(fn, "") for fn in sorted(called))
+
+
+def _bash_arm(body: str, word: str) -> str | None:
+    """The text of a `case` arm labelled `word)` inside a bash function body."""
+    m = re.search(rf"^\s+(?:[\w|-]+\|)?{re.escape(word)}(?:\|[\w|-]+)?\)\s*\n(.*?);;",
+                  body, re.MULTILINE | re.DOTALL)
+    return m.group(1) if m else None
+
+
+def _command_parsers(parser, path=()):
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            for name, sub in a.choices.items():
+                if (path + (name,))[0] == "completions":
+                    continue
+                yield path + (name,), sub
+                yield from _command_parsers(sub, path + (name,))
+
+
+# Value lists the scripts copy from code rather than from argparse choices:
+# (what, loader, [(script, function)]). Each list in those functions that
+# shares a word with the constant must equal it exactly.
+def _desktops():
+    from sysforge.primitives.pkg_catalog import DESKTOP_CATALOG
+    return set(DESKTOP_CATALOG)
+
+
+def _profile_methods():
+    from sysforge.primitives.makepkg_pgo import PROFILE_METHODS
+    return set(PROFILE_METHODS)
+
+
+_MIRRORED_LISTS = (
+    ("pkg_catalog.DESKTOP_CATALOG", _desktops,
+     (("completions/_sysforge", "_sysforge_packages_add_group"),
+      ("completions/sysforge.bash", "_sysforge_packages"))),
+    ("makepkg_pgo.PROFILE_METHODS", _profile_methods,
+     (("completions/_sysforge", "_sysforge_state_profiles"),)),
+)
+# A zsh `(a b c)` value list or a bash `compgen -W "a b c"` word list.
+_WORD_LIST_RE = re.compile(r':\(([\w ._-]+)\)\'|compgen -W "([^"$]+)"')
+
+
+def _check_mirrored_lists(repo: Path) -> list[Finding]:
+    findings = []
+    for what, load, places in _MIRRORED_LISTS:
+        want = load()
+        for script, fn in places:
+            body = _fn_bodies((repo / script).read_text()).get(fn)
+            lists = [set((m.group(1) or m.group(2)).split())
+                     for m in _WORD_LIST_RE.finditer(body or "")]
+            lists = [w for w in lists if w & want]
+            if not lists:
+                findings.append(Finding("completion_commands", "error", script,
+                                        f"{fn}: no list mirroring {what}"))
+            for words in lists:
+                if words != want:
+                    findings.append(Finding(
+                        "completion_commands", "error", script,
+                        f"{fn}: list differs from {what} "
+                        f"(missing {sorted(want - words)}, extra {sorted(words - want)})"))
+    return findings
+
+
+def check_completion_commands(repo: Path) -> list[Finding]:
+    zsh_path, bash_path = repo / "completions/_sysforge", repo / "completions/sysforge.bash"
+    if not (zsh_path.exists() and bash_path.exists()):
+        return []
+    zsh = _fn_bodies(zsh_path.read_text())
+    bash = _fn_bodies(bash_path.read_text())
+    flag_arg = bash.get("_sysforge_flag_arg", "")
+    root = _import_build_parser(repo)
+    global_flags = {o for a in root._actions for o in a.option_strings}
+    findings: list[Finding] = []
+
+    def err(where, msg):
+        findings.append(Finding("completion_commands", "error", where, msg))
+
+    for path, sub in _command_parsers(root):
+        actions = [a for a in sub._actions if a.option_strings and a.dest != "help"]
+        has_subs = any(isinstance(a, argparse._SubParsersAction) for a in sub._actions)
+        if has_subs and not actions:
+            continue  # a group parent: its subcommands carry the flags
+        cmd = " ".join(path)
+        words = [_FN_ALIASES.get(path[0], path[0]), *path[1:]]
+        zfn = "_sysforge_" + "_".join(w.replace("-", "_") for w in words)
+        zbody = zsh.get(zfn)
+        if zbody is None:
+            err("completions/_sysforge", f"{cmd}: no {zfn} function")
+        else:
+            zfull = _with_helpers(zbody, zsh)
+            # Flags named inside a `[description]` are prose, not offers.
+            zspecs = re.sub(r"\[[^]\n]*\]", "", zbody)
+            flags = {o for a in actions for o in a.option_strings}
+            for flag in sorted(o for o in flags if o.startswith("--")):
+                if not re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", zspecs):
+                    err("completions/_sysforge", f"{cmd}: {flag} not offered in {zfn}")
+            offered = _LONG_FLAG_RE.findall(zspecs)
+            for flag in sorted(set(offered) - flags - global_flags):
+                err("completions/_sysforge", f"{cmd}: {zfn} offers {flag}, which it does not have")
+            for a in actions:
+                for value in map(str, a.choices or ()):
+                    if not re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", zfull):
+                        err("completions/_sysforge",
+                            f"{cmd} {a.option_strings[-1]}: value {value!r} not offered")
+        bfn = "_sysforge_" + words[0].replace("-", "_")
+        bbody = bash.get(bfn)
+        if bbody is None:
+            err("completions/sysforge.bash", f"{cmd}: no {bfn} function")
+            continue
+        scope = bbody if len(path) == 1 else _bash_arm(bbody, path[-1])
+        if scope is None:
+            err("completions/sysforge.bash", f"{cmd}: no `{path[-1]})` arm in {bfn}")
+            continue
+        flags = {o for a in actions for o in a.option_strings}
+        for flag in sorted(o for o in flags if o.startswith("--")):
+            if not re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", scope):
+                err("completions/sysforge.bash", f"{cmd}: {flag} not offered")
+        if len(path) > 1:  # a top-level body also holds its subcommands' arms
+            for flag in sorted(set(_LONG_FLAG_RE.findall(scope)) - flags - global_flags):
+                err("completions/sysforge.bash", f"{cmd}: offers {flag}, which it does not have")
+        for a in actions:
+            if not a.choices:
+                continue
+            arm = next((_bash_arm(flag_arg, o) for o in a.option_strings
+                        if _bash_arm(flag_arg, o) is not None), None)
+            if arm is None and any(f"$prev == {o}" in scope for o in a.option_strings):
+                arm = scope  # values offered by the command itself (setup --preset)
+            if arm is None:
+                err("completions/sysforge.bash",
+                    f"{cmd} {a.option_strings[-1]}: no value case in _sysforge_flag_arg")
+                continue
+            for value in map(str, a.choices):
+                if not re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", arm):
+                    err("completions/sysforge.bash",
+                        f"{cmd} {a.option_strings[-1]}: value {value!r} not offered")
+    return findings + _check_mirrored_lists(repo)
+
+# ===========================================================================
 # Group: completion_widths
 # ===========================================================================
 
@@ -1482,6 +1653,7 @@ GROUPS = {
     "hooks":           check_hooks,
     "completions":     check_completions,
     "completion_widths": check_completion_widths,
+    "completion_commands": check_completion_commands,
     "versions":        check_versions,
     "manpage":         check_manpage,
     "dev_install":     check_dev_install_parity,
