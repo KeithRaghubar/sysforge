@@ -70,7 +70,7 @@ Trigger this whenever a change touches:
 
 - [ ] **Source sync goes through the scheduler** (CLAUDE.md gotcha #3). Any new code path that needs a fresh PKGBUILD calls `sysforge.primitives.source_sync.get_scheduler().request(SyncRequest(...))` — never `git pull` directly.
 - [ ] **`build_state.toml` invariants.** If you touch what's parsed from PKGBUILD, check whether the cached `build_state.toml` schema needs to evolve too.
-- [ ] **Tests.** `tests/test_parser.py`, `tests/test_patcher.py`, `tests/test_pkgbuild_meta.py` (if present), and `tests/test_aur.py` are the regression nets — add or update cases that exercise the spec detail you just changed.
+- [ ] **Tests.** `tests/test_parser.py`, `tests/test_patcher.py` and `tests/test_aur.py` are the regression nets — add or update cases that exercise the spec detail you just changed.
 
 ## Reporting
 

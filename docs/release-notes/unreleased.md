@@ -185,6 +185,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV15` — citations in the design docs and the Claude Code agents are checked.** The check that every file, module symbol and script CLAUDE.md cites still exists now covers the design docs and the agents, skills and rules under `.claude/`, and checks `make` targets too. It found and fixed a design passage on the prompt helpers that named a removed stage file and a removed function and gave call counts that were all wrong, a symbol cited under the wrong module, `make vm-install` (now `vm-install-stable`), and an agent and a skill citing files that no longer exist.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---

@@ -88,6 +88,11 @@ Groups:
                     tokens, functions) appears in a tracked file outside release
                     notes, ROADMAP, tests, the generated DESIGN.md and each
                     entry's own allow list (3.5.0-DEV12). Whole-word match.
+    citations       The claude_md citation check over docs/design/ and the
+                    tracked .claude/ agents, skills and rules (3.5.0-DEV15):
+                    cited paths, `path/module.symbol`s, .py files and `make`
+                    targets exist (a missing target only when it is a near
+                    miss of one of ours; the kernel's are quoted on purpose).
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -110,6 +115,7 @@ Drift detection cases (verify these still fire after editing this script):
     - Rename the symbol a shim record's anchor cites.
     - Cite `§Toolchain-variant drift detection` (no such heading) in docs/design/.
     - Write a name from tools/retired_names.toml in a comment under sysforge/.
+    - Cite `make vm-install` (the targets are vm-install-stable/-git) in docs/design/.
     - Replace the _REGISTRY literal with a comprehension (parse finds 0 records).
     - Run with --target-version=3.0.0 while a 3.0.0 removal is still present.
     - Break deprecations.py syntactically and run --check=semver_bump alone
@@ -491,8 +497,43 @@ def _resolve_module_file(repo: Path, name: str) -> Path | None:
     return hits[0] if len(hits) == 1 else None
 
 
+# Things cited on purpose after their removal, in a passage about that history.
+_CITATION_HISTORY = {"doctor.flat_flags"}
+# Local variables the design prose names attributes of: `run.plan` is update's
+# UpdateRun record, not primitives/run.py.
+_CITATION_LOCALS = {"run", "self", "args", "options", "opts", "state", "registry"}
+# A version or name placeholder (`docs/release-notes/vX.Y.Z.md`).
+_PLACEHOLDER_RE = re.compile(r"X\.Y|\bvX\b|\bNN\b|\bNAME\b")
+
+
+def _make_targets(repo: Path) -> set[str]:
+    mk = repo / "Makefile"
+    if not mk.is_file():
+        return set()
+    return set(re.findall(r"^([A-Za-z0-9_.-]+)\s*:(?!=)", mk.read_text(encoding="utf-8"),
+                          re.MULTILINE))
+
+
 def _check_citation(repo: Path, token: str) -> str | None:
     """Return an error message for a stale citation, or None (ok/skipped)."""
+    # `make <target> ...` (3.5.0-DEV15): the target must exist.
+    if token.startswith("make ") and len(token.split()) >= 2:
+        target = token.split()[1]
+        if re.fullmatch(r"[a-z][\w-]*", target) and "=" not in target:
+            import difflib
+            targets = _make_targets(repo)
+            # Only a near miss of one of ours is stale; `make nconfig` and
+            # `make htmldocs` are the kernel's targets, quoted on purpose.
+            near = ([t for t in sorted(targets) if t.startswith(target + "-")]
+                    or difflib.get_close_matches(target, sorted(targets), n=1, cutoff=0.85))
+            if targets and target not in targets and near:
+                return (f"cites `{token}` but the Makefile has no `{target}` target "
+                        f"(did it become `{near[0]}`?)")
+        return None
+    if token in _CITATION_HISTORY or _PLACEHOLDER_RE.search(token):
+        return None
+    if token.split(".")[0] in _CITATION_LOCALS and "/" not in token:
+        return None
     # `file.py::symbol` — resolve the file, then grep for the symbol.
     if "::" in token:
         file_part, _, sym = token.partition("::")
@@ -517,11 +558,39 @@ def _check_citation(repo: Path, token: str) -> str | None:
         rel = token.rstrip("/")
         if (repo / rel).exists() or (repo / "sysforge" / rel).exists():
             return None
+        # Only a path into this repo can be stale; `root/usr/bin`, `and/or` and
+        # runtime paths start with a segment the repo does not have.
+        first = rel.split("/")[0]
+        if not ((repo / first).exists() or (repo / "sysforge" / first).exists()):
+            return None
+        # `etc/pam.d`, `etc/sudoers.d`: system paths; the repo's etc/ holds
+        # only what it ships.
+        parts = rel.split("/")
+        if first == "etc" and len(parts) > 1 and not (repo / "etc" / parts[1]).exists():
+            return None
+        if rel.startswith("sysforge/_data"):
+            return None  # exists only in the built wheel (force-include)
+        # `primitives/artifacts.unified_rows`: a module path, then a symbol.
+        head, _, tail = rel.rpartition("/")
+        modname, dot, sym = tail.partition(".")
+        if not dot and any((b / head / f"{tail}.py").is_file() for b in (repo, repo / "sysforge")):
+            return None  # `primitives/install_reconcile`: a module named without .py
+        if dot and sym and Path(tail).suffix not in (".py", ".md", ".sh", ".toml", ".json"):
+            for base in (repo, repo / "sysforge"):
+                mod = base / head / f"{modname}.py"
+                if mod.is_file():
+                    if sym.split(".")[0] not in mod.read_text(encoding="utf-8"):
+                        return (f"cites `{token}` but {mod.relative_to(repo)} has no "
+                                f"`{sym.split('.')[0]}`")
+                    return None
         return f"cites path `{token}` which does not exist"
 
     # Bare script/module filename: resolvable anywhere in the tree.
-    if token.endswith((".py", ".sh")):
-        if (repo / token).exists() or _resolve_module_file(repo, token.rsplit(".", 1)[0]):
+    if token.endswith(".sh"):
+        return None  # a bare script name is as often the kernel's or the user's
+    if token.endswith(".py"):
+        if (repo / token).exists() or any(
+                not _CLAUDE_MD_SKIP_DIRS & set(p.parts) for p in repo.rglob(token)):
             return None
         return f"cites `{token}` — no such file in the tree"
 
@@ -553,6 +622,12 @@ def _check_citation(repo: Path, token: str) -> str | None:
         if mod is None:
             return None  # can't map — skip, fail-safe
         if sym_segs and sym_segs[0] not in mod.read_text(encoding="utf-8"):
+            # Several modules share a name (the kernel stage's config.py beside
+            # primitives/config.py): any of them defining it will do.
+            same = [p for p in repo.rglob(f"{segs[0]}.py")
+                    if not _CLAUDE_MD_SKIP_DIRS & set(p.parts)]
+            if any(sym_segs[0] in p.read_text(encoding="utf-8") for p in same):
+                return None
             return (f"cites `{token}` but {mod.relative_to(repo)} "
                     f"has no `{sym_segs[0]}`")
     return None
@@ -565,7 +640,7 @@ def check_claude_md(repo: Path) -> list[Finding]:
             continue
         rel = md.relative_to(repo).as_posix()
         seen: set[str] = set()
-        for token in _BACKTICK_RE.findall(md.read_text(encoding="utf-8")):
+        for token in _inline_code(md.read_text(encoding="utf-8")):
             token = token.strip()
             if token in seen:
                 continue
@@ -575,6 +650,47 @@ def check_claude_md(repo: Path) -> list[Finding]:
                 findings.append(Finding("claude_md", "error", rel, msg))
     return findings
 
+
+
+def _inline_code(text: str) -> list[str]:
+    """Inline code spans, paired within each line, fenced blocks dropped: a
+    ``` fence pairs with the next lone backtick otherwise and shifts every
+    span after it, which hid a stale path in a skill file."""
+    text = re.sub(r"^\s*```.*?^\s*```", "", text, flags=re.MULTILINE | re.DOTALL)
+    return [t for line in text.splitlines() for t in _BACKTICK_RE.findall(line)]
+
+
+def _citation_findings(repo: Path, files: list[Path], group: str) -> list[Finding]:
+    findings: list[Finding] = []
+    for md in files:
+        rel = md.relative_to(repo).as_posix()
+        seen: set[str] = set()
+        for token in _inline_code(md.read_text(encoding="utf-8")):
+            token = token.strip()
+            if token in seen:
+                continue
+            seen.add(token)
+            msg = _check_citation(repo, token)
+            if msg:
+                findings.append(Finding(group, "error", rel, msg))
+    return findings
+
+
+def check_citations(repo: Path) -> list[Finding]:
+    """The CLAUDE.md citation check, over the design docs and the tracked
+    `.claude/` agents, skills and rules (3.5.0-DEV15): every cited path, module
+    symbol, script and `make` target exists. Those files steer contributors and
+    agents as much as CLAUDE.md does, and went stale the same way."""
+    files = sorted((repo / "docs/design").rglob("*.md"))
+    claude = repo / ".claude"
+    if claude.is_dir():
+        try:
+            out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", ".claude"],
+                                 capture_output=True, check=True).stdout.decode()
+            files += sorted(repo / n for n in out.split("\0") if n.endswith(".md"))
+        except (OSError, subprocess.CalledProcessError):
+            files += sorted(claude.rglob("*.md"))
+    return _citation_findings(repo, [f for f in files if f.is_file()], "citations")
 
 # ===========================================================================
 # Group: roadmap_ids  (ROADMAP.md <-> release-notes ID collision detection)
@@ -1973,6 +2089,7 @@ GROUPS = {
     "standards_rows": check_standards_rows,
     "design_refs":    check_design_refs,
     "retired_names":  check_retired_names,
+    "citations":      check_citations,
 }
 
 

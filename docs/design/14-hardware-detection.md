@@ -95,7 +95,7 @@ Design ambition is broad (every kconfig domain in the registry, every CPU/GPU br
 - Storage: NVMe
 - Distro: Arch Linux, kernel: custom `linux-custom` PKGBUILD
 
-**Tested in VM** (`make vm-iso` → `make vm-install`):
+**Tested in VM** (`make vm-iso` → `make vm-install-stable`):
 - Host arch: `x86_64` (qemu/KVM guest)
 - CPU: emulated/passthrough (typically host-passthrough)
 - GPU: virtio (`gpu_vendors` likely empty or `["other"]`)
