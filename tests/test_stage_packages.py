@@ -71,7 +71,7 @@ def make_pkgbuild(pkgbuild_src_dir, name):
     return pb
 
 def make_options(**kwargs):
-    defaults = dict(resume=False, start_from=None, force_retry=False,
+    defaults = dict(resume=False, start_from=None, retry_failed=False,
                     dry_run=False, state_dir=None)
     defaults.update(kwargs)
     return RunOptions(**defaults)
@@ -760,11 +760,11 @@ def _answers(monkeypatch, *answers):
     monkeypatch.setattr(_pkgs_mod, "prompt_choice", lambda *a, **k: next(it))
 
 
-def test_resume_prompt_force_retry_retries_everything(monkeypatch):
+def test_resume_prompt_retry_failed_retries_everything(monkeypatch):
     monkeypatch.setattr(_pkgs_mod, "prompt_choice",
-                        lambda *a, **k: pytest.fail("prompted under --force-retry"))
+                        lambda *a, **k: pytest.fail("prompted under --retry-failed"))
     assert _pkgs_mod._prompt_failed_packages(
-        ["a", "b"], {}, make_options(force_retry=True)) == ({"a", "b"}, set())
+        ["a", "b"], {}, make_options(retry_failed=True)) == ({"a", "b"}, set())
 
 
 @pytest.mark.parametrize("answer, expected", [

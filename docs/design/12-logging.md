@@ -66,12 +66,12 @@ File logging runs at full verbosity regardless of the `-v` level — every `[INF
 
 **Unified log** — one consolidated file for the entire run.
 
-- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`). Per verb: `sysforge update` → `<state_dir>/sysforge-update.log`; `sysforge build` → `<state_dir>/sysforge-build.log`. Every other substantial verb (`doctor`, `fetch`, `revert-to-stock`, `uninstall`, `setup`, `config merge`, `state repair/forget`) opts into the same pattern — `sysforge-<name>.log` — via the base-class flag `Verb.wants_run_log`, opened/closed by the verb runner (purged before `execute`, kept on success; a failed run is closed with a `FAILED` marker in the log). Trivial list/passthrough printers (`env`, `log`, `search`, `completions`, `packages list`, `state list/failed`) and read-only reports (`resolve`, `state orphans`) stay opted out; `doctor` opts back out for `--apply`, which delegates its rebuild to `sysforge update`'s own log. A standalone `run <stage>` invocation writes `sysforge-run-<stage>.log` and keeps it on success (an operator-inspection artifact); the full `run pipeline` keeps its own shared `sysforge.log`.
+- Default path: `<state_dir>/sysforge.log` (i.e. `/var/lib/sysforge/sysforge.log`). Per verb: `sysforge update` → `<state_dir>/sysforge-update.log`; `sysforge build` → `<state_dir>/sysforge-build.log`. Every other substantial verb (`doctor`, `fetch`, `revert-to-stock`, `uninstall`, `setup`, `config merge`, `state repair/forget`) opts into the same pattern — `sysforge-<name>.log` — via the base-class flag `Verb.wants_run_log` (the name comes from `Verb.run_log_name`, which `sysforge log --verb` also reads, `3.5.0-F13`), opened/closed by the verb runner (purged before `execute`, kept on success; a failed run is closed with a `FAILED` marker in the log). Trivial list/passthrough printers (`env`, `log`, `search`, `completions`, `packages list`, `state list/failed`) and read-only reports (`resolve`, `state orphans`) stay opted out; `doctor` opts back out for `--apply`, which delegates its rebuild to `sysforge update`'s own log. A standalone `run <stage>` invocation writes `sysforge-run-<stage>.log` and keeps it on success (an operator-inspection artifact); the full `run pipeline` keeps its own shared `sysforge.log`.
 - `sysforge update` and `sysforge build` always truncate at run start and **keep** the log afterwards (so a multi-package run leaves one consolidated record next to the per-package logs). `sysforge run pipeline` appends across runs and clears on success; standalone `run <stage>` keeps its per-stage log on success instead.
 - Each session opens with a `# <command>: <time>` header naming the command that opened it (`open_unified_log(label=…)`: `sysforge run pipeline`, `sysforge run <stage>`, `sysforge update`, `sysforge <verb>`), and a standalone `run <stage>` logs its own lines under the stage's tag (`[TOOLCHAIN]`), not `[PIPELINE]`, which is the full pipeline's (`3.5.0-B36`).
 - A `# log cleared after successful run` marker is left in the file after truncation.
 - `--log-dir <path>` overrides the directory.
-- `--purge-log` (`run pipeline` only) truncates before the run starts.
+- `--truncate-log` (`run pipeline` only) truncates before the run starts.
 - `--persist-log` suppresses truncation on success. Use when you want to keep the log for post-run analysis.
 - `--no-unified-log` (`run pipeline` only) disables the unified log for this run.
 
@@ -91,10 +91,10 @@ The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the si
 | `--no-unified-log` | `run pipeline` | Disable unified log for this run |
 | `--no-pkg-log` | `build`, `update`, `run pipeline`, `run packages`, `run kernel` | Disable per-package logs for this run (one spelling everywhere since `3.5.0-F15`; the `run` stages used to take `--no-pkg-logs`) |
 | `--log-dir <path>` | `run pipeline`, `run packages`, `run kernel`, `build` | Override log file directory |
-| `--purge-log` | `run pipeline` | Truncate unified log before run |
+| `--truncate-log` | `run pipeline` | Truncate unified log before run |
 | `--persist-log` | `run pipeline`, `run toolchain`, `run packages`, `run kernel`, `build` | Keep log files after success |
 | `--rebuild-profdata` | `run toolchain` | Force full 4-pass PGO build even if compatible profdata exists |
-| `--auto-pgo` | `run toolchain` | Bypass all PGO confirmation prompts (required for non-interactive PGO runs) |
+| `--yes` | `run toolchain` | Bypass all PGO confirmation prompts (required for non-interactive PGO runs) |
 | `--cleansrc` | `build`, `update`, `fetch`, `run toolchain` | Purge each package's src dir and re-clone before fetching/building. Refuses (per package) on uncommitted changes, ahead-of-upstream commits, or `diverged_user` state |
 | `--cleansrc-force` | `build`, `update`, `fetch`, `run toolchain` | Like `--cleansrc` but bypasses the dirty/diverged guard. Use when the upstream rewrote history (e.g. Arch packaging repos force-push every release) and the local commits have no value to preserve |
 
@@ -121,7 +121,7 @@ well-known names. Emission is keyed off `Verb.requires_sentinel` in
 
 `SYSFORGE_TARGET` is supplied by every sentinel-gated verb via a
 `Verb.journal_target(args)` override (`build`, `uninstall`, `revert-to-stock`,
-`state forget`, `state failed --clear`, `state repair`, `state orphans --prune`),
+`state forget`, `state failed --clear`, `state repair`, `state orphans --delete`),
 and is namespaced so a consumer can tell a package subject from a whole-state
 operation without knowing which verb produced the record:
 

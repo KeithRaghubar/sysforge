@@ -49,7 +49,7 @@ _log = log.get_logger("TOOLCHAIN")
 
 
 class PGOAborted(RuntimeError):
-    """User declined a PGO confirmation prompt (or non-TTY without --auto-pgo)."""
+    """User declined a PGO confirmation prompt (or non-TTY without --yes)."""
 
 
 def pgo_confirm(
@@ -62,24 +62,24 @@ def pgo_confirm(
 ) -> bool:
     """Confirmation gate for fragile PGO decision points.
 
-    Returns True if the user (or `--auto-pgo`) approves; raises ``PGOAborted``
+    Returns True if the user (or `--yes`) approves; raises ``PGOAborted``
     otherwise. Behaviour matrix:
 
-      • ``--auto-pgo`` set        → no prompt; treat as approved.
-      • TTY, no ``--auto-pgo``    → prompt; empty input → ``default``.
-      • Non-TTY, no ``--auto-pgo``→ ``prompt.prompt_choice`` returns ``eof_default``
+      • ``--yes`` set        → no prompt; treat as approved.
+      • TTY, no ``--yes``    → prompt; empty input → ``default``.
+      • Non-TTY, no ``--yes``→ ``prompt.prompt_choice`` returns ``eof_default``
         (we set this to ``"n"`` everywhere, so the PGO path aborts cleanly with
-        a message directing the user to pass ``--auto-pgo``).
+        a message directing the user to pass ``--yes``).
 
     PGO fragility (silent mis-optimisation if profdata is wrong) is why we
     deliberately diverge from the rest of sysforge's automation-by-default
     posture here.
     """
-    if getattr(options, "auto_pgo", False):
+    if getattr(options, "yes", False):
         return True
     if not prompt.is_interactive():
         raise PGOAborted(
-            f"{abort_msg} (non-interactive PGO requires --auto-pgo)"
+            f"{abort_msg} (non-interactive PGO requires --yes)"
         )
     answer = prompt.prompt_choice(
         msg,
@@ -708,7 +708,7 @@ def build_llvm_pgo_inner(
                     # also repeats LDFLAGS on the link line, and a doubled
                     # --whole-archive of the runtime is a duplicate-symbol link
                     # failure. pgo_reuse=False keeps a target's own prior --pgo=use
-                    # profile (e.g. pgo-mesa/mesa.profdata) off the corpus build.
+                    # profile (e.g. pgo/mesa/mesa.profdata) off the corpus build.
                     if corpus_map:
                         try:
                             passes.build_pass(

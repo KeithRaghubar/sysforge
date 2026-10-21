@@ -36,6 +36,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from sysforge import log
 
 # RFC 3339 / ISO 8601, UTC "Z" form (the shape build_state/stage_sentinel emit).
@@ -727,6 +729,31 @@ def test_deprecations_group_flags_unregistered_warn_used(tmp_path):
     assert any("ghost.surface" in m for m in msgs)
 
 
+@pytest.mark.parametrize(("source", "clean"), [
+    ("_REGISTRY = ()\n", True),
+    ("_REGISTRY: tuple[Deprecation, ...] = ()\n", True),
+    ("_REGISTRY = _build()\n", False),
+    ("_REGISTRY = (\n", False),
+])
+def test_deprecations_declared_empty_registry_is_clean(tmp_path, source, clean):
+    """3.5.0-F16 retired the last surface: a registry written as an empty tuple
+    is clean, while one the parser cannot read stays an error in both groups."""
+    import sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(repo / "tools"))
+    try:
+        import check_standards as cs
+    finally:
+        sys.path.pop(0)
+    (tmp_path / "sysforge" / "primitives").mkdir(parents=True)
+    (tmp_path / "sysforge" / "primitives" / "deprecations.py").write_text(
+        source, encoding="utf-8")
+    unreadable = [f for f in cs.check_deprecations(tmp_path)
+                  if "registry parse found no records" in f.message]
+    assert (not unreadable) is clean
+
+
 def test_deprecations_flags_overdue_removal_at_target_version(tmp_path):
     """R3 — a compat surface still present at its removal version is an error.
 
@@ -1088,3 +1115,80 @@ def test_standards_rows_flags_a_stale_next_row_counter(tmp_path):
 def test_standards_rows_accepts_unique_rows_and_correct_counter(tmp_path):
     repo = _standards_tree(tmp_path, ([1, 3], [2, 4]), next_row=5)
     assert _load_check_standards().check_standards_rows(repo) == []
+
+
+# ---------------------------------------------------------------------------
+# design_refs (3.5.0-DEV10)
+# ---------------------------------------------------------------------------
+
+def test_design_refs_group_is_clean_on_the_real_repo():
+    findings = _load_check_standards().check_design_refs(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def _refs_repo(tmp_path, body):
+    (tmp_path / "docs/design").mkdir(parents=True)
+    (tmp_path / "docs/design/07-pipeline-layer.md").write_text(body)
+    (tmp_path / "docs/design/21-standards.md").write_text("| 23 | os-release |\n")
+    (tmp_path / "DESIGN.md").write_text(
+        "## Drift detection\n### Runner\n**Stale-profraw post-build check.** text\n")
+    return tmp_path
+
+
+@pytest.mark.parametrize("ref", [
+    "§Drift detection", "§Drift detection → *Toolchain drift*", "§Runner",
+    "§Stale-profraw post-build check", "§07", "§pipeline-layer", "§21-standards",
+    "§Standards row 23", "RFC 7231 §7.1.3 delta-seconds", "SemVer §§6–8",
+    "quoted as `§Nowhere` in prose",
+])
+def test_design_refs_accepts(tmp_path, ref):
+    repo = _refs_repo(tmp_path, f"see {ref}.\n")
+    assert _load_check_standards().check_design_refs(repo) == []
+
+
+@pytest.mark.parametrize("ref", [
+    "§Toolchain-variant drift detection below",  # the one design 07 carried
+    "§Reconvergence",                            # a heading renamed away
+    "§1242–1264",                                # line numbers rot
+    "§Standards row 99",
+])
+def test_design_refs_flags(tmp_path, ref):
+    repo = _refs_repo(tmp_path, f"see {ref}.\n")
+    [finding] = _load_check_standards().check_design_refs(repo)
+    assert finding.group == "design_refs"
+
+
+# ---------------------------------------------------------------------------
+# retired_names (3.5.0-DEV12)
+# ---------------------------------------------------------------------------
+
+def test_retired_names_group_is_clean_on_the_real_repo():
+    findings = _load_check_standards().check_retired_names(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def _retired_repo(tmp_path, files):
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/retired_names.toml").write_text(
+        '[[retired]]\nname = "--skip-boot-audit"\nid = "3.5.0-F15"\n'
+        'use = "--allow-boot-audit-failure"\nallow = ["sysforge/migrate.py"]\n')
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+    return tmp_path
+
+
+def test_retired_names_flags_a_leftover_in_a_comment(tmp_path):
+    repo = _retired_repo(tmp_path, {"sysforge/x.py": "# pass --skip-boot-audit to go on\n"})
+    [f] = _load_check_standards().check_retired_names(repo)
+    assert f.location == "sysforge/x.py:1" and "--allow-boot-audit-failure" in f.message
+
+
+def test_retired_names_matches_whole_words_and_honours_allows(tmp_path):
+    repo = _retired_repo(tmp_path, {
+        "sysforge/x.py": "--skip-boot-audit-ish and x--skip-boot-audit\n",  # other words
+        "sysforge/migrate.py": "OLD = '--skip-boot-audit'\n",                # entry allow
+        "docs/release-notes/v4.0.0.md": "renamed --skip-boot-audit\n",       # always allowed
+        "tests/test_x.py": "assert '--skip-boot-audit' not in flags\n",       # always allowed
+    })
+    assert _load_check_standards().check_retired_names(repo) == []

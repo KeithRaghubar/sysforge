@@ -6,12 +6,12 @@
 runner.py — pipeline DAG runner
 
 Sequences stage execution, manages checkpoint/resume, and handles
---start-from and --force-retry options.
+--start-from and --retry-failed options.
 
 Resume semantics:
   --resume            Resume from checkpoint. Skips done stages, re-runs from
                       first pending/failed stage. If packages stage has failed
-                      packages, prompts the user (or uses --force-retry).
+                      packages, prompts the user (or uses --retry-failed).
   --start-from NAME   Mark all stages before NAME as skipped_to and start from
                       NAME. Combined with --resume, preserves intra-stage
                       progress for NAME (e.g. already-built packages).
@@ -187,9 +187,9 @@ def run_stage_standalone(stage, config, options):
     log_dir = options.log_dir or state_dir
     unified_log_active = not options.no_unified_log and not options.dry_run
     if unified_log_active:
-        unified_log_path = log_dir / f"sysforge-run-{stage.name}.log"
+        unified_log_path = log_dir / log.verb_log_name(f"run-{stage.name}")
         try:
-            log.open_unified_log(unified_log_path, purge=options.purge_log,
+            log.open_unified_log(unified_log_path, purge=options.truncate_log,
                                label=f"sysforge run {stage.name}")
             _log.info(f"Unified log: {unified_log_path}")
         except PermissionError:
@@ -325,8 +325,8 @@ def run_pipeline(config, options, stages=None):
     unified_log_path: Path | None = None
     if unified_log_active:
         log_dir = options.log_dir or state_dir
-        unified_log_path = log_dir / "sysforge.log"
-        log.open_unified_log(unified_log_path, purge=options.purge_log,
+        unified_log_path = log_dir / log.PIPELINE_LOG
+        log.open_unified_log(unified_log_path, purge=options.truncate_log,
                              label="sysforge run pipeline")
         _log.info(f"Unified log: {unified_log_path}")
 

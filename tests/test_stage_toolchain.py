@@ -359,7 +359,7 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False, auto_pgo=True)
+    options = make_options(dry_run=False, yes=True)
 
     call_log = []
     def fake_run(pkgbuild_path, options=None):
@@ -494,7 +494,7 @@ def test_toolchain_stage_pgo_sidecar_persists_after_build_failure(tmp_path):
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False, auto_pgo=True)
+    options = make_options(dry_run=False, yes=True)
 
     call_log = []
     def fake_run(pkgbuild_path, options=None):
@@ -563,7 +563,7 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
 
     state = PipelineState(tmp_path / "state")
     config = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    options = make_options(dry_run=False, auto_pgo=True)
+    options = make_options(dry_run=False, yes=True)
 
     call_log = []
     def fake_run(pkgbuild_path, options=None):
@@ -812,7 +812,7 @@ def test_gate1_version_skew_aborts_before_build(tmp_path, monkeypatch):
     assert not _sentinel_exists(tmp_path / "state")
 
 def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
-    """A build-space brick aborts; --skip-build-space-check bypasses it."""
+    """A build-space brick aborts; --allow-low-build-space bypasses it."""
     from sysforge.primitives import toolchain_safety as _ts
     toml_path, state, config, options = _single_pass_setup(tmp_path)
 
@@ -831,7 +831,7 @@ def test_gate1_build_space_aborts_overridable(tmp_path, monkeypatch):
             ToolchainStage().run(config, state, options)
 
         # Override → the brick is skipped and the run proceeds.
-        options.skip_build_space_check = True
+        options.allow_low_build_space = True
         ToolchainStage().run(config, state, options)
     assert state.get_stage_result("toolchain")["variant"] == "stock_llvm"
 

@@ -49,7 +49,7 @@ def log_resolution_summary(
     *, pkgname, compiler, compiler_origin, cc, cxx, variant, bootloader,
     bootloader_installed, source, kconfig_target, base_config_source,
     hw_kconfig_count, manual_kconfig_count, device_kconfig_count,
-    kernel_cfg, skip_boot_audit, build_headers, build_docs,
+    kernel_cfg, allow_boot_audit_failure, build_headers, build_docs,
     fdo_kconfig_count=0, fdo_label="off",
 ):
     """Emit one labelled block of the resolved kernel-build plan.
@@ -65,7 +65,7 @@ def log_resolution_summary(
     gates = (
         f"fallback={'required' if kernel_cfg.require_fallback_kernel else 'off'} "
         f"boot_audit={'on' if kernel_cfg.boot_audit else 'off'}"
-        f"{' SKIPPED' if skip_boot_audit else ''} "
+        f"{' (failure allowed)' if allow_boot_audit_failure else ''} "
         f"min_boot_free={kernel_cfg.min_boot_free_mb}MiB "
         f"lsmod_snapshot={'on' if kernel_cfg.capture_lsmod_snapshot else 'off'}"
     )
@@ -217,11 +217,17 @@ class KernelStage(Stage):
         # A1: per-kernel toolchain drift. update.py's drift sweep skips
         # stage-owned packages (the kernel is one), so this stage owns the
         # drift signal for its own package. Same shape as update.py:1180-1205.
+        # Compared with what this run builds with, not the active variant: a
+        # kernel kept on the other compiler (kernel.toml / --toolchain) records
+        # that compiler, so it would otherwise warn on every run (3.5.0-B126).
+        from sysforge.primitives.pipeline_state import variant_built_with
         recorded_variant = (BuildState(state_dir).get(pkgname) or {}).get("toolchain_variant")
-        if recorded_variant and variant != "system" and recorded_variant != variant:
+        _, _cc, _ = config.resolve_compiler(kernel_cfg, options, state)
+        build_variant = variant_built_with(variant, _cc)
+        if recorded_variant and variant != "system" and recorded_variant != build_variant:
             _log.warn(
                 f"Installed {pkgname} was built under toolchain variant "
-                f"{recorded_variant!r}; active variant is {variant!r}. "
+                f"{recorded_variant!r}; this build uses {build_variant!r}. "
                 "Rebuilding will switch toolchains."
             )
 
@@ -342,7 +348,7 @@ class KernelStage(Stage):
         # Compiler resolution: CLI > kernel.toml > the toolchain stage's result.
         compiler, cc, cxx = config.resolve_compiler(kernel_cfg, options, state)
         if getattr(options, "compiler", None):
-            compiler_origin = "--compiler"
+            compiler_origin = "--toolchain"
         elif kernel_cfg.compiler:
             compiler_origin = "kernel.toml"
         elif cc:
@@ -365,7 +371,7 @@ class KernelStage(Stage):
             _log.warn(
                 "Active toolchain variant: pgo_llvm; kernel will inherit PGO "
                 "clang from the last `run toolchain`. Set `compiler = \"llvm\"` "
-                "in kernel.toml (or pass --compiler=llvm) to make this explicit "
+                "in kernel.toml (or pass --toolchain llvm) to make this explicit "
                 "and survive future toolchain-stage disable."
             )
         elif compiler is None and variant == "stock_llvm":
@@ -382,7 +388,7 @@ class KernelStage(Stage):
         # pipeline state — e.g. toolchain.toml configures PGO LLVM but a stock
         # repo llvm is installed, so the kernel won't be built with the PGO
         # toolchain the user thinks is active. Surfaced standalone via
-        # `sysforge doctor --toolchain`.
+        # `sysforge doctor system --toolchain`.
         from sysforge.primitives.llvm_state import detect_toolchain_config_mismatch
         for finding in detect_toolchain_config_mismatch(sysforge_config):
             _log.warn(f"{finding.message}: {finding.remediation}")
@@ -439,7 +445,7 @@ class KernelStage(Stage):
                 "as written); pass --no-interactive for unattended builds."
             )
 
-        skip_boot_audit = bool(getattr(options, "skip_boot_audit", False))
+        allow_boot_audit_failure = bool(getattr(options, "allow_boot_audit_failure", False))
         build_headers, build_docs = config.resolve_subpackages(kernel_cfg, options)
 
         if fdo_mode:
@@ -472,7 +478,7 @@ class KernelStage(Stage):
             manual_kconfig_count=manual_kconfig_count,
             device_kconfig_count=device_kconfig_count,
             kernel_cfg=kernel_cfg,
-            skip_boot_audit=skip_boot_audit,
+            allow_boot_audit_failure=allow_boot_audit_failure,
             build_headers=build_headers,
             build_docs=build_docs,
             fdo_kconfig_count=fdo_kconfig_count,
@@ -664,7 +670,7 @@ class KernelStage(Stage):
                 # Gate 2 — resolved-.config audit (raises on brick, pre-install).
                 gates.gate2_audit(
                     pkgbuild.parent, topology,
-                    skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                    allow_boot_audit_failure=allow_boot_audit_failure, state_dir=state_dir,
                     build_dir=built_dir, reused=reused_config,
                     already_built=already_built,
                 )

@@ -139,7 +139,10 @@ from sysforge.primitives.source_sync import (
     SyncRequest,
     get_scheduler,
 )
-from sysforge.profile_writer import write_package_compiler_override
+from sysforge.profile_writer import (
+    delete_package_compiler_override,
+    write_package_compiler_override,
+)
 
 # ABI / CACHE / PATCH tags are emitted by their owning modules (abi_check.py,
 # cache_probe.py, pkgbuild_patcher.py); CONF lives in makepkg_conf.py — this
@@ -203,6 +206,46 @@ def _log_cli_over_compiler_row(config, pkgbase, cc, cxx, ld) -> None:
         f"{' '.join(given)} overrides the [package_compiler_overrides] row for "
         f"{pkgbase} ({', '.join(f'{k}={v}' for k, v in row.items())})"
     )
+
+
+def _apply_cli_toolchain(resolved_profile: dict, options) -> dict:
+    """``build --toolchain`` (3.5.0-F14): the CLI wins over the profile and any
+    [package_compiler_overrides] row, as one unit swap through
+    ``profile.swap_toolchain``, so a gcc build of an llvm profile also loses
+    the llvm-* binutils and ``-fuse-ld=lld``. Returns a new dict; the input is
+    left alone."""
+    tc = options.toolchain_override
+    if not tc:
+        return resolved_profile
+    _build_log.info(f"toolchain {tc!r} from --toolchain")
+    return swap_toolchain(dict(resolved_profile), tc)
+
+
+def _apply_toolchain_row_choice(options, config: dict, pkgbase) -> dict:
+    """``build --save-toolchain`` / ``--reset-toolchain`` (3.5.0-F14): write or
+    remove this pkgbase's [package_compiler_overrides] row before the build,
+    through the one profiles.toml writer. A reset also drops the row from the
+    in-memory ``config`` this build resolves against, so it builds with the
+    profile's own toolchain (or ``--toolchain``). Best-effort, like the
+    recovery persist: a failed write is logged and the build goes on.
+    """
+    if not pkgbase or not (options.save_toolchain or options.reset_toolchain):
+        return config
+    try:
+        path = _active_profiles_path()
+        if options.reset_toolchain:
+            if delete_package_compiler_override(path, pkgbase):
+                _build_log.ui(f"{pkgbase}: saved toolchain removed from {path}")
+            rows = dict(config.get("package_compiler_overrides") or {})
+            rows.pop(pkgbase, None)
+            config = {**config, "package_compiler_overrides": rows}
+        if options.save_toolchain and options.toolchain_override:
+            tc = options.toolchain_override
+            if write_package_compiler_override(path, pkgbase, "", "", "", toolchain=tc):
+                _build_log.ui(f"{pkgbase}: toolchain {tc} saved to {path}")
+    except Exception as e:  # noqa: BLE001 — persistence never fails a build
+        _build_log.warn(f"Could not update the saved toolchain in profiles.toml: {e}")
+    return config
 
 
 def _persist_recovery_overrides(pkgbase) -> None:
@@ -890,8 +933,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
     # -sysforge optimization-provenance rename. Gated on the Phase-1 predicate
     # is_optimized_build_mode (one home for "does this build earn the suffix?"):
-    # only an optimization variant the *build verb* drove (e.g. mesa `--pgo=use`,
-    # build_mode pgo_mesa) reaches here with optimization_build_mode set — the
+    # only an optimization variant the *build verb* drove (e.g. `--pgo=use`,
+    # build_mode pgo) reaches here with optimization_build_mode set — the
     # toolchain stage's own PGO/BOLT naming is stage-managed and never threads it.
     # patch_package_suffix injects provides/conflicts/replaces (conflict mode) so
     # the renamed build is a validated drop-in; the rename dict rides back to run()
@@ -1225,6 +1268,12 @@ class BuildOptions:
     cc_override: str | None = None
     cxx_override: str | None = None
     ld_override: str | None = None
+    # `build --toolchain` (3.5.0-F14): swap the resolved profile's whole
+    # compiler bundle for this build; save/reset write or remove the pkgbase's
+    # [package_compiler_overrides] row first.
+    toolchain_override: str | None = None
+    save_toolchain: bool = False
+    reset_toolchain: bool = False
     cache_report: bool = False
     init_session: bool = True
     update: bool = True
@@ -1260,7 +1309,7 @@ class BuildOptions:
     # it: corpus targets compile to generate clang profraw, never -fprofile-use.
     pgo_reuse: bool = True
     # e.g. "autofdo_kernel" — stage-supplied optimization mode; seeds record_build_mode →
-    # -sysforge rename + build_state. mesa --pgo=use sets its own ("pgo_mesa") internally.
+    # -sysforge rename + build_state. --pgo=use sets its own ("pgo") internally.
     optimization_build_mode: str | None = None
     # F40: patch the cloned upstream's pkgbase to this local name (coexist) — set by the
     # kernel stage when pkgname != upstream_pkgname
@@ -1306,6 +1355,27 @@ def _report_pgo_staleness(pkgbase: str, profdata: Path) -> None:
         _build_log.warn(f"PGO profile {pkgbase}: could not grade the profile: {exc}")
 
 
+def _own_compiler_variant(variant, fingerprint, resolved_profile, options):
+    """The (variant, fingerprint) of the compiler this build actually used.
+
+    The run-wide values name the toolchain stage's compiler. A package swapped
+    to the other family (`build --toolchain`, a `[package_compiler_overrides]`
+    row, a profile's own `toolchain`) compiled with something else, and
+    recording the stage's variant hid that from `build_state.toml` and from
+    toolchain drift (3.5.0-B125). Such a build records the family's variant and
+    no fingerprint, which is only ever compared within one variant. The
+    toolchain stage keeps the run-wide values (it records its own variants); a
+    kernel built with the other family records it too, through its
+    ``cc_override`` (3.5.0-B126).
+    """
+    from sysforge.primitives.pipeline_state import variant_built_with
+    if options.owner_stage == "toolchain":
+        return variant, fingerprint
+    built = variant_built_with(
+        variant, options.cc_override or (resolved_profile or {}).get("CC"))
+    return (variant, fingerprint) if built == variant else (built, None)
+
+
 def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
                         rename, record_build_mode, build_elapsed,
                         kernel_build=False):
@@ -1326,6 +1396,8 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
             _prov, options.toolchain_variant, options.toolchain_fingerprint)
     else:
         _variant, _fingerprint = options.toolchain_variant, options.toolchain_fingerprint
+    _variant, _fingerprint = _own_compiler_variant(
+        _variant, _fingerprint, resolved_profile, options)
     if options.record_toolchain_variant is not None:
         _variant = options.record_toolchain_variant
     try:
@@ -1481,7 +1553,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
     # Use the PKGBUILD directory name; this matches pkgbase in all normal cases.
     if options.pkg_log:
         log_base = Path(options.log_dir) if options.log_dir is not None else pkgbuild_path.parent
-        log_path = log_base / f"sysforge_{pkgbuild_path.parent.name}.log"
+        log_path = log_base / log.pkg_log_name(pkgbuild_path.parent.name)
         log.open_pkg_log(log_path, argv=sys.argv)
         _build_log.info(f"Per-package log: {log_path}")
 
@@ -1627,14 +1699,12 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                     )
                 _build_log.warn(f"{pkgname}: Building without PGO: {reason}")
 
-        # mesa instrumentation PGO (`build --pgo=record|use`) — reuses the same
-        # compiler_flags_extra seam as the toolchain PGO above (makepkg_conf
-        # injects it into CFLAGS/CXXFLAGS/LDFLAGS, which mesa's arch-meson
-        # inherits). `record` bakes the store path into an instrumented mesa so
-        # *any* GPU app that loads it appends .profraw to the store; `use` merges
-        # those and consumes the profile, earning the -sysforge rename below
-        # (record_build_mode = "pgo_mesa"). A logged no-op for non-mesa pkgbases —
-        # mesa is the only wired target this phase.
+        # Instrumentation PGO (`build --pgo=record|use`, any package) reuses the
+        # same compiler_flags_extra seam as the toolchain PGO above (makepkg_conf
+        # injects it into CFLAGS/CXXFLAGS/LDFLAGS). `record` bakes the store path
+        # into an instrumented build so any process that loads it appends
+        # .profraw to the store; `use` merges those and consumes the profile,
+        # earning the -sysforge rename below (record_build_mode = "pgo").
         # Seeded from the stage-supplied optimization mode (kernel FDO sets
         # "autofdo_kernel"/"propeller_kernel" here); the mesa --pgo=use block
         # below sets its own. Either way it drives the -sysforge rename in
@@ -1680,7 +1750,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 )
                 _pgo_flag = mesa_pgo.use_flags(_profdata)
                 _staleness_profdata = _profdata
-                record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
+                record_build_mode = mesa_pgo.BUILD_MODE
             else:
                 raise RuntimeError(f"unknown --pgo mode {options.pgo_mode!r}")
             effective_flags_extra = (
@@ -1718,7 +1788,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
             if _reuse is not None:
                 _pgo_flag = mesa_pgo.use_flags(_reuse)
                 _staleness_profdata = _reuse
-                record_build_mode = mesa_pgo.build_mode_for(_pgo_pkgbase)
+                record_build_mode = mesa_pgo.BUILD_MODE
                 effective_flags_extra = (
                     f"{effective_flags_extra} {_pgo_flag}".strip()
                     if effective_flags_extra
@@ -1730,6 +1800,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                     f"{_pgo_globals.get('pkgver', '')}-{_pgo_globals.get('pkgrel', '1')}"
                 )
                 _build_log.ui(mesa_pgo.reuse_notice(_reuse, _pgo_pkgbase, _target))
+
+        config = _apply_toolchain_row_choice(options, config, _pkgname_from_meta(pkgmeta))
 
         extracted_profile = None
         if build_mode_uses_extracted_profile(build_mode):
@@ -1746,6 +1818,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # path at line ~1158, the None path just above) — never actually None
         # here, but pyright can't correlate the two separate `if` tests.
         assert resolved_profile is not None  # noqa: S101 — internal invariant, not input validation
+        resolved_profile = _apply_cli_toolchain(resolved_profile, options)
         if options.force_batch and not resolved_profile.get("batch", False):
             resolved_profile = dict(resolved_profile)
             resolved_profile["batch"] = True

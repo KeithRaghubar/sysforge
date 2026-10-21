@@ -90,6 +90,14 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-F12` — a per-package compiler swap switches the whole toolchain.** When a build failed and you picked gcc (or clang) from the build-failure menu, sysforge retried and remembered the choice in `profiles.toml`'s `[package_compiler_overrides]`, but only the C and C++ compiler and the linker changed: a gcc swap on an LLVM profile kept `llvm-ar`, `llvm-nm`, `llvm-ranlib`, `llvm-strip` and lld. A row can now say `toolchain = "gcc"` or `"llvm"`, which switches the whole set the way a `[[rules]]` profile's `toolchain` does, and the menu writes that form and retries with the whole set. At its linker question, leaving the answer blank now means the chosen toolchain's own linker. Rows that name `cc`, `cxx` and `ld` directly keep working and remain the way to name a compiler outside the two sets. When `sysforge build --cc`, `--cxx` or `--ld` overrides a row for a package, `-vv` says so. The comment above the table in `profiles.toml` lists which setting wins; `sysforge config merge` picks it up.
 
+
+---
+
+- **`3.5.0-F13` — `sysforge log --verb` pages the log a verb left.** `log` could page only the unified log and per-package logs, although `build`, `update`, `doctor`, `fetch`, `setup`, `uninstall`, `revert-to-stock`, `config merge`, `state repair`, `state forget` and each `run <stage>` leave their own `sysforge-<name>.log`, which the end of the run named once. `sysforge log --verb update` (or `build`, `state-repair`, `run-toolchain` and so on; Tab lists them) pages it, and `--log-dir` finds a log written with the same `--log-dir`, for verb, unified and per-package logs alike.
+
+---
+
+- **`3.5.0-F14` — choose a package's toolchain when you build it, and keep it.** `sysforge build PKG --toolchain gcc` (or `llvm`) builds the packages you name with that toolchain as a whole: compilers, `ar`/`nm`/`ranlib`/`strip` and linker together, the same swap the build-failure menu makes. Before, the only CLI choice was `--cc`/`--cxx`, which changed just the two compilers and left an LLVM profile's `llvm-ar` and `lld` in place. A `--cc gcc --cxx g++` or `--cc clang --cxx clang++` pair now does the same as `--toolchain`; any other pair still sets only the compilers, for a compiler sysforge does not bundle. Add `--save-toolchain` to keep the choice for those packages in `profiles.toml`, so later builds and `update` use it, without waiting for a build to fail first; `--reset-toolchain` removes it again. Dependencies built along the way keep their own profile. `run kernel` takes the same option under the same name (it was `--compiler`; see `3.5.0-F15`).
 ## Changed
 
 - **`3.0.0-F3` — `update` no longer builds a changed source nobody looked at.** The PKGBUILD review gate, which diffs a package's whole source tree since the last build you accepted, used to accept every change during `update` with a logged line, and accepted silently whenever there was no terminal, so a timer-driven `update` built and installed whatever had arrived. Now a changed source is shown to you at a terminal (view, accept, skip or abort, as `--review` did), and with no terminal (a timer, cron, a pipe) that package is refused: the rest of the run still builds, the summary lists it under "Refused at review" and the run exits 1. Changes from Arch's own packaging repos are accepted with a logged line, since the same people publish the binary packages you already install; `[build] review_trusted_sources` in `packages.toml` changes that list, and `--review` reviews everything. `build` and the toolchain stage's rebuild of libLLVM consumers follow the same rules, and `build` gains `--review`. To keep the old unattended behaviour, set `[build] review = "accept"` (every accepted change is still listed in the summary) or pass `--no-review`. The config comment explains the risk: a build sandbox limits what a build can read, but it does not inspect what gets installed.
@@ -149,6 +157,22 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DEV9` — the Makefile's comments and help match what it does.** `make help` now lists every variable a target reads (`TESTS=`, `NAME=`, `GUI=`, `DISTRO=`, `VM_USER=` and `preflight`'s `RUN_*` skips). `make dev` creates the project venv first, so it works on a fresh checkout; before, `uv pip install` used whatever venv `python` on `PATH` belonged to. `make clean` also removes `.ruff_cache/` and the generated `man/sysforge.1.scd`. `vm-ssh-root` is gone, since `vm-ssh` already connects as root. The `check-shipped` and `next-id` comments name the current check groups and ID types, and the `typecheck` comment says why it covers `sysforge/` only.
+
+---
+
+- **`3.5.0-DEV10` — a check that every `§Section` reference still resolves.** `make check-standards` gains a `design_refs` group: each `§` reference in the design docs, both CLAUDE.md files and code comments must name a DESIGN.md heading, a design file or a standards row. It found nine stale references, which are fixed: six pointed at a `§Reconvergence` section that is called *Drift detection*, one at a portability section that is standards row 23, one at a stale-profraw check under the wrong parent, and one at DESIGN.md line numbers.
+
+---
+
+- **`3.5.0-DEV11` — every written-down `sysforge` command is checked against the real parser.** The check that every `sysforge doctor …` the code prints still parses (`3.5.0-B3`) now covers every command, and reads comments and docstrings too, as well as the README, CLAUDE.md files, man page source, guides and shipped config comments. A long flag that a command does not have, or a subcommand name that is a near miss for a real one, fails the test with the file and line. It found nothing new; the two stale `doctor --toolchain`/`--suggest` comments it would have caught were fixed in `3.5.0-B125`.
+
+---
+
+- **`3.5.0-DEV12` — removed names cannot creep back.** `tools/retired_names.toml` lists the flags, tokens and functions this release removed, and `make check-standards` (group `retired_names`) fails if one appears anywhere outside release notes, ROADMAP, tests and the files that still read the old value to migrate it, comments included. Its first run found two stale passages in the design docs, now fixed: one citing a removed function, and the standards table still describing the `patched_pkgbuild` deprecation as live.
+
+---
+
+- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses options stand-ins outright (the last three are converted) and keeps the 31 older argument stand-ins from growing: each file's count may only go down. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
 
 ---
 
@@ -218,12 +242,28 @@ https://keepachangelog.com/en/1.1.0/
   | `--quiet`, `-q` | `--findings-only` | `doctor system`, `doctor pkg` |
   | `--non-interactive` | `--no-interactive` | `run kernel` |
   | `--list` | `--dry-run` | `config merge` (they were aliases) |
+  | `--auto-pgo` | `--yes` | `run toolchain` |
+  | `--force-retry` | `--retry-failed` | `run pipeline`, `run packages` |
+  | `--skip-boot-audit` | `--allow-boot-audit-failure` | `run kernel` |
+  | `--skip-build-space-check` | `--allow-low-build-space` | `run toolchain` |
+  | `--prune` | `--delete` | `state orphans` |
+  | `--purge STORE` | `--delete STORE` | `state profiles` (now also takes `--yes`, so it can run without a terminal) |
+  | `--purge-log` | `--truncate-log` | `run pipeline` |
+  | `--compiler gcc\|llvm` | `--toolchain gcc\|llvm` | `run kernel` (the same name and values as `build --toolchain`, `3.5.0-F14`) |
   | `sysforge doctor -q` / `--json` | `sysforge doctor system --findings-only` / `--json` | bare `doctor` |
   | `sysforge packages --packages FILE` / `--orphans` | `sysforge packages list --packages FILE` / `--orphans` | bare `packages` |
 
   The last two rows fix a bug as well as a spelling. An option given before a subcommand was silently dropped once the subcommand was named: `sysforge packages --packages /x.toml add foo` wrote to the default `packages.toml`, and `sysforge doctor --json system` printed text. Options now live only on the subcommand, the way `state` and `artifact` already worked, so a misplaced one is an error instead of being ignored. A bare `sysforge doctor` still runs the full system check and a bare `sysforge packages` still lists.
 
-  `doctor`'s old `--quiet` shared its name with the global `--quiet` (show errors only), which sysforge therefore could not accept after the word `doctor`, or after a package named `doctor`. With the rename, the global `--quiet` works after any command. `state orphans --yes` now says it applies with `--prune`: its old help said `--no-confirm` implied `--prune`, but it never did. Help text across `artifact`, `revert-to-stock`, `uninstall` and `search` is now written as sentences, like every other command's. **Migration:** scripts using any old spelling fail with "unrecognized arguments"; replace it as above.
+  `doctor`'s old `--quiet` shared its name with the global `--quiet` (show errors only), which sysforge therefore could not accept after the word `doctor`, or after a package named `doctor`. With the rename, the global `--quiet` works after any command. The two `--skip-` flags never skipped their check: it still runs, and the flag lets the install go ahead despite it, the same as the `--allow-` flags beside them, so they now say so. `state orphans --yes` now says it applies with `--delete`: its old help said `--no-confirm` implied pruning, but it never did. Help text across `artifact`, `revert-to-stock`, `uninstall` and `search` is now written as sentences, like every other command's. **Migration:** scripts using any old spelling fail with "unrecognized arguments"; replace it as above.
+
+---
+
+- **`3.5.0-F16` — `build_mode = "patched_pkgbuild"` is gone.** **Breaking:** the old name for `build_mode = "source_built"` in `profiles.toml`, deprecated since 2.0.0 and warned about on every run since 3.0.0, is no longer read as `source_built`. A profile that still uses it now stops the run with an error naming the replacement, so the package is never quietly built without its PKGBUILD's own flags. **Migration:** change `build_mode = "patched_pkgbuild"` to `build_mode = "source_built"`.
+
+---
+
+- **`3.5.0-F17` — mesa's PGO is no longer a special case.** **Breaking:** since `build --pgo` learned to profile any package, mesa had kept a store and a recorded mode of its own: profiles in `/var/cache/sysforge/pgo-mesa` (shared by mesa and lib32-mesa), and `build_mode = "pgo_mesa"` in the build state. Mesa now works like every other package, with its profiles in `/var/cache/sysforge/pgo/mesa` (and lib32-mesa's in `pgo/lib32-mesa`) and its optimized build recorded as `pgo`. `state profiles` lists it as `pgo/mesa`, so delete it with `state profiles --delete pgo/mesa`; `pgo-mesa` is no longer accepted. Neither old name is read any more, so `sysforge doctor system --state` reports them until you migrate. **Migration:** run `sysforge state repair` once. It moves your collected mesa profiles to their new stores and rewrites `pgo_mesa` in the build state; `--dry-run` shows what it would do. If you are part-way through recording, the instrumented mesa you have installed still writes to the old store, so rebuild it with `--pgo=record` before you go on. For Proton games, change `PRESSURE_VESSEL_FILESYSTEMS_RW` to `/var/cache/sysforge/pgo/mesa`.
 
 ## Fixed
 
@@ -291,7 +331,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B9` — Rust builds in the build sandbox show cargo's progress line again.** With `sandbox_builds = true`, the `Building [=====>    ] 120/431: <crate>` line that cargo draws above sysforge's progress bar never appeared; only the `Compiling` lines did. The sandbox's build tool always logs the build to a file, which sends cargo's output through a pipe, and cargo only draws its progress line when it is writing to a terminal. The sandbox now tells cargo to draw it anyway, at your terminal's width, whenever sysforge is passing the build's output to a terminal. Piped runs (`sysforge update | tee log.txt`) and `-vvv` runs are unchanged, and a profile that sets `CARGO_TERM_PROGRESS_WHEN` or `CARGO_TERM_PROGRESS_WIDTH` keeps its own setting. The width is taken when the build starts, so the line does not reflow if you resize the window mid-build. Builds outside the sandbox are not affected.
+- **`3.5.0-B9` — Rust builds in the build sandbox show cargo's progress line again.** With `sandbox_builds = true`, the `Building [=====>    ] 120/431: <crate>` line that cargo draws above sysforge's progress bar never appeared; only the `Compiling` lines did. The sandbox's build tool always logs the build to a file, which sends cargo's output through a pipe, and cargo only draws its progress line when it is writing to a terminal. The sandbox now tells cargo to draw it anyway, at your terminal's width, whenever sysforge is passing the build's output to a terminal. Piped runs (`sysforge update | tee log.txt`) and `-vvv` runs are unchanged, and a profile that sets `CARGO_TERM_PROGRESS_WHEN` or `CARGO_TERM_PROGRESS_WIDTH` keeps its own setting. The width is taken when the build starts; if the window gets narrower, the line is cut to fit (`3.5.0-B121`). Builds outside the sandbox are not affected.
 
 ---
 
@@ -401,7 +441,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B35` — help text names the commands it means instead of "pipeline".** sysforge's help still read as if setup were the main job. `sysforge --help` and the zsh completion now list `run` by what you run routinely: "Build the toolchain, kernel or packages, or run the fresh-install bootstrap". `run pipeline` says it is the fresh-install bootstrap. `run kernel --compiler` refers to "the compiler the last `run toolchain` set up" rather than "toolchain-stage pipeline state", and `update --include-stage-owned` to packages owned by `run kernel` or `run toolchain`. The man page's state-directory entry says "stage progress", and the top-level description matches the package description.
+- **`3.5.0-B35` — help text names the commands it means instead of "pipeline".** sysforge's help still read as if setup were the main job. `sysforge --help` and the zsh completion now list `run` by what you run routinely: "Build the toolchain, kernel or packages, or run the fresh-install bootstrap". `run pipeline` says it is the fresh-install bootstrap. `run kernel --toolchain` (then `--compiler`) refers to "the compiler the last `run toolchain` set up" rather than "toolchain-stage pipeline state", and `update --include-stage-owned` to packages owned by `run kernel` or `run toolchain`. The man page's state-directory entry says "stage progress", and the top-level description matches the package description.
 
 ---
 
@@ -481,7 +521,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B59` — `run kernel` checks a reused kernel package against its own config, or refuses it.** When makepkg found the kernel package already built and nothing tied a config to it, the boot-safety check (Gate 2) audited the newest `.config` in any build tree, which could belong to another build, or with none only warned, so a package the check had once rejected could be installed later after its build tree was wiped. The boot entry's version and the post-install DKMS check guessed the release the same way. A reused package is now checked against the config its own headers package ships when its build tree and archived config are gone, and is refused when no config can be tied to it (rebuild it, or pass `--skip-boot-audit`). The boot entry and DKMS check use the release of the package being installed.
+- **`3.5.0-B59` — `run kernel` checks a reused kernel package against its own config, or refuses it.** When makepkg found the kernel package already built and nothing tied a config to it, the boot-safety check (Gate 2) audited the newest `.config` in any build tree, which could belong to another build, or with none only warned, so a package the check had once rejected could be installed later after its build tree was wiped. The boot entry's version and the post-install DKMS check guessed the release the same way. A reused package is now checked against the config its own headers package ships when its build tree and archived config are gone, and is refused when no config can be tied to it (rebuild it, or pass `--allow-boot-audit-failure`). The boot entry and DKMS check use the release of the package being installed.
 
 ---
 
@@ -697,6 +737,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B121` — Narrowing the window during a sandboxed Rust build no longer leaves cargo progress lines behind.** In the build sandbox cargo draws its progress line at the width your terminal had when the build started, because it cannot measure the terminal from inside. When the window got narrower, for example when a tiled window opened beside it, each frame wrapped onto two rows. Cargo redraws only the row it is on, so the first half of every frame stayed on screen with the next `Compiling` line written over it. sysforge now cuts each frame to the window's current width as it passes it on. Builds outside the sandbox were not affected, since cargo measures the terminal there itself.
+
+---
+
 - **`3.5.0-B122` — wrong or outdated help text.** `build --pgo` said it applied only to mesa and did nothing for other packages; it works on any package and warns for one outside mesa and `sysforge.toml` `[pgo] allow`. `doctor pkg --apply` referred to "v1.x". `config merge` said its companion files come from `make sync-config`, a developer command; it now names pacman's `.pacnew`/`.pacsave`. `doctor pkg --rust` read like a changelog entry. In sysforge(1), `log` said per-package logs live under the state directory; they live beside each PKGBUILD under `[paths] pkgbuild_src_dir`.
 
 ---
@@ -706,6 +750,14 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B124` — Tab completion is several times faster.** Every Tab press started a full `sysforge` that loaded every command before printing a single name, and completing a package name also ran `pacman -Ssq` and piped about 140,000 names through `grep`, about half a second per press. Completion lookups now skip the rest of the CLI, the merged repo and AUR name list is cached and rebuilt only after a sync database, the AUR name list or your PKGBUILD directory changes, and sysforge filters the list to what you have typed before printing it. A package-name lookup now takes about 0.1 s and the others well under that. Completing a package from the build state also no longer tries to create the state directory, which could ask for your password. For contributors, `make bench-completions` prints the time of each lookup.
+
+---
+
+- **`3.5.0-B125` — A package built with the other compiler was recorded as built by the active one.** Every source build recorded the toolchain stage's compiler, so a package kept on gcc on an LLVM system (through a `[package_compiler_overrides]` row, a profile, the recovery menu or the new `build --toolchain`) was recorded as `pgo_llvm`. The record now names the compiler that built it. `update` does not report it as toolchain drift while your config still picks that compiler for it, so it is not rebuilt with clang. A one-off `build --toolchain` build is still reported, since the next normal build undoes it. The [drift guide](../guides/drift.md) has a new section on building one package with the other toolchain.
+
+---
+
+- **`3.5.0-B126` — A kernel built with the other compiler is recorded as such, and stops warning about it.** `run kernel` recorded the system toolchain's variant whatever compiler built the kernel, so a kernel kept on gcc (`compiler = "gcc"` in `kernel.toml`, or `--toolchain gcc`) on an LLVM system was recorded as `pgo_llvm`. The record now names the compiler that built it, as `3.5.0-B125` does for other packages. The kernel stage's "Rebuilding will switch toolchains" warning now compares the record with the compiler this run will use rather than the system one, so it appears only when the kernel's compiler actually changes, and it names that compiler.
 
 ## Security
 

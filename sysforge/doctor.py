@@ -1743,7 +1743,12 @@ class DoctorSystemVerb(Verb):
     """
 
     name = "doctor system"
+    wants_run_log = True
     requires_sentinel = False
+
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        return "doctor"  # shared with `doctor pkg`
 
     @classmethod
     def add_parser(cls, sub):
@@ -1754,9 +1759,6 @@ class DoctorSystemVerb(Verb):
         _add_system_axis_flags(p)
         p.set_defaults(verb_cls=cls, packages=[])
         return p
-
-    def unified_log_basename(self, args) -> str | None:
-        return "sysforge-doctor.log"
 
     def pre_check(self, args) -> PreCheckResult:
         # cmd_doctor_system reads args.config; the cli.py wrapper used to set it.
@@ -1780,7 +1782,12 @@ class DoctorPkgVerb(Verb):
     """
 
     name = "doctor pkg"
+    wants_run_log = True
     requires_sentinel = False
+
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        return "doctor"  # shared with `doctor system`
 
     @classmethod
     def add_parser(cls, sub):
@@ -1847,7 +1854,7 @@ class DoctorPkgVerb(Verb):
         # correctly lives in sysforge-update.log instead (2.1.0-F4).
         if getattr(args, "apply", False) and not getattr(args, "dry_run", False):
             return None
-        return "sysforge-doctor.log"
+        return super().unified_log_basename(args)
 
     def pre_check(self, args) -> PreCheckResult:
         if json_out.requested(args) and getattr(args, "apply", False):

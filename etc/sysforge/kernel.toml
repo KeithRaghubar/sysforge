@@ -86,7 +86,7 @@ pkgname = "linux-sysforge"
 # compiler — "gcc" | "llvm" — kernel-stage compiler override. Independent of
 #   the global toolchain stage, so a system that keeps gcc as its default can
 #   still build the kernel with LLVM (or vice versa). Resolution order:
-#   --compiler CLI flag > this field > toolchain-stage pipeline state. When
+#   --toolchain CLI flag > this field > toolchain-stage pipeline state. When
 #   unset, the kernel inherits whatever the toolchain stage registered (or
 #   profile defaults when toolchain is disabled).
 #   NOTE: compiler = "llvm" builds the kernel WITH clang; it does NOT apply
@@ -150,7 +150,7 @@ pkgname = "linux-sysforge"
 
 # boot_audit — default: true — run the /boot space check and the pre-install
 #   resolved-.config audit (Gate 2). CLI override for the audit:
-#   --skip-boot-audit
+#   --allow-boot-audit-failure
 #boot_audit = true
 
 # min_boot_free_mb — default: 200 — minimum free MiB on /boot before

@@ -253,7 +253,7 @@ def test_execute_names_a_profile_store_the_revert_leaves_behind(
     verb = revert_cmd.RevertToStockVerb()
     monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
     bs = BuildState(tmp_path)
-    bs._data["mesa-sysforge"] = {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+    bs._data["mesa-sysforge"] = {"build_mode": "pgo", "pkgbase": "mesa-sysforge",
                                  "origin_pkgbase": "mesa"}
     bs.save()
     seen = []
@@ -275,7 +275,7 @@ def test_execute_names_a_profile_store_the_revert_leaves_behind(
 # installed -sysforge members (vulkan-radeon-sysforge, …) behind, untracked.
 
 def _mesa_split():
-    common = {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+    common = {"build_mode": "pgo", "pkgbase": "mesa-sysforge",
               "origin_pkgbase": "mesa"}
     return {n: dict(common) for n in (
         "mesa-docs-sysforge", "mesa-sysforge", "vulkan-broadcom-sysforge",

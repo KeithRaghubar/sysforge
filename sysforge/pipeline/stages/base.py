@@ -24,14 +24,14 @@ class RunOptions:
     """
     resume: bool = False
     start_from: str | None = None    # start from this stage, mark prior as skipped_to
-    force_retry: bool = False        # retry failed packages without prompt
+    retry_failed: bool = False       # retry failed packages without prompt
     dry_run: bool = False            # log what would run, don't execute
     state_dir: Path | None = None    # overrides env var and default
     # Logging
     no_unified_log: bool = False     # disable unified log file
     no_pkg_log: bool = False        # disable per-package log files
     log_dir: Path | None = None      # override log file directory (default: state_dir)
-    purge_log: bool = False          # truncate unified log before run
+    truncate_log: bool = False       # truncate unified log before run
     persist_log: bool = False        # don't clear logs on successful completion
     # Cache reporting
     cache_report: bool = False       # print structured cache summary at end of run
@@ -54,7 +54,8 @@ class RunOptions:
     # CLI override for kernel.toml base_config_merge (replace|overlay)
     base_config_merge: str | None = None
     allow_no_fallback: bool = False  # kernel: override the fallback-kernel guarantee (Gate 1)
-    skip_boot_audit: bool = False    # kernel: override the pre-install boot-critical audit (Gate 2)
+    # kernel: install despite a failed pre-install boot-critical audit (Gate 2)
+    allow_boot_audit_failure: bool = False
     # kernel: build -headers subpackage; None → kernel.toml (default on)
     build_headers: bool | None = None
     # kernel: build -docs subpackage; None → kernel.toml (default off)
@@ -66,7 +67,7 @@ class RunOptions:
     makepkg_flags: list[str] = field(default_factory=list)
     # PGO profdata
     rebuild_profdata: bool = False   # force full 4-pass PGO even if compatible profdata exists
-    auto_pgo: bool = False           # bypass PGO confirmation prompts (required for non-TTY PGO)
+    yes: bool = False                # answer yes to PGO prompts (required for non-TTY PGO)
     # toolchain: consult the Pass-3 build cache to skip unchanged rebuilds
     reuse_built: bool = False
     # toolchain: BOLT the last Pass-4a tree and install, building nothing (3.5.0-F7)
@@ -75,11 +76,11 @@ class RunOptions:
     install_only: bool = False
     # LLVM safety pre-flight
     allow_dirty_llvm: bool = False   # bypass refuse-on-dirty/diverged for the toolchain stage
-    # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/skip_boot_audit)
+    # Toolchain Gate-1 overrides (mirror kernel's allow_no_fallback/allow_boot_audit_failure)
     # toolchain: override the PKGBUILD pkgver-skew brick (Gate 1)
     allow_version_skew: bool = False
     # toolchain: override the build-space-headroom brick (Gate 1)
-    skip_build_space_check: bool = False
+    allow_low_build_space: bool = False
     # toolchain: prompt|auto|off for libLLVM soname-bump consumer rebuild (CLI override of
     # toolchain.toml)
     rebuild_soname_consumers: str | None = None

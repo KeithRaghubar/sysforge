@@ -60,14 +60,12 @@ DEFAULT_PGO_STAGING_1 = "/var/tmp/sysforge-llvm-stage1"  # noqa: S108 — stable
 # Logical method names accepted by ``resolve_method_store``. ``"instr-pgo"``
 # aliases the legacy ``resolve_pgo_store`` location (back-compat with the
 # ``pgo_store`` config key / ``SYSFORGE_PGO_STORE`` env); the rest map to a
-# literal sibling subdir under the shared root. ``"pgo-mesa"`` is mesa's own
-# instrumentation-PGO store (distinct from ``instr-pgo``, which is the *compiler*
-# self-profile) — its runtime-collected ``.profraw`` and merged ``mesa.profdata``
-# live in ``<root>/pgo-mesa``; see ``primitives/mesa_pgo.py``. ``"pgo"`` is the
-# generic per-package instrumentation-PGO method (``--pgo`` on any non-mesa
-# target): profiles live in ``<root>/pgo/<pkgbase>`` via the ``target`` namespace.
+# literal sibling subdir under the shared root. ``"pgo"`` is the per-package
+# instrumentation-PGO method (``build --pgo`` on any package, mesa included
+# since 4.0.0): profiles live in ``<root>/pgo/<pkgbase>`` via the ``target``
+# namespace; see ``primitives/mesa_pgo.py``.
 PROFILE_METHODS = frozenset(
-    {"instr-pgo", "pgo-mesa", "pgo", "autofdo", "propeller", "bolt"}
+    {"instr-pgo", "pgo", "autofdo", "propeller", "bolt"}
 )
 
 
@@ -245,19 +243,13 @@ def resolve_purge_target(tcfg: dict | None, spec: str) -> Path:
 def stores_for_package(tcfg: dict | None, names) -> list[Path]:
     """Non-empty stores that belong to any of ``names`` (pkgbase / pkgnames).
 
-    Instrumentation PGO keys on pkgbase (mesa-family on its back-compat
-    ``pgo-mesa`` store); the kernel sample/post-link methods key on pkgname.
+    Instrumentation PGO keys on pkgbase; the kernel sample/post-link methods
+    key on pkgname.
     """
-    from sysforge.primitives.profile import is_mesa_pkgbase
-
     found: list[Path] = []
     for name in dict.fromkeys(n for n in names if n):
-        candidates = [
-            resolve_method_store(tcfg, "pgo-mesa") if is_mesa_pkgbase(name)
-            else resolve_method_store(tcfg, "pgo", target=name),
-            *(resolve_method_store(tcfg, m, target=name)
-              for m in ("autofdo", "propeller", "bolt")),
-        ]
+        candidates = [resolve_method_store(tcfg, m, target=name)
+                      for m in ("pgo", "autofdo", "propeller", "bolt")]
         for path in candidates:
             if path not in found and _store_entry("", None, path):
                 found.append(path)

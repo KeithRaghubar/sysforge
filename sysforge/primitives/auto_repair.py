@@ -12,7 +12,7 @@ output (or pre-flight context), the corresponding ``repair`` runs and
 the build is retried. Each scenario fires at most once per build so a
 mis-detection cannot loop.
 
-Four scenarios ship in v1.x (see DESIGN.md §1242–1264):
+Four scenarios ship in v1.x (see DESIGN.md §Build-failure auto-repair):
 
     vendored_deps_missing    auto_repair                meson wraps,
                                                         git submodules

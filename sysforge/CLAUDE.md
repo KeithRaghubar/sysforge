@@ -85,7 +85,7 @@ Mechanism lives in the cited §DESIGN section.
 - **Flag-drift**: `flag_drift.resolve_flag_drift` (pure); sole consumer `update` Phase 4.3. §update.
   Out-of-profile inputs (python/mesa/llvm/PGO profile) go through `build_inputs.resolve_build_inputs`
   on **both** sides (`_record_build_state` and the drift sub-axis): a new input is added there,
-  never recorded from what a patcher reported applying (`3.2.0-F18`). §Reconvergence.
+  never recorded from what a patcher reported applying (`3.2.0-F18`). §Drift detection.
 - **Config→flag precedence**: `config.resolve_flag_default(args, attr, cfg, key)` is the sole seam
   for `store_true` CLI flags falling back to a config default (CLI wins). §primitives / §`update.py`.
 - **`toolchain` profile-field expansion**: `profile._expand_toolchain`; `[defaults] toolchain` sync
@@ -114,8 +114,8 @@ Mechanism lives in the cited §DESIGN section.
   non-interactive; `--force` builds this run only, never writes. One packages.toml writer. §CLI Verb.
 - **Vocabulary** (renamed): build_mode `source_built` (legacy `profiled` build_state token removed
   in 3.0.0 — a pre-rename file now reads `profiled` verbatim until `sysforge state repair`, which
-  also normalizes it via `state_cmd._LEGACY_BUILD_MODE_TOKENS`; the profile-layer alias
-  `patched_pkgbuild`→`source_built` is a separate, still-aliased surface);
+  also normalizes it via `build_state.LEGACY_BUILD_MODE_TOKENS`, as it does mesa's retired `pgo_mesa`; the profile-layer token
+  `patched_pkgbuild` was removed in 4.0.0 and raises in `profile.normalize_build_mode`);
   repo_mode `build_from_source` (via `config.resolve_repo_mode`; legacy `profiled` token removed in
   3.0.0 — rejected by `REPO_MODE_ACCEPTED_INPUTS`, not aliased);
   per-pkg `enable_build_from_source` (legacy `pkgbuild_patch` — write-side only as of 3.0.0;
@@ -130,7 +130,7 @@ Mechanism lives in the cited §DESIGN section.
   `makepkg_pgo.resolve_method_store`.
   - **Instrumentation PGO** (`primitives/mesa_pgo.py`): `--pgo` on any package via the
     `compiler_flags_extra` seam (no `-Db_pgo` patch); `record` keeps stock name, `use` earns
-    `-sysforge`. Per-package stores (mesa keeps back-compat `pgo-mesa`); durable reuse via
+    `-sysforge`. Per-package stores `pgo/<pkgbase>` (mesa too since 4.0.0; `state repair` migrates the old `pgo-mesa`); durable reuse via
     `reuse_profdata`. LLVM-only; warn-list `config.pgo_warns_for`.
   - **Kernel sample-based FDO** (`primitives/kernel_fdo.py`): `run kernel --autofdo=record|capture|
     use`, run twice for Propeller (round 2 pins round 1's profile). One decision:
@@ -155,13 +155,15 @@ Mechanism lives in the cited §DESIGN section.
   Step durations only via `primitives/stage_timings.py` (`stage.step_recorder`; nothing under
   `--dry-run`). §`ui/progress.py`.
 - **Build-failure recovery**: `makepkg_invoke._run_recovery_menu`; persists a cc/ld swap via
-  `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer). §makepkg-wrapper.
+  `profile_writer.write_package_compiler_override` (sole `profiles.toml` writer, with
+  `delete_package_compiler_override`; `build --save-/--reset-toolchain` use the same pair).
+  A CLI toolchain swaps through `profile.swap_toolchain` like a row. §makepkg-wrapper.
 - **Sandbox host-only set**: `build_sandbox.host_only_packages` (source-built ∪ `pacman -Qm`) feeds
   both container channels — the `-I` closure and `local_repo.sync`; the ABI gate keeps the narrower
   `source_built_packages`. A `rust`/`cargo` target swaps `llvm_linked` for the repo LLVM via `-I` only
   (`fetch_repo_packages`), never by dropping LLVM from the local repo (2026-09-11 mesa). §makepkg-wrapper.
 - **Build failures**: reserved `[failures]` namespace in `build_state.toml`; diagnostics in
-  `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §`build_diag`.
+  `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §Build failures.
 - **Refused-install revert/restore**: `build_core._revert_uninstalled_state` stashes the undone entry
   in the reserved `[reverted]` namespace (keyed by artifact filename); `install_built` restores it via
   `_restore_reverted_state` when that file installs. That is the only record a reused (`AlreadyBuilt`)

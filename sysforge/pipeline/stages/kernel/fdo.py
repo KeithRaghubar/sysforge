@@ -99,7 +99,7 @@ def gate_fdo_llvm(mode, propeller, compiler, cc, *, explicit=True):
         raise RuntimeError(
             f'[KERNEL] kernel.toml [fdo] mode = "{cfg_mode}" requires the LLVM '
             'toolchain for the kernel. Set mode = "off", or build the kernel with '
-            'LLVM (kernel.toml compiler = "llvm" / --compiler=llvm). '
+            'LLVM (kernel.toml compiler = "llvm" / --toolchain llvm). '
             f"{LLVM_REQUIRED_HINT}"
         )
     feature = "kernel Propeller" if propeller else "kernel AutoFDO"

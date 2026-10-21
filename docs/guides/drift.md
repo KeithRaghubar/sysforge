@@ -14,7 +14,7 @@ only describes how to use it.
 | Kind | What changed | What `update` does |
 | --- | --- | --- |
 | **Version** | The PKGBUILD's version is newer than the installed one | Rebuilds it |
-| **Toolchain** | The package was built with a different compiler than the active one | Reports it |
+| **Toolchain** | The package was built with a different compiler than a fresh build would use | Reports it |
 | **Flag** | The package's flags now resolve differently than when it was built | Reports it |
 
 Version drift is the ordinary "there is an update" case and needs nothing from you. The other
@@ -145,6 +145,33 @@ is exact but reads a file of more than 100 MB on every check.
 Packages installed straight from the repos have no recorded toolchain and never drift. Nothing
 drifts until the toolchain stage has run at least once.
 
+### Building one package with the other toolchain
+
+Some packages build or run better with the other compiler. `build --toolchain` swaps the whole
+toolchain for the packages you name: compilers, archiver, linker and the flags tied to them.
+
+```bash
+sysforge build foo --toolchain gcc                    # this build only
+sysforge build foo --toolchain gcc --save-toolchain   # and keep it for later builds
+sysforge build foo --toolchain llvm --reset-toolchain # back to the profile's choice
+```
+
+The package records the toolchain that actually built it, so `sysforge state list --json` gives
+`"toolchain_variant": "gcc"` for it on an LLVM system. Whether `update` calls that drift depends on how the choice was made:
+
+| How `foo` got gcc | Next `update` |
+|---|---|
+| `--toolchain gcc --save-toolchain`, a `[package_compiler_overrides]` row or a profile | No drift. A rebuild would use gcc again. |
+| `--toolchain gcc` alone | Toolchain drift and flag drift (`CC: 'gcc' → 'clang'`). A rebuild returns it to the profile's toolchain. |
+| `--reset-toolchain` after a saved choice | Both, for the same reason: the profile picks clang again. |
+
+So use `--save-toolchain` for a choice you mean to keep. A one-off build is for trying the
+other compiler, and `update --rebuild-on-drift` will undo it.
+
+`--toolchain` covers only the packages you name. Dependencies built on the way keep their own
+profile. A `--cc`/`--cxx` pair that is exactly gcc/g++ or clang/clang++ counts as
+`--toolchain`; any other pair sets only the compilers and reaches dependencies too.
+
 ---
 
 ## Rebuilding on drift
@@ -199,5 +226,6 @@ rebuilding (--rebuild-on-flag-drift): mesa, ffmpeg; not queued: linux-sysforge (
 | rebuild what my profile change affected | `sysforge update --rebuild-on-flag-drift` |
 | rebuild after switching compilers | `sysforge update --rebuild-on-toolchain-drift` |
 | rebuild one package | `sysforge build <pkg>` |
+| keep one package on the other compiler | `sysforge build <pkg> --toolchain gcc --save-toolchain` |
 | rebuild a drifted kernel or LLVM package | the `sysforge run` command the drift line names |
 | check for broken library links | `sysforge doctor pkg --all` |

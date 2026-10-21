@@ -139,7 +139,8 @@ sysforge state list             # inspect build state
 ```bash
 sysforge doctor                 # fast full system health sweep
 sysforge doctor pkg mesa-git    # health-check one package's deps + linkage
-sysforge log [PKG]              # page sysforge logs
+sysforge log [PKG]              # page the unified log, or one package's build log
+sysforge log --verb update      # page the log a verb's last run left
 sysforge env                    # show the inherited build environment and its sources
 sysforge bench toolchain        # time your optimized clang against the stock repo clang
 sysforge help [COMMAND]         # help for sysforge or one command (same as --help)

@@ -140,8 +140,8 @@
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode — "source_built" | "pgo_llvm_toolchain" | "kernel"; omit for
 #     standard builds. "source_built" extracts the PKGBUILD's embedded
-#     profile (legacy token "patched_pkgbuild" still accepted on read).
-#     Optimization modes (pgo_mesa/pgo/autofdo_kernel/…) are stamped at
+#     profile (the old token "patched_pkgbuild" was removed in 4.0.0).
+#     Optimization modes (pgo/autofdo_kernel/…) are stamped at
 #     build time, not set here.
 #   build_mode    = "source_built"
 #
@@ -290,7 +290,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "source_built"   # extracts the PKGBUILD's embedded profile (was "patched_pkgbuild")
+build_mode = "source_built"   # extracts the PKGBUILD's embedded profile
 
 # kernel: for a kernel built with `sysforge build`. `sysforge run kernel` never
 #   selects a profile for it: the stage stamps owner_stage = "kernel", which

@@ -308,8 +308,8 @@ def profile_store_names(state_dir, pkgnames) -> list[str]:
     """Every name a removed package's profile store may be keyed on.
 
     Read *before* ``forget_packages`` erases the record: the instrumentation
-    store is keyed on the pre-rename pkgbase (``origin_pkgbase`` — mesa's
-    ``pgo-mesa``, not ``mesa-sysforge``), the kernel methods on pkgname
+    store is keyed on the pre-rename pkgbase (``origin_pkgbase``: ``pgo/mesa``,
+    not ``pgo/mesa-sysforge``), the kernel methods on pkgname
     (3.2.0-F11).
     """
     from sysforge.primitives.build_state import BuildState

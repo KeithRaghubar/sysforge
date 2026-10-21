@@ -51,10 +51,10 @@ from sysforge.pipeline.runner import _validate_stages, run_pipeline
 
 def make_options(**kwargs):
     defaults = dict(
-        resume=False, start_from=None, force_retry=False,
+        resume=False, start_from=None, retry_failed=False,
         dry_run=False, state_dir=None,
         no_unified_log=False, no_pkg_log=False,
-        log_dir=None, purge_log=False, persist_log=False,
+        log_dir=None, truncate_log=False, persist_log=False,
     )
     defaults.update(kwargs)
     return RunOptions(**defaults)

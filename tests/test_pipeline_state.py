@@ -316,3 +316,21 @@ def test_package_added_between_runs_is_queued_on_resume(tmp_path):
     s.mark_package_built("a")
     s.init_package_list(["a", "b", "c"])
     assert s._progress()["remaining"] == ["b", "c"]
+
+
+@pytest.mark.parametrize("variant, family", [
+    ("gcc", "gcc"), ("stock_llvm", "llvm"), ("pgo_llvm", "llvm"),
+    ("system", None), (None, None), ("pgo_llvm_intermediate", None),
+])
+def test_variant_family(variant, family):
+    from sysforge.primitives.pipeline_state import variant_family
+    assert variant_family(variant) == family
+
+
+@pytest.mark.parametrize("cc, variant", [
+    ("gcc", "gcc"), ("/usr/bin/g++", "gcc"), ("clang", "stock_llvm"),
+    ("/opt/x/clang-19", "stock_llvm"), ("cc", None), (None, None),
+])
+def test_variant_for_compiler(cc, variant):
+    from sysforge.primitives.pipeline_state import variant_for_compiler
+    assert variant_for_compiler(cc) == variant

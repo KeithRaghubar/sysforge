@@ -8,9 +8,9 @@ mesa_pgo.py — instrumentation-PGO orchestration (the ``build --pgo`` flow)
 The one home for sysforge's *runtime*-profiled per-package optimization. Mesa is
 the seeded/default target (and the only one with bespoke graphics handling), but
 since PGO is "just a build flag" (the ``compiler_flags_extra`` seam) every
-function here takes a ``pkgbase`` so ``--pgo`` works on any package (F5): mesa
-keeps its back-compat ``<root>/pgo-mesa`` store, a generic target gets its own
-``<root>/pgo/<pkgbase>``. Unlike the LLVM toolchain PGO (where an instrumented
+function here takes a ``pkgbase`` so ``--pgo`` works on any package (F5), each in
+its own ``<root>/pgo/<pkgbase>`` store; mesa has no store or build_mode of its own
+since 4.0.0 (3.5.0-F17). Unlike the LLVM toolchain PGO (where an instrumented
 clang profiles itself while building LLVM in one controlled process), a
 runtime-exercised library only emits profile data when applications later call
 into it. So the store path is baked into the build at compile time —
@@ -25,11 +25,11 @@ Two steps, the same flag-injection seam the toolchain PGO uses
     :func:`generate_flag`; the user then runs their normal graphics workload and
     ``.profraw`` accumulates in :func:`resolve_store`.
   * ``use`` — :func:`merge_profraw` folds the collected ``.profraw`` into one
-    ``mesa.profdata``; the rebuild consumes it via :func:`use_flags` and earns
-    the ``-sysforge`` rename (``build_mode = "pgo_mesa"``).
+    ``<pkgbase>.profdata``; the rebuild consumes it via :func:`use_flags` and earns
+    the ``-sysforge`` rename (``build_mode = "pgo"``).
 
 Store resolution defers to :func:`makepkg_pgo.resolve_method_store` (method
-``"pgo-mesa"``) so the shared profile-store root / provisioning / purge path
+``"pgo"``, target ``<pkgbase>``) so the shared profile-store root / provisioning / purge path
 covers it. The profraw merge shells out to ``llvm-profdata`` (LLVM only — this
 whole feature is gated on the LLVM toolchain upstream); everything else is pure.
 """
@@ -48,37 +48,10 @@ from sysforge.primitives import run
 
 _log = log.get_logger("MESAPGO")
 
-# Merged profile filename inside the store. ``.profraw`` (raw, per-process) is
-# what the instrumented build writes at runtime; ``<pkgbase>.profdata`` is the
-# merged artifact ``-fprofile-use`` consumes. ``mesa.profdata`` is the mesa
-# special case (== the generic ``<pkgbase>.profdata`` pattern), kept as a named
-# constant for back-compat references.
-PROFDATA_NAME = "mesa.profdata"
-
-# The optimization build_mode this flow records for mesa (see
-# profile.is_optimized_build_mode); generic targets record ``"pgo"`` via
-# build_mode_for(). The -sysforge package rename both trigger is applied
-# generically in makepkg_wrapper._run_build (gated on is_optimized_build_mode).
-BUILD_MODE = "pgo_mesa"
-GENERIC_BUILD_MODE = "pgo"
-
-
-def _is_mesa(pkgbase: str | None) -> bool:
-    """Mesa-family check (lazy import to keep this module import-light)."""
-    from sysforge.primitives.profile import is_mesa_pkgbase
-
-    return is_mesa_pkgbase(pkgbase)
-
-
-def build_mode_for(pkgbase: str | None = "mesa") -> str:
-    """The recorded ``build_mode`` for a ``--pgo`` build of ``pkgbase``.
-
-    Mesa keeps its established ``"pgo_mesa"`` value (back-compat with existing
-    ``build_state.toml`` entries and the mesa-specific reuse path); every other
-    package records the generic ``"pgo"``. Both are in ``_OPTIMIZED_BUILD_MODES``
-    so they earn the ``-sysforge`` rename.
-    """
-    return BUILD_MODE if _is_mesa(pkgbase) else GENERIC_BUILD_MODE
+# The optimization build_mode a ``--pgo=use`` build records, for every package
+# (see profile.is_optimized_build_mode). The -sysforge package rename it
+# triggers is applied generically in makepkg_wrapper._run_build.
+BUILD_MODE = "pgo"
 
 
 def profdata_name(pkgbase: str | None = "mesa") -> str:
@@ -104,20 +77,46 @@ def _load_tcfg() -> dict | None:
 
 
 def resolve_store(tcfg: dict | None = None, pkgbase: str | None = "mesa") -> Path:
-    """Resolve a package's PGO store dir.
-
-    Mesa-family keeps the back-compat ``<profile_store_root>/pgo-mesa`` location
-    (so already-collected mesa profiles are never orphaned); every other package
-    gets its own ``<profile_store_root>/pgo/<pkgbase>`` via the generic ``pgo``
-    method's ``target`` namespace. ``tcfg`` defaults to a fresh toolchain.toml
+    """Resolve a package's PGO store dir: ``<profile_store_root>/pgo/<pkgbase>``
+    via the ``pgo`` method's ``target`` namespace. ``tcfg`` defaults to a fresh toolchain.toml
     load so callers that only have a pkgbuild path don't have to thread config
     through. The directory itself is provisioned by the caller via
     ``fs_provision.ensure_writable_dir`` — this is pure path math, no I/O.
     """
     tc = tcfg if tcfg is not None else _load_tcfg()
-    if _is_mesa(pkgbase):
-        return resolve_method_store(tc, "pgo-mesa")
     return resolve_method_store(tc, "pgo", target=pkgbase)
+
+
+# Before 4.0.0 the mesa family shared one store, ``<root>/pgo-mesa``, holding
+# ``<pkgbase>.profdata`` per member plus the runtime ``.profraw``. Only
+# :func:`legacy_store_moves` reads it, for ``sysforge state repair``.
+_LEGACY_MESA_STORE = "pgo-mesa"
+_LEGACY_MESA_DEFAULT_TARGET = "mesa"
+
+
+def legacy_store_moves(tcfg: dict | None = None) -> list[tuple[Path, Path]]:
+    """The moves that carry the pre-4.0.0 ``<root>/pgo-mesa`` store into the
+    per-package ``<root>/pgo/<pkgbase>`` stores (3.5.0-F17). Pure: lists
+    ``(source, destination)`` pairs, never touches the disk.
+
+    A merged ``<pkgbase>.profdata`` (and its sidecars) goes to that pkgbase's
+    store; everything else, the ``.profraw`` the instrumented mesa wrote, goes
+    to ``pgo/mesa``. An entry whose destination already exists is skipped
+    rather than overwritten.
+    """
+    from sysforge.primitives.makepkg_pgo import resolve_profile_store_root
+    tc = tcfg if tcfg is not None else _load_tcfg()
+    old = resolve_profile_store_root(tc) / _LEGACY_MESA_STORE
+    if not old.is_dir():
+        return []
+    moves = []
+    for entry in sorted(old.iterdir()):
+        stem, sep, _ = entry.name.partition(".profdata")
+        target = stem if sep and stem else _LEGACY_MESA_DEFAULT_TARGET
+        dest = resolve_method_store(tc, "pgo", target=target) / entry.name
+        if not dest.exists():
+            moves.append((entry, dest))
+    return moves
 
 
 def profdata_path(tcfg: dict | None = None, pkgbase: str | None = "mesa") -> Path:

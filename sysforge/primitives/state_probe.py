@@ -89,6 +89,32 @@ def collect_state_findings(state_dir: Path | str | None = None,
     return collect_state_result(state_dir, installed).findings
 
 
+def _check_legacy_state(bs) -> list[diag.Finding]:
+    """build_state entries still carrying a retired build_mode token, and a
+    pre-4.0.0 ``pgo-mesa`` profile store. sysforge reads neither any more, so
+    an entry left as ``pgo_mesa`` is no longer treated as optimized; one
+    ``state repair`` fixes both (3.5.0-F17)."""
+    from sysforge.primitives import mesa_pgo
+    from sysforge.primitives.build_state import LEGACY_BUILD_MODE_TOKENS
+    stale = sorted(name for name, rec in bs.all_packages().items()
+                   if rec.get("build_mode") in LEGACY_BUILD_MODE_TOKENS)
+    moves = mesa_pgo.legacy_store_moves()
+    if not stale and not moves:
+        return []
+    parts = []
+    if stale:
+        parts.append(f"{len(stale)} build_state entr{'y' if len(stale) == 1 else 'ies'} "
+                     f"with a retired build_mode ({', '.join(stale[:8])})")
+    if moves:
+        parts.append(f"the old mesa profile store {moves[0][0].parent}")
+    return [diag.Finding(
+        "state", diag.SEV_WARN, "legacy_tokens",
+        "; ".join(parts) + " (from an older sysforge)",
+        remediation="run `sysforge state repair` to migrate them",
+        fix_cmd="sysforge state repair",
+    )]
+
+
 def collect_state_result(state_dir: Path | str | None = None,
                          installed: dict[str, str] | None = None,
                          ) -> diag.AxisResult:
@@ -110,7 +136,7 @@ def collect_state_result(state_dir: Path | str | None = None,
     except Exception as exc:  # state dir unreadable / malformed
         roster.ran.append("state_readable")
         for check_id in ("build_failures", "stage_sentinel", "pgo_record_only",
-                         "state_drift"):
+                         "legacy_tokens", "state_drift"):
             roster.skipped.append((check_id, "sysforge state unreadable"))
         return diag.AxisResult([diag.Finding(
             "state", diag.SEV_WARN, "state:unreadable",
@@ -189,6 +215,9 @@ def collect_state_result(state_dir: Path | str | None = None,
     # --- live instrumented / record-only PGO builds (F14) ------------------
     findings += diag.record_many(roster, "pgo_record_only",
                                  _check_instrumented_builds(bs))
+
+    # --- retired tokens and stores that `state repair` migrates (F17) -------
+    findings += diag.record_many(roster, "legacy_tokens", _check_legacy_state(bs))
 
     # --- build-state drift vs pacman (read-only) ---------------------------
     if installed is None:

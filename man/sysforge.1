@@ -163,12 +163,6 @@ Show what would run without executing anything.\&
 Used by: \fBrun pipeline\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
 .PP
 .RE
-\fB\-\-force\-retry\fR
-.RS 4
-Retry all failed packages without prompting.\&
-Used by: \fBrun pipeline\fR, \fBrun packages\fR.\&
-.PP
-.RE
 \fB\-\-json\fR
 .RS 4
 Print one JSON document (schema 1) on stdout instead of the report: each axis'\&s findings and the checks it ran and skipped.\& Everything else goes to stderr; the exit code is unchanged.\&
@@ -217,6 +211,12 @@ Path to a profiles.\&toml to use instead of the default.\&
 Used by: \fBbuild\fR, \fBupdate\fR, \fBfetch\fR, \fBresolve\fR, \fBrun pipeline\fR, \fBrun packages\fR, \fBrun kernel\fR.\&
 .PP
 .RE
+\fB\-\-retry\-failed\fR
+.RS 4
+Retry all failed packages without prompting.\&
+Used by: \fBrun pipeline\fR, \fBrun packages\fR.\&
+.PP
+.RE
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
 Override state directory.\&
@@ -256,14 +256,29 @@ Keep the per\-package log file after a successful build.\& Also settable via [bu
 Directory for the per\-package log file (default: alongside the PKGBUILD).\&
 .PP
 .RE
+\fB\-\-toolchain\fR \fIgcc\fR|\fIllvm\fR
+.RS 4
+Build the named packages with this compiler toolchain as a whole (compilers, binutils and linker) instead of their profile'\&s, for this build.\& Dependencies keep their own.\&
+.PP
+.RE
+\fB\-\-save\-toolchain\fR
+.RS 4
+With \-\-toolchain: also save it for these packages in profiles.\&toml [package_compiler_overrides], so later builds and updates use it too.\&
+.PP
+.RE
+\fB\-\-reset\-toolchain\fR
+.RS 4
+Remove these packages'\& saved toolchain from profiles.\&toml, so they build with their profile'\&s again.\&
+.PP
+.RE
 \fB\-\-cc\fR \fICOMPILER\fR
 .RS 4
-Override CC (C compiler) for this build, e.\&g.\& \-\-cc clang.\&
+Override only CC (C compiler) for this build, e.\&g.\& \-\-cc clang\-19.\& A gcc/g++ or clang/clang++ pair with \-\-cxx acts as \-\-toolchain.\&
 .PP
 .RE
 \fB\-\-cxx\fR \fICOMPILER\fR
 .RS 4
-Override CXX (C++ compiler) for this build, e.\&g.\& \-\-cxx clang++.\&
+Override only CXX (C++ compiler) for this build, e.\&g.\& \-\-cxx clang++\-19.\&
 .PP
 .RE
 \fB\-\-ld\fR \fILINKER\fR
@@ -725,16 +740,26 @@ Print the inherited env chain, all contributing sources (shell init files, syste
 .PP
 \fBsysforge log\fR [\fIOPTIONS\fR] \fI[PKG]\fR
 .PP
-Page the unified or per\-package sysforge log through $PAGER.\&
+Page a sysforge log (unified, per\-package or per\-verb) through $PAGER.\&
 .PP
 \fBPKG\fR
 .RS 4
 Package name (resolves to <pkgbuild_src_dir>/<pkg>/sysforge_<pkg>.\&log).\& Omit to page the unified log.\&
 .PP
 .RE
+\fB\-\-verb\fR \fIVERB\fR
+.RS 4
+Page the log the last run of VERB left, spelled with dashes (build, update, state\-repair, run\-toolchain, .\&.\&.\&).\&
+.PP
+.RE
+\fB\-\-log\-dir\fR \fIDIR\fR
+.RS 4
+Look in DIR instead, for a log written with the same \-\-log\-dir.\&
+.PP
+.RE
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
-Override state directory (used to locate the unified log).\&
+Override state directory (used to locate the unified and verb logs).\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
@@ -783,16 +808,16 @@ Show the planned repair without writing.\&
 .PP
 \fBsysforge state orphans\fR [\fIOPTIONS\fR]
 .PP
-List (and optionally prune) stale .\&pkg.\&tar* artifacts in PKGDEST.\& Only surfaces superseded files (pkgname installed AND artifact older than installed) so \-\-prune is always safe.\&
+List (and optionally delete) stale .\&pkg.\&tar* artifacts in PKGDEST.\& Only surfaces superseded files (pkgname installed AND artifact older than installed) so \-\-delete is always safe.\&
 .PP
-\fB\-\-prune\fR
+\fB\-\-delete\fR
 .RS 4
 Delete the listed superseded artifacts (prompts for confirmation).\&
 .PP
 .RE
 \fB\-\-yes\fR
 .RS 4
-With \-\-prune: delete without the y/N prompt.\&
+With \-\-delete: delete without the y/N prompt.\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-no\-pager\fR (see SHARED OPTIONS)
@@ -801,11 +826,16 @@ With \-\-prune: delete without the y/N prompt.\&
 .PP
 \fBsysforge state profiles\fR [\fIOPTIONS\fR]
 .PP
-List the collected optimization profiles (PGO, AutoFDO, Propeller, BOLT) with size, age and collected version.\& Read\-only unless \-\-purge.\&
+List the collected optimization profiles (PGO, AutoFDO, Propeller, BOLT) with size, age and collected version.\& Read\-only unless \-\-delete.\&
 .PP
-\fB\-\-purge\fR \fISTORE\fR
+\fB\-\-delete\fR \fISTORE\fR
 .RS 4
-Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo\-mesa, pgo/htop); asks for confirmation, refuses without a TTY.\& A later rebuild is then unprofiled until you collect again.\&
+Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo/mesa, autofdo/linux\-sysforge); asks for confirmation.\& A later rebuild is then unprofiled until you collect again.\&
+.PP
+.RE
+\fB\-\-yes\fR
+.RS 4
+With \-\-delete: delete without the y/N prompt (needed without a TTY).\&
 .PP
 .RE
 \fB\-\-state\-dir\fR \fIDIR\fR
@@ -1149,7 +1179,7 @@ Start from this stage, marking all prior stages as skipped.\& Useful on a live s
 Disable the unified log file.\&
 .PP
 .RE
-\fB\-\-purge\-log\fR
+\fB\-\-truncate\-log\fR
 .RS 4
 Truncate the unified log before this run.\&
 .PP
@@ -1159,7 +1189,7 @@ Truncate the unified log before this run.\&
 Skip the source sync (fetch and fast\-forward) in every stage that builds, and build each tree as checked out.\&
 .PP
 .RE
-\fBShared options:\fR \fB\-\-force\-retry\fR, \fB\-\-dry\-run\fR, \fB\-\-packages\fR, \fB\-\-state\-dir\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-persist\-log\fR, \fB\-\-profile\-conf\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR (see SHARED OPTIONS)
+\fBShared options:\fR \fB\-\-retry\-failed\fR, \fB\-\-dry\-run\fR, \fB\-\-packages\fR, \fB\-\-state\-dir\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-persist\-log\fR, \fB\-\-profile\-conf\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR (see SHARED OPTIONS)
 .PP
 \fBConfiguration:\fR profiles.\&toml, packages.\&toml, toolchain.\&toml, kernel.\&toml, sysforge.\&toml (per stage reached)
 .PP
@@ -1240,9 +1270,9 @@ Build nothing: BOLT the llvm build tree the last run left, repackage llvm, then 
 Build nothing: install the packages the last run built (e.\&g.\& after an install step failed or its sudo prompt timed out), with the usual audit, snapshot and verify.\& Refuses unless the last llvm build is the PGO build of the PKGBUILD'\&s version and every package is in PKGDEST.\& Implies \-\-no\-update.\&
 .PP
 .RE
-\fB\-\-auto\-pgo\fR
+\fB\-\-yes\fR
 .RS 4
-Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store purge, 4\-pass start, suspicious profdata size).\& Required for non\-interactive PGO runs; without it, a non\-TTY invocation aborts the PGO sub\-flow because PGO is fragile and silent mis\-optimisation is the failure mode.\&
+Answer yes to the PGO confirmation prompts (profdata reuse, staging/pgo_store purge, 4\-pass start, suspicious profdata size).\& Required for non\-interactive PGO runs; without it, a non\-TTY invocation aborts the PGO sub\-flow because PGO is fragile and silent mis\-optimisation is the failure mode.\&
 .PP
 .RE
 \fB\-\-allow\-dirty\-llvm\fR
@@ -1255,7 +1285,7 @@ Bypass the LLVM safety pre\-flight refusal on dirty or diverged trees.\& PGO pro
 Override the pre\-build Gate\-1 abort when the in\-tree LLVM PKGBUILDs disagree on pkgver across the lockstep suite (llvm/llvm\-libs/clang/lld/compiler\-rt/polly/openmp).\& By default a skew aborts before building because dependency resolution will fail; this builds anyway.\& spirv\-llvm\-translator and lib32\-* are never part of the skew check.\&
 .PP
 .RE
-\fB\-\-skip\-build\-space\-check\fR
+\fB\-\-allow\-low\-build\-space\fR
 .RS 4
 Override the pre\-build Gate\-1 abort when a filesystem hosting the staging dirs / pgo_store / build output lacks min_build_free_gb free (default 40 GiB).\& Dangerous: the multi\-hour LLVM build may fail partway with no space left.\&
 .PP
@@ -1287,7 +1317,7 @@ Build and install non\-kernel packages from packages.\&toml.\&
 Skip the source sync (fetch and fast\-forward) of each package and build it as checked out.\&
 .PP
 .RE
-\fBShared options:\fR \fB\-\-packages\fR, \fB\-\-dry\-run\fR, \fB\-\-force\-retry\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
+\fBShared options:\fR \fB\-\-packages\fR, \fB\-\-dry\-run\fR, \fB\-\-retry\-failed\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)
 .PP
 \fBConfiguration:\fR packages.\&toml, profiles.\&toml
 .PP
@@ -1314,9 +1344,9 @@ Purge the kernel src dir and re\-clone before building.\& Refuses if the existin
 Disable interactive kconfig (default is interactive: the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& runs as written).\& With this flag, interactive targets are patched to `make olddefconfig` for unattended runs.\&
 .PP
 .RE
-\fB\-\-compiler\fR \fIgcc\fR|\fIllvm\fR
+\fB\-\-toolchain\fR \fIgcc\fR|\fIllvm\fR
 .RS 4
-Kernel compiler override (gcc or llvm).\& Independent of `run toolchain`, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > the compiler the last `run toolchain` set up.\&
+Build the kernel with this toolchain (gcc or llvm).\& Independent of `run toolchain`, so you can keep gcc system\-wide but build the kernel with LLVM (or vice versa).\& Resolution order: this flag > kernel.\&toml compiler > the compiler the last `run toolchain` set up.\&
 .PP
 .RE
 \fB\-\-bootloader\fR \fIsystemd\-boot\fR|\fIgrub\fR|\fInone\fR
@@ -1364,9 +1394,9 @@ Round 2: layer Propeller (basic\-block layout) on round 1'\&s AutoFDO profile, w
 Override the boot\-safety guarantee that a fallback kernel (stock linux/linux\-lts with a boot image) exists before installing a custom kernel.\& Without a fallback, a broken custom kernel leaves no recovery path short of a live USB.\&
 .PP
 .RE
-\fB\-\-skip\-boot\-audit\fR
+\fB\-\-allow\-boot\-audit\-failure\fR
 .RS 4
-Override the pre\-install boot\-critical kconfig audit (Gate 2).\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous: it can leave the system unbootable.\&
+Install even when the pre\-install boot\-critical kconfig audit (Gate 2) fails.\& By default a built kernel that drops the root filesystem / storage controller / core boot infra aborts before install; this flag installs it anyway.\& Dangerous: it can leave the system unbootable.\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-dry\-run\fR, \fB\-\-cleansrc\-force\fR, \fB\-\-no\-pkg\-log\fR, \fB\-\-persist\-log\fR, \fB\-\-log\-dir\fR, \fB\-\-cache\-report\fR, \fB\-\-abi\-check\fR, \fB\-\-state\-dir\fR, \fB\-\-profile\-conf\fR (see SHARED OPTIONS)

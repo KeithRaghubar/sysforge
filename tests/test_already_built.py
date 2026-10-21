@@ -91,14 +91,14 @@ def test_build_core_catch_site_routes_through_seam():
 def test_toolchain_build_pkg_reuses_on_already_built(tmp_path):
     """A stale artifact in PKGDEST must not crash a toolchain pass (was: no
     catch at all — AlreadyBuilt propagated and killed a 5-pass PGO run)."""
-    from types import SimpleNamespace
 
     from sysforge.pipeline.stages.toolchain import passes as tc
     from sysforge.primitives.makepkg_invoke import AlreadyBuilt
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=llvm\n")
-    options = SimpleNamespace(dry_run=False, makepkg_flags=[], no_update=True)
+    from sysforge.pipeline.stages.base import RunOptions
+    options = RunOptions(dry_run=False, makepkg_flags=[], no_update=True)
 
     with patch.object(
         tc, "makepkg_run", side_effect=AlreadyBuilt(pkgbuild)

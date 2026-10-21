@@ -83,6 +83,11 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   dev docs) and file their release-note entry under `## Changed` only, like `DOC` (lint-enforced,
   `3.4.0-STD1`). Touching `sysforge/` or a shipped file makes it `B`/`F`.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
+- **Removing or renaming a flag, token or public name adds it to `tools/retired_names.toml`** in the
+  same change (unless the old spelling is still valid elsewhere); `make check-standards` then finds
+  every leftover, comments included. Written-down `sysforge …` commands and `§` references are
+  checked too (§Documentation consistency guards). Tests build `BuildOptions(...)`,
+  `RunOptions(...)` or `build_parser().parse_args([...])`, never a `SimpleNamespace` stand-in.
 - **CLI verbs go through the Verb framework**: `Verb` subclass dispatched by `verbs.runner.run_verb`
   (`pre_check`/`execute`/`post_validate`; `requires_sentinel=True` if it mutates). Its flags live
   on the class (`add_parser` classmethod, ending `set_defaults(verb_cls=cls)`); register it in

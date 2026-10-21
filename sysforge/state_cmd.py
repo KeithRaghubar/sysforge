@@ -20,25 +20,20 @@ Public API:
     cmd_state_repair(args)
     cmd_state_orphans(args)
 """
+import contextlib
 from collections import defaultdict
 from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import install_reconcile, journal
-from sysforge.primitives.build_state import BUILD_MODE_SOURCE
+from sysforge.primitives.build_state import LEGACY_BUILD_MODE_TOKENS
 from sysforge.primitives.pager import maybe_pager as _maybe_pager
 from sysforge.primitives.prompt import prompt_choice
 
 _log = log.get_logger("STATE")
 
-# Pre-3.0.0 build_mode tokens that a repair can safely rewrite to their
-# current equivalent. Deliberately a closed, known mapping — NOT "anything
-# unrecognized" — coercing arbitrary garbage to BUILD_MODE_SOURCE would
-# invent build history that was never true. "profiled" was the sole legacy
-# build_state token (see former build_state.build_mode=profiled compat
-# record, removed in 3.0.0); this is the only entry the repair command
-# understands.
-_LEGACY_BUILD_MODE_TOKENS = {"profiled": BUILD_MODE_SOURCE}
+# Retired build_mode tokens a repair rewrites (one home: build_state).
+_LEGACY_BUILD_MODE_TOKENS = LEGACY_BUILD_MODE_TOKENS
 
 # The fields `state repair` re-derives from the PKGBUILD; every other entry
 # field is carried from the entry it replaces (3.5.0-B42).
@@ -186,6 +181,30 @@ def _print_untracked_foreign(tracked: set[str]) -> None:
     )
 
 
+def _repair_legacy_pgo_store(dry_run: bool) -> None:
+    """Move the pre-4.0.0 ``pgo-mesa`` store's files into their per-package
+    ``pgo/<pkgbase>`` stores; remove the old directory once it is empty."""
+    from sysforge.primitives import mesa_pgo
+    moves = mesa_pgo.legacy_store_moves()
+    if not moves:
+        return
+    label = "Would move" if dry_run else "Moving"
+    print(f"{label} {len(moves)} file(s) out of the old mesa profile store:")
+    for src, dest in moves:
+        print(f"  {src} -> {dest}")
+    print()
+    if dry_run:
+        return
+    for src, dest in moves:
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dest)
+        except OSError as e:
+            _log.error(f"could not move {src} to {dest}: {e}")
+    with contextlib.suppress(OSError):
+        moves[0][0].parent.rmdir()  # only succeeds once nothing is left
+
+
 def cmd_state_repair(args):
     """Repair build_state.toml entries, via two independent passes.
 
@@ -217,7 +236,12 @@ def cmd_state_repair(args):
        PKGBUILD is missing. An unrecognized-but-not-legacy build_mode (e.g.
        a typo) is left alone rather than coerced — only the closed set of
        known legacy tokens is rewritten.
+
+    It also moves the pre-4.0.0 shared mesa profile store (``pgo-mesa``) into
+    the per-package ``pgo/<pkgbase>`` stores (3.5.0-F17), whether or not
+    build_state.toml needs anything.
     """
+    _repair_legacy_pgo_store(getattr(args, "dry_run", False))
     from sysforge.primitives.build_state import _ENTRY_KEYS, BuildState
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
     from sysforge.primitives.pkgbuild_patcher import RENAME_SUFFIX
@@ -435,7 +459,7 @@ def cmd_state_orphans(args):
     branch with local commits the user wants to keep available for later
     install) and we can't safely tell the difference.
 
-    Without ``--prune`` the command is read-only. With ``--prune`` the user
+    Without ``--delete`` the command is read-only. With ``--delete`` the user
     is asked y/N (skip with ``--yes``) before the files are removed.
     """
     from sysforge.primitives.pacman import (
@@ -462,7 +486,7 @@ def cmd_state_orphans(args):
         return
 
     total = sum(p.stat().st_size for p in superseded if p.exists())
-    with _maybe_pager(use_pager and not getattr(args, "prune", False)):
+    with _maybe_pager(use_pager and not getattr(args, "delete", False)):
         print(f"PKGDEST: {pkgdest}\n")
         print(
             f"  Superseded: older than installed ({len(superseded)} file(s), "
@@ -471,8 +495,8 @@ def cmd_state_orphans(args):
         for p in superseded:
             print(f"    {p.name}")
 
-    if not getattr(args, "prune", False):
-        print("\nRun `sysforge state orphans --prune` to delete.")
+    if not getattr(args, "delete", False):
+        print("\nRun `sysforge state orphans --delete` to delete.")
         return
 
     if not getattr(args, "yes", False):
@@ -725,9 +749,10 @@ def cmd_state_profiles(args) -> int:
 
     Read-only by default: method, target, size, age and — where the
     ``3.2.0-B16`` sidecar exists — the version a profile was collected against.
-    ``--purge <method>[/<target>]`` deletes one store after a TTY confirmation
-    (default No); a non-interactive run refuses, because a profile costs a
-    workload to regenerate. Nothing is ever purged implicitly: a merged
+    ``--delete <method>[/<target>]`` deletes one store after a confirmation
+    (default No); a non-interactive run refuses unless ``--yes`` is given,
+    because a profile costs a workload to regenerate. Nothing is ever deleted
+    implicitly: a merged
     profile's existence is the durable PGO opt-in (``mesa_pgo.reuse_profdata``).
     """
     import shutil
@@ -737,32 +762,34 @@ def cmd_state_profiles(args) -> int:
     from sysforge.primitives.render import fmt_bytes
 
     tcfg = _load_toolchain_cfg()
-    spec = getattr(args, "purge", None)
+    spec = getattr(args, "delete", None)
     if spec:
         try:
             target = makepkg_pgo.resolve_purge_target(tcfg, spec)
         except ValueError as exc:
-            _log.error(f"state profiles --purge: {exc}")
+            _log.error(f"state profiles --delete: {exc}")
             return 2
         if not target.exists():
-            print(f"No profile store at {target}: nothing to purge.")
+            print(f"No profile store at {target}: nothing to delete.")
             return 0
-        if not prompt.is_interactive():
-            _log.error(
-                f"refusing to purge {target} without a TTY: a collected profile "
-                "needs a workload to regenerate; run it from a terminal"
+        if not getattr(args, "yes", False):
+            if not prompt.is_interactive():
+                _log.error(
+                    f"refusing to delete {target} without a TTY: a collected profile "
+                    "needs a workload to regenerate; run it from a terminal, or "
+                    "pass --yes"
+                )
+                return 2
+            answer = prompt.prompt_choice(
+                f"Delete the {spec} profile store {target}? A rebuild will no longer "
+                "be profiled until a new workload is collected. [y/N] ",
+                ["y", "n"], default="n", retry_on_invalid=False,
             )
-            return 2
-        answer = prompt.prompt_choice(
-            f"Delete the {spec} profile store {target}? A rebuild will no longer "
-            "be profiled until a new workload is collected. [y/N] ",
-            ["y", "n"], default="n", retry_on_invalid=False,
-        )
-        if answer != "y":
-            print("Aborted: nothing deleted.")
-            return 2
+            if answer != "y":
+                print("Aborted: nothing deleted.")
+                return 2
         shutil.rmtree(target)
-        print(f"Purged {target}.")
+        print(f"Deleted {target}.")
         return 0
 
     rows = makepkg_pgo.list_profile_stores(tcfg)
@@ -797,7 +824,7 @@ def cmd_state_profiles(args) -> int:
         if gain != "-":
             print("\nGAIN: stock/sysforge compile-time ratio from "
                   "`sysforge bench toolchain`.")
-        print("\nReclaim one with: sysforge state profiles --purge <STORE>")
+        print("\nReclaim one with: sysforge state profiles --delete <STORE>")
     return 0
 
 
@@ -819,13 +846,13 @@ def orphaned_profile_lines(names) -> list[str]:
             spec = path.name
         lines.append(
             f"profile store kept: {path} (reclaim with "
-            f"`sysforge state profiles --purge {spec}`)"
+            f"`sysforge state profiles --delete {spec}`)"
         )
     return lines
 
 
 class StateProfilesVerb(Verb):
-    """List the profile store; ``--purge`` reclaims one store (3.2.0-F11)."""
+    """List the profile store; ``--delete`` reclaims one store (3.2.0-F11)."""
 
     name = "state-profiles"
     requires_sentinel = False
@@ -834,11 +861,13 @@ class StateProfilesVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("profiles",
             help="List the collected optimization profiles (PGO, AutoFDO, Propeller, "
-                 "BOLT) with size, age and collected version. Read-only unless --purge.")
-        p.add_argument("--purge", metavar="STORE", dest="purge",
+                 "BOLT) with size, age and collected version. Read-only unless --delete.")
+        p.add_argument("--delete", metavar="STORE", dest="delete",
             help="Delete one profile store, METHOD or METHOD/TARGET as listed "
-                 "(e.g. pgo-mesa, pgo/htop); asks for confirmation, refuses without "
-                 "a TTY. A later rebuild is then unprofiled until you collect again.")
+                 "(e.g. pgo/mesa, autofdo/linux-sysforge); asks for confirmation. "
+                 "A later rebuild is then unprofiled until you collect again.")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="With --delete: delete without the y/N prompt (needed without a TTY).")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
@@ -847,11 +876,11 @@ class StateProfilesVerb(Verb):
         return p
 
     def journal_target(self, args) -> str | None:
-        spec = getattr(args, "purge", None)
-        return journal.mode_target(f"profiles-purge:{spec}") if spec else None
+        spec = getattr(args, "delete", None)
+        return journal.mode_target(f"profiles-delete:{spec}") if spec else None
 
     def pre_check(self, args) -> PreCheckResult:
-        self.requires_sentinel = bool(getattr(args, "purge", None))
+        self.requires_sentinel = bool(getattr(args, "delete", None))
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:
@@ -915,9 +944,9 @@ class StateBootEntriesVerb(Verb):
 
 
 class StateOrphansVerb(Verb):
-    """List (and optionally prune) stale PKGDEST artifacts.
+    """List (and optionally delete) stale PKGDEST artifacts.
 
-    Sentinel only when ``--prune`` mutates the filesystem.
+    Sentinel only when ``--delete`` mutates the filesystem.
     """
 
     name = "state-orphans"
@@ -926,13 +955,13 @@ class StateOrphansVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("orphans",
-            help="List (and optionally prune) stale .pkg.tar* artifacts in PKGDEST. "
+            help="List (and optionally delete) stale .pkg.tar* artifacts in PKGDEST. "
                  "Only surfaces superseded files (pkgname installed AND artifact "
-                 "older than installed) so --prune is always safe.")
-        p.add_argument("--prune", action="store_true",
+                 "older than installed) so --delete is always safe.")
+        p.add_argument("--delete", action="store_true", dest="delete",
             help="Delete the listed superseded artifacts (prompts for confirmation).")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="With --prune: delete without the y/N prompt.")
+            help="With --delete: delete without the y/N prompt.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.set_defaults(verb_cls=cls)
@@ -943,7 +972,7 @@ class StateOrphansVerb(Verb):
         return journal.mode_target(self.name.split("-", 1)[-1])
 
     def pre_check(self, args) -> PreCheckResult:
-        self.requires_sentinel = bool(getattr(args, "prune", False))
+        self.requires_sentinel = bool(getattr(args, "delete", False))
         return PreCheckResult()
 
     def execute(self, args, pre: PreCheckResult) -> ExecResult:

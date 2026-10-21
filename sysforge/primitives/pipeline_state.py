@@ -356,6 +356,50 @@ def get_toolchain_variant(state) -> str:
     return result.get("variant", "system")
 
 
+def variant_family(variant) -> str | None:
+    """``"gcc"`` or ``"llvm"`` for a concrete variant, else None.
+
+    None for ``"system"``, an unset variant and the toolchain stage's
+    intermediate passes: none of them names the compiler a package built with.
+    """
+    if variant == "gcc":
+        return "gcc"
+    if variant in ("stock_llvm", "pgo_llvm"):
+        return "llvm"
+    return None
+
+
+def variant_for_compiler(cc) -> str | None:
+    """The variant a build compiled with ``cc`` records when it is not the
+    active toolchain's family (3.5.0-B125).
+
+    A clang the toolchain stage did not just build is ``"stock_llvm"``, as a
+    sandboxed build's repo clang is (``build_sandbox.recorded_toolchain``).
+    None when the name is neither, so an unrecognised raw ``--cc`` keeps the
+    active variant rather than guessing.
+    """
+    name = Path(str(cc or "")).name
+    if "clang" in name:
+        return "stock_llvm"
+    if "gcc" in name or "g++" in name:
+        return "gcc"
+    return None
+
+
+def variant_built_with(active, cc):
+    """The variant a build compiled with ``cc`` gets under the ``active`` one.
+
+    The active variant when ``cc`` is its family or unrecognised (or nothing
+    is active), else the other family's (3.5.0-B125). The one decision behind
+    what ``build_state`` records and what the kernel stage compares against.
+    """
+    own = variant_for_compiler(cc)
+    active_family = variant_family(active)
+    if own is None or active_family is None or variant_family(own) == active_family:
+        return active
+    return own
+
+
 def get_toolchain_fingerprint(state):
     """Return the active toolchain's identity fingerprint, or ``None`` (Q9).
 

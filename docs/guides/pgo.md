@@ -77,13 +77,13 @@ sysforge build mesa --pgo=record
 
 This builds and installs an *instrumented* mesa under its normal name. From now on, every
 program that loads mesa writes a `.profraw` file into the store
-(`/var/cache/sysforge/pgo-mesa` for mesa, `/var/cache/sysforge/pgo/<pkgbase>` for anything
-else). No environment variables needed.
+(`/var/cache/sysforge/pgo/<pkgbase>`, so `/var/cache/sysforge/pgo/mesa` for mesa). No
+environment variables needed.
 
 **Verify it's collecting** after the first session. Don't find out three evenings later:
 
 ```sh
-ls -lt /var/cache/sysforge/pgo-mesa | head      # fresh .profraw files?
+ls -lt /var/cache/sysforge/pgo/mesa | head      # fresh .profraw files?
 sysforge state profiles                          # store listed, size growing?
 ```
 
@@ -117,7 +117,7 @@ General rules that apply to any package:
    during the record phase:
 
    ```
-   PRESSURE_VESSEL_FILESYSTEMS_RW=/var/cache/sysforge/pgo-mesa %command%
+   PRESSURE_VESSEL_FILESYSTEMS_RW=/var/cache/sysforge/pgo/mesa %command%
    ```
 
    (Flatpak Steam needs an equivalent `--filesystem=` override.) Remove it afterwards.
@@ -142,9 +142,9 @@ build. Check with `pacman -Q mesa-sysforge`.
 - **Profiles go stale gradually.** Code that changed upstream loses its profile data. A
   rough rule: refresh after a major Mesa release, or when the notice shows a big version gap.
   Refreshing is just Step 1 → 3 again; the new data is **merged** with the old.
-- **Start over** (e.g. after changing GPU or driver): `sysforge state profiles --purge
-  pgo-mesa`, then record again.
-- **Stop using PGO**: purge the store, then `sysforge revert-to-stock mesa` (or rebuild normally).
+- **Start over** (e.g. after changing GPU or driver): `sysforge state profiles --delete
+  pgo/mesa`, then record again.
+- **Stop using PGO**: delete the store, then `sysforge revert-to-stock mesa` (or rebuild normally).
 
 **Is the profile stale?** Every rebuild that reuses a profile prints a line like
 
@@ -206,7 +206,7 @@ steps this run takes (preflight, instrument, bootstrap, train, optimize, then th
 audit, install and verification), the package being built, how far its build has got, the
 time since the stage started and an estimate of what is left. The estimate comes from how
 long each step took on your earlier runs, so it appears from the second run on. Every line of
-the run log (`sysforge log`) also starts with the time it was written, so a finished run
+the run log (`sysforge log --verb run-toolchain`) also starts with the time it was written, so a finished run
 shows how long each step took.
 
 The pre-install audit checks the new libLLVM against the programs already using it, such as
@@ -225,7 +225,7 @@ Best practices:
   ```
 - **Run it interactively the first time.** PGO asks for confirmation at several points
   (reusing an existing profile, purging staging, suspicious profile sizes). For unattended
-  runs, pass `--auto-pgo`.
+  runs, pass `--yes`.
 - **The profile is reused** across same-major LLVM rebuilds. After an LLVM *major* version
   bump it is incompatible and gets regenerated. Force a fresh one any time with
   `--rebuild-profdata`.
@@ -597,9 +597,9 @@ install time, saying to run `--install-only`.
 ## Inspecting and cleaning up profiles
 
 ```sh
-sysforge state profiles                    # every store: method, size, age, collected version, measured gain
-sysforge state profiles --purge pgo-mesa   # delete one store (asks first)
-sysforge state profiles --purge pgo/htop   # per-package stores are METHOD/TARGET
+sysforge state profiles                     # every store: method, size, age, collected version, measured gain
+sysforge state profiles --delete pgo/mesa   # delete one store (asks first)
+sysforge state profiles --delete pgo/htop   # per-package stores are METHOD/TARGET
 ```
 
 After a purge, the next rebuild of that package is unprofiled until you collect again.

@@ -183,3 +183,24 @@ def test_no_pgo_store_is_clean(monkeypatch, tmp_path):
                         lambda pkgbase=None: tmp_path / "absent" / "x.profdata")
     bs = _FakeBS({"bar": {"pkgbase": "bar"}})
     assert state_probe._check_instrumented_builds(bs) == []
+
+
+def test_legacy_build_mode_and_store_flagged(monkeypatch, tmp_path):
+    """3.5.0-F17: mesa's retired pgo_mesa token and its old shared store are
+    no longer read, so doctor points at the one command that migrates both."""
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(tmp_path))
+    (tmp_path / "pgo-mesa").mkdir()
+    (tmp_path / "pgo-mesa" / "mesa.profdata").write_bytes(b"merged")
+    bs = _FakeBS({"mesa-sysforge": {"build_mode": "pgo_mesa"},
+                  "foo": {"build_mode": "source_built"}})
+    out = state_probe._check_legacy_state(bs)
+    assert len(out) == 1
+    assert out[0].fix_cmd == "sysforge state repair"
+    assert "mesa-sysforge" in out[0].message and "foo" not in out[0].message
+    assert str(tmp_path / "pgo-mesa") in out[0].message
+
+
+def test_current_state_has_no_legacy_finding(monkeypatch, tmp_path):
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(tmp_path))
+    bs = _FakeBS({"mesa-sysforge": {"build_mode": "pgo"}})
+    assert state_probe._check_legacy_state(bs) == []

@@ -373,7 +373,9 @@ def test_repair_keeps_an_unbroken_renamed_member(tmp_path, monkeypatch):
     renamed = pkgs["foo-sysforge"]
     assert renamed["origin_pkgbase"] == "foo"
     assert renamed["pkgbase"] == "foo-sysforge"
-    assert renamed["build_mode"] == "pgo_mesa"
+    # Carried from the old entry, through the same legacy-token rewrite as
+    # pass 2: mesa's retired "pgo_mesa" comes back as "pgo" (3.5.0-F17).
+    assert renamed["build_mode"] == "pgo"
 
 
 def test_repair_rebuilds_a_broken_renamed_member_under_its_rename(tmp_path, monkeypatch):
@@ -393,3 +395,54 @@ def test_repair_rebuilds_a_broken_renamed_member_under_its_rename(tmp_path, monk
     assert pkgs["foo-sysforge"]["pkgver"] == "1.0"
     assert pkgs["foo-sysforge"]["origin_pkgbase"] == "foo"
     assert pkgs["foo-sysforge"]["owner_stage"] == "kernel"
+
+
+def _legacy_mesa_store(root: Path) -> Path:
+    old = root / "pgo-mesa"
+    old.mkdir(parents=True)
+    (old / "mesa.profdata").write_text("merged", encoding="utf-8")
+    (old / "7.profraw").write_text("raw", encoding="utf-8")
+    return old
+
+
+def test_repair_moves_the_legacy_mesa_store(tmp_path, monkeypatch, capsys):
+    """3.5.0-F17: the pre-4.0.0 shared pgo-mesa store moves into pgo/mesa,
+    even when build_state.toml needs nothing."""
+    root = tmp_path / "profiles"
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(root))
+    old = _legacy_mesa_store(root)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    cmd_state_repair(_args(state_dir))
+
+    assert (root / "pgo" / "mesa" / "mesa.profdata").read_text() == "merged"
+    assert (root / "pgo" / "mesa" / "7.profraw").exists()
+    assert not old.exists()
+
+
+def test_repair_dry_run_leaves_the_legacy_store(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "profiles"
+    monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(root))
+    old = _legacy_mesa_store(root)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    cmd_state_repair(_args(state_dir, dry_run=True))
+
+    assert "Would move 2 file(s)" in capsys.readouterr().out
+    assert (old / "mesa.profdata").exists()
+    assert not (root / "pgo").exists()
+
+
+def test_repair_rewrites_pgo_mesa_to_pgo(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYSFORGE_STATE_DIR", str(tmp_path / "state"))
+    state_dir = tmp_path / "state"
+    _write_raw_state(state_dir, {
+        "mesa-sysforge": {"pkgver": '"1.0"', "pkgrel": '"1"', "epoch": '"0"',
+                          "pkgbase": '"mesa-sysforge"', "build_mode": '"pgo_mesa"'},
+    })
+
+    cmd_state_repair(_args(state_dir))
+
+    assert BuildState(state_dir).all_packages()["mesa-sysforge"]["build_mode"] == "pgo"

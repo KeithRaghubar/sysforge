@@ -159,6 +159,93 @@ class _TerminalQueryFilter:
         return out
 
 
+# A cargo progress frame, ANSI-stripped: `    Building [====>   ] 12/431: a, b`
+# (or `Cleaning`, `Downloading`, ...): an indented status word, then the bar.
+_CARGO_FRAME_RE = re.compile(r" +[A-Z][a-z]+ \[")
+# What the start of a line may look like while it could still become one.
+_CARGO_FRAME_PREFIX_RE = re.compile(r" *(?:[A-Z][a-z]*(?: \[?)?)?")
+# An escape sequence cut off at the end of what has arrived so far.
+_PARTIAL_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;:?]*[ -/]*)?$")
+# A line longer than this is not a frame; stop holding it back.
+_CARGO_FRAME_MAX = 4096
+
+
+def _clip_visible(seg: bytes, width: int) -> bytes:
+    """``seg`` cut to ``width`` visible characters; escapes cost nothing, and
+    a cut segment ends with an SGR reset so no colour leaks past it."""
+    text = seg.decode("utf-8", "replace")
+    out, seen, pos = [], 0, 0
+    for m in _ANSI_ESCAPE_RE.finditer(text):
+        plain = text[pos:m.start()]
+        if seen + len(plain) > width:
+            out.append(plain[: width - seen])
+            return ("".join(out) + "\x1b[0m").encode()
+        out += [plain, m.group()]
+        seen += len(plain)
+        pos = m.end()
+    plain = text[pos:]
+    if seen + len(plain) > width:
+        return ("".join(out) + plain[: width - seen] + "\x1b[0m").encode()
+    return seg
+
+
+class _CargoFrameClip:
+    """Clip cargo's progress frames to the terminal's current width (3.5.0-B121).
+
+    In the sandbox cargo writes to a pipe, so it cannot measure the terminal
+    and draws every frame at the width it was given when the build started
+    (``CARGO_TERM_PROGRESS_WIDTH``, 3.5.0-B9). Once the window is narrower, a
+    frame wraps and the ``\\r`` that should redraw it returns only to the
+    wrapped row, so every frame left its first row behind under the build's
+    output. Each line that starts like a frame is held until its ``\\r`` or
+    ``\\n`` and forwarded cut to ``cols - 1`` columns; any other line passes
+    through as it arrives. Display only: ``line_callback`` sees the stream
+    unchanged.
+    """
+
+    def __init__(self, cols: int) -> None:
+        self.cols = cols        # updated on SIGWINCH
+        self._line = b""        # held start of the current line
+        self._holding = True    # the current line may still be a frame
+
+    def feed(self, chunk: bytes) -> bytes:
+        out = bytearray()
+        for piece in re.split(rb"([\r\n])", chunk):
+            if piece in (b"\r", b"\n"):
+                if self._holding:
+                    out += self._release(frame=self._is_frame())
+                out += piece
+                self._line, self._holding = b"", True
+            elif piece:
+                if not self._holding:
+                    out += piece
+                    continue
+                self._line += piece
+                if self._is_frame():
+                    if len(self._line) > _CARGO_FRAME_MAX:
+                        out += self._release(frame=False)
+                elif not self._could_be_frame():
+                    out += self._release(frame=False)
+        return bytes(out)
+
+    def flush(self) -> bytes:
+        return self._release(frame=False) if self._holding else b""
+
+    def _visible_head(self) -> str:
+        text = self._line[:256].decode("utf-8", "replace")
+        return _ANSI_ESCAPE_RE.sub("", _PARTIAL_ESCAPE_RE.sub("", text))
+
+    def _is_frame(self) -> bool:
+        return bool(_CARGO_FRAME_RE.match(self._visible_head()))
+
+    def _could_be_frame(self) -> bool:
+        return bool(_CARGO_FRAME_PREFIX_RE.fullmatch(self._visible_head()))
+
+    def _release(self, *, frame: bool) -> bytes:
+        held, self._line, self._holding = self._line, b"", False
+        return _clip_visible(held, max(1, self.cols - 1)) if frame else held
+
+
 # How often the progress bar may be repainted while we forward a raw stream
 # (3.3.0-F2). While forwarding, run_with_pty is the bar's only scheduled
 # painter: the display's own ticker stands down for the duration.
@@ -322,6 +409,7 @@ def run_with_pty(
     idle_timeout_s: float = 30.0,
     reserve_bottom_rows: int = 0,
     interactive: bool = False,
+    clip_cargo_frames: bool = False,
 ) -> int:
     """Spawn cmd with stdout+stderr attached to a pty. Returns the child's
     return code.
@@ -354,7 +442,12 @@ def run_with_pty(
     keep working, Ctrl-C reaches the child through the pty's line discipline,
     and ``line_callback`` still sees every line, which is how an interactive
     build's output reaches the logs. No rows are reserved (the child owns the
-    screen; the caller yields the terminal) and every byte is forwarded."""
+    screen; the caller yields the terminal) and every byte is forwarded.
+
+    ``clip_cargo_frames`` is for a child whose cargo draws its progress bar at
+    a fixed width it was handed (the sandbox, 3.5.0-B9): forwarded frames are
+    cut to the terminal's current width, so a narrower window does not leave
+    wrapped frames behind (``_CargoFrameClip``, 3.5.0-B121)."""
     if interactive:
         reserve_bottom_rows = 0
         forward_bytes = True
@@ -399,11 +492,14 @@ def run_with_pty(
     # emulator's scroll region, so the bar is repainted before the next chunk
     # rather than after up to _REFRESH_S of full-screen scrolling.
     winched = False
+    frame_clip = _CargoFrameClip(sz.columns) if (forward_bytes and clip_cargo_frames) else None
 
     def _on_winch(sig, frame):
         nonlocal winched
         winched = True
         new_sz = shutil.get_terminal_size(fallback=(80, 24))
+        if frame_clip is not None:
+            frame_clip.cols = new_sz.columns
         _set_winsize(master_fd, max(1, new_sz.lines - reserve_bottom_rows), new_sz.columns)
         if callable(prev_winch):
             prev_winch(sig, frame)
@@ -530,6 +626,8 @@ def run_with_pty(
                         # Display only — line_callback below still receives every
                         # byte, so classification and the filter can't drift apart.
                         out = query_filter.feed(chunk) if query_filter is not None else chunk
+                        if frame_clip is not None:
+                            out = frame_clip.feed(out)
                         if out:
                             try:
                                 sys.stdout.buffer.write(out)
@@ -545,12 +643,13 @@ def run_with_pty(
                         last_activity = time.monotonic()
                 _maybe_refresh()
 
-        if query_filter is not None:
-            tail = query_filter.flush()
-            if tail:
-                with contextlib.suppress(BrokenPipeError, AttributeError):
-                    sys.stdout.buffer.write(tail)
-                    sys.stdout.buffer.flush()
+        tail = query_filter.flush() if query_filter is not None else b""
+        if frame_clip is not None:
+            tail = frame_clip.feed(tail) + frame_clip.flush()
+        if tail:
+            with contextlib.suppress(BrokenPipeError, AttributeError):
+                sys.stdout.buffer.write(tail)
+                sys.stdout.buffer.flush()
 
         buf += decoder.decode(b"", final=True)
         if buf:

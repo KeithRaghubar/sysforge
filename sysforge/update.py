@@ -79,10 +79,12 @@ from sysforge.primitives.config import (
 )
 from sysforge.primitives.flag_drift import (
     STATUS_PARSE_ERROR,
+    current_compiler,
     current_sandboxed,
     drift_candidate,
     resolve_flag_drift,
 )
+from sysforge.primitives.pipeline_state import variant_family, variant_for_compiler
 from sysforge.primitives.llvm_state import (
     collect_llvm_state,
     preflight_suppressed,
@@ -926,7 +928,7 @@ def _phase_init(run: UpdateRun) -> int | None:
     run.unified_log_active = not getattr(run.args, "dry_run", False)
     run.unified_log_path = (
         Path(run.args.log_dir) if getattr(run.args, "log_dir", None) else run.state_dir
-    ) / "sysforge-update.log"
+    ) / log.verb_log_name(UpdateVerb.name)
     if run.unified_log_active:
         try:
             log.open_unified_log(run.unified_log_path, purge=True, label="sysforge update")
@@ -1131,6 +1133,7 @@ def _phase_toolchain_drift(run: UpdateRun) -> int | None:
     # cases the drift check now folds together: a different variant name, or a
     # same-variant toolchain rebuild caught by the fingerprint (Q9).
     run.drifted = []
+    _cgroups = None
     if run.active_variant != "system":
         seen_bases: set[str] = set()
         for r in run.results:
@@ -1146,6 +1149,18 @@ def _phase_toolchain_drift(run: UpdateRun) -> int | None:
                 if rec_variant is None:
                     continue
                 if rec_variant != run.active_variant:
+                    # The other family on purpose (a [package_compiler_overrides]
+                    # row, a profile's toolchain): the build used the compiler
+                    # the config still picks, so a rebuild would change nothing
+                    # (3.5.0-B125). A one-off `build --toolchain` is still drift.
+                    rec_family = variant_family(rec_variant)
+                    if rec_family not in (None, variant_family(run.active_variant)):
+                        if _cgroups is None:
+                            _cgroups = load_conflict_groups()
+                        _want = variant_for_compiler(
+                            current_compiler(rec, run.config, _cgroups))
+                        if variant_family(_want) == rec_family:
+                            break
                     run.drifted.append((
                         r.pkgbase, rec_variant,
                         f"built under a different variant than active "
@@ -1981,6 +1996,11 @@ class UpdateVerb(Verb):
 
     name = "update"
     requires_sentinel = True
+
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        # Opened by _phase_init with update's own lifecycle, not the runner's.
+        return cls.name
 
     @classmethod
     def add_parser(cls, sub):

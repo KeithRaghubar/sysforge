@@ -4,10 +4,13 @@ The profile-layer ``build_mode`` token space was renamed so it stops diverging
 from the build_state-layer token space: the profile value ``patched_pkgbuild``
 (historically meaning "a plain source build whose embedded PKGBUILD profile
 should be extracted") is the same concept build_state stamps as
-``source_built``. These tests pin the legacy read-alias + the single shared
-predicate that replaces the scattered ``("patched_pkgbuild", "kernel")`` checks.
+``source_built``. The read alias was removed in 4.0.0 (3.5.0-F16): the old
+token now raises. These also pin the single shared extraction predicate.
 """
 
+import pytest
+
+from sysforge.primitives.config import ConfigError
 from sysforge.primitives.profile import (
     build_mode_uses_extracted_profile,
     get_build_mode,
@@ -16,8 +19,9 @@ from sysforge.primitives.profile import (
 
 
 class TestNormalizeBuildMode:
-    def test_legacy_patched_pkgbuild_maps_to_source_built(self):
-        assert normalize_build_mode("patched_pkgbuild") == "source_built"
+    def test_removed_patched_pkgbuild_raises(self):
+        with pytest.raises(ConfigError, match="removed in 4.0.0"):
+            normalize_build_mode("patched_pkgbuild")
 
     def test_source_built_is_unchanged(self):
         assert normalize_build_mode("source_built") == "source_built"
@@ -40,10 +44,11 @@ class TestGetBuildModeNormalizes:
             "rules": [],
         }
 
-    def test_legacy_profile_token_is_normalized_on_read(self):
-        # A live/edited profiles.toml still carrying the old token reads back as
-        # the canonical value, so every downstream comparison sees one vocab.
-        assert get_build_mode([], self._config("patched_pkgbuild")) == "source_built"
+    def test_removed_profile_token_raises_on_read(self):
+        # A stale profiles.toml fails loudly instead of quietly building the
+        # package without its embedded profile.
+        with pytest.raises(ConfigError, match="source_built"):
+            get_build_mode([], self._config("patched_pkgbuild"))
 
     def test_canonical_token_reads_back_unchanged(self):
         assert get_build_mode([], self._config("source_built")) == "source_built"
@@ -56,9 +61,6 @@ class TestGetBuildModeNormalizes:
 class TestUsesExtractedProfilePredicate:
     def test_canonical_source_built_uses_extracted_profile(self):
         assert build_mode_uses_extracted_profile("source_built") is True
-
-    def test_legacy_patched_pkgbuild_uses_extracted_profile(self):
-        assert build_mode_uses_extracted_profile("patched_pkgbuild") is True
 
     def test_kernel_uses_extracted_profile(self):
         assert build_mode_uses_extracted_profile("kernel") is True

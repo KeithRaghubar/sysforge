@@ -249,9 +249,9 @@ def _pgo_setup(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None):
 
     state   = PipelineState(tmp_path / "state")
     config  = {"paths": {"pkgbuild_src_dir": str(pkgbuild_dir)}}
-    # auto_pgo=True: these tests exercise build behaviour, not prompt gating.
+    # yes=True: these tests exercise build behaviour, not prompt gating.
     # The dedicated pgo_confirm tests cover the prompt logic.
-    options = make_options(dry_run=False, auto_pgo=True)
+    options = make_options(dry_run=False, yes=True)
     return toml_path, pkgbuild_dir, staging, pgo_store, state, config, options
 
 def _pgo_fake_run_factory(pgo_store, call_log):
@@ -353,9 +353,9 @@ def _fake_healthy_clang(_cmd, **_kwargs):
     result.stderr = ""
     return result
 
-def _confirm_options(*, auto_pgo=False):
+def _confirm_options(*, yes=False):
     """Build a minimal RunOptions for pgo_confirm tests."""
-    return RunOptions(auto_pgo=auto_pgo)
+    return RunOptions(yes=yes)
 
 def _single_pass_setup(tmp_path, pkgs=("llvm", "clang")):
     """A non-PGO (single-pass) LLVM toolchain config + built package fixtures."""
@@ -427,9 +427,8 @@ def _patch_rebuild(monkeypatch, outcome, *, resolve_fail=()):
     monkeypatch.setattr("sysforge.pipeline.state.get_toolchain_variant", lambda s: "pgo_llvm")
 
 def _bolt_opts(dry_run=False):
-    from types import SimpleNamespace
-    return SimpleNamespace(dry_run=dry_run, state_dir=None, no_update=True,
-                           makepkg_flags=[])
+    from sysforge.pipeline.stages.base import RunOptions
+    return RunOptions(dry_run=dry_run, state_dir=None, no_update=True, makepkg_flags=[])
 
 def _identity(**kw):
     from sysforge.pipeline.stages.toolchain import ToolchainIdentity

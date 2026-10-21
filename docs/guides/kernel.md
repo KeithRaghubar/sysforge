@@ -238,7 +238,7 @@ how to override each:
 | --- | --- | --- | --- |
 | Fallback kernel | before the build | no stock `linux` or `linux-lts` with a boot image is installed | `require_fallback_kernel = false` or `--allow-no-fallback` |
 | `/boot` space | before the build | `/boot` is missing or has less than `min_boot_free_mb` (200 MiB) free | `boot_audit = false` |
-| Config audit (Gate 2) | after the build, before install | the built config drops your root filesystem, its storage controller, encryption/LVM/RAID support, or core boot options | `--skip-boot-audit` or `boot_audit = false` |
+| Config audit (Gate 2) | after the build, before install | the built config drops your root filesystem, its storage controller, encryption/LVM/RAID support, or core boot options | `--allow-boot-audit-failure` or `boot_audit = false` |
 | Boot readiness (Gate 3) | after install | the kernel image or initramfs is missing, no boot entry uses it, or a DKMS module (e.g. `nvidia-open-dkms`) was not rebuilt for it | none |
 
 The config audit runs before anything is installed, so a kernel it rejects never touches your
@@ -248,7 +248,7 @@ warnings.
 
 Keep the fallback kernel and its boot entry. If a new kernel fails to boot, choose the fallback
 from the boot menu. The overrides in the table are for machines where you already have another
-way back. `--skip-boot-audit` in particular can install a kernel that cannot mount your root
+way back. `--allow-boot-audit-failure` in particular can install a kernel that cannot mount your root
 filesystem.
 
 **DKMS modules need the headers.** `build_headers` is on by default because out-of-tree modules
@@ -273,5 +273,5 @@ mkinitcpio -P`), the step whose absence would leave the kernel unbootable.
 | add the compile-time hardening set | `hardening = true` |
 | pick the config steps | `kconfig_targets = [...]` |
 | discard local edits to the kernel tree | `sysforge run kernel --cleansrc` |
-| build with clang | `compiler = "llvm"` or `--compiler llvm` |
+| build with clang | `compiler = "llvm"` or `--toolchain llvm` |
 | list boot entries | `sysforge state boot-entries` |

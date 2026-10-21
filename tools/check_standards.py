@@ -78,6 +78,16 @@ Groups:
                     that is only the glyph is allowed. ROADMAP and release
                     notes are exempt (their entry lead is a lint-enforced
                     format).
+    design_refs     Every `§Section` reference in docs/design/, both CLAUDE.md
+                    files and sysforge/ code names something that exists: a
+                    DESIGN.md heading or bold run-in lead (by word-prefix), a
+                    design file number or slug, a design .md file, or a
+                    standards row (3.5.0-DEV10). External citations (RFC 7231
+                    §7.1.3, SemVer §§6–8) are skipped.
+    retired_names   No name listed in tools/retired_names.toml (removed flags,
+                    tokens, functions) appears in a tracked file outside release
+                    notes, ROADMAP, tests, the generated DESIGN.md and each
+                    entry's own allow list (3.5.0-DEV12). Whole-word match.
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -98,6 +108,8 @@ Drift detection cases (verify these still fire after editing this script):
     - Add warn_used("not-registered") to a sysforge/*.py file.
     - Change a compat record's removed_in to a minor (e.g. 3.1.0).
     - Rename the symbol a shim record's anchor cites.
+    - Cite `§Toolchain-variant drift detection` (no such heading) in docs/design/.
+    - Write a name from tools/retired_names.toml in a comment under sysforge/.
     - Replace the _REGISTRY literal with a comprehension (parse finds 0 records).
     - Run with --target-version=3.0.0 while a 3.0.0 removal is still present.
     - Break deprecations.py syntactically and run --check=semver_bump alone
@@ -1209,6 +1221,26 @@ _REGISTRY_EMPTY_MSG = (
 )
 
 
+def _registry_declared_empty(repo: Path) -> bool:
+    """True when deprecations.py parses and assigns ``_REGISTRY`` an empty
+    tuple literal: every surface has been retired (3.5.0-F16), which is a
+    clean registry, not an unreadable one."""
+    src = repo / _DEPRECATIONS_SRC
+    try:
+        tree = ast.parse(src.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return False
+    for node in tree.body:
+        target = (node.target if isinstance(node, ast.AnnAssign)
+                  else node.targets[0] if isinstance(node, ast.Assign)
+                  and len(node.targets) == 1 else None)
+        value = getattr(node, "value", None)
+        if (isinstance(target, ast.Name) and target.id == "_REGISTRY"
+                and isinstance(value, ast.Tuple) and not value.elts):
+            return True
+    return False
+
+
 def _parse_registry(repo: Path) -> list[dict]:
     """Statically read the Deprecation(...) records from deprecations.py.
 
@@ -1319,7 +1351,7 @@ def check_deprecations(repo: Path,
     # A check that cannot fail is worse than no check. Don't early-return here:
     # an empty registry alongside a live warn_used() call site is still an R1a
     # bijection failure and must be reported too.
-    if not records:
+    if not records and not _registry_declared_empty(repo):
         findings.append(Finding("deprecations", "error", src_rel,
                         _REGISTRY_EMPTY_MSG))
 
@@ -1574,8 +1606,9 @@ def check_semver_bump(repo: Path,
     # not the same as "registry read, nothing due" (empty findings is a clean
     # pass). Don't let an unreadable registry fall through as the latter.
     if not records:
-        findings.append(Finding("semver_bump", "error", _DEPRECATIONS_SRC,
-                        _REGISTRY_EMPTY_MSG))
+        if not _registry_declared_empty(repo):
+            findings.append(Finding("semver_bump", "error", _DEPRECATIONS_SRC,
+                            _REGISTRY_EMPTY_MSG))
         return findings
 
     for rec in records:
@@ -1757,6 +1790,171 @@ def _make_recipes(text: str) -> dict[str, str]:
     return recipes
 
 
+
+# ---------------------------------------------------------------------------
+# Group: design_refs (3.5.0-DEV10)
+# ---------------------------------------------------------------------------
+
+_REF_FILES = ("CLAUDE.md", "sysforge/CLAUDE.md")
+_REF_GLOBS = ("docs/design/*.md", "sysforge/**/*.py")
+_REF_STOP = re.compile(r"\s*(?:→|->|—|[,;:()]|\.(?:\s|$)|$)")
+
+
+def _norm_heading(text: str) -> str:
+    text = re.sub(r"[`*]", "", text).lower()
+    return re.sub(r"[\s/&]+", " ", text).strip(" .")
+
+
+def _ref_target(text: str) -> str:
+    """The section a `§` reference names, before any `→ subsection` or prose."""
+    if text.startswith("`"):
+        end = text.find("`", 1)
+        return text[: end + 1] if end > 0 else text
+    m = _REF_STOP.search(text)
+    return text[: m.start()] if m else text
+
+
+def _ref_resolves(target: str, headings: list[str], slugs: set[str],
+                  rows: set[str], repo_root: Path) -> bool:
+    t = target.strip()
+    m = re.match(r"(\d+)(?:-([a-z-]+))?\b", t)  # §07, §22 privilege seam, §21-standards
+    if m:
+        return m.group(1).zfill(2) in slugs and (not m.group(2) or m.group(2) in slugs)
+    first = t.split(" ")[0].strip("`")
+    if first.endswith(".md"):
+        return any((repo_root / d / first).is_file()
+                   for d in (".", "docs", "docs/design", "docs/design/verbs"))
+    if first in slugs:                             # §primitives-layer `resource_guard.py`
+        return True
+    m = re.match(r"(?:standards )?row (\d+)", t, re.IGNORECASE)
+    if m:
+        return m.group(1) in rows
+    norm = _norm_heading(t)
+    if norm.replace(" ", "-").strip("`") in slugs:
+        return True
+    words = norm.split(" ")
+    for n in range(len(words), 0, -1):
+        prefix = " ".join(words[:n])
+        if len(prefix) >= 3 and any(h.startswith(prefix) or prefix in h.split(" → ")
+                                    for h in headings):
+            return True
+        # a module name (`update.py`, `build_state`) resolves to any heading naming it
+        if n == 1 and any(prefix.removesuffix(".py") in h for h in headings):
+            return True
+    return False
+
+
+def check_design_refs(repo: Path) -> list[Finding]:
+    """Every `§Section` reference names a section that exists (3.5.0-DEV10).
+
+    Lenient on purpose: a reference resolves to a DESIGN.md heading that one of
+    its leading word-prefixes starts, a design file number (`§07`) or slug
+    (`§primitives-layer`), a standards row, or a heading naming the module it
+    cites. What it catches is a reference whose section never existed or was
+    renamed away, such as design 07's `§Toolchain-variant drift detection`.
+    """
+    design = repo / "DESIGN.md"
+    if not design.is_file():
+        return []
+    # Headings, plus the bold run-in leads (`**Shipped-file checks.** ...`)
+    # this design uses as sub-headings.
+    headings = []
+    for line in design.read_text(encoding="utf-8").splitlines():
+        if re.match(r"#{1,5} ", line):
+            headings.append(_norm_heading(line.lstrip("#")))
+        elif lead := re.match(r"(?:- )?\*\*([^*]+)\*\*", line):
+            headings.append(_norm_heading(lead.group(1)))
+    slugs = set()
+    for f in (repo / "docs/design").glob("*.md"):
+        num, _, slug = f.stem.partition("-")
+        slugs |= {num, slug}
+    std = repo / _STANDARDS_DOC
+    rows = set(re.findall(r"^\| (\d+) \|", std.read_text(encoding="utf-8"), re.MULTILINE)
+               ) if std.is_file() else set()
+    paths = [repo / f for f in _REF_FILES]
+    for pattern in _REF_GLOBS:
+        paths.extend(sorted(repo.glob(pattern)))
+    findings: list[Finding] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        rel = path.relative_to(repo)
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in re.finditer(r"(?<!§)§(?!§)(\S[^\n]{0,80})", line):
+                # Quoted in an inline code span, it is an example, not a reference.
+                if line[:m.start()].count("`") % 2:
+                    continue
+                # An external spec's section (RFC 7231 §7.1.3, SemVer §§6–8).
+                if re.search(r"RFC \d+\s*$", line[:m.start()]) or re.match(
+                        r"\d+\.\d", m.group(1)):
+                    continue
+                target = _ref_target(m.group(1))
+                if target and not _ref_resolves(target, headings, slugs, rows, repo):
+                    findings.append(Finding(
+                        "design_refs", "error", f"{rel}:{n}",
+                        f"§{target} names no DESIGN.md section, design file or "
+                        "standards row"))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Group: retired_names (3.5.0-DEV12)
+# ---------------------------------------------------------------------------
+
+_RETIRED_FILE = "tools/retired_names.toml"
+# Files that describe a removal on purpose.
+# Tests check that old names are refused; DESIGN.md is generated from
+# docs/design/, which is checked.
+_RETIRED_ALWAYS_ALLOWED = ("docs/release-notes/*", "ROADMAP.md", "docs/ROADMAP-ABANDONED.md",
+                           _RETIRED_FILE, "tests/*", "DESIGN.md")
+
+
+def _tracked_text_files(repo: Path) -> list[Path]:
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True,
+                             check=True).stdout.decode()
+        names = [n for n in out.split("\0") if n]
+    except (OSError, subprocess.CalledProcessError):
+        names = [str(p.relative_to(repo)) for p in repo.rglob("*")
+                 if p.is_file() and ".git" not in p.parts]
+    return [repo / n for n in names]
+
+
+def check_retired_names(repo: Path) -> list[Finding]:
+    """No retired name survives outside the files allowed to name it.
+
+    The registry is tools/retired_names.toml. Each name is matched as a whole
+    word (a neighbouring letter, digit, `_` or `-` makes it another word), in
+    every tracked text file, comments and completions included: a big rename
+    leaves old names in comments and design prose, which no parser reads.
+    """
+    import fnmatch
+    import tomllib
+    reg = repo / _RETIRED_FILE
+    if not reg.is_file():
+        return []
+    entries = tomllib.loads(reg.read_text(encoding="utf-8")).get("retired", [])
+    findings: list[Finding] = []
+    pats = [(e, re.compile(r"(?<![\w-])" + re.escape(e["name"]) + r"(?![\w-])"))
+            for e in entries]
+    for path in _tracked_text_files(repo):
+        rel = str(path.relative_to(repo))
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for entry, pat in pats:
+            allowed = (*_RETIRED_ALWAYS_ALLOWED, *entry.get("allow", ()))
+            if any(fnmatch.fnmatch(rel, g) for g in allowed):
+                continue
+            for m in pat.finditer(text):
+                n = text.count("\n", 0, m.start()) + 1
+                findings.append(Finding(
+                    "retired_names", "error", f"{rel}:{n}",
+                    f"{entry['name']} was retired by {entry['id']}; use {entry['use']} "
+                    f"(or allow this file in {_RETIRED_FILE})"))
+    return findings
+
 GROUPS = {
     "paths":          check_paths,
     "spdx":           check_spdx,
@@ -1773,6 +1971,8 @@ GROUPS = {
     "release_gates":  check_release_gates,
     "em_dash":        check_em_dash,
     "standards_rows": check_standards_rows,
+    "design_refs":    check_design_refs,
+    "retired_names":  check_retired_names,
 }
 
 

@@ -6,7 +6,8 @@
 
 Only writes the auto-managed [package_compiler_overrides] table (pkgbase ->
 inline table of ``toolchain`` (+ ``ld``), or raw cc/cxx/ld for a hand-entered
-pair), recovered from interactive build failures. Line-
+pair), recovered from interactive build failures or chosen with ``build
+--toolchain … --save-toolchain`` and removed with ``--reset-toolchain``. Line-
 level and comment-preserving, mirroring verbs.shared.rewrite_packages_toml:
 never round-trips the whole document through a TOML emitter (which would strip
 comments and reorder the user's hand-authored profiles/rules).
@@ -25,9 +26,10 @@ _log = log.get_logger("PROFILE")
 _SECTION = "[package_compiler_overrides]"
 _HEADER = (
     "# Auto-managed by sysforge: compiler/linker overrides recovered from "
-    "build failures.\n# Keyed by pkgbase. toolchain swaps the whole compiler "
-    "bundle; raw cc/cxx/ld\n# apply last. Both win over the matched profile; "
-    "--cc/--cxx/--ld win over both.\n"
+    "build failures\n# or saved with `build --toolchain … --save-toolchain`. "
+    "Keyed by pkgbase. toolchain\n# swaps the whole compiler bundle; raw "
+    "cc/cxx/ld apply last. Both win over the\n# matched profile; --toolchain "
+    "and --cc/--cxx/--ld win over both.\n"
 )
 
 
@@ -115,4 +117,39 @@ def write_package_compiler_override(
     what = (f"toolchain={toolchain}" + (f" ld={ld}" if ld else "")
             if toolchain else f"cc={cc} cxx={cxx} ld={ld}")
     _log.info(f"Recorded compiler override for {pkgbase}: {what}")
+    return True
+
+
+def delete_package_compiler_override(path: Path, pkgbase: str) -> bool:
+    """Remove this pkgbase's [package_compiler_overrides] row, if any
+    (``build --reset-toolchain``, 3.5.0-F14). Leaves every other row and the
+    section header in place. Returns True when a row was removed; False when
+    there was none, or on OSError (logged)."""
+    path = Path(path)
+    try:
+        text = path.read_text()
+    except OSError as e:
+        _log.warn(f"profiles.toml override removal skipped (read failed): {e}")
+        return False
+    lines = text.splitlines(keepends=True)
+    sect_idx = next(
+        (i for i, ln in enumerate(lines) if ln.strip() == _SECTION), None
+    )
+    if sect_idx is None:
+        return False
+    row_re = _row_re(pkgbase)
+    for i in range(sect_idx + 1, len(lines)):
+        if lines[i].lstrip().startswith("["):
+            return False
+        if row_re.match(lines[i]):
+            del lines[i]
+            break
+    else:
+        return False
+    try:
+        atomic_write.replace_file(path, "".join(lines), tag="CONFIG")
+    except OSError as e:
+        _log.error(f"Could not remove the compiler override for {pkgbase} from {path}: {e}")
+        return False
+    _log.info(f"Removed compiler override for {pkgbase}")
     return True

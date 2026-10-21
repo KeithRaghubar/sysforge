@@ -452,6 +452,7 @@ def _invoke(pkgbuild, conf, profile, **kwargs):
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         captured["preexec"] = preexec_fn
+        captured["clip_cargo_frames"] = _kw.get("clip_cargo_frames", False)
         # Snapshot what exists in the build dir *during* the run, so the
         # scratch-conf lifetime is observable.
         captured["during"] = sorted(p.name for p in Path(cwd).iterdir())
@@ -526,6 +527,8 @@ def test_seam_forces_cargo_progress_when_forwarding_to_a_tty(tmp_path):
         cap = _invoke(pb, conf, {})
     assert "export CARGO_TERM_PROGRESS_WHEN=always" in cap["chroot_conf"]
     assert "export CARGO_TERM_PROGRESS_WIDTH=97" in cap["chroot_conf"]
+    # 3.5.0-B121: a fixed width is clipped to the live one as it is forwarded.
+    assert cap["clip_cargo_frames"] is True
 
 
 def test_seam_no_cargo_progress_when_output_is_piped(tmp_path):
@@ -535,6 +538,7 @@ def test_seam_no_cargo_progress_when_output_is_piped(tmp_path):
     with patch("sysforge.primitives.makepkg_invoke.sys.stdout.isatty", return_value=False):
         cap = _invoke(pb, conf, {})
     assert "CARGO_TERM_PROGRESS" not in cap["chroot_conf"]
+    assert cap["clip_cargo_frames"] is False
 
 
 def test_seam_writes_then_removes_the_scratch_conf(tmp_path):
@@ -1386,7 +1390,7 @@ def test_provision_toolchain_installs_the_conf_named_linker(tmp_path):
 
 def test_host_profile_data_finds_the_referenced_profdata(tmp_path):
     """The exact 3.2.0-B10 failure. The PGO stage injects
-    ``-fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata`` into the
+    ``-fprofile-use=/var/cache/sysforge/pgo/mesa/mesa.profdata`` into the
     flags, that path exists only on the host, and clang treats an unreadable
     profile as a hard error — which meson reports as ``Compiler clang cannot
     compile programs``, indistinguishable from having no compiler at all."""
@@ -1518,7 +1522,7 @@ def test_refuse_profile_generate_rejects_the_generate_family(tmp_path, flag):
     """makechrootpkg -c discards the container's writes, so the .profraw a
     generate build writes there is gone before anything can merge it. Refuse
     rather than succeed silently with no profile."""
-    conf = _conf_with(tmp_path, f'CFLAGS="-O2 {flag}=/var/cache/sysforge/pgo-mesa"\n')
+    conf = _conf_with(tmp_path, f'CFLAGS="-O2 {flag}=/var/cache/sysforge/pgo/mesa"\n')
     with pytest.raises(bs.SandboxUnavailable, match="--pgo=record"):
         bs.refuse_profile_generate(_pol(tmp_path), None, conf_path=conf)
 
@@ -1631,13 +1635,13 @@ def test_audit_refuses_b6_b7_missing_fuse_ld_linker(tmp_path, key):
 
 
 def test_audit_refuses_b10_unmirrored_profile(tmp_path):
-    text = _final('CFLAGS="-O2 -fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata"\n')
+    text = _final('CFLAGS="-O2 -fprofile-use=/var/cache/sysforge/pgo/mesa/mesa.profdata"\n')
     with pytest.raises(bs.SandboxUnavailable, match="_PROFILE_USE_PREFIXES"):
         bs.audit_chroot_conf(text, _audit_root(tmp_path))
 
 
 def test_audit_accepts_a_mirrored_profile(tmp_path):
-    prof = "/var/cache/sysforge/pgo-mesa/mesa.profdata"
+    prof = "/var/cache/sysforge/pgo/mesa/mesa.profdata"
     text = _final(f'CFLAGS="-O2 -fprofile-use={prof}"\n')
     bs.audit_chroot_conf(text, _audit_root(tmp_path, files=(prof,)))
 

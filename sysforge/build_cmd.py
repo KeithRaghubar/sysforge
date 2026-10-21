@@ -28,6 +28,7 @@ from sysforge.primitives.config import (
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.pkgbuild_review import resolve_review_policy
+from sysforge.primitives.profile import TOOLCHAIN_CHOICES, toolchain_for_compilers
 from sysforge.verbs import ExecResult, PreCheckResult, Verb
 from sysforge.verbs.helpers import CLEANSRC_FORCE_HELP, load_config_with_overrides
 
@@ -199,10 +200,21 @@ def _write_repo_optin(name: str, config) -> bool:
         return False
 
 
+def _cli_toolchain(args) -> str | None:
+    """The whole-bundle toolchain this build asked for (3.5.0-F14): ``--toolchain``,
+    else a ``--cc``/``--cxx`` pair that is exactly a bundle's compilers (gcc/g++,
+    clang/clang++). Any other pair stays a raw CC/CXX override."""
+    if getattr(args, "toolchain", None):
+        return args.toolchain
+    cc, cxx = getattr(args, "cc", None), getattr(args, "cxx", None)
+    return toolchain_for_compilers(cc, cxx) if cc and cxx else None
+
+
 class BuildVerb(Verb):
     """Build one or more packages using their matched profiles."""
 
     name = "build"
+    wants_run_log = True
     requires_sentinel = True
 
     @classmethod
@@ -234,10 +246,22 @@ class BuildVerb(Verb):
             help="Directory for the per-package log file (default: alongside the PKGBUILD).")
         p.add_argument("--profile-conf", metavar="FILE", dest="profile_conf",
             help="Path to a profiles.toml to use instead of the default.")
+        p.add_argument("--toolchain", choices=TOOLCHAIN_CHOICES, dest="toolchain",
+            help="Build the named packages with this compiler toolchain as a whole "
+                 "(compilers, binutils and linker) instead of their profile's, for "
+                 "this build. Dependencies keep their own.")
+        p.add_argument("--save-toolchain", action="store_true", dest="save_toolchain",
+            help="With --toolchain: also save it for these packages in "
+                 "profiles.toml [package_compiler_overrides], so later builds and "
+                 "updates use it too.")
+        p.add_argument("--reset-toolchain", action="store_true", dest="reset_toolchain",
+            help="Remove these packages' saved toolchain from profiles.toml, so they "
+                 "build with their profile's again.")
         p.add_argument("--cc", metavar="COMPILER", dest="cc",
-            help="Override CC (C compiler) for this build, e.g. --cc clang.")
+            help="Override only CC (C compiler) for this build, e.g. --cc clang-19. "
+                 "A gcc/g++ or clang/clang++ pair with --cxx acts as --toolchain.")
         p.add_argument("--cxx", metavar="COMPILER", dest="cxx",
-            help="Override CXX (C++ compiler) for this build, e.g. --cxx clang++.")
+            help="Override only CXX (C++ compiler) for this build, e.g. --cxx clang++-19.")
         p.add_argument("--ld", metavar="LINKER", dest="ld",
             help="Override linker for this build, e.g. --ld lld.")
         p.add_argument("--cache-report", action="store_true", dest="cache_report",
@@ -289,17 +313,17 @@ class BuildVerb(Verb):
         p.set_defaults(verb_cls=cls)
         return p
 
-    def unified_log_basename(self, args) -> str | None:
+    @classmethod
+    def run_log_name(cls) -> str | None:
         """A multi-package ``build`` run leaves one consolidated log next to
         the per-package logs, parallel to ``sysforge-update.log``.
 
         ``build`` goes through ``build_core`` rather than the pipeline runner,
         so — unlike ``run kernel``/``run toolchain``, which already emit a
-        consolidated ``sysforge.log`` via ``run_stage_standalone`` — it would
-        otherwise have no run-level log at all. Opened/closed by the verb
-        runner; dry runs write nothing."""
-        del args
-        return "sysforge-build.log"
+        consolidated log via ``run_stage_standalone`` — it would otherwise have
+        no run-level log at all. Opened/closed by the verb runner; dry runs
+        write nothing."""
+        return "build"
 
     def journal_target(self, args) -> str | None:
         return journal.pkg_target(getattr(args, "packages", None) or [])
@@ -311,6 +335,16 @@ class BuildVerb(Verb):
                 file=sys.stderr,
             )
         _log.info(f"Invocation: {' '.join(sys.argv)}")
+        if getattr(args, "save_toolchain", False):
+            if getattr(args, "reset_toolchain", False):
+                return PreCheckResult(
+                    blocker="--save-toolchain and --reset-toolchain contradict each other",
+                    exit_code=2)
+            if not _cli_toolchain(args):
+                return PreCheckResult(
+                    blocker="--save-toolchain needs --toolchain (or a gcc/g++ or "
+                            "clang/clang++ --cc/--cxx pair) to save",
+                    exit_code=2)
         config = load_config_with_overrides(args)
         # AUR posture (3.1.0-F3): refuse an AUR-tracked target up front rather
         # than failing mid-sync. The checkout's origin decides (C3), not the
@@ -341,7 +375,8 @@ class BuildVerb(Verb):
                 LLVM_REQUIRED_HINT,
                 is_llvm_toolchain,
             )
-            toolchain = config.get("defaults", {}).get("toolchain")
+            toolchain = (_cli_toolchain(args)
+                         or config.get("defaults", {}).get("toolchain"))
             if not is_llvm_toolchain(toolchain):
                 return PreCheckResult(
                     blocker=f"PGO (--pgo) requires the LLVM toolchain. "
@@ -498,6 +533,9 @@ class BuildVerb(Verb):
             cc=args.cc,
             cxx=args.cxx,
             ld=args.ld,
+            toolchain=_cli_toolchain(args),
+            save_toolchain=getattr(args, "save_toolchain", False),
+            reset_toolchain=getattr(args, "reset_toolchain", False),
             state_dir=state_dir,
             pkg_log=not args.no_pkg_log,
             persist_log=resolve_flag_default(args, "persist_log", build_cfg, "persist_log"),

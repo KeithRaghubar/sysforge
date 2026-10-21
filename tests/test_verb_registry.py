@@ -100,49 +100,112 @@ def test_no_user_facing_text_names_git_pull():
     assert "git pull" not in src
 
 
-_DOCTOR_CMD = re.compile(r"sysforge doctor((?: (?:system|pkg|-[-\w]+))*)")
+# `sysforge` followed by words, placeholders and flags, up to anything else
+# (a pipe, a closing backtick, punctuation).
+_CMD = re.compile(
+    r"\bsysforge((?:[ \t]+(?:--?[A-Za-z][\w-]*(?:=[^\s`'\"]*)?|<[^>\s]+>|[A-Za-z][\w.+-]*))+)")
+# Where a user can be told to run a command. Design docs, ROADMAP and release
+# notes describe old spellings on purpose and are left out.
+_DOC_FILES = ("README.md", "CLAUDE.md", "sysforge/CLAUDE.md", "man/sysforge.1.scd.in")
+_DOC_GLOBS = ("docs/guides/*.md", "docs/concepts/*.md", "etc/sysforge/*.toml")
 
 
-def _docstrings(tree):
-    return {n.body[0].value for n in ast.walk(tree)
-            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and n.body and isinstance(n.body[0], ast.Expr)}
-
-
-def _printed_doctor_commands():
-    """Every `sysforge doctor ...` a user can be told to run: non-docstring
-    string literals under sysforge/, plus the README, guides, concept pages
-    and man source."""
-    found = []
+def _texts():
+    """(where, text) for every place a command can be written down: string
+    literals, docstrings and comments under sysforge/, and the user docs."""
+    import io
+    import tokenize
     for py in sorted((REPO_ROOT / "sysforge").rglob("*.py")):
-        tree = ast.parse(py.read_text(encoding="utf-8"))
-        skip = _docstrings(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
-                    and node not in skip:
-                for m in _DOCTOR_CMD.finditer(node.value):
-                    found.append((f"{py.relative_to(REPO_ROOT)}:{node.lineno}", m.group(1)))
-    docs = [REPO_ROOT / "README.md", REPO_ROOT / "man/sysforge.1.scd.in",
-            *sorted((REPO_ROOT / "docs/guides").glob("*.md")),
-            *sorted((REPO_ROOT / "docs/concepts").glob("*.md"))]
+        rel = py.relative_to(REPO_ROOT)
+        src = py.read_text(encoding="utf-8")
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type in (tokenize.STRING, tokenize.COMMENT):
+                yield f"{rel}:{tok.start[0]}", tok.string
+    docs = [REPO_ROOT / f for f in _DOC_FILES]
+    for pattern in _DOC_GLOBS:
+        docs += sorted(REPO_ROOT.glob(pattern))
     for doc in docs:
         for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
-            for m in _DOCTOR_CMD.finditer(line):
-                found.append((f"{doc.relative_to(REPO_ROOT)}:{n}", m.group(1)))
-    return found
+            yield f"{doc.relative_to(REPO_ROOT)}:{n}", line
 
 
-def test_every_printed_doctor_command_parses():
-    """3.5.0-B3: `doctor` became a `system`/`pkg` namespace and the flat
-    `doctor --<axis>` form was removed, but advisories kept printing it, so
-    `sysforge doctor --restart` failed with "unrecognized arguments"."""
-    cmds = _printed_doctor_commands()
-    assert cmds, "the scan found no doctor commands at all"
-    parser = build_parser()
-    bad = []
-    for where, rest in cmds:
-        try:
-            parser.parse_args(["doctor", *rest.split()])
-        except SystemExit:
-            bad.append(f"{where}: sysforge doctor{rest}")
-    assert not bad, "printed doctor commands that do not parse:\n  " + "\n  ".join(bad)
+def _subparsers(parser):
+    for a in parser._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            return a
+    return None
+
+
+def _check_command(root, tokens):
+    """Problems with one written-down command, or [] when it is fine. Long
+    flags only: build and update pass makepkg's short flags through."""
+    if not tokens:
+        return []
+    import difflib
+
+    def options(p):
+        return {o: a for a in p._actions for o in a.option_strings}
+
+    global_opts = options(root)
+    first = tokens[0]
+    if not first.startswith("-") and first not in _subparsers(root).choices:
+        return []  # prose or a path ("sysforge builds", "sysforge -mindepth")
+    parser, path, problems = root, [], []
+    takes_value = False
+    for tok in tokens:
+        if takes_value:              # `--thaw mesa`: the flag's value
+            takes_value = False
+            continue
+        if tok.startswith("--"):
+            flag, eq, _ = tok.partition("=")
+            action = (options(parser) | global_opts).get(flag)
+            if action is None:
+                problems.append(f"{' '.join(path) or '(top level)'} has no {flag}")
+            else:
+                takes_value = action.nargs != 0 and not eq
+            continue
+        if tok.startswith("-") or tok.startswith("<"):
+            continue
+        sub = _subparsers(parser)
+        if sub is None:
+            continue  # a positional (a package name, a path)
+        if tok in sub.choices:
+            parser = sub.choices[tok]
+            path.append(tok)
+        elif difflib.get_close_matches(tok, list(sub.choices), n=1, cutoff=0.8):
+            # Close to a real one: a typo or a rename. Anything else is prose
+            # ("sysforge config files on a packaged install") or a positional.
+            problems.append(f"{' '.join(path)} has no subcommand {tok!r}")
+            break
+        else:
+            break
+    return problems
+
+
+def test_every_written_command_names_real_flags_and_subcommands():
+    """3.5.0-DEV11 (generalising 3.5.0-B3's doctor-only check): every
+    `sysforge ...` the code or the user docs tell someone to run names
+    subcommands and long flags that exist. B3 was `doctor --restart` printed
+    after the flat form was removed; F15's renames left the same kind of
+    leftover in comments."""
+    root = build_parser()
+    seen, bad = 0, []
+    for where, text in _texts():
+        for m in _CMD.finditer(text):
+            seen += 1
+            for problem in _check_command(root, m.group(1).split()):
+                bad.append(f"{where}: sysforge{m.group(1)}  ({problem})")
+    assert seen > 100, f"the scan found only {seen} commands"
+    assert not bad, "written-down commands that do not exist:\n  " + "\n  ".join(bad)
+
+
+def test_command_check_catches_the_known_failure_shapes():
+    root = build_parser()
+    assert _check_command(root, ["doctor", "--restart"])           # B3: flat doctor form
+    assert _check_command(root, ["run", "kernel", "--compiler", "gcc"])  # F15 rename
+    assert _check_command(root, ["config", "files", "on", "a"]) == []  # prose
+    assert _check_command(root, ["--thaw", "mesa", "update"]) == []    # a global's value
+    assert _check_command(root, ["run", "toolchian"])               # typo'd subcommand
+    assert _check_command(root, ["build", "mesa", "--toolchain", "gcc"]) == []
+    assert _check_command(root, ["build", "-sfCci", "mesa"]) == []  # makepkg pass-through
+    assert _check_command(root, ["builds", "--anything"]) == []     # prose, not a command

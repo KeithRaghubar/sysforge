@@ -816,3 +816,124 @@ def test_interactive_proxy_restores_a_terminal_stdin(tmp_path, monkeypatch):
     finally:
         os.close(master)
         os.close(slave)
+
+
+# ---------------------------------------------------------------------------
+# 3.5.0-B121: cargo frames drawn at a fixed width, clipped to the live width
+# ---------------------------------------------------------------------------
+
+def _frame(done: int, total: int = 31, width: int = 100) -> bytes:
+    """One cargo progress frame as the sandbox's forced width draws it."""
+    bar = ("=" * done + ">").ljust(28)[:28]
+    text = f"    Building [{bar}] {done}/{total}: c{done}, c{done + 1}"
+    return (b"\x1b[1m\x1b[96m    Building\x1b[0m"
+            + text[len("    Building"):].ljust(width - 2).encode() + b"\r")
+
+
+def _compiling(n: int) -> bytes:
+    return b"\x1b[K\x1b[1m\x1b[92m   Compiling\x1b[0m c%d v0.1.0\r\n" % n
+
+
+def _cargo_stream(width: int = 100) -> bytes:
+    out = b""
+    for n in range(1, 12):
+        out += _compiling(n) + _frame(n, width=width)
+    return out + b"\x1b[K    Finished `dev` profile\r\n"
+
+
+def _screen(stream: bytes, cols: int) -> list[str]:
+    """A minimal terminal: autowrap, \\r, \\n, ESC[K; other escapes ignored.
+    Returns every row written, scrollback included."""
+    from sysforge.primitives.pty_runner import _ANSI_ESCAPE_RE
+    rows, row, col = [[]], 0, 0
+    text = stream.decode()
+    pos = 0
+    while pos < len(text):
+        m = _ANSI_ESCAPE_RE.match(text, pos)
+        if m:
+            if m.group() == "\x1b[K":
+                del rows[row][col:]
+            pos = m.end()
+            continue
+        ch = text[pos]
+        pos += 1
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            row += 1
+            if row == len(rows):
+                rows.append([])
+        else:
+            if col == cols:  # pending wrap
+                row, col = row + 1, 0
+                if row == len(rows):
+                    rows.append([])
+            line = rows[row]
+            line.extend(" " * (col + 1 - len(line)))
+            line[col] = ch
+            col += 1
+    return ["".join(r).rstrip() for r in rows]
+
+
+def _frame_rows(rows):
+    return [r for r in rows if "Building" in r or "=>" in r or "/31" in r]
+
+
+def test_unclipped_frames_wider_than_the_window_leave_rows_behind():
+    """The bug, in the model: frames drawn for 100 columns on a 70-column
+    terminal wrap, and each \\r redraws only the wrapped half."""
+    rows = _screen(_cargo_stream(width=100), cols=70)
+    assert len(_frame_rows(rows)) > 1
+
+
+def test_clipped_frames_leave_no_fragment_above_the_live_row():
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    clip = _CargoFrameClip(cols=70)
+    out = clip.feed(_cargo_stream(width=100)) + clip.flush()
+    rows = _screen(out, cols=70)
+    assert _frame_rows(rows) == []          # the last frame was erased by Finished
+    assert sum("Compiling" in r for r in rows) == 11
+
+
+def test_clip_is_independent_of_where_reads_split():
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    stream = _cargo_stream(width=100)
+    whole = _CargoFrameClip(cols=70)
+    want = whole.feed(stream) + whole.flush()
+    for step in (1, 2, 3, 7, 64):
+        clip = _CargoFrameClip(cols=70)
+        got = b"".join(clip.feed(stream[i:i + step]) for i in range(0, len(stream), step))
+        assert got + clip.flush() == want, step
+
+
+def test_clip_leaves_frames_that_fit_and_other_lines_alone():
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    stream = _cargo_stream(width=60) + b"==> Leaving fakeroot environment.\r\n"
+    clip = _CargoFrameClip(cols=100)
+    assert clip.feed(stream) + clip.flush() == stream
+
+
+def test_clip_does_not_hold_back_a_line_that_cannot_be_a_frame():
+    """A prompt or a partial line must reach the terminal as it arrives."""
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    clip = _CargoFrameClip(cols=40)
+    assert clip.feed(b"==> Validating source files") == b"==> Validating source files"
+    assert clip.feed(b"   Compiling c1") == b"   Compiling c1"
+
+
+def test_clip_visible_counts_only_printing_characters():
+    from sysforge.primitives.pty_runner import _clip_visible
+    seg = b"\x1b[1mBuilding\x1b[0m [====]"
+    assert _clip_visible(seg, 100) == seg
+    assert _clip_visible(seg, 8) == b"\x1b[1mBuilding\x1b[0m\x1b[0m"
+    assert _clip_visible(seg, 10) == b"\x1b[1mBuilding\x1b[0m [\x1b[0m"
+
+
+def test_run_with_pty_clips_only_when_asked(tmp_path, monkeypatch):
+    frame = "    Building [=====>      ] 3/9: " + "x" * 200
+    for clip, wide in ((False, True), (True, False)):
+        sink = _capture_stdout_buffer(monkeypatch)
+        run_with_pty(["bash", "-c", f"printf '{frame}\\r'"], cwd=tmp_path,
+                     env={"PATH": "/usr/bin:/bin"}, line_callback=lambda _l: None,
+                     forward_bytes=True, clip_cargo_frames=clip)
+        assert ("x" * 150 in sink.getvalue().decode()) is wide

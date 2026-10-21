@@ -113,7 +113,8 @@ def test_state_unreadable_skips_every_dependent_check(monkeypatch):
     res = doctor._collect_state_findings(_args())
     assert [f.check_id for f in res.findings] == ["state:unreadable"]
     assert {c for c, _ in res.roster.skipped} == {
-        "build_failures", "stage_sentinel", "pgo_record_only", "state_drift"}
+        "build_failures", "stage_sentinel", "pgo_record_only", "legacy_tokens",
+        "state_drift"}
 
 
 def test_abi_with_nothing_to_scan_is_skipped():

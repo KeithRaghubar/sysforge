@@ -235,17 +235,13 @@ def test_consolidated_log_default_basename_is_none():
 
 def test_wants_run_log_derives_basename_from_name():
     """A verb opting in via the flag logs to sysforge-<name>.log."""
-    v = _CountingVerb()
-    v.name = "doctor"
-    v.wants_run_log = True
+    v = type("_Logged", (_CountingVerb,), {"name": "doctor", "wants_run_log": True})()
     assert v.unified_log_basename(_args()) == "sysforge-doctor.log"
 
 
 def test_wants_run_log_preserves_hyphenated_names():
     """Hyphenated verb names map straight through (state-repair, etc.)."""
-    v = _CountingVerb()
-    v.name = "state-repair"
-    v.wants_run_log = True
+    v = type("_Logged", (_CountingVerb,), {"name": "state-repair", "wants_run_log": True})()
     assert v.unified_log_basename(_args()) == "sysforge-state-repair.log"
 
 
@@ -363,9 +359,7 @@ def test_doctor_verb_opts_out_of_run_log_on_real_apply(tmp_path):
 
 def test_flagged_verb_persists_log_via_runner(tmp_path):
     """Through run_verb, a wants_run_log verb keeps its log on success."""
-    v = _CountingVerb()
-    v.name = "doctor"
-    v.wants_run_log = True
+    v = type("_Logged", (_CountingVerb,), {"name": "doctor", "wants_run_log": True})()
     rc = run_verb(
         v, _args(state_dir=str(tmp_path), log_dir=str(tmp_path), dry_run=False)
     )

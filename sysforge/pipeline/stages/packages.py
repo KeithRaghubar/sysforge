@@ -24,7 +24,7 @@ Effective build mode for repo packages:
   per-package enable_build_from_source = true  →  forces "build_from_source" regardless of global
 
 Per-package checkpointing: state is written after every outcome (built/failed).
-On resume with failed packages the user is prompted (or --force-retry bypasses).
+On resume with failed packages the user is prompted (or --retry-failed bypasses).
 
 packages.toml search order:
   1. config["packages_file"]  (from --packages or profiles.toml)
@@ -136,10 +136,10 @@ def _prompt_failed_packages(failed_names, errors, options):
     Prompt the user about how to handle failed packages on resume.
     Returns (retry_set, skip_set) — sets of package names.
 
-    With --force-retry: retry all without prompt.
+    With --retry-failed: retry all without prompt.
     """
-    if options.force_retry:
-        _log.info(f"--force-retry: retrying all {len(failed_names)} failed package(s)")
+    if options.retry_failed:
+        _log.info(f"--retry-failed: retrying all {len(failed_names)} failed package(s)")
         return set(failed_names), set()
 
     _log.warn(f"Resuming with {len(failed_names)} failed package(s):")

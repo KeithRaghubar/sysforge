@@ -136,7 +136,7 @@ def gate1_preflight(
     Brick (abort, overridable): PKGBUILD pkgver skew across the lockstep suite
     (``--allow-version-skew``); a non-functional clang / missing lld
     (``smoke_test_compilers``); insufficient build-filesystem space
-    (``--skip-build-space-check`` / ``min_build_free_gb``); [multilib] disabled
+    (``--allow-low-build-space`` / ``min_build_free_gb``); [multilib] disabled
     while a lib32-* is in scope (``require_multilib``). In dry-run every brick
     is downgraded to a warning so the run can still preview. Advisory (warn):
     residual instrumentation; incomplete rollback snapshot. Runs for BOTH the
@@ -144,7 +144,7 @@ def gate1_preflight(
     """
     dry_run = options.dry_run
     allow_skew = bool(getattr(options, "allow_version_skew", False))
-    skip_space = bool(getattr(options, "skip_build_space_check", False))
+    allow_low_space = bool(getattr(options, "allow_low_build_space", False))
     require_multilib = tcfg.require_multilib
     min_free_gb = tcfg.min_build_free_gb
     lib32_in_scope = bool(lib32_pkgs)
@@ -188,7 +188,7 @@ def gate1_preflight(
     # min_build_free_gb), so they are exempt.
     if mode := no_build_mode(options):
         _log.info(f"{mode}: nothing is built; skipping the build-space headroom check")
-    elif not skip_space:
+    elif not allow_low_space:
         space = toolchain_safety.check_build_space(
             [staging1, staging, pgo_store, *(p.parent for p in pkgbuild_map.values())],
             min_free_gb,
@@ -196,7 +196,7 @@ def gate1_preflight(
         if space is not None:
             _abort_or_warn(space)
     else:
-        _log.warn("--skip-build-space-check: skipping the build-space headroom check")
+        _log.warn("--allow-low-build-space: not enforcing the build-space headroom")
 
     # Brick: [multilib] must be enabled when lib32 is in scope.
     if require_multilib:
@@ -708,8 +708,8 @@ def log_toolchain_resolution_summary(
     overrides = []
     if getattr(options, "allow_version_skew", False):
         overrides.append("allow-version-skew")
-    if getattr(options, "skip_build_space_check", False):
-        overrides.append("skip-build-space-check")
+    if getattr(options, "allow_low_build_space", False):
+        overrides.append("allow-low-build-space")
     gates = (
         f"min_build_free={tcfg.min_build_free_gb:g}GiB "
         f"require_multilib={'on' if tcfg.require_multilib else 'off'}"

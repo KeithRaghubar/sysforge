@@ -37,7 +37,7 @@ import fnmatch
 import pprint
 import re
 from sysforge import log
-from sysforge.primitives import deprecations
+from sysforge.primitives.config import ConfigError
 from sysforge.primitives.makepkg_flags import (
     _detect_linker_from_ldflags,
     _inject_linker,
@@ -553,6 +553,9 @@ _TOOLCHAIN_BUNDLES: dict[str, dict[str, str]] = {
     },
 }
 
+# The values `build --toolchain` and `run kernel --toolchain` accept (3.5.0-F14).
+TOOLCHAIN_CHOICES = tuple(sorted(_TOOLCHAIN_BUNDLES))
+
 # Linker selected by the llvm bundle when the profile declares no -fuse-ld=.
 _LLVM_LINKER = "lld"
 
@@ -1000,71 +1003,66 @@ def get_build_mode(matched_rules, config) -> str | None:
 #   "source_built"       | profile +    | plain from-source build; the profile
 #                        | build_state  | layer extracts the PKGBUILD's embedded
 #                        |              | profile, build_state stamps it as the
-#                        |              | "rebuild me on update" marker. Legacy
-#                        |              | profile token: "patched_pkgbuild".
-#                        |              | (The legacy build_state token,
-#                        |              | "profiled", was removed in 3.0.0.)
+#                        |              | "rebuild me on update" marker. The
+#                        |              | legacy profile token "patched_pkgbuild"
+#                        |              | was removed in 4.0.0, the build_state
+#                        |              | token "profiled" in 3.0.0.
 #   "kernel"             | profile +    | kernel build; extracts embedded profile,
 #                        | build_state  | coexist-renamed when optimized.
 #   "pacman"             | build_state  | installed from a binary repo (deferred
 #                        |              | -Syu), never source-rebuilt by update.
 #   "pgo_llvm_toolchain" | profile +    | instrumentation PGO of the LLVM
 #                        | build_state  | toolchain — earns -sysforge.
-#   "pgo_mesa" / "pgo" / | build_state  | the remaining optimization modes, all
+#   "pgo" /              | build_state  | the remaining optimization modes, all
 #   "autofdo_kernel" /   | (stamped)    | stamped at build time and members of
 #   "propeller_kernel"   |              | _OPTIMIZED_BUILD_MODES → -sysforge.
+#                        |              | (mesa's own "pgo_mesa" became "pgo" in
+#                        |              | 4.0.0; `state repair` rewrites it.)
 #   "bolt_llvm"          | build_state  | a BOLTed LLVM toolchain member, stamped
 #                        | (restamped)  | after the BOLT repackage, never passed to
 #                        |              | makepkg: keeps its stock name, and
 #                        |              | build_state.is_source_build_mode() is
 #                        |              | true for it (3.5.0-B31).
 #
-# This module normalizes the legacy profile token "patched_pkgbuild"→
-# "source_built" on read, never on write of new data (normalize_build_mode,
-# applied at the get_build_mode read chokepoint). The build_state layer's
-# equivalent read alias ("profiled"→"source_built") was removed in 3.0.0; a
-# pre-rename build_state.toml token now survives verbatim until
-# `sysforge state repair` rewrites it.
+# The legacy profile token "patched_pkgbuild" was read as "source_built" until
+# 4.0.0 (3.5.0-F16); it now raises at the get_build_mode read chokepoint
+# rather than fall through as an unknown mode, which would silently turn the
+# user's source builds into plain ones. The build_state layer's "profiled"
+# token went in 3.0.0 and survives verbatim until `sysforge state repair`.
 
 # Profile-layer build_mode values whose build wants the PKGBUILD's *embedded*
 # profile extracted (a plain from-source build and a kernel build). The shared
-# predicate below is the one home for this membership — the two scattered
-# ``build_mode in ("patched_pkgbuild", "kernel")`` checks (flag_drift,
-# makepkg_wrapper) route through it so the legacy alias is honoured in one place.
+# predicate below is the one home for this membership; flag_drift and
+# makepkg_wrapper route through it rather than re-spell it inline.
 _EXTRACTED_PROFILE_BUILD_MODES = frozenset({"source_built", "kernel"})
 
-# Legacy profile-layer build_mode token → canonical token. (The build_state
-# layer's equivalent "profiled"→"source_built" read alias was removed in
-# 3.0.0; this profile-layer alias is a separate surface, not in scope there.)
-_LEGACY_BUILD_MODE_ALIASES = {"patched_pkgbuild": "source_built"}
+_REMOVED_BUILD_MODE = "patched_pkgbuild"
 
 
 def normalize_build_mode(build_mode: str | None) -> str | None:
-    """Map a legacy profile-layer ``build_mode`` token to its canonical value.
+    """The profile-layer ``build_mode`` read chokepoint.
 
-    ``"patched_pkgbuild"`` → ``"source_built"``; every other token (and
-    ``None``) is returned unchanged. The single read-alias chokepoint so a
-    live/edited profiles.toml of any vintage presents one vocabulary downstream.
+    Returns the token unchanged, except the removed legacy token
+    ``"patched_pkgbuild"``, which raises: falling through as an unknown mode
+    would quietly stop extracting the PKGBUILD's embedded profile.
 
-    The alias branch warns via the deprecation registry (2.6.1-STD3, standards
-    row 24) — it is a ``compat`` surface, removed in 4.0.0. Only that branch
-    warns: this function is called on every profile read, so warning on the
-    canonical token would be noise, and ``warn_used`` dedups per run anyway.
+    Raises:
+        ConfigError: for ``"patched_pkgbuild"`` (removed in 4.0.0). A
+            ``RuntimeError`` subclass, so the CLI prints an error line, not a
+            traceback.
     """
-    if build_mode is None:
-        return None
-    canonical = _LEGACY_BUILD_MODE_ALIASES.get(build_mode)
-    if canonical is not None:
-        deprecations.warn_used("profiles.build_mode=patched_pkgbuild")
-        return canonical
+    if build_mode == _REMOVED_BUILD_MODE:
+        raise ConfigError(
+            f"profiles.toml: build_mode = {build_mode!r} was removed in 4.0.0. "
+            'Change it to build_mode = "source_built".'
+        )
     return build_mode
 
 
 def build_mode_uses_extracted_profile(build_mode: str | None) -> bool:
     """True when ``build_mode`` should extract the PKGBUILD's embedded profile.
 
-    One home for the ``("patched_pkgbuild", "kernel")`` gate (legacy token
-    accepted via :func:`normalize_build_mode`). Consumed by ``flag_drift`` and
+    One home for the ``("source_built", "kernel")`` gate. Consumed by ``flag_drift`` and
     ``makepkg_wrapper`` — don't re-spell the membership inline.
     """
     return normalize_build_mode(build_mode) in _EXTRACTED_PROFILE_BUILD_MODES
@@ -1081,8 +1079,7 @@ def build_mode_uses_extracted_profile(build_mode: str | None) -> bool:
 # ``"kernel"`` and a non-PGO ``stock_llvm`` build keep their stock package name.
 _OPTIMIZED_BUILD_MODES = frozenset({
     "pgo_llvm_toolchain",  # instrumentation PGO of the LLVM toolchain (existing)
-    "pgo_mesa",            # instrumentation PGO of mesa
-    "pgo",                 # instrumentation PGO of any other package (F5)
+    "pgo",                 # instrumentation PGO of any package (`build --pgo`)
     "autofdo_kernel",      # sample-based FDO of the kernel (Clang AutoFDO)
     "propeller_kernel",    # Propeller basic-block layout of the kernel
     "bolt_llvm",           # post-link BOLT of the LLVM toolchain

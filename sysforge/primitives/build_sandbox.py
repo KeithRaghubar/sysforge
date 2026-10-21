@@ -530,7 +530,7 @@ def host_profile_data(exports: dict | None, conf_path=None) -> list:
     """Host profile files named by the flags, in first-seen order.
 
     The PGO stages bake an absolute host path into the flag
-    (``-fprofile-use=/var/cache/sysforge/pgo-mesa/mesa.profdata``), and clang
+    (``-fprofile-use=/var/cache/sysforge/pgo/mesa/mesa.profdata``), and clang
     treats an unreadable profile as a hard **error** rather than a warning —
     which meson surfaces as ``Compiler clang cannot compile programs``, the
     same message a chroot with no compiler at all produces. That collision is

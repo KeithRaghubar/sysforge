@@ -996,6 +996,9 @@ def build_and_install(
     cc: str | None = None,
     cxx: str | None = None,
     ld: str | None = None,
+    toolchain: str | None = None,
+    save_toolchain: bool = False,
+    reset_toolchain: bool = False,
     state_dir: Path | None = None,
     pkg_log: bool = True,
     persist_log: bool = False,
@@ -1039,11 +1042,14 @@ def build_and_install(
     is in ``review_trusted`` (``"aur"`` covers AUR dependencies) are accepted
     without asking in either active mode.
 
-    ``pgo_mode`` (``"record"``/``"use"``/``None``) drives mesa instrumentation
-    PGO (`build --pgo`). Threaded into every target's ``BuildOptions`` but a
-    no-op for non-mesa pkgbases (the wrapper gates on ``is_mesa_pkgbase``), so a
-    mixed batch only profiles the mesa target. ``use`` earns the ``-sysforge``
-    rename (``build_mode = "pgo_mesa"``).
+    ``pgo_mode`` (``"record"``/``"use"``/``None``) drives instrumentation
+    PGO (`build --pgo`), threaded into every target's ``BuildOptions``.
+    ``use`` earns the ``-sysforge`` rename (``build_mode = "pgo"``).
+
+    ``toolchain`` (``build --toolchain``, 3.5.0-F14) swaps each named
+    target's whole compiler bundle; ``save_toolchain``/``reset_toolchain``
+    write or remove the target's ``[package_compiler_overrides]`` row first.
+    None of the three reaches AUR dependencies, which keep their own profile.
 
     ``mesa_smoke`` runs the post-install mesa smoke check after the bulk
     install (3.2.0-F10); ``update`` passes ``False`` and runs it once after its
@@ -1349,6 +1355,10 @@ def build_and_install(
                         cc_override=cc,
                         cxx_override=cxx,
                         ld_override=ld,
+                        # Named targets only; deps keep their own profile.
+                        toolchain_override=toolchain,
+                        save_toolchain=save_toolchain,
+                        reset_toolchain=reset_toolchain,
                         cache_report=False,
                         abi_check=abi_check,
                         init_session=(

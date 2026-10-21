@@ -63,7 +63,7 @@ def _files_db_present():
 # ---------------------------------------------------------------------------
 
 def make_options(**kwargs):
-    defaults = dict(resume=False, start_from=None, force_retry=False,
+    defaults = dict(resume=False, start_from=None, retry_failed=False,
                     dry_run=False, state_dir=None)
     defaults.update(kwargs)
     return RunOptions(**defaults)

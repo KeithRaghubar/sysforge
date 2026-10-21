@@ -5,7 +5,7 @@
 """
 provides_lookup.py — reverse-lookup which packages own a soname file
 
-Thin wrapper around `pacman -F` for `sysforge doctor --suggest` so the
+Thin wrapper around `pacman -F` for `sysforge doctor pkg --suggest` so the
 user can see which package would satisfy an unsatisfied soname or a
 missing NEEDED runtime library.
 

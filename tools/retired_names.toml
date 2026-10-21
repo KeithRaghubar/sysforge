@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: 2026 Keith Raghubar
+#
+# SPDX-License-Identifier: MIT
+
+# Names sysforge no longer has (3.5.0-DEV12). `make check-standards` (group
+# `retired_names`) fails on any of them anywhere in the repo, comments and
+# completions included, outside the files that describe the change on purpose:
+# release notes, ROADMAP, ROADMAP-ABANDONED and this file. An entry's `allow`
+# adds the files that must still name it (the migration code that reads the old
+# value, the tests that check it is refused).
+#
+# Only names that cannot mean anything else belong here. A spelling still valid
+# on another command (`--force`, `--purge`, `--quiet`) or common in other tools
+# (`--list`, `--prune`) is checked per command by tests/test_verb_registry.py
+# instead (3.5.0-DEV11).
+#
+#   name     the exact text, matched as a whole word (`-` counts as a word char)
+#   id       the roadmap ID that retired it
+#   use      what to write instead
+#   allow    extra files (globs) where it may still appear
+
+# --- 3.5.0-F15: one spelling per flag ---------------------------------------
+
+[[retired]]
+name = "--no-pkg-logs"
+id = "3.5.0-F15"
+use = "--no-pkg-log"
+allow = [
+    "docs/design/08-cli-verb-framework.md",
+    "docs/design/12-logging.md",
+]
+
+[[retired]]
+name = "--no-confirm"
+id = "3.5.0-F15"
+use = "--yes"
+
+[[retired]]
+name = "--non-interactive"
+id = "3.5.0-F15"
+use = "--no-interactive"
+
+[[retired]]
+name = "--auto-pgo"
+id = "3.5.0-F15"
+use = "--yes"
+allow = [
+    "docs/design/08-cli-verb-framework.md",
+]
+
+[[retired]]
+name = "--force-retry"
+id = "3.5.0-F15"
+use = "--retry-failed"
+
+[[retired]]
+name = "--skip-boot-audit"
+id = "3.5.0-F15"
+use = "--allow-boot-audit-failure"
+
+[[retired]]
+name = "--skip-build-space-check"
+id = "3.5.0-F15"
+use = "--allow-low-build-space"
+
+[[retired]]
+name = "--purge-log"
+id = "3.5.0-F15"
+use = "--truncate-log"
+
+[[retired]]
+name = "--compiler"
+id = "3.5.0-F15"
+use = "run kernel --toolchain"
+
+# --- 3.5.0-F16: the patched_pkgbuild alias ----------------------------------
+
+[[retired]]
+name = "patched_pkgbuild"
+id = "3.5.0-F16"
+use = "source_built"
+allow = [
+    "sysforge/primitives/profile.py",
+    "sysforge/CLAUDE.md",
+    "docs/design/10-flag-profile-system.md",
+    "docs/design/21-standards.md",
+    "etc/sysforge/profiles.toml",
+]
+
+# --- 3.5.0-F17: mesa PGO is generic -----------------------------------------
+
+[[retired]]
+name = "pgo_mesa"
+id = "3.5.0-F17"
+use = "pgo"
+allow = [
+    "sysforge/primitives/build_state.py",
+    "sysforge/primitives/profile.py",
+    "sysforge/primitives/state_probe.py",
+    "sysforge/CLAUDE.md",
+    "docs/design/08-cli-verb-framework.md",
+]
+
+[[retired]]
+name = "pgo-mesa"
+id = "3.5.0-F17"
+use = "pgo/mesa"
+allow = [
+    "sysforge/primitives/mesa_pgo.py",
+    "sysforge/primitives/state_probe.py",
+    "sysforge/state_cmd.py",
+    "sysforge/CLAUDE.md",
+    "docs/design/08-cli-verb-framework.md",
+]
+
+[[retired]]
+name = "build_mode_for"
+id = "3.5.0-F17"
+use = "mesa_pgo.BUILD_MODE"

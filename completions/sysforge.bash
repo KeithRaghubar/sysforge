@@ -122,8 +122,16 @@ _sysforge_flag_arg() {
             COMPREPLY=( $(compgen -W "reconfigure toolchain packages kernel" -- "$cur") )
             return 0
             ;;
-        --compiler)
-            COMPREPLY=( $(compgen -W "gcc llvm" -- "$cur") )
+        --toolchain)
+            # `build`/`run kernel` take a value; `doctor system --toolchain` is a switch.
+            if [[ " ${words[*]} " != *" doctor "* ]]; then
+                COMPREPLY=( $(compgen -W "gcc llvm" -- "$cur") )
+                return 0
+            fi
+            ;;
+        --verb)
+            # sysforge log: every verb_log_names() entry (test_log_cmd checks).
+            COMPREPLY=( $(compgen -W "build config-merge doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update" -- "$cur") )
             return 0
             ;;
         --bootloader)
@@ -193,7 +201,8 @@ _sysforge_installed_pkg_names() {
 
 _sysforge_build() {
     _sysforge_flag_arg && return
-    local flags="-m --makepkg --interactive --profile-conf --cc --cxx --ld \
+    local flags="-m --makepkg --interactive --profile-conf \
+        --toolchain --save-toolchain --reset-toolchain --cc --cxx --ld \
         --no-pkg-log --log-dir --persist-log --cache-report --abi-check \
         --no-update --cleansrc --cleansrc-force --no-llvm-preflight \
         --review --no-review --force --rebuild --pgo --state-dir"
@@ -244,8 +253,8 @@ _sysforge_resolve() {
 _sysforge_log() {
     _sysforge_flag_arg && return
     if [[ $cur == -* ]]; then
-        COMPREPLY=( $(compgen -W "--state-dir --no-pager" -- "$cur") )
-    else
+        COMPREPLY=( $(compgen -W "--verb --log-dir --state-dir --no-pager" -- "$cur") )
+    elif [[ " ${words[*]} " != *" --verb "* ]]; then
         _sysforge_local_pkg_names
     fi
 }
@@ -366,10 +375,10 @@ _sysforge_state() {
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--state-dir --no-pager --json" -- "$cur") )
             ;;
         orphans)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--prune --yes --no-pager" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--delete --yes --no-pager" -- "$cur") )
             ;;
         profiles)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--purge --no-pager --state-dir" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--delete --yes --no-pager --state-dir" -- "$cur") )
             ;;
         boot-entries)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--no-pager" -- "$cur") )
@@ -419,9 +428,9 @@ _sysforge_run() {
     case "$subverb" in
         pipeline)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
-                --resume --start-from --force-retry --dry-run --packages \
+                --resume --start-from --retry-failed --dry-run --packages \
                 --state-dir --profile-conf --no-unified-log --no-pkg-log \
-                --log-dir --purge-log --persist-log --cache-report --abi-check \
+                --log-dir --truncate-log --persist-log --cache-report --abi-check \
                 --no-update" -- "$cur") )
             ;;
         hardware)
@@ -433,22 +442,22 @@ _sysforge_run() {
         toolchain)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update -m --makepkg --persist-log --cache-report \
-                --abi-check --state-dir --rebuild-profdata --reuse-built --bolt-only --install-only --auto-pgo \
-                --allow-dirty-llvm --allow-version-skew --skip-build-space-check \
+                --abi-check --state-dir --rebuild-profdata --reuse-built --bolt-only --install-only --yes \
+                --allow-dirty-llvm --allow-version-skew --allow-low-build-space \
                 --rebuild-soname-consumers --cleansrc --cleansrc-force" -- "$cur") )
             ;;
         packages)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
-                --packages --dry-run --force-retry --no-update --no-pkg-log \
+                --packages --dry-run --retry-failed --no-update --no-pkg-log \
                 --persist-log --log-dir --cache-report --abi-check --state-dir \
                 --profile-conf" -- "$cur") )
             ;;
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --no-interactive --compiler --bootloader --base-config \
+                --no-interactive --toolchain --bootloader --base-config \
                 --base-config-merge \
-                --allow-no-fallback --skip-boot-audit \
+                --allow-no-fallback --allow-boot-audit-failure \
                 --headers --no-headers --docs --no-docs \
                 --keep-hotplug-drivers --no-keep-hotplug-drivers \
                 --autofdo --propeller --no-pkg-log \

@@ -2,7 +2,7 @@
 test_state_orphans.py — coverage for `sysforge state orphans`.
 
 Verifies that the command surfaces untracked + superseded artifacts in
-PKGDEST, prints a sane summary, and only deletes when --prune is set
+PKGDEST, prints a sane summary, and only deletes when --delete is set
 (with confirmation by default).
 """
 from pathlib import Path
@@ -12,8 +12,8 @@ from unittest.mock import patch
 from sysforge.state_cmd import cmd_state_orphans
 
 
-def _args(prune: bool = False, yes: bool = False, no_pager: bool = True):
-    return SimpleNamespace(prune=prune, yes=yes, no_pager=no_pager)
+def _args(delete: bool = False, yes: bool = False, no_pager: bool = True):
+    return SimpleNamespace(delete=delete, yes=yes, no_pager=no_pager)
 
 
 def _mk_pkg(pkgdest: Path, name: str, ver: str, rel: str = "1") -> Path:
@@ -82,11 +82,11 @@ def test_uninstalled_packages_not_listed(tmp_path, capsys):
     assert "Superseded" in out
     assert "htop-3.3.0-1-x86_64.pkg.tar.zst" in out
     assert "htop-3.4.0-1-x86_64.pkg.tar.zst" not in out
-    assert "--prune" in out
+    assert "--delete" in out
 
 
-def test_prune_only_removes_superseded(tmp_path, capsys):
-    """--prune must not touch the kept-on-purpose builds."""
+def test_delete_only_removes_superseded(tmp_path, capsys):
+    """--delete must not touch the kept-on-purpose builds."""
     pkgdest = tmp_path / "builds"
     kept = _mk_pkg(pkgdest, "kernel-custom", "6.10.0")  # uninstalled — kept
     stale = _mk_pkg(pkgdest, "htop", "3.3.0")           # superseded
@@ -105,7 +105,7 @@ def test_prune_only_removes_superseded(tmp_path, capsys):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                side_effect=fake_read):
-        cmd_state_orphans(_args(prune=True, yes=True))
+        cmd_state_orphans(_args(delete=True, yes=True))
 
     out = capsys.readouterr().out
     assert kept.exists()             # NOT touched
@@ -114,7 +114,7 @@ def test_prune_only_removes_superseded(tmp_path, capsys):
     assert "Removed 1 file(s)" in out
 
 
-def test_prune_declined_keeps_files(tmp_path, capsys, monkeypatch):
+def test_delete_declined_keeps_files(tmp_path, capsys, monkeypatch):
     pkgdest = tmp_path / "builds"
     stale = _mk_pkg(pkgdest, "htop", "3.3.0")
     monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
@@ -124,14 +124,14 @@ def test_prune_declined_keeps_files(tmp_path, capsys, monkeypatch):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                return_value="htop"):
-        cmd_state_orphans(_args(prune=True, yes=False))
+        cmd_state_orphans(_args(delete=True, yes=False))
 
     out = capsys.readouterr().out
     assert stale.exists()
     assert "Aborted" in out
 
 
-def test_prune_eof_treated_as_decline(tmp_path, capsys, monkeypatch):
+def test_delete_eof_treated_as_decline(tmp_path, capsys, monkeypatch):
     pkgdest = tmp_path / "builds"
     stale = _mk_pkg(pkgdest, "htop", "3.3.0")
 
@@ -144,7 +144,7 @@ def test_prune_eof_treated_as_decline(tmp_path, capsys, monkeypatch):
                return_value={"htop": "3.4.0-1"}), \
          patch("sysforge.primitives.pacman.read_pkgname_from_file",
                return_value="htop"):
-        cmd_state_orphans(_args(prune=True, yes=False))
+        cmd_state_orphans(_args(delete=True, yes=False))
 
     out = capsys.readouterr().out
     assert stale.exists()

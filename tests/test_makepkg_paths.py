@@ -421,7 +421,7 @@ def test_kernel_gate2_missing_tree_after_fresh_build_is_fatal(tmp_path, monkeypa
     monkeypatch.setattr(kernel, "resolve_built_config", lambda d, **kw: None)
     with pytest.raises(RuntimeError, match="Gate 2"):
         kernel.gate2_audit(
-            tmp_path, [], skip_boot_audit=False, build_dir=tmp_path / "gone",
+            tmp_path, [], allow_boot_audit_failure=False, build_dir=tmp_path / "gone",
         )
 
 
@@ -431,7 +431,7 @@ def test_kernel_gate2_missing_tree_without_fresh_build_only_warns(tmp_path, monk
     monkeypatch.setattr(kernel, "resolve_built_config", lambda d, **kw: None)
     # AlreadyBuilt path: no build dir was reported, so there is no tree to
     # demand — stays the existing warning.
-    assert kernel.gate2_audit(tmp_path, [], skip_boot_audit=False) is None
+    assert kernel.gate2_audit(tmp_path, [], allow_boot_audit_failure=False) is None
 
 
 @pytest.mark.parametrize(("pkgmeta", "rename", "expected"), [

@@ -137,10 +137,10 @@ def _neutralize_kernel_gates(monkeypatch):
 
 def make_options(**kwargs):
     defaults = dict(
-        resume=False, start_from=None, force_retry=False,
+        resume=False, start_from=None, retry_failed=False,
         dry_run=False, state_dir=None,
         no_unified_log=False, no_pkg_log=False,
-        log_dir=None, purge_log=False, persist_log=False,
+        log_dir=None, truncate_log=False, persist_log=False,
         # Stage-level tests are not exercising the scheduler — default to
         # --no-update so the kernel pre-sync is a no-op. Sync-specific tests
         # below override this explicitly.
@@ -1382,7 +1382,7 @@ def test_resolve_compiler_rejects_invalid_cli(tmp_path):
     state = PipelineState(tmp_path / "state")
     options = make_options()
     options.compiler = "icc"
-    with pytest.raises(RuntimeError, match="invalid --compiler"):
+    with pytest.raises(RuntimeError, match="invalid --toolchain"):
         resolve_compiler(kcfg({}), options, state)
 
 
@@ -2205,7 +2205,7 @@ def test_gate2_brick_aborts_before_install(tmp_path, monkeypatch):
     install_mock.assert_not_called()
 
 
-def test_gate2_skip_boot_audit_installs_anyway(tmp_path, monkeypatch):
+def test_gate2_allow_boot_audit_failure_installs_anyway(tmp_path, monkeypatch):
     from sysforge.primitives.kernel_safety import KernelFinding, SEV_ERROR
     builds = tmp_path / "builds"
     make_pkgbuild(builds, "linux-git")
@@ -2224,7 +2224,7 @@ def test_gate2_skip_boot_audit_installs_anyway(tmp_path, monkeypatch):
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, make_options(
-            state_dir=tmp_path / "state", skip_boot_audit=True))
+            state_dir=tmp_path / "state", allow_boot_audit_failure=True))
     install_mock.assert_called_once()
 
 
@@ -2657,6 +2657,39 @@ def test_run_silent_when_variants_match(tmp_path):
     logs = _run_kernel_with_state(tmp_path, (state, p))
 
     assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(logs))
+
+
+def _kernel_on(tmp_path, builds, compiler):
+    """kernel.toml pinning the kernel's own compiler (top-level key first)."""
+    p = make_kernel_toml(tmp_path, builds)
+    p.write_text(f'compiler = "{compiler}"\n' + p.read_text())
+    return p
+
+
+@pytest.mark.parametrize("compiler, recorded, active, cc", [
+    ("gcc", "gcc", "pgo_llvm", "/usr/bin/clang"),        # gcc kernel, LLVM system
+    ("llvm", "stock_llvm", "gcc", "/usr/bin/gcc"),        # llvm kernel, gcc system
+])
+def test_run_silent_for_a_kernel_kept_on_the_other_compiler(
+        tmp_path, compiler, recorded, active, cc):
+    """3.5.0-B126: the record names the kernel's own compiler, so comparing it
+    with the active variant warned on every run."""
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    _seed_build_state(tmp_path / "state", "linux-git", recorded, builds / "linux-git")
+    state = _state_with_variant(tmp_path, active, cc=cc, cxx=cc + "++")
+    logs = _run_kernel_with_state(tmp_path, (state, _kernel_on(tmp_path, builds, compiler)))
+    assert not any("Rebuilding will switch toolchains" in m for m in _warn_messages(logs))
+
+
+def test_run_warns_when_the_kernel_compiler_changes(tmp_path):
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    _seed_build_state(tmp_path / "state", "linux-git", "pgo_llvm", builds / "linux-git")
+    state = _state_with_variant(tmp_path, "pgo_llvm",
+                                cc="/usr/bin/clang", cxx="/usr/bin/clang++")
+    logs = _run_kernel_with_state(tmp_path, (state, _kernel_on(tmp_path, builds, "gcc")))
+    assert any("this build uses 'gcc'" in m for m in _warn_messages(logs))
 
 
 def test_run_silent_when_recorded_variant_absent(tmp_path):
@@ -5236,14 +5269,14 @@ def test_gate2_refuses_a_reused_package_with_no_tied_config(tmp_path, monkeypatc
     monkeypatch.setattr(_km.gates, "_gate2_audit_config",
                         lambda *a, **k: pytest.fail(f"audited {other}"))
     with pytest.raises(RuntimeError, match="no config tied to it"):
-        _km.gates.gate2_audit(tmp_path / "pkg", None, skip_boot_audit=False,
+        _km.gates.gate2_audit(tmp_path / "pkg", None, allow_boot_audit_failure=False,
                               build_dir=None, reused=None, already_built=True)
 
 
-def test_gate2_skip_boot_audit_lets_an_unverifiable_reuse_through(tmp_path, monkeypatch):
+def test_gate2_allow_boot_audit_failure_lets_an_unverifiable_reuse_through(tmp_path, monkeypatch):
     monkeypatch.setattr(_km.gates, "_gate2_audit_config",
                         lambda *a, **k: pytest.fail("audited a guessed config"))
-    _km.gates.gate2_audit(tmp_path / "pkg", None, skip_boot_audit=True,
+    _km.gates.gate2_audit(tmp_path / "pkg", None, allow_boot_audit_failure=True,
                           build_dir=None, reused=None, already_built=True)
 
 
@@ -5291,7 +5324,7 @@ def test_gate2_audits_reused_config_names_source_no_e2(tmp_path, monkeypatch):
     monkeypatch.setattr(device_probe, "enumerate_devices", lambda **k: [])
     reused = _km.gates.ReusedConfig({"CONFIG_EXT4_FS": "y"}, _REL, "build tree /t")
     with _capture_logs() as logs:
-        _km.gates.gate2_audit(tmp_path, None, skip_boot_audit=False, reused=reused)
+        _km.gates.gate2_audit(tmp_path, None, allow_boot_audit_failure=False, reused=reused)
     assert seen["cfg"] == {"CONFIG_EXT4_FS": "y"}
     assert any("build tree /t" in m for m in _info_messages(logs))
     assert not any("matches the running kernel" in m for m in _warn_messages(logs))
@@ -5441,7 +5474,7 @@ def test_gate2_caches_tree_rust_minimums(tmp_path, monkeypatch):
     monkeypatch.setattr(_km.gates, "resolve_built_config", lambda d, **kw: tree / ".config")
     state = tmp_path / "state"
     state.mkdir()
-    _km.gates.gate2_audit(tmp_path, None, skip_boot_audit=False, state_dir=state,
+    _km.gates.gate2_audit(tmp_path, None, allow_boot_audit_failure=False, state_dir=state,
                           build_dir=tmp_path / "b")
     assert _km.gates.load_rust_minimums(state) == (
         {"rustc": "1.85.0", "bindgen": "0.71.1"}, "the 7.2.7-sf kernel tree")

@@ -197,8 +197,7 @@ def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
 
-    from types import SimpleNamespace
-    options = SimpleNamespace(
+    options = makepkg_wrapper.BuildOptions(
         state_dir=None,
         source=None,
         owner_stage=None,
@@ -215,6 +214,51 @@ def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
 
     assert captured["build_seconds"] == 123
     assert isinstance(captured["build_seconds"], int)
+
+
+@pytest.mark.parametrize("active, cc, owner, recorded, fingerprint", [
+    ("pgo_llvm", "gcc", None, "gcc", None),           # --toolchain gcc on llvm
+    ("gcc", "clang", None, "stock_llvm", None),       # --toolchain llvm on gcc
+    ("pgo_llvm", "clang", None, "pgo_llvm", "fp"),    # same family: unchanged
+    ("gcc", "gcc", None, "gcc", "fp"),
+    ("pgo_llvm", "gcc", "kernel", "gcc", None),       # a gcc kernel (3.5.0-B126)
+    ("pgo_llvm", "gcc", "toolchain", "pgo_llvm", "fp"),  # the stage's own variants
+    ("system", "gcc", None, "system", "fp"),          # no toolchain stage yet
+    ("pgo_llvm", "my-cc", None, "pgo_llvm", "fp"),    # unrecognised raw --cc
+])
+def test_record_build_state_names_the_compiler_actually_used(
+        tmp_path, monkeypatch, active, cc, owner, recorded, fingerprint):
+    """3.5.0-B125: a package swapped to the other toolchain family recorded the
+    toolchain stage's variant, so build_state claimed pgo_llvm for a gcc build."""
+    import sysforge.primitives.build_state as bs_mod
+
+    captured = {}
+
+    class _SpyState(bs_mod.BuildState):
+        def record(self, *a, **k):
+            captured.update(k)
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    options = makepkg_wrapper.BuildOptions(
+        state_dir=None, source=None, owner_stage=owner, cc_override=None,
+        toolchain_variant=active, toolchain_fingerprint="fp",
+        record_toolchain_variant=None,
+    )
+    pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
+                           "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
+
+    makepkg_wrapper._record_build_state(
+        pkgbuild, pkgmeta, {"CC": cc}, options,
+        rename=None, record_build_mode=None, build_elapsed=1,
+    )
+
+    assert (captured["toolchain_variant"], captured["toolchain_fingerprint"]) \
+        == (recorded, fingerprint)
 
 
 def test_record_build_state_warns_when_no_pkgname_resolves(tmp_path, monkeypatch, capsys):
@@ -236,8 +280,7 @@ def test_record_build_state_warns_when_no_pkgname_resolves(tmp_path, monkeypatch
 
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgbase=linux\n")
-    from types import SimpleNamespace
-    options = SimpleNamespace(
+    options = makepkg_wrapper.BuildOptions(
         state_dir=None, source=None, owner_stage="kernel",
         toolchain_variant=None, toolchain_fingerprint=None, record_toolchain_variant=None,
     )
@@ -506,12 +549,11 @@ def _spy_record(monkeypatch):
 
 
 def _record(tmp_path, variant="pgo_llvm", fingerprint="fp-host", record_variant=None):
-    from types import SimpleNamespace
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
-    options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
-                              toolchain_variant=variant, toolchain_fingerprint=fingerprint,
-                              record_toolchain_variant=record_variant)
+    options = makepkg_wrapper.BuildOptions(
+        toolchain_variant=variant, toolchain_fingerprint=fingerprint,
+        record_toolchain_variant=record_variant)
     pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
                            "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
     makepkg_wrapper._record_build_state(pkgbuild, pkgmeta, None, options, rename=None,
@@ -560,15 +602,12 @@ def test_record_site_sandboxed_records_the_copy_compiler(tmp_path, monkeypatch, 
 
 
 def test_record_site_clears_provenance_on_the_no_pkgname_path(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     from sysforge.primitives import build_sandbox
     _spy_record(monkeypatch)
     build_sandbox.set_provenance(build_sandbox.SandboxProvenance("gcc", "x"))
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text("\n")
-    options = SimpleNamespace(state_dir=None, source=None, owner_stage=None,
-                              toolchain_variant=None, toolchain_fingerprint=None,
-                              record_toolchain_variant=None)
+    options = makepkg_wrapper.BuildOptions()
     makepkg_wrapper._record_build_state(pkgbuild, {"globals": {}}, None, options,
                                         rename=None, record_build_mode=None, build_elapsed=1)
     assert build_sandbox.take_provenance() is None
@@ -679,7 +718,6 @@ def test_reuse_build_never_arms_counter_on_gcc(tmp_path, monkeypatch):
 def _record_capture(tmp_path, monkeypatch, pkgbuild_text):
     """Run _record_build_state over a real PKGBUILD; return bs.record kwargs."""
     import sysforge.primitives.build_state as bs_mod
-    from types import SimpleNamespace
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
     captured = {}
@@ -694,7 +732,7 @@ def _record_capture(tmp_path, monkeypatch, pkgbuild_text):
     monkeypatch.setattr(bs_mod, "BuildState", _SpyState)
     pkgbuild = tmp_path / "PKGBUILD"
     pkgbuild.write_text(pkgbuild_text)
-    options = SimpleNamespace(
+    options = makepkg_wrapper.BuildOptions(
         state_dir=None, source=None, owner_stage=None, cc_override=None,
         toolchain_variant=None, toolchain_fingerprint=None,
         record_toolchain_variant=None,

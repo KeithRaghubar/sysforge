@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from sysforge.primitives.config import load_config
+from sysforge.primitives.profile import TOOLCHAIN_CHOICES
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup
 from sysforge.verbs.helpers import (
@@ -42,6 +43,12 @@ class _RunVerbBase(Verb):
     # Stage.makepkg_bearing, 2.1.0-B4).
     makepkg_bearing = False
 
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        # run_stage_standalone opens sysforge-run-<stage>.log itself, and each
+        # verb is named run-<stage>.
+        return cls.name
+
     def pre_check(self, args) -> PreCheckResult:
         if self.makepkg_bearing and os.geteuid() == 0:
             return PreCheckResult(
@@ -58,6 +65,10 @@ class _RunVerbBase(Verb):
 
 class RunPipelineVerb(_RunVerbBase):
     name = "run-pipeline"
+
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        return None  # the pipeline log, log.PIPELINE_LOG: `sysforge log` with no argument
     # NOT makepkg_bearing at the verb level: the pipeline spans the bootstrap
     # phase (install/hardware/configure/reconfigure), which legitimately runs
     # as root on the live ISO. The runner enforces the no-root rule per stage
@@ -74,7 +85,7 @@ class RunPipelineVerb(_RunVerbBase):
         p.add_argument("--start-from", metavar="STAGE", dest="start_from",
             help="Start from this stage, marking all prior stages as skipped. "
                  "Useful on a live system: --start-from reconfigure.")
-        p.add_argument("--force-retry", action="store_true", dest="force_retry",
+        p.add_argument("--retry-failed", action="store_true", dest="retry_failed",
             help="Retry all failed packages without prompting.")
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show what would run without executing anything.")
@@ -88,7 +99,7 @@ class RunPipelineVerb(_RunVerbBase):
             help="Disable per-package log files.")
         p.add_argument("--log-dir", metavar="DIR", dest="log_dir",
             help="Directory for log files.")
-        p.add_argument("--purge-log", action="store_true", dest="purge_log",
+        p.add_argument("--truncate-log", action="store_true", dest="truncate_log",
             help="Truncate the unified log before this run.")
         p.add_argument("--persist-log", action="store_true", dest="persist_log",
             help="Keep log files after successful completion.")
@@ -111,13 +122,13 @@ class RunPipelineVerb(_RunVerbBase):
         options = RunOptions(
             resume=args.resume,
             start_from=args.start_from,
-            force_retry=args.force_retry,
+            retry_failed=args.retry_failed,
             dry_run=args.dry_run,
             state_dir=Path(args.state_dir) if args.state_dir else None,
             no_unified_log=args.no_unified_log,
             no_pkg_log=args.no_pkg_log,
             log_dir=Path(args.log_dir) if args.log_dir else None,
-            purge_log=args.purge_log,
+            truncate_log=args.truncate_log,
             persist_log=args.persist_log,
             cache_report=args.cache_report,
             abi_check=args.abi_check,
@@ -236,8 +247,8 @@ class RunToolchainVerb(_RunVerbBase):
                  "with the usual audit, snapshot and verify. Refuses unless the "
                  "last llvm build is the PGO build of the PKGBUILD's version and "
                  "every package is in PKGDEST. Implies --no-update.")
-        p.add_argument("--auto-pgo", action="store_true", dest="auto_pgo",
-            help="Bypass the PGO confirmation prompts (profdata reuse, staging/pgo_store "
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="Answer yes to the PGO confirmation prompts (profdata reuse, staging/pgo_store "
                  "purge, 4-pass start, suspicious profdata size). Required for non-interactive "
                  "PGO runs; without it, a non-TTY invocation aborts the PGO sub-flow because PGO "
                  "is fragile and silent mis-optimisation is the failure mode.")
@@ -255,8 +266,8 @@ class RunToolchainVerb(_RunVerbBase):
                  "skew aborts before building because dependency resolution will "
                  "fail; this builds anyway. spirv-llvm-translator and lib32-* are "
                  "never part of the skew check.")
-        p.add_argument("--skip-build-space-check", action="store_true",
-            dest="skip_build_space_check",
+        p.add_argument("--allow-low-build-space", action="store_true",
+            dest="allow_low_build_space",
             help="Override the pre-build Gate-1 abort when a filesystem hosting the "
                  "staging dirs / pgo_store / build output lacks min_build_free_gb "
                  "free (default 40 GiB). Dangerous: the multi-hour LLVM build may "
@@ -326,10 +337,10 @@ class RunToolchainVerb(_RunVerbBase):
             persist_log=args.persist_log,
             makepkg_flags=expand_makepkg_flags(args.makepkg) if args.makepkg else [],
             rebuild_profdata=args.rebuild_profdata,
-            auto_pgo=args.auto_pgo,
+            yes=args.yes,
             allow_dirty_llvm=args.allow_dirty_llvm,
             allow_version_skew=getattr(args, "allow_version_skew", False),
-            skip_build_space_check=getattr(args, "skip_build_space_check", False),
+            allow_low_build_space=getattr(args, "allow_low_build_space", False),
             rebuild_soname_consumers=getattr(args, "rebuild_soname_consumers", None),
             reuse_built=getattr(args, "reuse_built", False),
             bolt_only=getattr(args, "bolt_only", False),
@@ -351,7 +362,7 @@ class RunPackagesVerb(_RunVerbBase):
             help=PACKAGES_FILE_HELP)
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show what would run without executing anything.")
-        p.add_argument("--force-retry", action="store_true", dest="force_retry",
+        p.add_argument("--retry-failed", action="store_true", dest="retry_failed",
             help="Retry all failed packages without prompting.")
         p.add_argument("--no-update", action="store_true", dest="no_update",
             help="Skip the source sync (fetch and fast-forward) of each package "
@@ -380,7 +391,7 @@ class RunPackagesVerb(_RunVerbBase):
         config = load_config_with_overrides(args)
         options = RunOptions(
             dry_run=args.dry_run,
-            force_retry=args.force_retry,
+            retry_failed=args.retry_failed,
             no_update=args.no_update,
             no_pkg_log=args.no_pkg_log,
             persist_log=args.persist_log,
@@ -416,8 +427,8 @@ class RunKernelVerb(_RunVerbBase):
             help="Disable interactive kconfig (default is interactive: the PKGBUILD's "
                  "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
                  "interactive targets are patched to `make olddefconfig` for unattended runs.")
-        p.add_argument("--compiler", choices=["gcc", "llvm"], dest="compiler",
-            help="Kernel compiler override (gcc or llvm). Independent of "
+        p.add_argument("--toolchain", choices=TOOLCHAIN_CHOICES, dest="compiler",
+            help="Build the kernel with this toolchain (gcc or llvm). Independent of "
                  "`run toolchain`, so you can keep gcc system-wide but build the "
                  "kernel with LLVM (or vice versa). Resolution order: this flag > "
                  "kernel.toml compiler > the compiler the last `run toolchain` set up.")
@@ -489,10 +500,10 @@ class RunKernelVerb(_RunVerbBase):
                  "(stock linux/linux-lts with a boot image) exists before "
                  "installing a custom kernel. Without a fallback, a broken custom "
                  "kernel leaves no recovery path short of a live USB.")
-        p.add_argument("--skip-boot-audit", action="store_true",
-            dest="skip_boot_audit",
-            help="Override the pre-install boot-critical kconfig audit (Gate 2). "
-                 "By default a built kernel that drops the root filesystem / "
+        p.add_argument("--allow-boot-audit-failure", action="store_true",
+            dest="allow_boot_audit_failure",
+            help="Install even when the pre-install boot-critical kconfig audit (Gate 2) "
+                 "fails. By default a built kernel that drops the root filesystem / "
                  "storage controller / core boot infra aborts before install; this "
                  "flag installs it anyway. Dangerous: it can leave the system unbootable.")
         p.set_defaults(verb_cls=cls)
@@ -521,7 +532,7 @@ class RunKernelVerb(_RunVerbBase):
             base_config=getattr(args, "base_config", None),
             base_config_merge=getattr(args, "base_config_merge", None),
             allow_no_fallback=getattr(args, "allow_no_fallback", False),
-            skip_boot_audit=getattr(args, "skip_boot_audit", False),
+            allow_boot_audit_failure=getattr(args, "allow_boot_audit_failure", False),
             build_headers=getattr(args, "build_headers", None),
             build_docs=getattr(args, "build_docs", None),
             kernel_fdo=getattr(args, "kernel_fdo", None),

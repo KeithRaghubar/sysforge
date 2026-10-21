@@ -69,7 +69,7 @@ def test_execute_names_a_profile_store_the_uninstall_leaves_behind(
     from sysforge import state_cmd
 
     bs = _bs(tmp_path, {
-        "mesa-sysforge": {"build_mode": "pgo_mesa", "pkgbase": "mesa-sysforge",
+        "mesa-sysforge": {"build_mode": "pgo", "pkgbase": "mesa-sysforge",
                           "origin_pkgbase": "mesa"},
     })
     bs.save()

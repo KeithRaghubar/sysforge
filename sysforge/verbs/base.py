@@ -40,6 +40,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from sysforge import log
+
 if TYPE_CHECKING:
     from sysforge.primitives.stage_sentinel import Recovery
 
@@ -98,8 +100,20 @@ class Verb(ABC):
     #: closed by ``verbs.runner._consolidated_log``: purged before ``execute``,
     #: kept ``persist=True`` after, skipped on dry-run). Substantial verbs set
     #: this True; pure printers / read-only reports leave it False. Verbs that
-    #: need a non-derived basename override ``unified_log_basename`` instead.
+    #: need a non-derived basename override ``run_log_name`` instead.
     wants_run_log: bool = False
+
+    @classmethod
+    def run_log_name(cls) -> str | None:
+        """The ``<name>`` in the ``sysforge-<name>.log`` this verb leaves, or None.
+
+        One declaration for the writer and for ``sysforge log --verb``
+        (3.5.0-F13), so a verb that starts logging is pageable with no second
+        edit. Defaults to ``name`` for a ``wants_run_log`` verb. A verb that
+        opens its own log (``update``, the standalone ``run`` stages) overrides
+        this without setting ``wants_run_log``, so the runner leaves it alone.
+        """
+        return cls.name if cls.wants_run_log else None
 
     @classmethod
     def add_parser(cls, sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -150,10 +164,12 @@ class Verb(ABC):
         pipeline return ``None`` here because they own richer log lifecycles
         (their own purge/persist/success policy) and call
         :func:`~sysforge.log.open_unified_log` directly.
-        Setting ``wants_run_log = True`` derives the basename from ``self.name``.
+        Setting ``wants_run_log = True`` derives the basename from
+        :meth:`run_log_name`.
         """
         del args
-        return f"sysforge-{self.name}.log" if self.wants_run_log else None
+        name = self.run_log_name()
+        return log.verb_log_name(name) if name and self.wants_run_log else None
 
     def journal_target(self, args) -> str | None:
         """The ``SYSFORGE_TARGET`` value for this verb's journald record, or ``None``.

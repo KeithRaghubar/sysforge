@@ -16,22 +16,22 @@ from sysforge.primitives import run as run_seam
 # Store resolution + flag values
 # ---------------------------------------------------------------------------
 
-def test_store_is_pgo_mesa_method_subdir(monkeypatch):
-    # Default root, no override: <profile_store_root>/pgo-mesa. Opts out of
+def test_store_is_pgo_method_target_subdir(monkeypatch):
+    # Default root, no override: <profile_store_root>/pgo/mesa. Opts out of
     # conftest's store isolation (path only, no I/O).
     monkeypatch.delenv("SYSFORGE_PROFILE_STORE", raising=False)
     store = mesa_pgo.resolve_store({})
-    assert store.name == "pgo-mesa"
-    assert store.parent.name == "sysforge"
+    assert (store.parent.name, store.name) == ("pgo", "mesa")
+    assert store.parent.parent.name == "sysforge"
 
 
 def test_store_honours_profile_store_override(tmp_path):
     store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)})
-    assert store == tmp_path / "pgo-mesa"
+    assert store == tmp_path / "pgo" / "mesa"
 
 
 def test_profdata_path_under_store():
-    assert mesa_pgo.profdata_path({}).name == mesa_pgo.PROFDATA_NAME
+    assert mesa_pgo.profdata_path({}).name == "mesa.profdata"
     assert mesa_pgo.profdata_path({}).parent == mesa_pgo.resolve_store({})
 
 
@@ -42,8 +42,10 @@ def test_generate_flag_bakes_store_path(tmp_path):
 def test_build_mode_is_optimized():
     from sysforge.primitives.profile import is_optimized_build_mode
 
-    assert mesa_pgo.BUILD_MODE == "pgo_mesa"
+    assert mesa_pgo.BUILD_MODE == "pgo"
     assert is_optimized_build_mode(mesa_pgo.BUILD_MODE)
+    # mesa's own token was retired in 4.0.0 (3.5.0-F17): no longer optimized.
+    assert not is_optimized_build_mode("pgo_mesa")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +81,7 @@ def test_merge_no_profraw_reuses_existing_profdata(tmp_path, monkeypatch):
     # consuming build failed downstream) must NOT hard-abort: the merged
     # profdata is the durable, consumable artifact. Return it as-is without
     # invoking llvm-profdata.
-    out = tmp_path / mesa_pgo.PROFDATA_NAME
+    out = tmp_path / mesa_pgo.profdata_name("mesa")
     out.write_text("merged-already")
 
     def explode(*a, **kw):  # llvm-profdata must not be touched
@@ -114,7 +116,7 @@ def test_merge_success_invokes_llvm_profdata(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_seam.subprocess, "run", fake_run)
     out = mesa_pgo.merge_profraw(tmp_path)
-    assert out == tmp_path / mesa_pgo.PROFDATA_NAME
+    assert out == tmp_path / mesa_pgo.profdata_name("mesa")
     assert out.read_text() == "merged"
     assert calls["argv"][0] == "llvm-profdata"
     assert "merge" in calls["argv"]
@@ -149,7 +151,7 @@ def test_merge_folds_existing_profdata(tmp_path, monkeypatch):
     # Pruning the raw is only safe if the accumulated signal lives in the
     # profdata — so a re-merge must pass the existing profdata as an input
     # (cumulative, like the toolchain), not start from scratch.
-    out = tmp_path / mesa_pgo.PROFDATA_NAME
+    out = tmp_path / mesa_pgo.profdata_name("mesa")
     out.write_text("prior")
     (tmp_path / "new.profraw").write_text("raw")
     monkeypatch.setattr(mesa_pgo.shutil, "which", lambda _t: "/usr/bin/llvm-profdata")
@@ -169,7 +171,7 @@ def test_merge_folds_existing_profdata(tmp_path, monkeypatch):
     argv = calls["argv"]
     out_idx = argv.index("--output") + 1
     inputs = [a for i, a in enumerate(argv) if i not in (0, out_idx - 1, out_idx)]
-    assert any(a.endswith(mesa_pgo.PROFDATA_NAME) for a in inputs)
+    assert any(a.endswith(mesa_pgo.profdata_name("mesa")) for a in inputs)
     assert out.read_text() == "remerged"
 
 
@@ -200,7 +202,7 @@ def test_reuse_profdata_returns_existing_merged_profile(tmp_path):
     # a subsequent source rebuild reuses it instead of producing stock mesa.
     store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)})
     store.mkdir(parents=True)
-    pd = store / mesa_pgo.PROFDATA_NAME
+    pd = store / mesa_pgo.profdata_name("mesa")
     pd.write_text("merged")
     assert mesa_pgo.reuse_profdata({"profile_store": str(tmp_path)}) == pd
 
@@ -218,12 +220,11 @@ def test_reuse_profdata_ignores_bare_profraw(tmp_path):
 # Generalization beyond mesa (F5): per-package stores + build_mode
 # ---------------------------------------------------------------------------
 
-def test_store_is_pgo_mesa_for_mesa_family():
-    # mesa-family keeps the back-compat <root>/pgo-mesa store (no target subdir),
-    # so existing collected mesa profiles are never orphaned.
+def test_mesa_family_gets_per_package_stores(tmp_path):
+    # Since 4.0.0 mesa is no special case: each member has its own store.
     for pkgbase in ("mesa", "mesa-git", "lib32-mesa"):
-        store = mesa_pgo.resolve_store({}, pkgbase=pkgbase)
-        assert store.name == "pgo-mesa", pkgbase
+        store = mesa_pgo.resolve_store({"profile_store": str(tmp_path)}, pkgbase=pkgbase)
+        assert store == tmp_path / "pgo" / pkgbase
 
 
 def test_store_is_per_package_for_non_mesa(tmp_path):
@@ -241,14 +242,43 @@ def test_profdata_name_tracks_pkgbase(tmp_path):
     assert pd == tmp_path / "pgo" / "foo" / "foo.profdata"
 
 
-def test_build_mode_for_mesa_vs_generic():
-    from sysforge.primitives.profile import is_optimized_build_mode
+# ---------------------------------------------------------------------------
+# Pre-4.0.0 shared mesa store migration (3.5.0-F17)
+# ---------------------------------------------------------------------------
 
-    assert mesa_pgo.build_mode_for("mesa") == "pgo_mesa"
-    assert mesa_pgo.build_mode_for("foo") == "pgo"
-    # Both earn the -sysforge rename.
-    assert is_optimized_build_mode(mesa_pgo.build_mode_for("mesa"))
-    assert is_optimized_build_mode(mesa_pgo.build_mode_for("foo"))
+def _legacy_store(root):
+    old = root / "pgo-mesa"
+    old.mkdir(parents=True)
+    for name in ("mesa.profdata", "mesa.profdata.version", "lib32-mesa.profdata",
+                 "123.profraw"):
+        (old / name).write_text(name, encoding="utf-8")
+    return old
+
+
+def test_legacy_store_moves_route_by_pkgbase(tmp_path):
+    root = tmp_path / "root"
+    _legacy_store(root)
+    moves = {src.name: dest for src, dest in
+             mesa_pgo.legacy_store_moves({"profile_store": str(root)})}
+    assert moves == {
+        "123.profraw": root / "pgo" / "mesa" / "123.profraw",
+        "lib32-mesa.profdata": root / "pgo" / "lib32-mesa" / "lib32-mesa.profdata",
+        "mesa.profdata": root / "pgo" / "mesa" / "mesa.profdata",
+        "mesa.profdata.version": root / "pgo" / "mesa" / "mesa.profdata.version",
+    }
+
+
+def test_legacy_store_moves_skip_an_existing_destination(tmp_path):
+    root = tmp_path / "root"
+    _legacy_store(root)
+    (root / "pgo" / "mesa").mkdir(parents=True)
+    (root / "pgo" / "mesa" / "mesa.profdata").write_text("newer", encoding="utf-8")
+    names = {s.name for s, _ in mesa_pgo.legacy_store_moves({"profile_store": str(root)})}
+    assert "mesa.profdata" not in names
+
+
+def test_no_legacy_store_no_moves(tmp_path):
+    assert mesa_pgo.legacy_store_moves({"profile_store": str(tmp_path)}) == []
 
 
 def test_reuse_profdata_per_package(tmp_path):

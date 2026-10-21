@@ -31,7 +31,7 @@ build_mode = "pgo_llvm_toolchain"
 
 [profiles.patched]
 extends = "optimized"
-build_mode = "source_built"   # legacy "patched_pkgbuild" read-accepted, warns, gone in 4.0.0
+build_mode = "source_built"   # the old token "patched_pkgbuild" raises since 4.0.0
 
 [profiles.kernel]
 extends = "bare"
@@ -47,7 +47,7 @@ enumeration of every token (next to `_OPTIMIZED_BUILD_MODES`). The profile layer
 (`profiles.toml`, user-set) uses `source_built` | `pgo_llvm_toolchain` | `kernel`
 (omit for a standard build); the build_state layer (`build_state.toml`, stamped at
 build time) uses `source_built` | `pacman` | `kernel` plus the optimization modes
-(`pgo_mesa`/`pgo`/`autofdo_kernel`/`propeller_kernel`/`bolt_llvm`). The two layers
+(`pgo`/`autofdo_kernel`/`propeller_kernel`/`bolt_llvm`). The two layers
 share one value space: `source_built` means "a plain from-source build" in both —
 the profile layer extracts the PKGBUILD's embedded profile, build_state stamps it
 as the rebuild-on-update marker. `bolt_llvm` is the exception among the
@@ -63,18 +63,17 @@ one predicate for "plain source build" (flag drift's `drift_candidate`,
 `source_built`, so the stamp always describes the packages last built
 (`3.5.0-B31`).
 
-The profile layer normalizes its own legacy token **on read only** (never written
-into new data): `patched_pkgbuild → source_built` (`profile.normalize_build_mode`,
-applied at the `get_build_mode` read chokepoint). That alias is a registered
-`compat` deprecation as of 2.6.1-STD3 — reading it warns once per run and it is
-**removed in 4.0.0** (standards row 24; a `compat` removal may only land on an
-`X.0.0`, and 3.0.0 ships with the surface live). The build_state layer's
+The profile layer's legacy token `patched_pkgbuild` (read as `source_built`,
+deprecated since 2.0.0) was **removed in 4.0.0** (`3.5.0-F16`). The
+`get_build_mode` read chokepoint, `profile.normalize_build_mode`, now raises a
+`ConfigError` naming the replacement for it, the same treatment `repo_mode =
+"profiled"` got in 3.0.0: falling through as an unknown mode would quietly stop
+extracting the embedded profile. The build_state layer's
 equivalent read alias, `profiled → source_built` (formerly `BuildState.__init__`),
 was removed in 3.0.0 — a pre-rename `build_state.toml` entry now reads `profiled`
 verbatim until `sysforge state repair` rewrites it. The "does this mode extract
 the embedded PKGBUILD profile?" gate has one home —
-`profile.build_mode_uses_extracted_profile` (`source_built`/`kernel`, legacy
-profile-layer token accepted) — consumed by `flag_drift` and `makepkg_wrapper`;
+`profile.build_mode_uses_extracted_profile` (`source_built`/`kernel`) — consumed by `flag_drift` and `makepkg_wrapper`;
 don't re-spell the membership inline.
 
 ### Toolchain field
@@ -181,7 +180,7 @@ lib32 and musl-static guards, so their scrubs see the final token set — via
 | nothing related | the system token is appended |
 
 Only tokens the system conf actually sets are ever restored — the table never invents a flag, so a
-distro whose conf omits a token stays as it is (§Distro portability). A pure shell reference
+distro whose conf omits a token stays as it is (§Standards row 23). A pure shell reference
 (`CXXFLAGS = "$CFLAGS"`) inherits the referenced key's tokens by expansion; `apply_preserved_system_tokens`
 appends only what this key's own system value adds beyond them, measured against the referenced
 key's merged value, so Arch's C++-only `-Wp,-D_GLIBCXX_ASSERTIONS` (in the shipped `CXXFLAGS` set,
@@ -292,7 +291,8 @@ Don't add a parallel `nice`/`systemd-run`/`-j`/`RLIMIT_AS` path elsewhere.
 
 An auto-managed table, keyed by `pkgbase`, that records a compiler/linker swap
 recovered from an interactive build-failure (see pipeline-layer → Makepkg
-Wrapper → Interactive recovery menu). Each row is an inline table:
+Wrapper → Interactive recovery menu), or chosen up front with `build --toolchain
+… --save-toolchain` (`3.5.0-F14`). Each row is an inline table:
 
 ```toml
 [package_compiler_overrides]
@@ -317,11 +317,32 @@ profile (`makepkg_wrapper._reemit_for_swap`), so the build that succeeded is the
 one that is kept; a blank LD there means the bundle's own linker. A hand-entered
 `[m]` pair stays raw.
 
-**Precedence, lowest to highest** — five surfaces choose a package's compiler:
+**Choosing a toolchain from the CLI** (`3.5.0-F14`). `build --toolchain
+{gcc,llvm}` swaps each named target's whole bundle for this build, through the
+same `swap_toolchain` (`makepkg_wrapper._apply_cli_toolchain`, right after
+`resolve_profile`), so it beats the profile and any row. A `--cc`/`--cxx` pair
+that is exactly a bundle's compilers (`profile.toolchain_for_compilers`: gcc/g++,
+clang/clang++) counts as `--toolchain` (`build_cmd._cli_toolchain`); any other
+pair, or one half alone, stays a raw override, the escape hatch for an exotic
+compiler. `--save-toolchain` writes the target's row before the build and
+`--reset-toolchain` removes it (`profile_writer.delete_package_compiler_override`,
+which also drops it from the run's in-memory config), both via
+`makepkg_wrapper._apply_toolchain_row_choice`, so keeping a toolchain for a
+package no longer takes a failed build. All three apply to the named targets
+only: AUR dependencies built on the way keep their own profile (a raw
+`--cc`/`--cxx` still reaches them as before). `--pgo` with `--toolchain gcc` is
+refused, as PGO is LLVM-only. `run kernel --toolchain` takes the same values
+(`profile.TOOLCHAIN_CHOICES`). The build records the swapped family's
+`toolchain_variant`; toolchain drift skips it while a row or the profile still
+picks that family, so only a one-off `--toolchain` drifts back (`3.5.0-B125`,
+§Drift detection).
+
+**Precedence, lowest to highest** — six surfaces choose a package's compiler:
 `[defaults] toolchain` < the matched profile's `toolchain` < the profile's
 explicit `CC`/`CXX`/`AR`/… keys < a `[package_compiler_overrides]` row
-(`toolchain`, then raw keys) < `sysforge build --cc/--cxx/--ld` (which rides
-`extra_env` and the conf `*_override` arguments). The CLI beating a row is
+(`toolchain`, then raw keys) < `sysforge build --toolchain` < a raw
+`--cc/--cxx/--ld` (which rides `extra_env` and the conf `*_override`
+arguments). The CLI beating a row is
 logged at `info` (`makepkg_wrapper._log_cli_over_compiler_row`) so the row does
 not lose without a trace.
 

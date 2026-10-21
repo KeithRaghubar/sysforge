@@ -17,8 +17,22 @@ def _clean_dedup():
     dep._reset_warned()
 
 
-def test_registry_is_not_empty():
-    assert dep._REGISTRY, "registry must not be empty"
+# A stand-in compat record. The registry is empty after 4.0.0 retired its last
+# surface (3.5.0-F16), so the warn seam is exercised against this one.
+_FAKE = dep.Deprecation(
+    surface="test.old_key",
+    kind=dep.CONFIG_KEY,
+    function=dep.COMPAT,
+    deprecated_in="3.0.0",
+    removed_in="9.0.0",
+    replacement="new_key",
+)
+
+
+@pytest.fixture
+def fake_record(monkeypatch):
+    monkeypatch.setitem(dep._BY_SURFACE, _FAKE.surface, _FAKE)
+    return _FAKE
 
 
 def test_surfaces_are_unique():
@@ -49,40 +63,35 @@ def test_kinds_and_functions_are_in_vocabulary():
             f"{d.surface}: bad function {d.function!r}"
 
 
-def test_get_returns_record_and_none():
-    assert dep.get("profiles.build_mode=patched_pkgbuild").replacement == \
-        'build_mode = "source_built"' 
+def test_get_returns_record_and_none(fake_record):
+    assert dep.get(fake_record.surface).replacement == "new_key"
     assert dep.get("no.such.surface") is None
 
 
-def test_warn_used_message_names_removal_and_replacement(monkeypatch):
+def test_warn_used_message_names_removal_and_replacement(monkeypatch, fake_record):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append((tag, msg)))
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    dep.warn_used(fake_record.surface)
     assert len(seen) == 1
     tag, msg = seen[0]
     assert tag == "[DEPRECATED]"
-    assert "profiles.build_mode=patched_pkgbuild" in msg
-    assert "4.0.0" in msg
-    assert "source_built" in msg
+    assert fake_record.surface in msg
+    assert "9.0.0" in msg
+    assert "new_key" in msg
 
 
-def test_warn_used_fires_once_per_run(monkeypatch):
+def test_warn_used_fires_once_per_run(monkeypatch, fake_record):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    for _ in range(3):
+        dep.warn_used(fake_record.surface)
     assert len(seen) == 1, "dedup must collapse repeat reads within one run"
 
 
-def test_warn_used_dedups_per_surface_not_globally(monkeypatch):
-    """Dedup keys on surface, not on a single global once-only flag. Only the
-    profiles build_mode alias ships as of 3.1.0, so a second record is injected
-    here purely to exercise the dedup granularity — it is not a real surface."""
+def test_warn_used_dedups_per_surface_not_globally(monkeypatch, fake_record):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    fake = dep.Deprecation(
+    other = dep.Deprecation(
         surface="test.fake_surface",
         kind=dep.CLI_FLAG,
         function=dep.SHIM,
@@ -91,9 +100,9 @@ def test_warn_used_dedups_per_surface_not_globally(monkeypatch):
         replacement="nothing",
         anchor="tests/test_deprecations.py::test_warn_used_dedups_per_surface_not_globally",
     )
-    monkeypatch.setitem(dep._BY_SURFACE, fake.surface, fake)
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
-    dep.warn_used(fake.surface)
+    monkeypatch.setitem(dep._BY_SURFACE, other.surface, other)
+    dep.warn_used(fake_record.surface)
+    dep.warn_used(other.surface)
     assert len(seen) == 2
 
 
@@ -101,49 +110,32 @@ def test_warn_used_unknown_surface_fails_soft(monkeypatch):
     warns, debugs = [], []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: warns.append(msg))
     monkeypatch.setattr(dep.log, "debug", lambda tag, msg: debugs.append(msg))
-    dep.warn_used("profiles.build_mode=patched_pkgbuildz")     # typo, deliberately — must not raise
+    dep.warn_used("test.old_keyz")     # typo, deliberately: must not raise
     assert warns == [], "an unregistered surface must not warn"
     assert len(debugs) == 1
 
 
-def test_reset_warned_restores_state(monkeypatch):
+def test_reset_warned_restores_state(monkeypatch, fake_record):
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    dep.warn_used(fake_record.surface)
     dep._reset_warned()
-    dep.warn_used("profiles.build_mode=patched_pkgbuild")
+    dep.warn_used(fake_record.surface)
     assert len(seen) == 2
 
 
-def test_profiles_patched_pkgbuild_is_registered():
-    """2.6.1-STD3: the profile-layer build_mode alias was the one compat
-    surface 2.6.1-STD2 missed — the bijection check walks registry→call-site,
-    never code→registry, so an unregistered alias is invisible to it. It is a
-    COMPAT surface (the old spelling still works), so its removal must land on
-    a major; 3.0.0 is already shipping with it present, hence 4.0.0."""
-    d = dep.get("profiles.build_mode=patched_pkgbuild")
-    assert d is not None, "the alias must carry a registry record"
-    assert d.function == dep.COMPAT
-    assert d.kind == dep.CONFIG_KEY
-    assert d.removed_in == "4.0.0"
-    assert d.anchor is None
-
-
-def test_normalize_build_mode_warns_on_legacy_token(monkeypatch):
-    """The alias branch of the read chokepoint must route through warn_used,
-    so the removal version in the notice is built from the record."""
+def test_build_mode_patched_pkgbuild_is_rejected():
+    """3.5.0-F16: the alias was removed in 4.0.0. It must raise rather than
+    fall through as an unknown mode, which would silently stop extracting the
+    PKGBUILD's embedded profile."""
     from sysforge.primitives import profile
-    seen = []
-    monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))
-    assert profile.normalize_build_mode("patched_pkgbuild") == "source_built"
-    assert len(seen) == 1
-    assert "patched_pkgbuild" in seen[0]
-    assert "4.0.0" in seen[0]
+    from sysforge.primitives.config import ConfigError
+    with pytest.raises(ConfigError, match="source_built"):
+        profile.normalize_build_mode("patched_pkgbuild")
+    assert dep.get("profiles.build_mode=patched_pkgbuild") is None
 
 
-def test_normalize_build_mode_current_token_does_not_warn(monkeypatch):
-    """Only the alias branch warns — the canonical token and None are silent,
-    and normalize_build_mode is called on every profile read."""
+def test_normalize_build_mode_passes_current_tokens(monkeypatch):
     from sysforge.primitives import profile
     seen = []
     monkeypatch.setattr(dep.log, "warn", lambda tag, msg: seen.append(msg))

@@ -68,18 +68,9 @@ class Deprecation:
 # The registry. `deprecated_in` values are recovered from git history (the commit
 # that introduced the replacement, resolved to its first containing tag), not
 # guessed.
-_REGISTRY: tuple[Deprecation, ...] = (
-    Deprecation(
-        surface="profiles.build_mode=patched_pkgbuild",
-        kind=CONFIG_KEY,
-        function=COMPAT,
-        deprecated_in="2.0.0",
-        removed_in="4.0.0",
-        replacement='build_mode = "source_built"',
-    ),
-)
+_REGISTRY: tuple[Deprecation, ...] = ()
 
-_BY_SURFACE = {d.surface: d for d in _REGISTRY}
+_BY_SURFACE: dict[str, Deprecation] = {d.surface: d for d in _REGISTRY}
 
 # Once-per-run dedup. Load-bearing, not cosmetic: config and state reads repeat
 # within a run, so without dedup a single surface would warn on every read.

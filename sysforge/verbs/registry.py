@@ -66,6 +66,14 @@ COMMANDS: tuple[type[Verb] | VerbGroup, ...] = (
 )
 
 
+
+def verb_log_names() -> list[str]:
+    """Every ``<name>`` a verb writes ``sysforge-<name>.log`` under, sorted:
+    the choices of ``sysforge log --verb`` (3.5.0-F13)."""
+    verbs = [v for e in COMMANDS
+             for v in (e.members if isinstance(e, VerbGroup) else (e,))]
+    return sorted({n for v in verbs if (n := v.run_log_name())})
+
 # Top-level COMMAND help tiers (2.5.0-F1). Presentation-only grouping so a new
 # user can tell routine verbs from ad-hoc introspection instead of reading one
 # flat, registration-ordered block. This tuple is the single source of truth:

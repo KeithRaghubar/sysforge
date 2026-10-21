@@ -794,7 +794,7 @@ def test_sysforge_keys_never_injected():
     """Internal keys (batch, build_mode, etc.) must not appear in env."""
     profile = {
         "batch": True,
-        "build_mode": "patched_pkgbuild",
+        "build_mode": "source_built",
         "clean_builddir": True,
         "CC": "clang",
     }

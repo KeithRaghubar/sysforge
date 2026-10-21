@@ -93,7 +93,7 @@ drift_detect = "fingerprint"
 # min_build_free_gb — minimum free space (GiB) required on each filesystem
 #   hosting the staging dirs / pgo_store / build output. A full 4-pass LLVM
 #   build needs substantial scratch space; falling short mid-build leaves a
-#   half-built tree. Override a trip with --skip-build-space-check.
+#   half-built tree. Override a trip with --allow-low-build-space.
 #min_build_free_gb = 40
 
 # require_multilib — require the [multilib] repo to be enabled in

@@ -670,26 +670,26 @@ def test_pgo_no_size_warning_when_profdata_adequate(tmp_path):
     assert not any("unexpectedly small" in str(a) for a in warn_calls), \
         "Unexpected profdata size warning for adequate profdata"
 
-def test_pgo_confirm_auto_pgo_skips_prompt():
-    """--auto-pgo bypasses the prompt entirely (no TTY check, no input)."""
+def test_pgo_confirm_yes_skips_prompt():
+    """--yes bypasses the prompt entirely (no TTY check, no input)."""
     with patch("sysforge.primitives.prompt.is_interactive") as is_int, \
          patch("sysforge.primitives.prompt.prompt_choice") as pc:
         result = pgo_confirm(
             "fake prompt",
             default="n", eof_default="n",
-            options=_confirm_options(auto_pgo=True),
+            options=_confirm_options(yes=True),
             abort_msg="should not abort",
         )
     assert result is True
     is_int.assert_not_called()
     pc.assert_not_called()
 
-def test_pgo_confirm_non_tty_aborts_without_auto_pgo():
-    """No TTY and no --auto-pgo → abort with 'requires --auto-pgo' message."""
+def test_pgo_confirm_non_tty_aborts_without_yes():
+    """No TTY and no --yes → abort with 'requires --yes' message."""
     with patch("sysforge.primitives.prompt.is_interactive",
                return_value=False), \
          patch("sysforge.primitives.prompt.prompt_choice") as pc:
-        with pytest.raises(PGOAborted, match="non-interactive PGO requires --auto-pgo"):
+        with pytest.raises(PGOAborted, match="non-interactive PGO requires --yes"):
             pgo_confirm(
                 "fake prompt",
                 default="n", eof_default="n",

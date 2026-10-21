@@ -12,6 +12,8 @@ making the phases functions — instead of driving the whole verb through
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from sysforge import update
 from sysforge.primitives.build_state import BuildState
 from sysforge.update import UpdateRun
@@ -205,3 +207,27 @@ def test_source_sync_phase_picks_up_rpc_versions_recorded_this_run(tmp_path, mon
                         lambda: SimpleNamespace(cache=SimpleNamespace(all=lambda: cache)))
     assert update._phase_source_sync(run) is None
     assert run.rpc_version_by_base == {"htop": "3.3-1", "lib32-libdbusmenu": "16.04.0-6"}
+
+
+# 3.5.0-B125: a package built on the other family on purpose records that
+# family's variant; drift skips it only while the config still picks it.
+
+@pytest.mark.parametrize("recorded, active, wanted_cc, drifts", [
+    ("gcc", "pgo_llvm", "gcc", False),         # row keeps it on gcc
+    ("gcc", "pgo_llvm", "clang", True),        # one-off --toolchain gcc
+    ("stock_llvm", "gcc", "clang", False),     # row keeps it on llvm
+    ("stock_llvm", "gcc", "gcc", True),        # one-off --toolchain llvm
+    ("stock_llvm", "pgo_llvm", "clang", True),  # same family, new toolchain
+    ("gcc", "pgo_llvm", None, True),           # PKGBUILD gone: report as before
+])
+def test_toolchain_drift_phase_honours_a_deliberate_other_family(
+        tmp_path, monkeypatch, recorded, active, wanted_cc, drifts):
+    monkeypatch.setattr(update, "load_conflict_groups", lambda: {})
+    monkeypatch.setattr(update, "current_compiler", lambda *a: wanted_cc)
+    run = _run(tmp_path)
+    run.bs.record("foo", "1", "1", "0", "foo", tmp_path, build_mode="source_built",
+                  toolchain_variant=recorded)
+    run.active_variant = active
+    run.results = [_result("foo")]
+    update._phase_toolchain_drift(run)
+    assert bool(run.drifted) is drifts

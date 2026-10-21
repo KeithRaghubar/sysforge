@@ -264,10 +264,7 @@ def test_record_site_value_rederives_in_sync(tmp_path, monkeypatch):
     state_dir.mkdir()
     d = _pkgbuild(tmp_path)
     pkgbuild = d / "PKGBUILD"
-    options = SimpleNamespace(
-        state_dir=state_dir, source=None, owner_stage=None, cc_override=None,
-        toolchain_variant=None, toolchain_fingerprint=None,
-        record_toolchain_variant=None)
+    options = makepkg_wrapper.BuildOptions(state_dir=state_dir)
     makepkg_wrapper._record_build_state(
         # No resolved profile: no flags_string, so only the inputs axis judges.
         pkgbuild, parse_pkgbuild(pkgbuild), None, options,

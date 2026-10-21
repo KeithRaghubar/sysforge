@@ -1243,7 +1243,7 @@ def test_bolt_llvm_counts_as_a_source_build():
     assert build_state.is_source_build_mode("source_built")
     assert build_state.is_source_build_mode(bolt.BUILD_MODE)
     assert not build_state.is_source_build_mode("pacman")
-    assert not build_state.is_source_build_mode("pgo_mesa")
+    assert not build_state.is_source_build_mode("pgo")
     assert not build_state.is_source_build_mode(None)
 
 

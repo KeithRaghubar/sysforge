@@ -6,7 +6,9 @@
 
 The flag vocabulary drifted verb by verb: `--no-pkg-log` beside
 `--no-pkg-logs`, four spellings of "don't ask" (`--yes`, `--no-confirm`,
-`--force`), `--non-interactive` beside `--no-update`, and group parents that
+`--force`, `--auto-pgo`), `--skip-` beside `--allow-` for safety overrides,
+`--prune` beside `--purge` for deleting, `--non-interactive` beside
+`--no-update`, and group parents that
 accepted their default subcommand's flags only to drop them silently once a
 subcommand was named. Each test pins one rule (§CLI Verb Framework, "Flag
 conventions") so a new flag cannot reintroduce the drift.
@@ -73,10 +75,33 @@ def test_no_flag_differs_from_another_only_by_a_plural_s():
 
 def test_prompt_skip_is_spelled_yes():
     """Skipping a confirmation is `--yes` everywhere; `--force` means
-    override a guard, never "don't ask"."""
+    override a guard, never "don't ask". `--auto-pgo` was the last
+    per-feature variant."""
     bad = [f"{name} {opt}" for name, opt in _flags()
-           if opt in ("--no-confirm", "--noconfirm", "--assume-yes", "-y")]
+           if opt in ("--no-confirm", "--noconfirm", "--assume-yes", "-y")
+           or opt.startswith(("--auto-", "--force-"))]
     assert not bad, f"use --yes to skip a confirmation: {bad}"
+
+
+def test_safety_overrides_are_spelled_allow():
+    """A flag that lets a run go ahead despite a failed check is
+    `--allow-<condition>` (`--allow-no-fallback`, `--allow-boot-audit-failure`).
+    `--skip-` read as "don't run the check", which these never meant; a step
+    not run at all is `--no-<step>`."""
+    bad = [f"{name} {opt}" for name, opt in _flags() if opt.startswith("--skip-")]
+    assert not bad, f"spell a safety override --allow-<condition>: {bad}"
+
+
+# `artifact remove --purge` keeps the package-manager sense: also delete the
+# managed copy. Every other "delete what this lists" flag is `--delete`.
+_PURGE_ALLOWED = {("artifact remove", "--purge")}
+
+
+def test_deleting_listed_items_is_spelled_delete():
+    bad = [f"{name} {opt}" for name, opt in _flags()
+           if (opt in ("--prune", "--purge") or opt.startswith(("--prune-", "--purge-")))
+           and (name, opt) not in _PURGE_ALLOWED]
+    assert not bad, f"spell deleting what a command lists --delete: {bad}"
 
 
 def test_negative_flags_use_the_no_prefix():

@@ -367,6 +367,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # fork of the command, not another prefix entry — see build_sandbox.
     sandbox = build_sandbox.for_profile(build_sandbox.get_policy(), resolved_profile)
     sandbox_cleanup = None
+    # Whether the sandbox handed cargo a fixed progress width (3.5.0-B9), whose
+    # frames the forwarder then clips to the live width (3.5.0-B121).
+    cargo_width_fixed = False
     on_success = None
     if sandbox.enabled:
         # Raises SandboxUnavailable rather than falling back to a host build:
@@ -445,6 +448,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                            if _forwards_to_terminal(interactive) else None)
         _chroot_text = build_sandbox.chroot_conf_text(
             conf_path, exports=extra_env, progress_width=_progress_width)
+        cargo_width_fixed = _progress_width is not None
         # After every provisioning step, so it judges the chroot as the build
         # will see it (3.4.0-F2). Raises before the canonical swap below, so a
         # refusal has nothing to undo but the scratch dir.
@@ -683,6 +687,7 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
             idle_callback=_on_idle,
             idle_timeout_s=MAKEPKG_HEARTBEAT_S,
             reserve_bottom_rows=progress_hooks.hooks().reserved_rows(),
+            clip_cargo_frames=cargo_width_fixed,
         )
     finally:
         if sandbox_cleanup is not None:

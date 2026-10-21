@@ -159,8 +159,11 @@ _sysforge_build() {
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
     '--interactive[strip --noconfirm from makepkg_flags]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
-    '--cc[override C compiler for this build]:compiler' \
-    '--cxx[override C++ compiler for this build]:compiler' \
+    '--toolchain[build with this toolchain as a whole]:toolchain:(gcc llvm)' \
+    '(--reset-toolchain)--save-toolchain[also save --toolchain for these packages]' \
+    '(--save-toolchain)--reset-toolchain[remove the saved toolchain]' \
+    '--cc[override only CC for this build]:compiler' \
+    '--cxx[override only CXX for this build]:compiler' \
     '--ld[override linker for this build]:linker:(lld mold ld bfd)' \
     '--no-pkg-log[disable per-package log file]' \
     '--log-dir[directory for per-package log]:directory:_files -/' \
@@ -475,8 +478,8 @@ _sysforge_state_subcommands() {
   local subcommands=(
     'list:tabulate build_state.toml entries'
     'repair:re-parse PKGBUILDs to fix entries with unexpanded variables'
-    'orphans:list (and optionally prune) stale .pkg.tar* artifacts in PKGDEST'
-    'profiles:list collected optimization profiles (and optionally purge one)'
+    'orphans:list (and optionally delete) stale artifacts in PKGDEST'
+    'profiles:list collected optimization profiles (and optionally delete one)'
     'boot-entries:show which loader entry boots each kernel'
     'failed:list recorded build failures (with any diagnosed fix)'
     'forget:stop maintaining package(s) (delete their build_state record)'
@@ -524,14 +527,15 @@ _sysforge_state_list() {
 
 _sysforge_state_orphans() {
   _arguments \
-    '--prune[delete the listed superseded artifacts]' \
-    '--yes[with --prune: delete without the y/N prompt]' \
+    '--delete[delete the listed superseded artifacts]' \
+    '--yes[with --delete: delete without the y/N prompt]' \
     '--no-pager[do not pipe output through $PAGER]'
 }
 
 _sysforge_state_profiles() {
   _arguments \
-    '--purge[delete one profile store (METHOD or METHOD/TARGET)]:store:(instr-pgo pgo-mesa pgo autofdo propeller bolt)' \
+    '--delete[delete one profile store (METHOD or METHOD/TARGET)]:store:(instr-pgo pgo autofdo propeller bolt)' \
+    '--yes[with --delete: delete without the y/N prompt]' \
     '--no-pager[do not pipe output through $PAGER]' \
     '--state-dir[override state directory]:dir:_directories'
 }
@@ -625,7 +629,7 @@ _sysforge_run_pipeline() {
   _arguments \
     '--resume[continue from the last checkpoint]' \
     '--start-from[begin from this stage]:stage:(reconfigure toolchain packages kernel)' \
-    '--force-retry[retry failed packages without prompting]' \
+    '--retry-failed[retry failed packages without prompting]' \
     '--dry-run[show what would run without executing]' \
     '--packages[path to packages.toml]:file:_files' \
     '--state-dir[override state directory]:directory:_files -/' \
@@ -633,7 +637,7 @@ _sysforge_run_pipeline() {
     '--no-unified-log[disable unified log file]' \
     '--no-pkg-log[disable per-package log files]' \
     '--log-dir[directory for log files]:directory:_files -/' \
-    '--purge-log[truncate unified log before this run]' \
+    '--truncate-log[truncate unified log before this run]' \
     '--persist-log[keep logs after successful run]' \
     '--cache-report[print ccache/sccache summary after run]' \
     '--abi-check[post-build ABI check on built shared libraries]' \
@@ -662,10 +666,10 @@ _sysforge_run_toolchain() {
     '--reuse-built[reuse unchanged Pass-3 packages; opt-in]' \
     '--bolt-only[BOLT the last build tree and install; no build]' \
     '--install-only[install the last built toolchain; no build]' \
-    '--auto-pgo[bypass PGO confirmation prompts]' \
+    '--yes[bypass PGO confirmation prompts]' \
     '--allow-dirty-llvm[bypass the dirty-tree pre-flight refusal]' \
     '--allow-version-skew[override the Gate-1 pkgver-skew abort]' \
-    '--skip-build-space-check[override the Gate-1 space check]' \
+    '--allow-low-build-space[override the Gate-1 space check]' \
     '--rebuild-soname-consumers[rebuild libLLVM consumers on a soname bump]:mode:(prompt auto off)' \
     '--cleansrc[purge toolchain src dirs and re-clone]' \
     '--cleansrc-force[purge + re-clone, bypassing the dirty guard]' \
@@ -677,7 +681,7 @@ _sysforge_run_packages() {
   _arguments \
     '--packages[path to packages.toml]:file:_files' \
     '--dry-run[show what would run without executing]' \
-    '--force-retry[retry failed packages without prompting]' \
+    '--retry-failed[retry failed packages without prompting]' \
     '--no-update[skip the source sync, build as checked out]' \
     '--no-pkg-log[disable per-package log files]' \
     '--persist-log[keep logs after successful run]' \
@@ -695,12 +699,12 @@ _sysforge_run_kernel() {
     '--cleansrc[purge the kernel src dir and re-clone]' \
     '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
     '--no-interactive[use olddefconfig, no interactive kconfig]' \
-    '--compiler[kernel-stage compiler override]:compiler:(gcc llvm)' \
+    '--toolchain[build the kernel with this toolchain]:toolchain:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
     '--base-config[override kernel.toml base_config]:source:_sysforge_base_config_source' \
     '--base-config-merge[override kernel.toml base_config_merge]:mode:(replace overlay)' \
     '--allow-no-fallback[override the fallback-kernel guarantee (Gate 1)]' \
-    '--skip-boot-audit[override the Gate-2 boot audit; dangerous]' \
+    '--allow-boot-audit-failure[override the Gate-2 boot audit; dangerous]' \
     '--headers[build the -headers subpackage (default on)]' \
     '--no-headers[drop -headers; DKMS cannot rebuild]' \
     '--docs[build the -docs subpackage]' \
@@ -754,9 +758,11 @@ _sysforge_base_config_source() {
 
 _sysforge_log() {
   _arguments \
+    '(1)--verb[page a verb'"'"'s consolidated log]:verb:(build config-merge doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update)' \
+    '--log-dir[directory the log was written to]:directory:_files -/' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--no-pager[do not pipe output through $PAGER]' \
-    '1: :_sysforge_local_pkg_names'
+    '(--verb)1: :_sysforge_local_pkg_names'
 }
 
 _sysforge_config() {

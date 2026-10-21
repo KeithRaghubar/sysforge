@@ -240,7 +240,7 @@ def test_suffix_layer_stands_down_for_named_coexist_build():
 
 def test_suffix_layer_still_applies_without_explicit_target():
     assert makepkg_wrapper._suffix_layer_applies("autofdo_kernel", None)
-    assert makepkg_wrapper._suffix_layer_applies("pgo_mesa", None)
+    assert makepkg_wrapper._suffix_layer_applies("pgo", None)
     # Conflict-mode builds never take the explicit-target exemption.
-    assert makepkg_wrapper._suffix_layer_applies("pgo_mesa", "whatever")
+    assert makepkg_wrapper._suffix_layer_applies("pgo", "whatever")
     assert not makepkg_wrapper._suffix_layer_applies(None, None)

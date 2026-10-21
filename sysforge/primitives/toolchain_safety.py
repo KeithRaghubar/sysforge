@@ -1027,7 +1027,7 @@ def check_build_space(
         f"(need ≥ {min_free_gb:g} GiB): the LLVM build will likely fail "
         "partway with no space left",
         "Free space on the staging/pgo_store/build filesystem, lower "
-        "min_build_free_gb in toolchain.toml, or pass --skip-build-space-check.",
+        "min_build_free_gb in toolchain.toml, or pass --allow-low-build-space.",
         is_brick=True,
     )
 

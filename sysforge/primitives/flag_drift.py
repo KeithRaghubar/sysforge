@@ -25,6 +25,7 @@ Public API:
                        preserved_system_tokens=None,
                        sandbox_policy=None, state_dir=None) -> FlagDriftResult
     current_sandboxed(entry, config, conflict_groups, policy) -> bool | None
+    current_compiler(entry, config, conflict_groups) -> str | None
 """
 from __future__ import annotations
 
@@ -105,7 +106,7 @@ def diff_flags(stored: str, current: str) -> list[str]:
 
 def _is_pgo_mode(build_mode: str | None) -> bool:
     from sysforge.primitives import mesa_pgo
-    return build_mode in (mesa_pgo.BUILD_MODE, mesa_pgo.GENERIC_BUILD_MODE)
+    return build_mode == mesa_pgo.BUILD_MODE
 
 
 def drift_candidate(entry: dict) -> bool:
@@ -113,7 +114,7 @@ def drift_candidate(entry: dict) -> bool:
 
     A ``source_built`` entry (or ``bolt_llvm``, the same build BOLTed,
     3.5.0-B31) is judged on every sub-axis. A PGO build
-    (``pgo`` / ``pgo_mesa``) is judged on the build-inputs sub-axis only, and
+    (``pgo``) is judged on the build-inputs sub-axis only, and
     only once it has recorded ``build_inputs`` (3.2.0-F18): its profile flags
     were never compared, and that stays unchanged.
     """
@@ -157,9 +158,10 @@ def _sandboxed_for(entry: dict, resolved: dict, policy, build_mode=None) -> bool
     return False if suppressed else for_profile(policy, resolved).enabled
 
 
-def current_sandboxed(entry: dict, config: dict, conflict_groups, policy) -> bool | None:
-    """:func:`_sandboxed_for` for a recorded package, resolving its profile
-    from the PKGBUILD on disk. None when the PKGBUILD is missing or unparsable."""
+def _resolve_current(entry: dict, config: dict, conflict_groups):
+    """(build_mode, resolved profile) a fresh build of a recorded package
+    would use, from the PKGBUILD on disk. None when the PKGBUILD is missing
+    or unparsable."""
     raw = entry.get("pkgbuild_dir")
     if not raw:
         return None
@@ -176,7 +178,25 @@ def current_sandboxed(entry: dict, config: dict, conflict_groups, policy) -> boo
                  if build_mode_uses_extracted_profile(build_mode) else None)
     resolved = resolve_profile(pkgmeta, matched, config, conflict_groups,
                                extracted_profile=extracted)
+    return build_mode, resolved
+
+
+def current_sandboxed(entry: dict, config: dict, conflict_groups, policy) -> bool | None:
+    """:func:`_sandboxed_for` for a recorded package, resolving its profile
+    from the PKGBUILD on disk. None when the PKGBUILD is missing or unparsable."""
+    current = _resolve_current(entry, config, conflict_groups)
+    if current is None:
+        return None
+    build_mode, resolved = current
     return _sandboxed_for(entry, resolved, policy, build_mode)
+
+
+def current_compiler(entry: dict, config: dict, conflict_groups) -> str | None:
+    """The ``CC`` a fresh build of a recorded package would use, so toolchain
+    drift can tell a package kept on the other toolchain on purpose from one
+    left behind by a toolchain switch (3.5.0-B125). None when unknown."""
+    current = _resolve_current(entry, config, conflict_groups)
+    return None if current is None else current[1].get("CC")
 
 
 def _sandbox_diff(entry: dict, resolved: dict, policy, build_mode=None) -> list[str]:

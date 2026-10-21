@@ -208,7 +208,7 @@ def resolve_reused_config(state_dir, pkgname, pkgbuild_dir, *, build_dir=None):
     artifact ships; otherwise the ``kconfig-history`` archive for that release
     is used, then the ``.config`` the package itself ships (its headers
     package, 3.5.0-B59). ``None`` when the artifact's release is unknown or no
-    source matches — Gate 2 then refuses unless ``--skip-boot-audit``.
+    source matches — Gate 2 then refuses unless ``--allow-boot-audit-failure``.
     """
     from sysforge.primitives import kconfig_history
     from sysforge.build.makepkg_wrapper import (
@@ -366,7 +366,7 @@ def built_kernel_release(config_path):
     return text or None
 
 
-def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
+def gate2_audit(pkgbuild_dir, topology, *, allow_boot_audit_failure, state_dir=None,
                 build_dir=None, reused=None, already_built=False):
     """Audit the resolved .config before install. Raises on brick unless skipped.
 
@@ -389,7 +389,7 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         # running kernel's modules with the same files, so the warning would
         # fire on every no-change run (the noise this path exists to remove).
         _gate2_audit_config(reused.config, reused.path, topology,
-                            skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                            allow_boot_audit_failure=allow_boot_audit_failure, state_dir=state_dir,
                             source=reused.source, release=reused.release,
                             warn_running=False)
         return
@@ -398,18 +398,18 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         # newest .config in some build tree may be another build's, so a
         # package Gate 2 once rejected could be audited against the wrong one
         # and installed. Refuse, as a fresh build without a config does.
-        if not skip_boot_audit:
+        if not allow_boot_audit_failure:
             raise RuntimeError(
                 "[KERNEL] Gate 2: the reused kernel package in PKGDEST has no "
                 "config tied to it (no matching build tree, kconfig-history "
                 "archive or headers package); boot-critical config cannot be "
                 "validated, aborting before install. Rebuild it (remove it from "
-                "PKGDEST or bump pkgrel), or pass --skip-boot-audit to override."
+                "PKGDEST or bump pkgrel), or pass --allow-boot-audit-failure to override."
             )
         _log.warn(
             "Gate 2: no config is tied to the reused kernel package; "
             "boot-critical config was NOT validated before install "
-            "(--skip-boot-audit)."
+            "(--allow-boot-audit-failure)."
         )
         return
     config_path = resolve_built_config(pkgbuild_dir, build_dir=build_dir)
@@ -417,12 +417,12 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         # A fresh build reported its tree (``build_dir``) yet left no .config
         # there: the boot-critical backstop would silently be off, so refuse
         # (3.2.0-B37).
-        if build_dir is not None and not skip_boot_audit:
+        if build_dir is not None and not allow_boot_audit_failure:
             raise RuntimeError(
                 "[KERNEL] Gate 2: resolved kernel .config not found under the "
                 f"fresh build tree {build_dir}; boot-critical config cannot "
                 "be validated, aborting before install. Pass "
-                "--skip-boot-audit to override."
+                "--allow-boot-audit-failure to override."
             )
         _log.warn(
             "Gate 2: resolved kernel .config not found in build tree; "
@@ -431,12 +431,12 @@ def gate2_audit(pkgbuild_dir, topology, *, skip_boot_audit, state_dir=None,
         return
 
     _gate2_audit_config(config_path, config_path, topology,
-                        skip_boot_audit=skip_boot_audit, state_dir=state_dir,
+                        allow_boot_audit_failure=allow_boot_audit_failure, state_dir=state_dir,
                         source=str(config_path),
                         release=built_kernel_release(config_path))
 
 
-def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
+def _gate2_audit_config(config, config_path, topology, *, allow_boot_audit_failure,
                         state_dir, source, release, warn_running=True):
     """Gate 2's audit proper. ``config`` is a path or a parsed dict;
     ``config_path`` is the ``.config`` inside a kernel tree when there is one
@@ -485,16 +485,16 @@ def _gate2_audit_config(config, config_path, topology, *, skip_boot_audit,
             "module loading."
         )
 
-    if bricks and not skip_boot_audit:
+    if bricks and not allow_boot_audit_failure:
         raise RuntimeError(
             f"[KERNEL] {len(bricks)} boot-critical config problem(s) in the "
             "built kernel: aborting before install so the running system "
             "stays bootable. Fix the kconfig and rebuild, or pass "
-            f"--skip-boot-audit to override. Resolved .config: {source}"
+            f"--allow-boot-audit-failure to override. Resolved .config: {source}"
         )
     if bricks:
         _log.warn(
-            f"--skip-boot-audit: proceeding to install despite {len(bricks)} "
+            f"--allow-boot-audit-failure: proceeding to install despite {len(bricks)} "
             "brick-class finding(s)"
         )
 

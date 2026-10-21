@@ -28,15 +28,15 @@ def test_list_profile_stores_reports_method_target_size(tmp_path):
     tc = _tcfg(tmp_path)
     root = tmp_path / "root"
     _file(root / "llvm-pgo" / "clang.profdata", 100)
-    _file(root / "pgo-mesa" / "mesa.profdata", 50)
-    (root / "pgo-mesa" / "mesa.profdata.version").write_text("1:26.1.3-2\n")
+    _file(root / "pgo" / "mesa" / "mesa.profdata", 50)
+    (root / "pgo" / "mesa" / "mesa.profdata.version").write_text("1:26.1.3-2\n")
     _file(root / "pgo" / "htop" / "htop.profdata", 7)
     (root / "autofdo").mkdir(parents=True)  # seeded empty → not listed
 
     rows = {(r.method, r.target): r for r in mp.list_profile_stores(tc)}
-    assert set(rows) == {("instr-pgo", None), ("pgo-mesa", None), ("pgo", "htop")}
+    assert set(rows) == {("instr-pgo", None), ("pgo", "mesa"), ("pgo", "htop")}
     assert rows[("instr-pgo", None)].size_bytes == 100
-    assert rows[("pgo-mesa", None)].collected_version == "1:26.1.3-2"
+    assert rows[("pgo", "mesa")].collected_version == "1:26.1.3-2"
     assert rows[("pgo", "htop")].path == root / "pgo" / "htop"
 
 
@@ -99,12 +99,14 @@ def test_list_profile_stores_empty_when_nothing_collected(tmp_path):
 def test_resolve_purge_target_parses_method_and_target(tmp_path):
     tc = _tcfg(tmp_path)
     assert mp.resolve_purge_target(tc, "pgo/htop") == tmp_path / "root" / "pgo" / "htop"
-    assert mp.resolve_purge_target(tc, "pgo-mesa") == tmp_path / "root" / "pgo-mesa"
+    assert mp.resolve_purge_target(tc, "pgo/mesa") == tmp_path / "root" / "pgo" / "mesa"
 
 
-def test_resolve_purge_target_refuses_an_unknown_method(tmp_path):
+@pytest.mark.parametrize("spec", ["llvm-pgo", "pgo-mesa"])
+def test_resolve_purge_target_refuses_an_unknown_method(tmp_path, spec):
+    # pgo-mesa was retired in 4.0.0 (3.5.0-F17); its files move under pgo/.
     with pytest.raises(ValueError, match="unknown profile method"):
-        mp.resolve_purge_target(_tcfg(tmp_path), "llvm-pgo")
+        mp.resolve_purge_target(_tcfg(tmp_path), spec)
 
 
 def test_resolve_purge_target_refuses_path_escapes(tmp_path):
@@ -123,10 +125,10 @@ def test_stores_for_package_finds_non_empty_stores(tmp_path):
         root / "autofdo" / "linux-sysforge"]
 
 
-def test_stores_for_package_maps_mesa_to_its_back_compat_store(tmp_path):
+def test_stores_for_package_maps_mesa_like_any_package(tmp_path):
     tc = _tcfg(tmp_path)
-    _file(tmp_path / "root" / "pgo-mesa" / "mesa.profdata")
-    assert mp.stores_for_package(tc, ["mesa"]) == [tmp_path / "root" / "pgo-mesa"]
+    _file(tmp_path / "root" / "pgo" / "mesa" / "mesa.profdata")
+    assert mp.stores_for_package(tc, ["mesa"]) == [tmp_path / "root" / "pgo" / "mesa"]
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +136,7 @@ def test_stores_for_package_maps_mesa_to_its_back_compat_store(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _args(**kw):
-    base = dict(purge=None, no_pager=True, state_dir=None)
+    base = dict(delete=None, yes=False, no_pager=True, state_dir=None)
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -150,7 +152,7 @@ def test_state_profiles_lists_the_store(tmp_path, monkeypatch, capsys):
     assert "pgo" in out and "htop" in out and "2.0 KiB" in out
 
 
-def test_state_profiles_purge_needs_confirmation(tmp_path, monkeypatch):
+def test_state_profiles_delete_needs_confirmation(tmp_path, monkeypatch):
     from sysforge import state_cmd
 
     tc = _tcfg(tmp_path)
@@ -158,37 +160,50 @@ def test_state_profiles_purge_needs_confirmation(tmp_path, monkeypatch):
     monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
     monkeypatch.setattr("sysforge.primitives.prompt.is_interactive", lambda: True)
     monkeypatch.setattr("sysforge.primitives.prompt.prompt_choice", lambda *a, **k: "n")
-    assert state_cmd.cmd_state_profiles(_args(purge="pgo/htop")) == 2
+    assert state_cmd.cmd_state_profiles(_args(delete="pgo/htop")) == 2
     assert store.is_dir()
 
     monkeypatch.setattr("sysforge.primitives.prompt.prompt_choice", lambda *a, **k: "y")
-    assert state_cmd.cmd_state_profiles(_args(purge="pgo/htop")) == 0
+    assert state_cmd.cmd_state_profiles(_args(delete="pgo/htop")) == 0
     assert not store.exists()
 
 
-def test_state_profiles_purge_refuses_without_a_tty(tmp_path, monkeypatch):
+def test_state_profiles_delete_refuses_without_a_tty(tmp_path, monkeypatch):
     from sysforge import state_cmd
 
     tc = _tcfg(tmp_path)
-    store = _file(tmp_path / "root" / "pgo-mesa" / "mesa.profdata").parent
+    store = _file(tmp_path / "root" / "pgo" / "mesa" / "mesa.profdata").parent
     monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
     monkeypatch.setattr("sysforge.primitives.prompt.is_interactive", lambda: False)
-    assert state_cmd.cmd_state_profiles(_args(purge="pgo-mesa")) == 2
+    assert state_cmd.cmd_state_profiles(_args(delete="pgo/mesa")) == 2
     assert store.is_dir()
 
 
-def test_state_profiles_purge_rejects_unknown_method(tmp_path, monkeypatch):
+def test_state_profiles_delete_yes_skips_the_prompt_without_a_tty(tmp_path, monkeypatch):
+    """F15: --yes is the one way to skip a confirmation, so a scripted run can
+    delete a store as `state orphans --delete --yes` deletes artifacts."""
+    from sysforge import state_cmd
+
+    tc = _tcfg(tmp_path)
+    store = _file(tmp_path / "root" / "pgo" / "htop" / "htop.profdata").parent
+    monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
+    monkeypatch.setattr("sysforge.primitives.prompt.is_interactive", lambda: False)
+    assert state_cmd.cmd_state_profiles(_args(delete="pgo/htop", yes=True)) == 0
+    assert not store.exists()
+
+
+def test_state_profiles_delete_rejects_unknown_method(tmp_path, monkeypatch):
     from sysforge import state_cmd
 
     monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: _tcfg(tmp_path))
-    assert state_cmd.cmd_state_profiles(_args(purge="bogus")) == 2
+    assert state_cmd.cmd_state_profiles(_args(delete="bogus")) == 2
 
 
 def test_cli_parses_state_profiles():
     from sysforge.cli import _build_parser
 
-    args = _build_parser().parse_args(["state", "profiles", "--purge", "pgo/htop"])
-    assert args.purge == "pgo/htop"
+    args = _build_parser().parse_args(["state", "profiles", "--delete", "pgo/htop", "--yes"])
+    assert (args.delete, args.yes) == ("pgo/htop", True)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +218,7 @@ def test_orphaned_profile_notice_names_the_path(tmp_path, monkeypatch):
     monkeypatch.setattr(state_cmd, "_load_toolchain_cfg", lambda: tc)
     lines = state_cmd.orphaned_profile_lines(["htop"])
     assert len(lines) == 1
-    assert str(store) in lines[0] and "state profiles --purge pgo/htop" in lines[0]
+    assert str(store) in lines[0] and "state profiles --delete pgo/htop" in lines[0]
     assert state_cmd.orphaned_profile_lines(["ripgrep"]) == []
 
 

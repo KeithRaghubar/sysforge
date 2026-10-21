@@ -15,7 +15,7 @@ File logging (always full verbosity, all levels):
   Unified log — one file for the entire run, managed by the pipeline runner.
                 Default: <state_dir>/sysforge.log
                 Persists across runs until a successful pipeline completion,
-                then truncated. --purge-log truncates before the run starts.
+                then truncated. --truncate-log truncates before the run starts.
                 --persist-log suppresses truncation on success.
   Per-package log — one file per package build, written alongside the PKGBUILD.
                     Path: <pkgbuild_dir>/<pkgname>/sysforge_<pkgname>.log
@@ -94,6 +94,22 @@ _LEVEL_SGR = {
     "INFO":  "",
     "DEBUG": _ANSI_DIM,
 }
+
+# Log file names, shared by the writers and `sysforge log` (3.5.0-F13). Each
+# lives in the state dir unless the writer was given --log-dir. Which verbs
+# write one is declared on the verb (`Verb.run_log_name`).
+PIPELINE_LOG = "sysforge.log"
+
+
+def verb_log_name(name: str) -> str:
+    """A verb's consolidated log file name: ``sysforge-<name>.log``."""
+    return f"sysforge-{name}.log"
+
+
+def pkg_log_name(pkgbase: str) -> str:
+    """Per-package log file name, next to the PKGBUILD or under --log-dir."""
+    return f"sysforge_{pkgbase}.log"
+
 
 _CLEARED_MARKER = "# log cleared after successful run\n"
 _SEP = "# " + "─" * 60 + "\n"

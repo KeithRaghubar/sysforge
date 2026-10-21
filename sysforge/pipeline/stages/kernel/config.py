@@ -31,7 +31,7 @@ _log = log.get_logger("KERNEL")
 def resolve_compiler(kernel_cfg, options, state):
     """
     Resolve the kernel-stage compiler. Precedence:
-      1. options.compiler (CLI --compiler)
+      1. options.compiler (CLI --toolchain)
       2. kernel_cfg["compiler"]
       3. pipeline state's toolchain.cc (mapped back to "gcc" or "llvm")
       4. None (let makepkg_wrapper fall through to profile defaults)
@@ -40,7 +40,7 @@ def resolve_compiler(kernel_cfg, options, state):
     """
     cli = getattr(options, "compiler", None)
     cfg = kernel_cfg.compiler
-    for source, val in (("--compiler", cli), ("kernel.toml", cfg)):
+    for source, val in (("--toolchain", cli), ("kernel.toml", cfg)):
         if val and val not in constants.VALID_COMPILERS:
             raise RuntimeError(
                 f"[KERNEL] invalid {source} value {val!r}: "

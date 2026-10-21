@@ -114,6 +114,13 @@ BUILD_MODE_PACMAN = "pacman"
 BUILD_MODE_BOLT = "bolt_llvm"
 _SOURCE_BUILD_MODES = frozenset({BUILD_MODE_SOURCE, BUILD_MODE_BOLT})
 
+# Retired build_mode tokens and what replaced them: "profiled" (3.0.0) and
+# mesa's own "pgo_mesa" (4.0.0, now the generic "pgo"; 3.5.0-F17). Neither is
+# read as an alias. `sysforge state repair` rewrites them and `sysforge doctor
+# system --state` reports any left. Deliberately a closed mapping: coercing an
+# unknown token would invent build history that was never true.
+LEGACY_BUILD_MODE_TOKENS = {"profiled": BUILD_MODE_SOURCE, "pgo_mesa": "pgo"}
+
 
 def is_source_build_mode(build_mode: str | None) -> bool:
     """True for a from-source build under its stock name (``source_built``,
