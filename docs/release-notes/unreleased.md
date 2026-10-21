@@ -189,6 +189,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV16` — the concept pages' rules are tested.** Each concept page must close with *Further reading*, citing at least one upstream source, then *In sysforge*, and must not use sysforge's own terms before that last section. The rule was in CLAUDE.md only; every page already followed it.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
