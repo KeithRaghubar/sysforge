@@ -800,6 +800,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B129` — `run kernel --keep-hotplug-drivers` takes effect.** The flag and its `--no-` form were accepted and then dropped before the kernel stage read them, so the stage always used `kernel.toml`'s `keep_hotplug_drivers`. They now override it, as their help says. A new test checks that every flag of every `run` stage reaches the stage.
 
+---
+
+- **`3.5.0-B130` — cargo's progress line no longer leaves its end behind in the build sandbox.** In a sandboxed Rust build, a `Compiling` line written after cargo's `Building [=====>    ] 120/431: <crate>` line covered the bar but not what followed it, so text like `] 120/431: serde, syn` stayed at the end of the row. cargo clears its progress line before printing anything else only when it colours its output, and in the sandbox it writes to a pipe and doesn't colour it, so it just writes the next line over the old one. sysforge now clears the row itself before the next line. Builds outside the sandbox were not affected.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.
