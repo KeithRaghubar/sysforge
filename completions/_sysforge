@@ -284,6 +284,7 @@ _sysforge_doctor_system() {
     '--rust[Rust toolchain owner + rustup default; opt-in]' \
     '--cache[compile-cache readiness: ccache/sccache]' \
     '--pacman[pacman-db consistency, .pacnew drift, orphans]' \
+    '--config[retired or unknown settings in the live config]' \
     '--state[state integrity: failures, sentinel, drift]' \
     '--boot[boot readiness: kernel artifacts, space, DKMS]' \
     '--restart[processes running superseded code after upgrade]' \
@@ -758,7 +759,7 @@ _sysforge_base_config_source() {
 
 _sysforge_log() {
   _arguments \
-    '(1)--verb[page a verb'"'"'s consolidated log]:verb:(build config-merge doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update)' \
+    '(1)--verb[page a verb'"'"'s consolidated log]:verb:(build config-clean config-merge config-reset doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update)' \
     '--log-dir[directory the log was written to]:directory:_files -/' \
     '--state-dir[override state directory]:directory:_files -/' \
     '--no-pager[do not pipe output through $PAGER]' \
@@ -776,6 +777,9 @@ _sysforge_config() {
   case $state in
     args)
       case $words[1] in
+        check) _sysforge_config_check ;;
+        clean) _sysforge_config_clean ;;
+        reset) _sysforge_config_reset ;;
         merge) _sysforge_config_merge ;;
       esac
       ;;
@@ -784,9 +788,35 @@ _sysforge_config() {
 
 _sysforge_config_subcommands() {
   local subcommands=(
+    'check:report retired or unknown settings in the live config'
+    'clean:rewrite retired settings (--unknown: drop unknown ones)'
+    'reset:put keys, or a whole file, back to the shipped default'
     'merge:interactively adopt or clear .sfnew/.pacnew config companions'
   )
   _describe 'subcommand' subcommands
+}
+
+_sysforge_config_check() {
+  _arguments \
+    '--config-dir[live config dir to check]:directory:_files -/' \
+    '--json[print one JSON document instead of the report]'
+}
+
+_sysforge_config_clean() {
+  _arguments \
+    '--config-dir[live config dir to clean]:directory:_files -/' \
+    '--unknown[also remove settings sysforge does not know]' \
+    '--dry-run[show the diff without writing]' \
+    '--yes[write without asking]'
+}
+
+_sysforge_config_reset() {
+  _arguments \
+    '--config-dir[live config dir]:directory:_files -/' \
+    '--dry-run[show the diff without writing]' \
+    '--yes[write without asking]' \
+    '1:file:(sysforge.toml profiles.toml packages.toml kernel.toml toolchain.toml)' \
+    '*:key (SECTION.KEY):'
 }
 
 _sysforge_config_merge() {

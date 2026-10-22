@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from cli_args import cli_args
 from sysforge import cli
 from sysforge.primitives.net_policy import reset_policy
 
@@ -144,7 +145,6 @@ def test_frozen_run_exits_non_zero_with_the_package_named(update_scenario, capsy
     ``--frozen`` run produces once the CLI in this task installs the policy
     at entry.
     """
-    from types import SimpleNamespace
 
     from sysforge.primitives.source_sync import STATUS_FROZEN
 
@@ -152,11 +152,7 @@ def test_frozen_run_exits_non_zero_with_the_package_named(update_scenario, capsy
     update_scenario.fake_sync(
         {"htop": (STATUS_FROZEN, "source freeze active — refused: htop")}
     )
-    args = SimpleNamespace(
-        state_dir=None, dry_run=False, devel=False, offline=False,
-        no_pkg_log=True, persist_log=False, log_dir=None, profile_conf=None,
-        cache_report=False, packages=None,
-    )
+    args = cli_args("update", "--no-pkg-log")
     with pytest.raises(RuntimeError, match="htop"):
         update_scenario.run(args, installed={"htop": "0.9.0-1"}, foreign={"htop": "0.9.0-1"})
     combined = "".join(capsys.readouterr())

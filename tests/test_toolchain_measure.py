@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT
 
 """Toolchain stage → bench hand-off after a verified install (3.4.0-F11)."""
-from types import SimpleNamespace
+
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,8 @@ from sysforge.pipeline.stages.toolchain.config import ToolchainConfig
 
 
 def _opts(tmp_path, dry_run=False):
-    return SimpleNamespace(dry_run=dry_run, state_dir=str(tmp_path))
+    from sysforge.pipeline.stages.base import RunOptions
+    return RunOptions(dry_run=dry_run, state_dir=Path(tmp_path))
 
 
 def _tcfg(after_build):

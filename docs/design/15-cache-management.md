@@ -36,7 +36,7 @@ Cache probe uses `ccache --print-stats --format=tab` (ccache ≥ 4.0, standard o
 
 ### Toolchain fingerprint tracking
 
-SysForge tracks a toolchain fingerprint (hash of compiler path + version) in its state dir. On mismatch (e.g. after LLVM version bump), `invalidate_on_toolchain_change` fires: `warn` (default) / `purge` / `ignore`.
+There is no cache-invalidation setting. Each source build records the toolchain that built it in `build_state.toml` (`toolchain_variant`, `toolchain_fingerprint`), and `sysforge update` reports a package built by a different or rebuilt toolchain as toolchain drift (§Drift detection), rebuilding it with `--rebuild-on-toolchain-drift`. The compile caches need nothing from sysforge here: ccache and sccache key their entries on the compiler itself, so a toolchain change misses rather than reusing objects from the old compiler.
 
 ---
 

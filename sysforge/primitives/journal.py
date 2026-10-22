@@ -57,6 +57,23 @@ def journal_send(**fields: str | int) -> None:
 TARGET_PKG_PREFIX = "pkg:"
 TARGET_MODE_PREFIX = "mode:"
 
+FIELD_VERB = "SYSFORGE_VERB"
+FIELD_TARGET = "SYSFORGE_TARGET"
+FIELD_EXIT = "SYSFORGE_EXIT"
+
+#: The fields a record carries besides journald's own, as (name, scdoc text).
+#: Only commands that change the system write a record.
+#: The man page's JOURNAL section is generated from this (3.5.0-DOC13).
+JOURNAL_FIELDS: tuple[tuple[str, str], ...] = (
+    (FIELD_VERB, "The command, with spaces as dashes for subcommands "
+                 "(build, update, state-forget, artifact-deploy)."),
+    (FIELD_TARGET, "What it acted on, when it has a subject: pkg:<names> for "
+                   "packages (space-separated), mode:<name> for a state "
+                   "operation. Absent otherwise."),
+    (FIELD_EXIT, "The exit status. Records of a failed run are also logged at "
+                 "PRIORITY=3 (err), the others at 6 (info)."),
+)
+
 
 def pkg_target(names) -> str | None:
     """`pkg:`-namespaced ``SYSFORGE_TARGET`` for a package-subject verb.
@@ -79,9 +96,9 @@ def record_verb(verb: str, target: str | None, exit_code: int) -> None:
         "MESSAGE": message,
         "PRIORITY": 6 if exit_code == 0 else 3,
         "SYSLOG_IDENTIFIER": "sysforge",
-        "SYSFORGE_VERB": verb,
-        "SYSFORGE_EXIT": exit_code,
+        FIELD_VERB: verb,
+        FIELD_EXIT: exit_code,
     }
     if target:
-        fields["SYSFORGE_TARGET"] = target
+        fields[FIELD_TARGET] = target
     journal_send(**fields)

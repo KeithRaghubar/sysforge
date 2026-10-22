@@ -1,0 +1,879 @@
+{
+ "commands": {
+  "": {
+   "flags": {
+    "--color": [
+     "always",
+     "auto",
+     "never"
+    ],
+    "--frozen": null,
+    "--no-frozen": null,
+    "--no-throttle": null,
+    "--py-profile": null,
+    "--py-profile-out": null,
+    "--quiet": null,
+    "--thaw": null,
+    "--timings": null,
+    "--turbo": null,
+    "--verbose": null,
+    "--version": null
+   },
+   "positionals": {}
+  },
+  "artifact adopt": {
+   "flags": {
+    "--class": [
+     "pacman-hook",
+     "script",
+     "systemd-unit"
+    ]
+   },
+   "positionals": {
+    "PATH": null
+   }
+  },
+  "artifact deploy": {
+   "flags": {
+    "--adopt-live": null,
+    "--all": null,
+    "--force": null
+   },
+   "positionals": {
+    "NAME": null
+   }
+  },
+  "artifact edit": {
+   "flags": {},
+   "positionals": {
+    "NAME": null
+   }
+  },
+  "artifact list": {
+   "flags": {
+    "--unmanaged": null
+   },
+   "positionals": {}
+  },
+  "artifact remove": {
+   "flags": {
+    "--force": null,
+    "--purge": null
+   },
+   "positionals": {
+    "NAME": null
+   }
+  },
+  "artifact review": {
+   "flags": {
+    "--all": null,
+    "--include-unknown": null
+   },
+   "positionals": {}
+  },
+  "bench toolchain": {
+   "flags": {
+    "--offline": null,
+    "--runs": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "build": {
+   "flags": {
+    "--abi-check": null,
+    "--cache-report": null,
+    "--cc": null,
+    "--cleansrc": null,
+    "--cleansrc-force": null,
+    "--cxx": null,
+    "--force": null,
+    "--interactive": null,
+    "--ld": null,
+    "--log-dir": null,
+    "--makepkg": null,
+    "--no-llvm-preflight": null,
+    "--no-pkg-log": null,
+    "--no-review": null,
+    "--no-update": null,
+    "--persist-log": null,
+    "--pgo": [
+     "record",
+     "use"
+    ],
+    "--profile-conf": null,
+    "--rebuild": null,
+    "--reset-toolchain": null,
+    "--review": null,
+    "--save-toolchain": null,
+    "--state-dir": null,
+    "--toolchain": [
+     "gcc",
+     "llvm"
+    ]
+   },
+   "positionals": {
+    "PKGBUILD": null
+   }
+  },
+  "config check": {
+   "flags": {
+    "--config-dir": null,
+    "--json": null
+   },
+   "positionals": {}
+  },
+  "config clean": {
+   "flags": {
+    "--config-dir": null,
+    "--dry-run": null,
+    "--unknown": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
+  "config merge": {
+   "flags": {
+    "--config-dir": null,
+    "--dry-run": null,
+    "--no-pager": null
+   },
+   "positionals": {}
+  },
+  "config reset": {
+   "flags": {
+    "--config-dir": null,
+    "--dry-run": null,
+    "--yes": null
+   },
+   "positionals": {
+    "FILE": [
+     "kernel.toml",
+     "packages.toml",
+     "profiles.toml",
+     "sysforge.toml",
+     "toolchain.toml"
+    ],
+    "KEY": null
+   }
+  },
+  "doctor pkg": {
+   "flags": {
+    "--abi": null,
+    "--all": null,
+    "--apply": null,
+    "--dry-run": null,
+    "--findings-only": null,
+    "--graphics": null,
+    "--integrity": null,
+    "--json": null,
+    "--repo": null,
+    "--rust": null,
+    "--shallow": null,
+    "--suggest": null,
+    "--yes": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "doctor system": {
+   "flags": {
+    "--audio": null,
+    "--boot": null,
+    "--cache": null,
+    "--config": null,
+    "--distro": null,
+    "--findings-only": null,
+    "--gfxperf": null,
+    "--graphics": null,
+    "--hardware": null,
+    "--integrity": null,
+    "--json": null,
+    "--network": null,
+    "--pacman": null,
+    "--restart": null,
+    "--rust": null,
+    "--services": null,
+    "--state": null,
+    "--storage": null,
+    "--toolchain": null
+   },
+   "positionals": {}
+  },
+  "env": {
+   "flags": {},
+   "positionals": {}
+  },
+  "fetch": {
+   "flags": {
+    "--cleansrc": null,
+    "--cleansrc-force": null,
+    "--no-llvm-preflight": null,
+    "--no-update": null,
+    "--profile-conf": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "help": {
+   "flags": {},
+   "positionals": {
+    "COMMAND": null
+   }
+  },
+  "log": {
+   "flags": {
+    "--log-dir": null,
+    "--no-pager": null,
+    "--state-dir": null,
+    "--verb": [
+     "build",
+     "config-clean",
+     "config-merge",
+     "config-reset",
+     "doctor",
+     "fetch",
+     "revert-to-stock",
+     "run-hardware",
+     "run-kernel",
+     "run-packages",
+     "run-reconfigure",
+     "run-toolchain",
+     "setup",
+     "state-forget",
+     "state-repair",
+     "uninstall",
+     "update"
+    ]
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "packages add": {
+   "flags": {
+    "--enable-build-from-source": null,
+    "--no-cache": null,
+    "--packages": null,
+    "--reason": null,
+    "--source": [
+     "aur",
+     "local",
+     "repo"
+    ]
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "packages add-group": {
+   "flags": {
+    "--packages": null
+   },
+   "positionals": {
+    "DESKTOP": [
+     "budgie",
+     "cinnamon",
+     "cosmic",
+     "gnome",
+     "kde",
+     "lxqt",
+     "mate",
+     "xfce"
+    ]
+   }
+  },
+  "packages list": {
+   "flags": {
+    "--orphans": null,
+    "--packages": null
+   },
+   "positionals": {}
+  },
+  "packages remove": {
+   "flags": {
+    "--packages": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "resolve": {
+   "flags": {
+    "--deps": null,
+    "--profile-conf": null,
+    "--show-flags": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "revert-to-stock": {
+   "flags": {
+    "--dry-run": null,
+    "--state-dir": null,
+    "--yes": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "run hardware": {
+   "flags": {
+    "--dry-run": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "run kernel": {
+   "flags": {
+    "--abi-check": null,
+    "--allow-boot-audit-failure": null,
+    "--allow-no-fallback": null,
+    "--autofdo": [
+     "capture",
+     "record",
+     "use"
+    ],
+    "--base-config": null,
+    "--base-config-merge": [
+     "overlay",
+     "replace"
+    ],
+    "--bootloader": [
+     "grub",
+     "none",
+     "systemd-boot"
+    ],
+    "--cache-report": null,
+    "--cleansrc": null,
+    "--cleansrc-force": null,
+    "--dry-run": null,
+    "--log-dir": null,
+    "--no-docs": null,
+    "--no-headers": null,
+    "--no-interactive": null,
+    "--no-keep-hotplug-drivers": null,
+    "--no-pkg-log": null,
+    "--no-update": null,
+    "--persist-log": null,
+    "--profile-conf": null,
+    "--propeller": null,
+    "--state-dir": null,
+    "--toolchain": [
+     "gcc",
+     "llvm"
+    ]
+   },
+   "positionals": {}
+  },
+  "run packages": {
+   "flags": {
+    "--abi-check": null,
+    "--cache-report": null,
+    "--dry-run": null,
+    "--log-dir": null,
+    "--no-pkg-log": null,
+    "--no-update": null,
+    "--packages": null,
+    "--persist-log": null,
+    "--profile-conf": null,
+    "--retry-failed": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "run pipeline": {
+   "flags": {
+    "--abi-check": null,
+    "--cache-report": null,
+    "--dry-run": null,
+    "--log-dir": null,
+    "--no-pkg-log": null,
+    "--no-unified-log": null,
+    "--no-update": null,
+    "--packages": null,
+    "--persist-log": null,
+    "--profile-conf": null,
+    "--resume": null,
+    "--retry-failed": null,
+    "--start-from": null,
+    "--state-dir": null,
+    "--truncate-log": null
+   },
+   "positionals": {}
+  },
+  "run reconfigure": {
+   "flags": {
+    "--dry-run": null,
+    "--packages": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "run toolchain": {
+   "flags": {
+    "--abi-check": null,
+    "--allow-dirty-llvm": null,
+    "--allow-low-build-space": null,
+    "--allow-version-skew": null,
+    "--bolt-only": null,
+    "--cache-report": null,
+    "--cleansrc": null,
+    "--cleansrc-force": null,
+    "--dry-run": null,
+    "--install-only": null,
+    "--makepkg": null,
+    "--no-update": null,
+    "--persist-log": null,
+    "--rebuild-profdata": null,
+    "--rebuild-soname-consumers": [
+     "auto",
+     "off",
+     "prompt"
+    ],
+    "--reuse-built": null,
+    "--state-dir": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
+  "search": {
+   "flags": {},
+   "positionals": {
+    "TERM": null
+   }
+  },
+  "setup": {
+   "flags": {
+    "--pacman-conf": null,
+    "--preset": [
+     "defaults",
+     "low-friction",
+     "performance",
+     "secure"
+    ]
+   },
+   "positionals": {}
+  },
+  "state boot-entries": {
+   "flags": {
+    "--no-pager": null
+   },
+   "positionals": {}
+  },
+  "state failed": {
+   "flags": {
+    "--clear": null,
+    "--clear-all": null,
+    "--names": null,
+    "--no-pager": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "state forget": {
+   "flags": {
+    "--state-dir": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "state list": {
+   "flags": {
+    "--json": null,
+    "--no-pager": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "state orphans": {
+   "flags": {
+    "--delete": null,
+    "--no-pager": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
+  "state profiles": {
+   "flags": {
+    "--delete": null,
+    "--no-pager": null,
+    "--state-dir": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
+  "state repair": {
+   "flags": {
+    "--dry-run": null,
+    "--state-dir": null
+   },
+   "positionals": {}
+  },
+  "uninstall": {
+   "flags": {
+    "--state-dir": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  },
+  "update": {
+   "flags": {
+    "--cache-report": null,
+    "--cleansrc": null,
+    "--cleansrc-force": null,
+    "--devel": null,
+    "--dry-run": null,
+    "--explain-drift": null,
+    "--include-stage-owned": null,
+    "--install-only": null,
+    "--interactive": null,
+    "--json": null,
+    "--log-dir": null,
+    "--makepkg": null,
+    "--no-cleanbuild": null,
+    "--no-llvm-preflight": null,
+    "--no-pkg-log": null,
+    "--no-review": null,
+    "--no-sysupgrade": null,
+    "--no-sysupgrade-report": null,
+    "--no-toolchain-preflight": null,
+    "--offline": null,
+    "--packages": null,
+    "--persist-log": null,
+    "--profile-conf": null,
+    "--rebuild-on-drift": null,
+    "--rebuild-on-flag-drift": null,
+    "--rebuild-on-toolchain-drift": null,
+    "--review": null,
+    "--state-dir": null,
+    "--sysupgrade": null,
+    "--versions": null,
+    "--yes": null
+   },
+   "positionals": {
+    "PKG": null
+   }
+  }
+ },
+ "environment": [
+  "PAGER",
+  "SYSFORGE_ASCII",
+  "SYSFORGE_CONFIG_DIR",
+  "SYSFORGE_EDITOR",
+  "SYSFORGE_MERGE",
+  "SYSFORGE_PACMAN_NO_PYALPM",
+  "SYSFORGE_PGO_STORE",
+  "SYSFORGE_PROFILE_STORE",
+  "SYSFORGE_PROGRESS_TRACE",
+  "SYSFORGE_PTY_RAW_DUMP",
+  "SYSFORGE_STATE_DIR"
+ ],
+ "journal_fields": [
+  "SYSFORGE_EXIT",
+  "SYSFORGE_TARGET",
+  "SYSFORGE_VERB"
+ ],
+ "config": {
+  "sysforge.toml": {
+   "top_level": [],
+   "sections": {
+    "artifacts": [
+     "roots"
+    ],
+    "aur": [
+     "enabled",
+     "min_fetch_interval_ms",
+     "rate_limit_abort_s"
+    ],
+    "build": [
+     "cpu_quota",
+     "ionice",
+     "jobs",
+     "mem_limit",
+     "nice",
+     "pre_build_snapshot",
+     "python",
+     "repo_track"
+    ],
+    "doctor": [
+     "disk_low_gb",
+     "mirrorlist_stale_days",
+     "pkg_cache_warn_gb"
+    ],
+    "failure_handling": [
+     "checksum_mismatch",
+     "pgp_key_missing",
+     "srcinfo_drift",
+     "vendored_deps_missing"
+    ],
+    "git": [
+     "clone_timeout",
+     "fetch_timeout"
+    ],
+    "log": [
+     "verbosity"
+    ],
+    "mesa": [
+     "filter_drivers",
+     "gallium",
+     "vulkan"
+    ],
+    "pgo": [
+     "allow",
+     "skew_warn_ratio"
+    ],
+    "safety": [
+     "llvm_preflight",
+     "llvm_strict_toolchain"
+    ],
+    "security": [
+     "auto_fetch_pgp_keys",
+     "freeze_sources",
+     "sandbox_builds",
+     "sandbox_chroot_dir",
+     "sandbox_clean",
+     "sandbox_local_repo",
+     "sandbox_update"
+    ],
+    "ui": [
+     "color",
+     "editor",
+     "merge"
+    ],
+    "update": [
+     "rebuild_on_drift",
+     "rebuild_on_flag_drift",
+     "rebuild_on_toolchain_drift"
+    ]
+   }
+  },
+  "profiles.toml": {
+   "top_level": [
+    "extends_system"
+   ],
+   "sections": {
+    "append_conflict_groups": null,
+    "consumes_inference": null,
+    "defaults": [
+     "append_groups",
+     "profile",
+     "toolchain"
+    ],
+    "package_compiler_overrides": null,
+    "paths": [
+     "pkgbuild_src_dir"
+    ],
+    "preserved_system_tokens": null,
+    "profiles": null,
+    "rules": null
+   }
+  },
+  "packages.toml": {
+   "top_level": [],
+   "sections": {
+    "build": [
+     "abi_check",
+     "cache_report",
+     "confirm_plan",
+     "persist_log",
+     "pkgbuild_src_dir",
+     "repo_mode",
+     "review",
+     "review_trusted_sources",
+     "system_upgrade"
+    ],
+    "group": null,
+    "package": null
+   }
+  },
+  "kernel.toml": {
+   "top_level": [
+    "base_config",
+    "base_config_merge",
+    "boot_audit",
+    "boot_entries",
+    "boot_entries_prefix",
+    "bootloader",
+    "build_docs",
+    "build_headers",
+    "capture_lsmod_snapshot",
+    "compiler",
+    "device_kconfig",
+    "enabled",
+    "hardening",
+    "interactive",
+    "kconfig_merge",
+    "kconfig_targets",
+    "keep_hotplug_drivers",
+    "min_boot_free_mb",
+    "pkgbuild_src_dir",
+    "pkgname",
+    "require_fallback_kernel",
+    "source",
+    "srcdir",
+    "upstream_pkgname"
+   ],
+   "sections": {
+    "fdo": [
+     "mode"
+    ],
+    "kconfig": null
+   }
+  },
+  "toolchain.toml": {
+   "top_level": [
+    "compiler",
+    "drift_detect",
+    "enabled",
+    "min_build_free_gb",
+    "pgo",
+    "pgo_staging",
+    "pgo_staging1",
+    "pgo_staging3",
+    "pgo_store",
+    "profile_store",
+    "rebuild_soname_consumers",
+    "require_multilib",
+    "reuse_unchanged",
+    "skip_build"
+   ],
+   "sections": {
+    "bench": [
+     "after_build",
+     "corpus"
+    ],
+    "bolt": [
+     "enabled",
+     "libllvm",
+     "training_workload"
+    ],
+    "llvm": [
+     "targets"
+    ],
+    "packages": [
+     "lib32",
+     "non_pgo",
+     "pgo",
+     "training_corpus"
+    ]
+   }
+  }
+ },
+ "json": {
+  "config-check": [
+   "config_dir",
+   "issues",
+   "issues[].file",
+   "issues[].fix",
+   "issues[].kind",
+   "issues[].line",
+   "issues[].message",
+   "issues[].setting",
+   "kind",
+   "schema"
+  ],
+  "doctor": [
+   "affected",
+   "affected[].issues",
+   "affected[].name",
+   "affected[].tag",
+   "axes",
+   "axes[].errors",
+   "axes[].findings",
+   "axes[].findings[].check_id",
+   "axes[].findings[].fix_cmd",
+   "axes[].findings[].is_brick",
+   "axes[].findings[].message",
+   "axes[].findings[].remediation",
+   "axes[].findings[].severity",
+   "axes[].findings[].subject",
+   "axes[].label",
+   "axes[].name",
+   "axes[].roster",
+   "axes[].roster.ran",
+   "axes[].roster.skipped",
+   "axes[].roster.skipped[].check",
+   "axes[].roster.skipped[].reason",
+   "kind",
+   "schema",
+   "scope"
+  ],
+  "state-list": [
+   "kind",
+   "opted_out",
+   "opted_out[].at",
+   "opted_out[].pkgbase",
+   "opted_out[].pkgnames",
+   "opted_out[].via",
+   "packages",
+   "packages[].build_mode",
+   "packages[].built_at",
+   "packages[].name",
+   "packages[].owner_stage",
+   "packages[].pkgbase",
+   "packages[].pkgbuild_dir",
+   "packages[].source",
+   "packages[].toolchain_variant",
+   "packages[].version",
+   "schema",
+   "untracked_foreign",
+   "untracked_foreign[].name",
+   "untracked_foreign[].version"
+  ],
+  "update-dry-run": [
+   "drift",
+   "drift.flags",
+   "drift.flags.packages",
+   "drift.flags.packages[].diff",
+   "drift.flags.packages[].pkgbase",
+   "drift.flags.rebuild",
+   "drift.toolchain",
+   "drift.toolchain.active",
+   "drift.toolchain.packages",
+   "drift.toolchain.packages[].pkgbase",
+   "drift.toolchain.packages[].reason",
+   "drift.toolchain.packages[].recorded",
+   "drift.toolchain.rebuild",
+   "kind",
+   "offline",
+   "packages",
+   "packages[].action",
+   "packages[].available",
+   "packages[].has_build_record",
+   "packages[].installed",
+   "packages[].pkgbase",
+   "packages[].pkgnames",
+   "packages[].source",
+   "schema",
+   "sync_failures",
+   "sync_failures[].error",
+   "sync_failures[].pkgbase",
+   "sync_failures[].status"
+  ]
+ },
+ "run_logs": [
+  "build",
+  "config-clean",
+  "config-merge",
+  "config-reset",
+  "doctor",
+  "fetch",
+  "revert-to-stock",
+  "run-hardware",
+  "run-kernel",
+  "run-packages",
+  "run-reconfigure",
+  "run-toolchain",
+  "setup",
+  "state-forget",
+  "state-repair",
+  "uninstall",
+  "update"
+ ]
+}

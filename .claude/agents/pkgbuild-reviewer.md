@@ -20,7 +20,7 @@ You review changes to:
 - `sysforge/primitives/vcs_pkgver.py` — `[epoch:]pkgver-pkgrel` resolution for VCS sources
 - `sysforge/primitives/source_meta.py` — `source_meta.toml` schema
 - `sysforge/primitives/build_state.py` — `build_state.toml` schema
-- `sysforge/update.py`, `sysforge/fetch.py`, `sysforge/converge.py` — call sites
+- `sysforge/update.py`, `sysforge/fetch.py` — call sites
 
 Reject the review request if the diff falls outside this scope; the user wants a generalist reviewer instead.
 

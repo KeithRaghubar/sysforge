@@ -5,7 +5,6 @@ Covers all pure-logic functions. Subprocess calls (lsmod, mkinitcpio,
 bootctl, makepkg) are mocked — nothing real runs.
 """
 import contextlib
-import types
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -3469,10 +3468,8 @@ def test_kernel_stage_run_stages_lsmod_snapshot(tmp_path):
 
 
 def _hotplug_opts(**kw):
-    ns = types.SimpleNamespace(keep_hotplug_drivers=None, dry_run=False)
-    for k, v in kw.items():
-        setattr(ns, k, v)
-    return ns
+    from sysforge.pipeline.stages.base import RunOptions
+    return RunOptions(**kw)
 
 
 def test_resolve_keep_hotplug_cli_overrides_toml():
@@ -4093,8 +4090,8 @@ def test_base_config_merge_cli_overrides_kernel_toml(tmp_path, monkeypatch):
 
     cfg, d = _running_base(tmp_path, monkeypatch)
     label = write_base_config(
-        cfg, dry_run=False, options=SimpleNamespace(base_config=None,
-                                                    base_config_merge="overlay"))
+        cfg, dry_run=False, options=RunOptions(base_config=None,
+                                               base_config_merge="overlay"))
     assert label == "running (overlay)"
 
 

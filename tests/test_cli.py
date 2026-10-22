@@ -31,6 +31,7 @@ from sysforge.cli import (
     _resolve_verbosity,
 )
 from sysforge.build.makepkg_wrapper import expand_makepkg_flags
+from cli_args import cli_args
 
 
 # ---------------------------------------------------------------------------
@@ -393,10 +394,17 @@ def test_implicit_preserves_tokens_before_subcommand():
 # CLI-entry sentinel check skip on --dry-run
 # ---------------------------------------------------------------------------
 
+# A minimal real command line per command the gate tests use.
+_GATE_ARGV = {"build": ["build", "x"], "update": ["update"], "run": ["run", "toolchain"],
+              "setup": ["setup"], "env": ["env"], "doctor": ["doctor", "system"],
+              "resolve": ["resolve", "x"], "fetch": ["fetch", "x"],
+              "completions": ["completions", "packages"], "log": ["log"],
+              "packages": ["packages", "list"], "state": ["state", "list"]}
+
+
 def _gate_args(*, command, dry_run):
-    """Minimal args namespace for the sentinel-gate condition."""
-    from types import SimpleNamespace
-    return SimpleNamespace(command=command, dry_run=dry_run, state_dir=None)
+    """The parsed command line for the sentinel-gate condition."""
+    return cli_args(*_GATE_ARGV[command], *(["--dry-run"] if dry_run else []))
 
 
 def test_dry_run_skips_entry_sentinel_check():
@@ -407,7 +415,8 @@ def test_dry_run_skips_entry_sentinel_check():
     outer CLI gate should match so the two stay in sync.
     """
     from sysforge.cli import _gate_sentinel_check
-    for cmd in ("build", "update", "run", "setup"):
+    # build and setup have no --dry-run, so only these two can be read-only here.
+    for cmd in ("update", "run"):
         assert _gate_sentinel_check(_gate_args(command=cmd, dry_run=True)) is False
 
 

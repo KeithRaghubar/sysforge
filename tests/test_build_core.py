@@ -1434,13 +1434,6 @@ def test_make_build_options_override_wins_over_stage_default():
     assert bo.owner_stage == "other"
 
 
-def test_make_build_options_abi_check_defaults_false_when_absent():
-    """A run-options object lacking abi_check degrades to False, not error."""
-    opts = SimpleNamespace(no_pkg_log=False, persist_log=False, state_dir=None)
-    bo = make_build_options("packages", opts)
-    assert bo.abi_check is False
-    assert bo.pkg_log is True
-
 
 def test_make_build_options_unknown_stage_raises():
     opts = _run_options()

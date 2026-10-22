@@ -13,7 +13,6 @@ Covers:
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +29,7 @@ from sysforge.resolve import (
     _print_resolve,
     cmd_resolve,
 )
+from cli_args import cli_args
 
 TESTS_DIR = Path(__file__).parent
 DATA_DIR = TESTS_DIR / "data"
@@ -427,7 +427,8 @@ def test_print_resolve_internal_keys_separated(capsys, tmp_path):
 # ---------------------------------------------------------------------------
 
 def _make_args(pkg, show_flags=False, deps=False, profile_conf=None):
-    return SimpleNamespace(pkg=pkg, show_flags=show_flags, deps=deps, profile_conf=profile_conf)
+    return cli_args("resolve", "_", pkg=pkg, show_flags=show_flags, deps=deps,
+                    profile_conf=profile_conf)
 
 
 def test_cmd_resolve_htop_matches_rule(capsys):

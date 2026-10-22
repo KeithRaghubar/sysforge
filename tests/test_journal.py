@@ -8,6 +8,7 @@ import socket
 import struct
 from types import SimpleNamespace
 
+from cli_args import cli_args
 from sysforge.primitives import journal
 
 
@@ -122,19 +123,19 @@ def test_state_failed_verb_journal_target():
     from sysforge.state_cmd import StateFailedVerb
 
     verb = StateFailedVerb()
-    assert verb.journal_target(SimpleNamespace(clear="mesa", clear_all=False)) == "pkg:mesa"
+    assert verb.journal_target(cli_args("state", "failed", "--clear", "mesa")) == "pkg:mesa"
     # neither flag: not sentinel-gated, no subject
-    assert verb.journal_target(SimpleNamespace(clear=None, clear_all=False)) is None
+    assert verb.journal_target(cli_args("state", "failed")) is None
     # 2.5.1-F3: --clear-all is equally sentinel-gated (it rewrites
     # build_state.toml) but subjectless, so it emits a `mode:` target rather
     # than journalling the bare verb name.
     assert (
-        verb.journal_target(SimpleNamespace(clear=None, clear_all=True))
+        verb.journal_target(cli_args("state", "failed", "--clear-all"))
         == "mode:failed-clear-all"
     )
     # --clear wins when both are somehow set: the named subject is more useful.
     assert (
-        verb.journal_target(SimpleNamespace(clear="mesa", clear_all=True)) == "pkg:mesa"
+        verb.journal_target(cli_args("state", "failed", clear="mesa", clear_all=True)) == "pkg:mesa"
     )
 
 

@@ -131,11 +131,15 @@ _sysforge_flag_arg() {
             ;;
         --verb)
             # sysforge log: every verb_log_names() entry (test_log_cmd checks).
-            COMPREPLY=( $(compgen -W "build config-merge doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update" -- "$cur") )
+            COMPREPLY=( $(compgen -W "build config-clean config-merge config-reset doctor fetch revert-to-stock run-hardware run-kernel run-packages run-reconfigure run-toolchain setup state-forget state-repair uninstall update" -- "$cur") )
             return 0
             ;;
         --bootloader)
             COMPREPLY=( $(compgen -W "systemd-boot grub none" -- "$cur") )
+            return 0
+            ;;
+        --rebuild-soname-consumers)
+            COMPREPLY=( $(compgen -W "prompt auto off" -- "$cur") )
             return 0
             ;;
         --base-config)
@@ -268,7 +272,7 @@ _sysforge_doctor() {
     case "$subverb" in
         system)
             local sys_flags="--distro --graphics --gfxperf --hardware --toolchain \
-                --rust --cache --pacman --state --boot --restart --storage \
+                --rust --cache --pacman --state --config --boot --restart --storage \
                 --services --audio --network --integrity --findings-only --json"
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "$sys_flags" -- "$cur") )
             ;;
@@ -503,10 +507,23 @@ _sysforge_help() {
 _sysforge_config() {
     _sysforge_flag_arg && return
     if [[ -z $subverb ]]; then
-        COMPREPLY=( $(compgen -W "merge" -- "$cur") )
+        COMPREPLY=( $(compgen -W "check clean reset merge" -- "$cur") )
         return
     fi
     case "$subverb" in
+        check)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --json" -- "$cur") )
+            ;;
+        clean)
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --unknown --dry-run --yes" -- "$cur") )
+            ;;
+        reset)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=( $(compgen -W "--config-dir --dry-run --yes" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -W "sysforge.toml profiles.toml packages.toml kernel.toml toolchain.toml" -- "$cur") )
+            fi
+            ;;
         merge)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --dry-run --no-pager" -- "$cur") )
             ;;

@@ -1,4 +1,4 @@
-.PHONY: all help dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
+.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
         bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
@@ -275,6 +275,16 @@ design: ## Regenerate DESIGN.md from docs/design/
 
 # DESIGN.md drift gate (mirrors the manpage check). Fails if the committed
 # DESIGN.md is out of date with its docs/design/ sources. Run by tools/release.sh.
+install-hooks: ## Install the pre-commit hook running the fast gates (tools/pre-commit.sh)
+	ln -sf ../../tools/pre-commit.sh .git/hooks/pre-commit
+	@echo "pre-commit hook installed; skip once with git commit --no-verify"
+
+surface: ## Regenerate tests/data/surface.json, the snapshot of every user-facing surface
+	uv run --no-sync python tools/surface.py --write
+
+check-surface: ## Gate: surface snapshot current; changes vs main recorded in release notes
+	uv run --no-sync python tools/surface.py --check
+
 check-design: ## Gate: DESIGN.md in sync with docs/design/
 	uv run --no-sync python tools/build_design.py --check
 
@@ -358,7 +368,7 @@ sync-config: ## Merge new shipped defaults into the live config dir
 # The gate list, in run order, written once (3.5.0-DEV8): `pre-release`
 # depends on it and tools/ci.sh reads it through `print-gates`, so the release
 # gate and CI cannot drift apart.
-GATES := lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards
+GATES := lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards check-surface
 
 pre-release: $(GATES) ## Composite gate: lint, types, tests, all checks
 

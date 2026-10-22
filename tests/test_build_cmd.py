@@ -15,6 +15,8 @@ import types
 
 import pytest
 
+from cli_args import cli_args
+
 import sysforge.build_cmd as build_cmd
 import sysforge.build_core as build_core
 import sysforge.pipeline.state as pipeline_state
@@ -50,13 +52,8 @@ def _run_build(monkeypatch, tmp_path, pkgname, *, is_repo, force=True,
     monkeypatch.setattr(pipeline_state, "get_toolchain_fingerprint", lambda st: None)
     monkeypatch.setattr(pipeline_state, "PipelineState", lambda d: None)
 
-    args = types.SimpleNamespace(
-        makepkg=None, pkgbuilds=[pkgname], cleansrc=False, cleansrc_force=False,
-        no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
-        ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
-        cache_report=False, abi_check=False, no_review=True, timings=False,
-        force=force, rebuild=rebuild,
-    )
+    args = cli_args("build", pkgname, no_update=True, no_pkg_log=True, no_review=True,
+                    force=force, rebuild=rebuild)
     result = BuildVerb().execute(args, PreCheckResult(ctx={"config": config or {}}))
     return captured["targets"], result
 
@@ -94,14 +91,8 @@ def test_split_package_members_dedup_to_one_target(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline_state, "get_toolchain_fingerprint", lambda st: None)
     monkeypatch.setattr(pipeline_state, "PipelineState", lambda d: None)
 
-    args = types.SimpleNamespace(
-        makepkg=None, pkgbuilds=["wayland-git", "wayland-docs-git"],
-        cleansrc=False, cleansrc_force=False,
-        no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
-        ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
-        cache_report=False, abi_check=False, no_review=True, timings=False,
-        force=True,
-    )
+    args = cli_args("build", "wayland-git", "wayland-docs-git", no_update=True,
+                    no_pkg_log=True, no_review=True, force=True)
     BuildVerb().execute(args, PreCheckResult(ctx={"config": {}}))
 
     assert [t.pkgbase for t in captured["targets"]] == ["wayland-git"]
@@ -262,13 +253,8 @@ def _run_build_capture_kwargs(monkeypatch, tmp_path, pkgname, *, force,
     pkg_path.write_text(packages_toml_text)
     cfg = {"packages_file": str(pkg_path)}
 
-    args = types.SimpleNamespace(
-        makepkg=None, pkgbuilds=[pkgname], cleansrc=False, cleansrc_force=False,
-        no_update=True, interactive=False, profile_conf=None, cc=None, cxx=None,
-        ld=None, state_dir=None, no_pkg_log=True, persist_log=False, log_dir=None,
-        cache_report=False, abi_check=False, no_review=True, timings=False,
-        force=force,
-    )
+    args = cli_args("build", pkgname, no_update=True, no_pkg_log=True, no_review=True,
+                    force=force)
     BuildVerb().execute(args, PreCheckResult(ctx={"config": cfg}))
     return captured
 

@@ -535,6 +535,7 @@ class RunKernelVerb(_RunVerbBase):
             allow_boot_audit_failure=getattr(args, "allow_boot_audit_failure", False),
             build_headers=getattr(args, "build_headers", None),
             build_docs=getattr(args, "build_docs", None),
+            keep_hotplug_drivers=getattr(args, "keep_hotplug_drivers", None),
             kernel_fdo=getattr(args, "kernel_fdo", None),
             kernel_propeller=getattr(args, "kernel_propeller", False),
         )

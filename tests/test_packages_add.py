@@ -22,6 +22,7 @@ from sysforge.packages_cmd import (
     cmd_packages_remove,
 )
 from sysforge.verbs.shared import entry_is_inert, rewrite_packages_toml
+from cli_args import cli_args
 
 
 def _args(pkg, packages, **overrides):
@@ -212,7 +213,7 @@ def test_remove_missing_entry_is_fatal(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 def _group_args(desktop, packages):
-    return SimpleNamespace(desktop=desktop, packages=str(packages))
+    return cli_args("packages", "add-group", "cosmic", desktop=desktop, packages=str(packages))
 
 
 def test_add_group_writes_group(tmp_path, capsys):

@@ -3,12 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from cli_args import cli_args
 from sysforge import packages_cmd
 from sysforge.packages_cmd import PackagesAddVerb, cmd_packages_list
 
 
 def _list(path, **kw):
-    cmd_packages_list(SimpleNamespace(packages=str(path), orphans=kw.get("orphans", False)))
+    cmd_packages_list(cli_args("packages", "list", packages=str(path),
+                               orphans=kw.get("orphans", False)))
 
 
 def test_list_without_a_file_is_fatal(tmp_path):
@@ -77,8 +79,7 @@ def test_packages_file_defaults_to_the_configured_path(tmp_path, monkeypatch):
 
 
 def test_add_verb_pre_check_blocks_source_only():
-    args = SimpleNamespace(pkg="mesa", enable_build_from_source=False,
-                           no_cache=False, reason=None, source="repo")
+    args = cli_args("packages", "add", "mesa", "--source", "repo")
     pre = PackagesAddVerb().pre_check(args)
     assert pre.blocker and "--source alone is metadata" in pre.blocker
     assert pre.exit_code == 1
@@ -113,4 +114,4 @@ def test_add_reports_a_lifted_opt_out(tmp_path, monkeypatch, capsys):
 def test_remove_without_a_file_is_fatal(tmp_path):
     with pytest.raises(SystemExit):
         packages_cmd.cmd_packages_remove(
-            SimpleNamespace(pkg="mesa", packages=str(tmp_path / "packages.toml")))
+            cli_args("packages", "remove", "mesa", packages=str(tmp_path / "packages.toml")))

@@ -153,6 +153,9 @@ Fields may be added in a minor release; a renamed or removed field bumps `"schem
 **Config and your own artifacts**
 
 ```bash
+sysforge config check           # settings sysforge retired or does not know
+sysforge config clean           # rewrite the retired ones (--unknown: drop unknown ones)
+sysforge config reset FILE [KEY]  # back to the shipped default (whole file: keeps a backup)
 sysforge config merge           # adopt shipped config-default drift (.sfnew)
 sysforge setup                  # pacman integration (IgnoreGroup + hooks), a preset, update preferences
 sysforge artifact list          # inventory your scripts, systemd units, pacman hooks

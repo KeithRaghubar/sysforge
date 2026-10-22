@@ -98,6 +98,11 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-F14` — choose a package's toolchain when you build it, and keep it.** `sysforge build PKG --toolchain gcc` (or `llvm`) builds the packages you name with that toolchain as a whole: compilers, `ar`/`nm`/`ranlib`/`strip` and linker together, the same swap the build-failure menu makes. Before, the only CLI choice was `--cc`/`--cxx`, which changed just the two compilers and left an LLVM profile's `llvm-ar` and `lld` in place. A `--cc gcc --cxx g++` or `--cc clang --cxx clang++` pair now does the same as `--toolchain`; any other pair still sets only the compilers, for a compiler sysforge does not bundle. Add `--save-toolchain` to keep the choice for those packages in `profiles.toml`, so later builds and `update` use it, without waiting for a build to fail first; `--reset-toolchain` removes it again. Dependencies built along the way keep their own profile. `run kernel` takes the same option under the same name (it was `--compiler`; see `3.5.0-F15`).
+
+---
+
+- **`3.5.0-F18` — find and fix retired or misspelt settings in your config files.** An upgrade never rewrites your config files, so a setting sysforge stopped reading stayed there, silently ignored, and a misspelt key was never reported. `sysforge config check` lists both, with the line (`--json` prints them as one JSON document for scripts): settings sysforge renamed or retired (such as `[git] pull_timeout`, the per-package `pkgbuild_patch`, `repo_mode = "profiled"` and `build_mode = "patched_pkgbuild"`) and keys it does not know. `sysforge config clean` gives retired settings their current name or value, keeping your comments, and with `--unknown` removes the unknown ones. `sysforge config reset FILE [KEY ...]` puts keys back to the shipped default, or the whole file, keeping the old one as `FILE.bak-<time>`. Both show the change first and ask (or take `--yes`; `--dry-run` only shows it). `sysforge doctor system --config`, part of the default sweep, reports the same findings. The shipped defaults are now installed with the package for this, and `toolchain.toml` documents `profile_store` and `profiles.toml` documents `extends_system`, both read but listed nowhere. A test keeps every setting sysforge reads documented in the shipped files, so `config check` never calls a working setting unknown.
+
 ## Changed
 
 - **`3.0.0-F3` — `update` no longer builds a changed source nobody looked at.** The PKGBUILD review gate, which diffs a package's whole source tree since the last build you accepted, used to accept every change during `update` with a logged line, and accepted silently whenever there was no terminal, so a timer-driven `update` built and installed whatever had arrived. Now a changed source is shown to you at a terminal (view, accept, skip or abort, as `--review` did), and with no terminal (a timer, cron, a pipe) that package is refused: the rest of the run still builds, the summary lists it under "Refused at review" and the run exits 1. Changes from Arch's own packaging repos are accepted with a logged line, since the same people publish the binary packages you already install; `[build] review_trusted_sources` in `packages.toml` changes that list, and `--review` reviews everything. `build` and the toolchain stage's rebuild of libLLVM consumers follow the same rules, and `build` gains `--review`. To keep the old unattended behaviour, set `[build] review = "accept"` (every accepted change is still listed in the summary) or pass `--no-review`. The config comment explains the risk: a build sandbox limits what a build can read, but it does not inspect what gets installed.
@@ -172,7 +177,27 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses options stand-ins outright (the last three are converted) and keeps the 31 older argument stand-ins from growing: each file's count may only go down. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
+- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses them, and every test now builds a real `BuildOptions`, `RunOptions` or parsed command line (the last through a small `cli_args` helper), with no exceptions left: the last stand-in tested a fallback no caller needed, and both are gone. Converting them found a real bug (`3.5.0-B129`) and tests of `--dry-run` on two commands that have no such flag. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
+
+---
+
+- **`3.5.0-DEV14` — completions are checked command by command.** `make check-shipped` gains a `completion_commands` group. The old check looked only at top-level commands, so once group commands such as `state` and `run` stopped taking flags of their own, none of their subcommands' flags were checked, and a flag counted as present if it appeared anywhere in the file. Now each command's flags must be offered where that command is completed, in both zsh and bash; no flag the command lacks may be offered; every value a flag accepts must be offered; and lists copied from the code (desktops, profile-store methods) must match it.
+
+---
+
+- **`3.5.0-DEV15` — citations in the design docs and the Claude Code agents are checked.** The check that every file, module symbol and script CLAUDE.md cites still exists now covers the design docs and the agents, skills and rules under `.claude/`, and checks `make` targets too. It found and fixed a design passage on the prompt helpers that named a removed stage file and a removed function and gave call counts that were all wrong, a symbol cited under the wrong module, `make vm-install` (now `vm-install-stable`), and an agent and a skill citing files that no longer exist. A code name cited without its module must also exist somewhere in the code: that found 48 functions the design docs still called by names they lost in an earlier reorganization, a reconfigure prompt that changed, and a cache-invalidation setting the docs described but sysforge never had.
+
+---
+
+- **`3.5.0-DEV16` — the concept pages' rules are tested.** Each concept page must close with *Further reading*, citing at least one upstream source, then *In sysforge*, and must not use sysforge's own terms before that last section. The rule was in CLAUDE.md only; every page already followed it.
+
+---
+
+- **`3.5.0-DEV17` — a test that every flag reaches the code that uses it.** `run kernel --keep-hotplug-drivers` (`3.5.0-B129`) was read by the stage from an options object that never had the field, so the read always returned its default. Any such read now fails a test, as does a command flag that nothing reads. Both pass on today's code; the first would have caught B129.
+
+---
+
+- **`3.5.0-DEV18` — every user-facing change is recorded where reviewers look.** `tests/data/surface.json` is a generated list of everything a user can type, set or parse: commands and their flags and values, environment variables, journal fields, config keys, `--json` fields and log names. `make check-surface` fails when it is out of date, when something was added or removed without a release note naming it, or when a name disappears without being registered as retired. CI now blocks a merge on any failing check, `CONTRIBUTING.md` lists what to update for each kind of change, pull requests get a checklist, and `make install-hooks` adds an optional pre-commit hook running the fast checks.
 
 ---
 
@@ -221,6 +246,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DOC12` — sysforge(1) lists shared options once.** An option several commands accept with the same meaning, such as `--state-dir`, `--profile-conf` or `--no-pager`, was printed in full under every one of them (`--state-dir` thirteen times). They now appear once in a new SHARED OPTIONS section, with the commands that accept each, and every command names its shared options in one line. `--packages` and `--cleansrc-force` now have the same help text everywhere, so they are shared too. Options that take one of a fixed set of values now show those values (`--pgo record|use`) instead of an internal name such as `PGO_MODE`. The page is about 180 lines shorter.
+
+---
+
+- **`3.5.0-DOC13` — the man page documents the journal records.** Commands that change installed packages or build state write a record to the systemd journal, queryable by field, but no user document said so. A new JOURNAL section names the fields (`SYSFORGE_VERB`, `SYSFORGE_TARGET`, `SYSFORGE_EXIT`), which commands write them, and two `journalctl` queries; it is generated from the field list the records are built from.
 
 ---
 
@@ -758,6 +787,18 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B126` — A kernel built with the other compiler is recorded as such, and stops warning about it.** `run kernel` recorded the system toolchain's variant whatever compiler built the kernel, so a kernel kept on gcc (`compiler = "gcc"` in `kernel.toml`, or `--toolchain gcc`) on an LLVM system was recorded as `pgo_llvm`. The record now names the compiler that built it, as `3.5.0-B125` does for other packages. The kernel stage's "Rebuilding will switch toolchains" warning now compares the record with the compiler this run will use rather than the system one, so it appears only when the kernel's compiler actually changes, and it names that compiler.
+
+---
+
+- **`3.5.0-B127` — bash completes the values of `run toolchain --rebuild-soname-consumers`.** zsh offered `prompt`, `auto` and `off` after the flag; bash offered nothing. It now offers the same three.
+
+---
+
+- **`3.5.0-B128` — the man page lists every environment variable sysforge reads.** Its ENVIRONMENT section named three of eleven. Now it also covers `SYSFORGE_MERGE` (the merge tool for `config merge`), `SYSFORGE_ASCII` (ASCII in place of decorative glyphs), `SYSFORGE_PGO_STORE` and `SYSFORGE_PROFILE_STORE` (where profiles are kept, the second documented nowhere before), and three diagnostic switches for bug reports. The `SYSFORGE_EDITOR` entry now gives the whole lookup order, which includes `sysforge.toml [ui] editor`, and the pager entry the right fallback flags. The section is generated from one list in the code, and a test fails on a variable missing from it.
+
+---
+
+- **`3.5.0-B129` — `run kernel --keep-hotplug-drivers` takes effect.** The flag and its `--no-` form were accepted and then dropped before the kernel stage read them, so the stage always used `kernel.toml`'s `keep_hotplug_drivers`. They now override it, as their help says. A new test checks that every flag of every `run` stage reaches the stage.
 
 ## Security
 

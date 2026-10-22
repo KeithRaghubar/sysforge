@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cli_args import cli_args
 from sysforge import log
 from sysforge.primitives import json_out
 
@@ -103,7 +104,7 @@ def test_state_list_json_validates(tmp_path, capsys, monkeypatch, verbose):
     bs.save()
     OptOutList(tmp_path).add("mesa", ["mesa"], via=VIA_FORGET)
     monkeypatch.setattr(pacman, "get_foreign_packages", lambda: {"foo-git": "1-1"})
-    args = SimpleNamespace(state_dir=str(tmp_path), no_pager=False, json=True)
+    args = cli_args("state", "list", "--json", state_dir=str(tmp_path))
     assert run_verb(StateListVerb(), args) == 0
     doc = _only_document(capsys.readouterr().out)
     _validate(doc, _schema("state-list"))
@@ -156,7 +157,7 @@ def test_doctor_json_exit_code_matches_the_report(monkeypatch, capsys):
 
 def test_doctor_pkg_refuses_json_with_apply():
     from sysforge.doctor import DoctorPkgVerb
-    pre = DoctorPkgVerb().pre_check(SimpleNamespace(json=True, apply=True))
+    pre = DoctorPkgVerb().pre_check(cli_args("doctor", "pkg", "--json", "--apply"))
     assert pre.blocker and pre.exit_code == 2
 
 
@@ -228,3 +229,55 @@ def test_update_dry_run_json_lists_flag_drift_promotion(
     doc = _only_document(capsys.readouterr().out)
     (pkg,) = doc["packages"]
     assert (pkg["pkgbase"], pkg["action"]) == ("htop", "NEEDS_REBUILD")
+
+
+def test_config_check_json_validates(tmp_path, capsys, verbose):
+    """3.5.0-F18: one document on stdout, every finding in it, same exit code."""
+    import shutil
+
+    from sysforge.config_cmd import ConfigCheckVerb
+    from sysforge.primitives import config_schema
+    from sysforge.verbs.runner import run_verb
+    shipped = Path(__file__).resolve().parent.parent / "etc/sysforge"
+    for name in config_schema.CONFIG_FILES:
+        shutil.copy(shipped / name, tmp_path / name)
+    (tmp_path / "sysforge.toml").write_text("[git]\npull_timeout = 5\n[ui]\ncolr = 1\n[nosuch]\n")
+    args = cli_args("config", "check", "--json", "--config-dir", str(tmp_path))
+    assert run_verb(ConfigCheckVerb(), args) == 1
+    doc = _only_document(capsys.readouterr().out)
+    _validate(doc, _schema("config-check"))
+    assert [(i["kind"], i["setting"]) for i in doc["issues"]] == [
+        ("retired_key", "[git] pull_timeout"), ("unknown_key", "[ui] colr"),
+        ("unknown_section", "[nosuch]")]
+
+
+def test_config_check_json_when_clean(tmp_path, capsys):
+    import shutil
+
+    from sysforge.config_cmd import ConfigCheckVerb
+    from sysforge.primitives import config_schema
+    from sysforge.verbs.runner import run_verb
+    shipped = Path(__file__).resolve().parent.parent / "etc/sysforge"
+    for name in config_schema.CONFIG_FILES:
+        shutil.copy(shipped / name, tmp_path / name)
+    args = cli_args("config", "check", "--json", "--config-dir", str(tmp_path))
+    assert run_verb(ConfigCheckVerb(), args) == 0
+    doc = _only_document(capsys.readouterr().out)
+    _validate(doc, _schema("config-check"))
+    assert doc["issues"] == []
+
+
+def test_every_emitted_kind_has_a_schema_and_back():
+    """Each `json_out.emit("<kind>", ...)` has tests/data/json-schema/<kind>.schema.json,
+    and each schema is for a kind something emits (standards row 32)."""
+    import ast
+    pkg = Path(__file__).resolve().parent.parent / "sysforge"
+    kinds = set()
+    for py in pkg.rglob("*.py"):
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "emit"
+                    and getattr(node.func.value, "id", None) == "json_out"
+                    and node.args and isinstance(node.args[0], ast.Constant)):
+                kinds.add(node.args[0].value)
+    schemas = {p.name.removesuffix(".schema.json") for p in _SCHEMAS.glob("*.schema.json")}
+    assert kinds == schemas

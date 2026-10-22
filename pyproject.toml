@@ -35,6 +35,9 @@ packages = ["sysforge"]
 [tool.hatch.build.targets.wheel.force-include]
 "etc/pacman.d/hooks" = "sysforge/_data/pacman-hooks"
 "tools/pacman-hook-helper.sh" = "sysforge/_data/pacman-hook-helper.sh"
+# Pristine shipped configs, for `sysforge config check/reset` (3.5.0-F18): the
+# copies under /etc/sysforge are the user's, kept across upgrades by backup=().
+"etc/sysforge" = "sysforge/_data/config-defaults"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

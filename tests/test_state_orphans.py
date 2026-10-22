@@ -6,14 +6,14 @@ PKGDEST, prints a sane summary, and only deletes when --delete is set
 (with confirmation by default).
 """
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sysforge.state_cmd import cmd_state_orphans
+from cli_args import cli_args
 
 
 def _args(delete: bool = False, yes: bool = False, no_pager: bool = True):
-    return SimpleNamespace(delete=delete, yes=yes, no_pager=no_pager)
+    return cli_args("state", "orphans", delete=delete, yes=yes, no_pager=no_pager)
 
 
 def _mk_pkg(pkgdest: Path, name: str, ver: str, rel: str = "1") -> Path:

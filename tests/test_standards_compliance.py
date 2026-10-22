@@ -422,7 +422,6 @@ def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
     hard-coded verb list — so it cannot rot as verbs are added.
     """
     from contextlib import nullcontext
-    from types import SimpleNamespace
 
     from sysforge.verbs import runner
     from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
@@ -458,7 +457,8 @@ def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
         def execute(self, args, pre):
             return ExecResult(exit_code=0)
 
-    args = SimpleNamespace(state_dir=str(tmp_path), dry_run=True)
+    from cli_args import cli_args
+    args = cli_args("state", "repair", "--dry-run", state_dir=str(tmp_path))
 
     assert runner.run_verb(_Mut(), args) == 0
     assert runner.run_verb(_Ro(), args) == 0
@@ -1192,3 +1192,68 @@ def test_retired_names_matches_whole_words_and_honours_allows(tmp_path):
         "tests/test_x.py": "assert '--skip-boot-audit' not in flags\n",       # always allowed
     })
     assert _load_check_standards().check_retired_names(repo) == []
+
+
+# ---------------------------------------------------------------------------
+# citations (3.5.0-DEV15)
+# ---------------------------------------------------------------------------
+
+def test_citations_group_is_clean_on_the_real_repo():
+    findings = _load_check_standards().check_citations(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def _cite_repo(tmp_path, body):
+    (tmp_path / "docs/design").mkdir(parents=True)
+    (tmp_path / "docs/design/01-x.md").write_text(body)
+    (tmp_path / "sysforge/primitives").mkdir(parents=True)
+    (tmp_path / "sysforge/primitives/artifacts.py").write_text("def rehash(): pass\n")
+    (tmp_path / "etc/sysforge").mkdir(parents=True)
+    (tmp_path / "Makefile").write_text("vm-install-git: ## x\n\ttrue\ntest: ## y\n\ttrue\n")
+    return tmp_path
+
+
+@pytest.mark.parametrize("cite", [
+    "`primitives/artifacts.rehash`",      # path + symbol ("rehash" ends in "sh")
+    "`make test ARGS=-x`", "`make nconfig`", "`make htmldocs`",  # ours, kernel's
+    "`etc/pam.d`", "`root/usr/bin`", "`and/or`",                 # not repo paths
+    "`merge_config.sh`",                                          # a kernel script
+    "`run.plan`", "`docs/release-notes/vX.Y.Z.md`",               # local, placeholder
+    "`sysforge/_data/config-defaults`",                           # wheel-only
+])
+def test_citations_accepts(tmp_path, cite):
+    assert _load_check_standards().check_citations(_cite_repo(tmp_path, f"see {cite}\n")) == []
+
+
+@pytest.mark.parametrize("cite, expect", [
+    ("`primitives/artifacts.gone`", "has no `gone`"),
+    ("`make vm-install`", "did it become `vm-install-git`"),
+    ("`primitives/removed.py`", "does not exist"),
+    ("`converge.py`", "no such file"),
+])
+def test_citations_flags(tmp_path, cite, expect):
+    [f] = _load_check_standards().check_citations(_cite_repo(tmp_path, f"see {cite}\n"))
+    assert expect in f.message
+
+
+def test_citations_are_paired_per_line_past_a_fence(tmp_path):
+    """A ``` fence used to pair with the next lone backtick, shifting every
+    span after it; that hid a stale path in a skill file."""
+    body = "```bash\nmake test\n```\nsee `primitives/removed.py` here\n"
+    [f] = _load_check_standards().check_citations(_cite_repo(tmp_path, body))
+    assert "primitives/removed.py" in f.message
+
+
+def test_citations_flag_a_bare_name_nothing_defines(tmp_path):
+    """3.5.0-DEV15: `_confirm_or_abort` had no module to resolve against, so
+    it outlived its function by years."""
+    repo = _cite_repo(tmp_path, "see `_confirm_or_abort` and `rehash` and `IgnorePkg`\n")
+    [f] = _load_check_standards().check_citations(repo)
+    assert "_confirm_or_abort" in f.message
+
+
+def test_citations_accept_a_bare_name_the_code_uses(tmp_path):
+    repo = _cite_repo(tmp_path, "see `_make_frame` here\n")
+    (repo / "sysforge/primitives/frames.py").write_text("def _make_frame(): pass\n")
+    _load_check_standards()._CODE_WORDS.clear()
+    assert _load_check_standards().check_citations(repo) == []

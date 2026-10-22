@@ -1908,11 +1908,9 @@ def test_rust_axis_is_opt_in(monkeypatch):
 
 def test_rust_flag_selects_only_rust_axis():
     from sysforge import doctor
-    from types import SimpleNamespace
-    args = SimpleNamespace(packages=[], repo=False, rust=True,
-                           **{a: False for a in doctor._AXIS_FLAGS
-                              if a != "rust"})
-    # every other axis flag defaults False; only --rust set
+    from cli_args import cli_args
+    args = cli_args("doctor", "pkg", "--rust")
+    # every other axis flag keeps its real default; only --rust set
     names = doctor._resolve_axis_names(args)
     assert names == ["rust"]
 

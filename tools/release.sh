@@ -361,6 +361,12 @@ preflight_fresh() {
         echo "ERROR: standards checks failed — fix the findings above and re-run." >&2
         exit 1
     fi
+    # Surface snapshot gate (3.5.0-DEV18): tests/data/surface.json current, and
+    # every surface change since the last commit recorded in the release notes.
+    if ! make --no-print-directory check-surface >&2; then
+        echo "ERROR: surface snapshot stale or a change unrecorded — see above; 'make surface' regenerates it." >&2
+        exit 1
+    fi
     # Version-relative rules need the version being released, which `make
     # check-standards` cannot know (it runs before the bump). Re-run the two
     # version-aware groups against $NEW: R3 (a declared removal still present)

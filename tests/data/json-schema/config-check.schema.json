@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sysforge/config-check.schema.json",
+  "title": "sysforge config check --json (schema 1)",
+  "type": "object",
+  "required": ["schema", "kind", "config_dir", "issues"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {"const": 1},
+    "kind": {"const": "config-check"},
+    "config_dir": {"type": "string"},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "kind", "setting", "message", "fix"],
+        "additionalProperties": false,
+        "properties": {
+          "file": {"enum": ["sysforge.toml", "profiles.toml", "packages.toml",
+                            "kernel.toml", "toolchain.toml"]},
+          "line": {"type": "integer"},
+          "kind": {"enum": ["parse_error", "retired_key", "retired_value",
+                            "unknown_key", "unknown_section"]},
+          "setting": {"type": ["string", "null"]},
+          "message": {"type": "string"},
+          "fix": {"type": "string"}
+        }
+      }
+    }
+  }
+}

@@ -12,15 +12,16 @@ during 3.5.0-F14/B125/B126). When a field is renamed, the stub keeps the old
 name and the test goes on passing against an object production never builds.
 
 ``BuildOptions(...)`` and ``RunOptions(...)`` default every field and reject a
-name they do not have, and ``build_parser().parse_args([...])`` gives a parsed
-command line with every flag present. Use those.
+name they do not have, and ``cli_args("state", "list", state_dir=d)``
+(tests/cli_args.py) parses a real command line, then sets fields the command
+has. Use those.
 
 Options stand-ins are recognised by a field that is on the dataclass but is no
 CLI flag's destination, so only an options object has it. Argument stand-ins
-are recognised by fields that are all one command's flags; the ones that
-predate this check are in ``_ARGS_STAND_INS``, a **shrinking** allowlist (the
-same discipline as tests/test_module_layering.py): a new one fails, and a file
-that converts some must lower its count.
+are recognised by fields that are all one command's flags. ``_ARGS_STAND_INS``
+lists the deliberate exceptions with their reason, as a **shrinking**
+allowlist (the discipline of tests/test_module_layering.py): a new stand-in
+fails, and a converted exception must be removed from it.
 """
 import argparse
 import ast
@@ -34,30 +35,11 @@ from sysforge.verbs.registry import build_parser
 
 TESTS = Path(__file__).resolve().parent
 
-# file name -> SimpleNamespace stand-ins for parsed arguments it still has.
-_ARGS_STAND_INS: dict[str, int] = {
-    "test_build_cmd.py": 3,
-    "test_build_core.py": 1,
-    "test_cli.py": 1,
-    "test_completions_speed.py": 1,
-    "test_doctor.py": 1,
-    "test_journal.py": 4,
-    "test_json_output.py": 2,
-    "test_log_cmd.py": 1,
-    "test_net_policy_cli.py": 1,
-    "test_opt_out.py": 2,
-    "test_packages_add.py": 1,
-    "test_packages_list.py": 3,
-    "test_removed_failures.py": 1,
-    "test_resolve.py": 1,
-    "test_stage_kernel.py": 2,
-    "test_standards_compliance.py": 1,
-    "test_state_forget.py": 1,
-    "test_state_list.py": 1,
-    "test_state_orphans.py": 1,
-    "test_state_repair.py": 1,
-    "test_toolchain_measure.py": 1,
-}
+# Deliberate exceptions, as file name -> (stand-ins it keeps, why). Empty, and
+# that is the steady state: the last one tested a getattr fallback no caller
+# needed, and went with it. Every parsed command line is built with
+# tests/cli_args.cli_args; converting them found 3.5.0-B129.
+_ARGS_STAND_INS: dict[str, tuple[int, str]] = {}
 
 
 def _stand_ins():
@@ -114,10 +96,18 @@ def test_parsed_argument_stand_ins_only_shrink():
         keys -= global_dests
         if len(keys) >= 2 and any(keys <= d for d in commands):
             found[py.name] += 1
-    grown = {f: n for f, n in found.items() if n > _ARGS_STAND_INS.get(f, 0)}
+    allowed = {f: n for f, (n, _why) in _ARGS_STAND_INS.items()}
+    grown = {f: n for f, n in found.items() if n > allowed.get(f, 0)}
     assert not grown, (
         "new SimpleNamespace stand-ins for parsed arguments; build them with "
-        f"build_parser().parse_args([...]) instead: {grown}")
-    shrunk = {f: (n, found.get(f, 0)) for f, n in _ARGS_STAND_INS.items()
+        f"tests/cli_args.cli_args(...) instead: {grown}")
+    shrunk = {f: (n, found.get(f, 0)) for f, n in allowed.items()
               if found.get(f, 0) < n}
     assert not shrunk, f"lower these _ARGS_STAND_INS counts (listed, now): {shrunk}"
+
+
+def test_stand_in_allowlist_is_empty():
+    """The shrinking-allowlist check passes vacuously on an empty list, so this
+    pins it shut, as tests/test_module_layering.py does. Re-adding an entry
+    needs a reason a real object cannot serve."""
+    assert _ARGS_STAND_INS == {}
