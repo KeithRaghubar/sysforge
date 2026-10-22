@@ -193,6 +193,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV17` — a test that every flag reaches the code that uses it.** `run kernel --keep-hotplug-drivers` (`3.5.0-B129`) was read by the stage from an options object that never had the field, so the read always returned its default. Any such read now fails a test, as does a command flag that nothing reads. Both pass on today's code; the first would have caught B129.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
