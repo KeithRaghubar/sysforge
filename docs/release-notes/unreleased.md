@@ -197,6 +197,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV18` — every user-facing change is recorded where reviewers look.** `tests/data/surface.json` is a generated list of everything a user can type, set or parse: commands and their flags and values, environment variables, journal fields, config keys, `--json` fields and log names. `make check-surface` fails when it is out of date, when something was added or removed without a release note naming it, or when a name disappears without being registered as retired. CI now blocks a merge on any failing check, `CONTRIBUTING.md` lists what to update for each kind of change, pull requests get a checklist, and `make install-hooks` adds an optional pre-commit hook running the fast checks.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---

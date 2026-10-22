@@ -24,6 +24,8 @@ make check-design    # guard: DESIGN.md in sync with sources
 make roadmap-view SORT=effort  # print Planned table sorted by a column (read-only)
 make check-shipped   # guard: etc/sysforge, PKGBUILD*, hooks, completions, manpage parity
 make check-standards
+make surface         # regenerate tests/data/surface.json after any user-facing change
+make check-surface   # guard: snapshot current; surface changes vs main named in release notes
 make sync-config     # adopt new shipped defaults into untracked live config (add-only)
 make container-smoke[-cachyos]  # packaging + portability checks in a container (needs make vm-pkg-stable first)
 make ci-local        # replay the CI job (.github/workflows/ci.yml) in a clean Arch container
@@ -84,6 +86,8 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   dev docs) and file their release-note entry under `## Changed` only, like `DOC` (lint-enforced,
   `3.4.0-STD1`). Touching `sysforge/` or a shipped file makes it `B`/`F`.
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
+- **A user-facing change regenerates `tests/data/surface.json`** (`make surface`) and names what
+  changed in the release notes; `make check-surface` (a required CI gate) enforces both.
 - **Removing or renaming a flag, token or public name adds it to `tools/retired_names.toml`** in the
   same change (unless the old spelling is still valid elsewhere); `make check-standards` then finds
   every leftover, comments included. Written-down `sysforge …` commands and `§` references are

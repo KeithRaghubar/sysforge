@@ -1,7 +1,8 @@
 # Suite, lint and check-* gates on a clean Arch container (3.4.0-DEV1).
-# Contributor-only, never shipped. Advisory: no branch protection until it has
-# stayed green for one release cycle. The job body is tools/ci.sh; reproduce a
-# red run locally with `make ci-local`.
+# Contributor-only, never shipped. Required: a ruleset on main makes this
+# `gates` job a required status check and changes arrive by pull request, so a
+# red run blocks the merge. The job body is tools/ci.sh; reproduce a red run
+# locally with `make ci-local`.
 name: ci
 
 on:
