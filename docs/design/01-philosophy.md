@@ -12,3 +12,5 @@ This document describes only **implemented** design. Planned features, candidate
 
 ---
 
+
+<!-- Branch-protection test: edited without `make design`, so check-design must fail in CI. Do not merge. -->
