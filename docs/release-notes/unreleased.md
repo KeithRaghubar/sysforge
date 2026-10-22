@@ -177,7 +177,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses them, and every test now builds a real `BuildOptions`, `RunOptions` or parsed command line (the last through a small `cli_args` helper), except one test of a fallback for exactly such an object. Converting them found a real bug (`3.5.0-B129`) and tests of `--dry-run` on two commands that have no such flag. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
+- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses them, and every test now builds a real `BuildOptions`, `RunOptions` or parsed command line (the last through a small `cli_args` helper), with no exceptions left: the last stand-in tested a fallback no caller needed, and both are gone. Converting them found a real bug (`3.5.0-B129`) and tests of `--dry-run` on two commands that have no such flag. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
 
 ---
 

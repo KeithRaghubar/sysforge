@@ -35,14 +35,11 @@ from sysforge.verbs.registry import build_parser
 
 TESTS = Path(__file__).resolve().parent
 
-# file name -> (stand-ins it keeps, why). Every other parsed command line is
-# built with tests/cli_args.cli_args. Converting the rest found
-# `run kernel --keep-hotplug-drivers` never reaching the stage (3.5.0-B129) and
-# gate tests exercising `build --dry-run`, which does not exist.
-_ARGS_STAND_INS: dict[str, tuple[int, str]] = {
-    "test_build_core.py": (1, "tests make_build_options' fallback for an options "
-                              "object without abi_check, which a stand-in is"),
-}
+# Deliberate exceptions, as file name -> (stand-ins it keeps, why). Empty, and
+# that is the steady state: the last one tested a getattr fallback no caller
+# needed, and went with it. Every parsed command line is built with
+# tests/cli_args.cli_args; converting them found 3.5.0-B129.
+_ARGS_STAND_INS: dict[str, tuple[int, str]] = {}
 
 
 def _stand_ins():
@@ -107,3 +104,10 @@ def test_parsed_argument_stand_ins_only_shrink():
     shrunk = {f: (n, found.get(f, 0)) for f, n in allowed.items()
               if found.get(f, 0) < n}
     assert not shrunk, f"lower these _ARGS_STAND_INS counts (listed, now): {shrunk}"
+
+
+def test_stand_in_allowlist_is_empty():
+    """The shrinking-allowlist check passes vacuously on an empty list, so this
+    pins it shut, as tests/test_module_layering.py does. Re-adding an entry
+    needs a reason a real object cannot serve."""
+    assert _ARGS_STAND_INS == {}

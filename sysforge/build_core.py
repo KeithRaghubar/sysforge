@@ -700,8 +700,9 @@ def make_build_options(stage: str, options, **overrides):
 
     This centralizes the three install-bearing stages' (``kernel`` /
     ``toolchain`` / ``packages``) hand-assembly so a stage-wide default lives in
-    exactly one place. ``abi_check`` is read via ``getattr`` so a run-options
-    object without the attribute degrades to ``False`` rather than raising.
+    exactly one place. Every caller passes its stage's ``RunOptions``, so each
+    field is read directly: a ``getattr`` default here would hide a renamed
+    field behind a silent ``False`` (the shape of 3.5.0-B129).
     """
     from sysforge.build.makepkg_wrapper import BuildOptions
 
@@ -711,7 +712,7 @@ def make_build_options(stage: str, options, **overrides):
         "pkg_log": not options.no_pkg_log,
         "persist_log": options.persist_log,
         "state_dir": options.state_dir,
-        "abi_check": getattr(options, "abi_check", False),
+        "abi_check": options.abi_check,
     }
     fields.update(_STAGE_BUILD_DEFAULTS[stage])
     fields.update(overrides)
