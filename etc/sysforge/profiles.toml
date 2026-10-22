@@ -224,6 +224,11 @@
 #
 # ============================== END OF HEADER ================================
 
+# extends_system — only in a user file (~/.config/sysforge/profiles.toml):
+#   true merges it onto this system file (its rules ranked above the system's)
+#   instead of replacing the system file outright.
+# extends_system = true
+
 [paths]
 pkgbuild_src_dir = "~/src"
 

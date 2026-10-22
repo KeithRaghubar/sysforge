@@ -279,12 +279,21 @@ def _scan(lines: list[str]) -> tuple[list[_Header], list[_Entry]]:
 def _documented(text: str) -> dict[str, set[str]]:
     """Table -> keys the shipped default documents, active or commented out."""
     out: dict[str, set[str]] = {"": set()}
-    table = ""
+    table = active = ""
     for line in text.splitlines():
-        body = re.sub(r"^\s*#\s?", "", line) if line.lstrip().startswith("#") else line
+        if not line.strip():
+            # A commented example table covers its own comment block only: a
+            # blank line returns to the last real header, so a top-level key
+            # documented after the header's examples stays top-level.
+            table = active
+            continue
+        commented = line.lstrip().startswith("#")
+        body = re.sub(r"^\s*#\s?", "", line) if commented else line
         h = _HEADER_RE.match(body)
         if h and body.strip().startswith("["):
             table = ".".join(_unquote_parts(h.group(2)))
+            if not commented:
+                active = table
             out.setdefault(table, set())
             continue
         k = _KEY_RE.match(body)
