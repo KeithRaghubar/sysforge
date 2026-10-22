@@ -512,7 +512,7 @@ _sysforge_config() {
     fi
     case "$subverb" in
         check)
-            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir" -- "$cur") )
+            [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --json" -- "$cur") )
             ;;
         clean)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--config-dir --unknown --dry-run --yes" -- "$cur") )

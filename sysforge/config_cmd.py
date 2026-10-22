@@ -42,7 +42,7 @@ import time
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import atomic_write, config_schema, paths, prompt
+from sysforge.primitives import atomic_write, config_schema, json_out, paths, prompt
 from sysforge.primitives.editor import resolve_merge_tool, run_tty_argv
 from sysforge.primitives.pager import maybe_pager
 from sysforge.primitives.prompt import prompt_choice, prompt_key
@@ -239,6 +239,14 @@ def cmd_config_check(args) -> int:
     """Report retired and unknown settings. 0 when there are none, else 1."""
     config_dir = _resolve_config_dir(args)
     issues = config_schema.inspect(config_dir)
+    if json_out.requested(args):
+        json_out.emit("config-check", {
+            "config_dir": str(config_dir),
+            "issues": [{"file": i.file, "line": i.line, "kind": i.kind,
+                        "setting": i.where or None, "message": i.message,
+                        "fix": _HINTS[i.kind]} for i in issues],
+        })
+        return 1 if issues else 0
     if not issues:
         _log.ui(f"config check: nothing retired or unknown in {config_dir}")
         return 0
@@ -387,6 +395,9 @@ class ConfigCheckVerb(Verb):
                  "(renamed keys, refused values) or does not know (misspelt or "
                  "no longer used). Exits 1 when it finds any.")
         _add_config_dir(p)
+        p.add_argument("--json", action="store_true", dest="json",
+            help="Print one JSON document (schema 1) on stdout instead of the "
+                 "report; the exit code is unchanged.")
         p.set_defaults(verb_cls=cls)
         return p
 

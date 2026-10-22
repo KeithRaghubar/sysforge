@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-21"
+.TH "sysforge" "1" "2026\-10\-22"
 .PP
 .PP
 .SH NAME
@@ -1072,6 +1072,11 @@ Check, clean or reset the live sysforge config files, or merge shipped\-default 
 .PP
 Report settings in the live config files that sysforge retired (renamed keys, refused values) or does not know (misspelt or no longer used).\& Exits 1 when it finds any.\&
 .PP
+\fB\-\-json\fR
+.RS 4
+Print one JSON document (schema 1) on stdout instead of the report; the exit code is unchanged.\&
+.PP
+.RE
 \fBShared options:\fR \fB\-\-config\-dir\fR (see SHARED OPTIONS)
 .PP
 .SS config clean

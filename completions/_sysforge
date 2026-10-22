@@ -798,7 +798,8 @@ _sysforge_config_subcommands() {
 
 _sysforge_config_check() {
   _arguments \
-    '--config-dir[live config dir to check]:directory:_files -/'
+    '--config-dir[live config dir to check]:directory:_files -/' \
+    '--json[print one JSON document instead of the report]'
 }
 
 _sysforge_config_clean() {
