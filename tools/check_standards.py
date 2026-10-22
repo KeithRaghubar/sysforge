@@ -546,6 +546,14 @@ def _make_targets(repo: Path) -> set[str]:
                           re.MULTILINE))
 
 
+def _git_ignored(repo: Path, rel: str) -> bool:
+    """A gitignored path is generated: it exists after a build, never in a clean
+    checkout, so whether it exists here depends on the machine."""
+    r = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--no-index", rel],
+                       capture_output=True)
+    return r.returncode == 0
+
+
 def _check_citation(repo: Path, token: str) -> str | None:
     """Return an error message for a stale citation, or None (ok/skipped)."""
     # `make <target> ...` (3.5.0-DEV15): the target must exist.
@@ -610,6 +618,8 @@ def _check_citation(repo: Path, token: str) -> str | None:
             return None
         if rel.startswith("sysforge/_data"):
             return None  # exists only in the built wheel (force-include)
+        if _git_ignored(repo, rel):
+            return None  # a generated intermediate (`man/sysforge.1.scd`)
         # `primitives/artifacts.unified_rows`: a module path, then a symbol.
         head, _, tail = rel.rpartition("/")
         modname, dot, sym = tail.partition(".")

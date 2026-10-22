@@ -4098,8 +4098,8 @@ the gates — they need a booted VM or a working podman and network, neither of 
 prerequisite of a lint run — but a minor or major release that skips them is untested against a
 real install. See `tools/vm/README.md` and `tools/container/README.md`.
 
-**CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on every push and
-pull request in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the
+**CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on each pull request (a newer push to
+it cancels the superseded run) and on each push to `main`, in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the
 core dev tier (`make dev-deps-core`) installed. Its job is
 to catch a test or gate that passes only because of the workstation (clang-forced shell, live
 config, installed extras, one hardware profile); it is not a release gate and holds no signing key.

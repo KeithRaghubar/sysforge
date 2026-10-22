@@ -6,8 +6,17 @@
 name: ci
 
 on:
+  # A branch is checked through its pull request; push runs only for main, so a
+  # PR's commit is not tested twice.
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A newer push to the same PR cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

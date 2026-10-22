@@ -63,6 +63,17 @@ def test_missing_path_citation_is_error(tmp_path):
                for f in findings), findings
 
 
+def test_gitignored_generated_path_passes_when_absent(tmp_path):
+    """A clean checkout has no `man/sysforge.1.scd`; a dev tree does. The verdict
+    must not depend on which one runs the check."""
+    import subprocess
+    repo = _repo(tmp_path, "Rendered from `man/sysforge.1.scd` and `man/gone.scd`.\n",
+                 {".gitignore": "man/sysforge.1.scd\n"})
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    findings = check_standards.check_claude_md(repo)
+    assert [f.message for f in findings] == ["cites path `man/gone.scd` which does not exist"]
+
+
 def test_sysforge_relative_path_resolves(tmp_path):
     """`primitives/paths.py` is cited repo-root-relative to sysforge/."""
     repo = _repo(tmp_path, "User paths -> `primitives/paths.py`.\n",
