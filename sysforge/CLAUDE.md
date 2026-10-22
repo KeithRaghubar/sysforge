@@ -258,7 +258,7 @@ Mechanism lives in the cited §DESIGN section.
 - **Pass-3 builds non-pgo against the libLLVM it ships** (`CMAKE_PREFIX_PATH` **and** forced
   `-DLLVM_DIR` via `patch_llvm_dir`; staging3 needs both `llvm-libs`+`llvm`). Build reuse opt-in via
   `build_fingerprint.py` (`--reuse-built`, fail-safe to rebuild; bump `_SCHEMA` on new inputs).
-- **Pass-2 training corpus**: `_resolve_training_corpus`; extras (mesa) compile with the instrumented
+- **Pass-2 training corpus**: `resolve_training_corpus`; extras (mesa) compile with the instrumented
   stage1 clang so profraw merges into the one `clang.profdata` — never installed, never
   `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort, but
   `BuildAborted` (user abort) re-raises. PGO path only.

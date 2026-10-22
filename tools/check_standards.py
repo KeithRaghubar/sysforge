@@ -498,7 +498,35 @@ def _resolve_module_file(repo: Path, name: str) -> Path | None:
 
 
 # Things cited on purpose after their removal, in a passage about that history.
-_CITATION_HISTORY = {"doctor.flat_flags"}
+_CITATION_HISTORY = {"doctor.flat_flags", "_DOCTOR_MIGRATION", "_prompt_llvm_recovery",
+                     "from_fix_suggestion", "from_toolchain_check"}
+# Names from other software the docs quote: pacman, LLVM, systemd-boot, sysctl,
+# makechrootpkg, and PKGBUILD example variables.
+_CITATION_EXTERNAL = {"IgnorePkg", "InitializeAllTargets", "LoaderEntryDefault",
+                      "kptr_restrict", "unprivileged_bpf_disabled", "install_packages",
+                      "depends_x86_64", "sha256sums_x86_64", "package_bar", "_pkgver"}
+# A bare code name: `_private`, `snake_case_name`, `CamelCase` (3.5.0-DEV15).
+_CODE_NAME_RE = re.compile(
+    r"^(?:_[A-Za-z0-9_]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)$")
+_CODE_WORDS: dict[str, set[str]] = {}
+
+
+def _code_words(repo: Path) -> set[str]:
+    """Every identifier-shaped word in the repo's tracked non-doc files."""
+    key = str(repo)
+    if key not in _CODE_WORDS:
+        words: set[str] = set()
+        for path in _tracked_text_files(repo):
+            rel = path.relative_to(repo).as_posix()
+            if rel.startswith(("docs/", ".claude/")) or rel.endswith(".md"):
+                continue
+            try:
+                words |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*",
+                                        path.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError):
+                continue
+        _CODE_WORDS[key] = words
+    return _CODE_WORDS[key]
 # The repo's own top-level and package directories: a path into one of these is
 # a citation even if that whole directory is gone.
 _REPO_TOP_DIRS = {"tools", "tests", "docs", "sysforge", "etc", "completions", "man",
@@ -537,6 +565,13 @@ def _check_citation(repo: Path, token: str) -> str | None:
     if token in _CITATION_HISTORY or _PLACEHOLDER_RE.search(token):
         return None
     if token.split(".")[0] in _CITATION_LOCALS and "/" not in token:
+        return None
+    # A bare code name with no module to resolve it against: it must at least
+    # exist somewhere in the code (`_confirm_or_abort` had been gone for years).
+    bare = token.split("(", 1)[0]
+    if _CODE_NAME_RE.match(bare) and bare not in _CITATION_EXTERNAL:
+        if bare not in _code_words(repo):
+            return f"cites `{bare}`, which nothing in the code defines or uses"
         return None
     # `file.py::symbol` — resolve the file, then grep for the symbol.
     if "::" in token:

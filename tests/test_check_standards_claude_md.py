@@ -104,7 +104,11 @@ def test_unresolvable_tokens_are_skipped(tmp_path):
         "`docs/design/*.md`; never `os.environ[\"BUILDDIR\"]`; id `1.2.0-F1`;\n"
         "`vX.Y.Z.md`; `emit_makepkg_conf(is_lib32=)`; `[bolt] enabled = false`.\n"
     )
-    repo = _repo(tmp_path, body)
+    # A bare callee is checked against the code (3.5.0-DEV15), so the fixture
+    # defines it; the call syntax around it is what this case tolerates.
+    repo = _repo(tmp_path, body, {"sysforge/primitives/makepkg_conf.py":
+                                  "def emit_makepkg_conf(is_lib32=False):\n    pass\n"})
+    check_standards._CODE_WORDS.clear()
     assert check_standards.check_claude_md(repo) == []
 
 

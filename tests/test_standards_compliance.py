@@ -1242,3 +1242,18 @@ def test_citations_are_paired_per_line_past_a_fence(tmp_path):
     body = "```bash\nmake test\n```\nsee `primitives/removed.py` here\n"
     [f] = _load_check_standards().check_citations(_cite_repo(tmp_path, body))
     assert "primitives/removed.py" in f.message
+
+
+def test_citations_flag_a_bare_name_nothing_defines(tmp_path):
+    """3.5.0-DEV15: `_confirm_or_abort` had no module to resolve against, so
+    it outlived its function by years."""
+    repo = _cite_repo(tmp_path, "see `_confirm_or_abort` and `rehash` and `IgnorePkg`\n")
+    [f] = _load_check_standards().check_citations(repo)
+    assert "_confirm_or_abort" in f.message
+
+
+def test_citations_accept_a_bare_name_the_code_uses(tmp_path):
+    repo = _cite_repo(tmp_path, "see `_make_frame` here\n")
+    (repo / "sysforge/primitives/frames.py").write_text("def _make_frame(): pass\n")
+    _load_check_standards()._CODE_WORDS.clear()
+    assert _load_check_standards().check_citations(repo) == []
