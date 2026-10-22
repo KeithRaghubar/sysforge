@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from cli_args import cli_args
 from sysforge.primitives.build_state import BuildState
 from sysforge.primitives.opt_out import (
     VIA_FORGET,
@@ -103,7 +104,7 @@ def test_forget_without_opt_out_records_nothing(tmp_path):
 def test_state_forget_writes_the_record(tmp_path, capsys):
     from sysforge.state_cmd import cmd_state_forget
     _seed(tmp_path, "htop", "htop")
-    cmd_state_forget(SimpleNamespace(state_dir=str(tmp_path), pkgnames=["htop"]))
+    cmd_state_forget(cli_args("state", "forget", "htop", state_dir=str(tmp_path)))
     assert OptOutList(tmp_path).load()["htop"]["via"] == "forget"
     assert "will not re-adopt" in capsys.readouterr().out
 
@@ -113,7 +114,7 @@ def test_revert_records_a_revert_opt_out(tmp_path, monkeypatch):
     monkeypatch.setattr(revert_cmd, "resolve_state_dir", lambda *a, **k: (tmp_path, "test"))
     _seed(tmp_path, "htop", "htop")
     verb = revert_cmd.RevertToStockVerb()
-    args = SimpleNamespace(packages=["htop"], dry_run=False, yes=True, state_dir=None)
+    args = cli_args("revert-to-stock", "htop", "--yes")
     with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs"):
         pre = verb.pre_check(args)
         assert verb.execute(args, pre).exit_code == 0

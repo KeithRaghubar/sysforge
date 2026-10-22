@@ -60,6 +60,8 @@ class RunOptions:
     build_headers: bool | None = None
     # kernel: build -docs subpackage; None → kernel.toml (default off)
     build_docs: bool | None = None
+    # kernel: --[no-]keep-hotplug-drivers; None → kernel.toml (3.5.0-B129)
+    keep_hotplug_drivers: bool | None = None
     # kernel: sample-based FDO step ("record"|"capture"|"use"); LLVM-only
     kernel_fdo: str | None = None
     kernel_propeller: bool = False     # kernel: layer Propeller on the --autofdo cycle

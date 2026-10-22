@@ -422,7 +422,6 @@ def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
     hard-coded verb list — so it cannot rot as verbs are added.
     """
     from contextlib import nullcontext
-    from types import SimpleNamespace
 
     from sysforge.verbs import runner
     from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
@@ -458,7 +457,8 @@ def test_journald_mirror_emits_only_for_sentinel_verbs(tmp_path, monkeypatch):
         def execute(self, args, pre):
             return ExecResult(exit_code=0)
 
-    args = SimpleNamespace(state_dir=str(tmp_path), dry_run=True)
+    from cli_args import cli_args
+    args = cli_args("state", "repair", "--dry-run", state_dir=str(tmp_path))
 
     assert runner.run_verb(_Mut(), args) == 0
     assert runner.run_verb(_Ro(), args) == 0

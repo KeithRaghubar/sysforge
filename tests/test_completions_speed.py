@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from cli_args import cli_args
+
 import sysforge.completions_data as completions_data
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -93,8 +95,7 @@ def universe(monkeypatch, tmp_path):
 
 
 def _emit(capsys, resource="packages", prefix="", limit=0) -> list[str]:
-    completions_data.emit(types.SimpleNamespace(resource=resource, prefix=prefix,
-                                                limit=limit))
+    completions_data.emit(cli_args("completions", resource, prefix=prefix, limit=limit))
     return capsys.readouterr().out.splitlines()
 
 

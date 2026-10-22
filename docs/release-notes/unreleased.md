@@ -177,7 +177,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses options stand-ins outright (the last three are converted) and keeps the 31 older argument stand-ins from growing: each file's count may only go down. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
+- **`3.5.0-DEV13` — tests build real options and arguments, not stand-ins.** A `SimpleNamespace` standing in for `BuildOptions`, `RunOptions` or a parsed command line broke whole test files each time the code read a new field, and would keep passing on a renamed one. A new test refuses them, and every test now builds a real `BuildOptions`, `RunOptions` or parsed command line (the last through a small `cli_args` helper), except one test of a fallback for exactly such an object. Converting them found a real bug (`3.5.0-B129`) and tests of `--dry-run` on two commands that have no such flag. The root CLAUDE.md now says to build `BuildOptions(...)`, `RunOptions(...)` or `build_parser().parse_args([...])`, and to add every removed name to `tools/retired_names.toml`.
 
 ---
 
@@ -787,6 +787,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B128` — the man page lists every environment variable sysforge reads.** Its ENVIRONMENT section named three of eleven. Now it also covers `SYSFORGE_MERGE` (the merge tool for `config merge`), `SYSFORGE_ASCII` (ASCII in place of decorative glyphs), `SYSFORGE_PGO_STORE` and `SYSFORGE_PROFILE_STORE` (where profiles are kept, the second documented nowhere before), and three diagnostic switches for bug reports. The `SYSFORGE_EDITOR` entry now gives the whole lookup order, which includes `sysforge.toml [ui] editor`, and the pager entry the right fallback flags. The section is generated from one list in the code, and a test fails on a variable missing from it.
+
+---
+
+- **`3.5.0-B129` — `run kernel --keep-hotplug-drivers` takes effect.** The flag and its `--no-` form were accepted and then dropped before the kernel stage read them, so the stage always used `kernel.toml`'s `keep_hotplug_drivers`. They now override it, as their help says. A new test checks that every flag of every `run` stage reaches the stage.
 
 ## Security
 

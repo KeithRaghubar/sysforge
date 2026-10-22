@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cli_args import cli_args
 from sysforge import state_cmd, uninstall_cmd
 from sysforge.primitives import install_reconcile as ir
 from sysforge.primitives import pacman, state_probe
@@ -223,8 +224,8 @@ def test_state_failed_omits_a_removal_without_saving(tmp_path, local_db, capsys)
     _state(tmp_path, {"foo": _src("foo")}, failures=["foo", "bar"])
     _window("foo")
 
-    state_cmd.cmd_state_failed(SimpleNamespace(
-        state_dir=str(tmp_path), no_pager=True, clear=None, clear_all=False, names=True))
+    state_cmd.cmd_state_failed(cli_args("state", "failed", "--names", "--no-pager",
+                                        state_dir=str(tmp_path)))
 
     assert capsys.readouterr().out.split() == ["bar"]
     assert set(BuildState(tmp_path).all_failures()) == {"foo", "bar"}

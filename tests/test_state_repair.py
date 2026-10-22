@@ -7,10 +7,10 @@ that unrecoverable cases are skipped with a clear reason rather than
 corrupting good state.
 """
 from pathlib import Path
-from types import SimpleNamespace
 
 from sysforge.state_cmd import cmd_state_repair
 from sysforge.primitives.build_state import BuildState
+from cli_args import cli_args
 
 
 def _write_broken_state(state_dir: Path, entries: dict[str, dict]) -> None:
@@ -26,7 +26,7 @@ def _write_broken_state(state_dir: Path, entries: dict[str, dict]) -> None:
 
 
 def _args(state_dir: Path, dry_run: bool = False):
-    return SimpleNamespace(state_dir=str(state_dir), dry_run=dry_run)
+    return cli_args("state", "repair", state_dir=str(state_dir), dry_run=dry_run)
 
 
 def test_repair_simple_scalar_reference(tmp_path, capsys, monkeypatch):

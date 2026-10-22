@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cli_args import cli_args
 from sysforge import log
 from sysforge.primitives import json_out
 
@@ -103,7 +104,7 @@ def test_state_list_json_validates(tmp_path, capsys, monkeypatch, verbose):
     bs.save()
     OptOutList(tmp_path).add("mesa", ["mesa"], via=VIA_FORGET)
     monkeypatch.setattr(pacman, "get_foreign_packages", lambda: {"foo-git": "1-1"})
-    args = SimpleNamespace(state_dir=str(tmp_path), no_pager=False, json=True)
+    args = cli_args("state", "list", "--json", state_dir=str(tmp_path))
     assert run_verb(StateListVerb(), args) == 0
     doc = _only_document(capsys.readouterr().out)
     _validate(doc, _schema("state-list"))
@@ -156,7 +157,7 @@ def test_doctor_json_exit_code_matches_the_report(monkeypatch, capsys):
 
 def test_doctor_pkg_refuses_json_with_apply():
     from sysforge.doctor import DoctorPkgVerb
-    pre = DoctorPkgVerb().pre_check(SimpleNamespace(json=True, apply=True))
+    pre = DoctorPkgVerb().pre_check(cli_args("doctor", "pkg", "--json", "--apply"))
     assert pre.blocker and pre.exit_code == 2
 
 

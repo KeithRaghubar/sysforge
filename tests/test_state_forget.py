@@ -5,14 +5,14 @@ Deletes build_state.toml records so `sysforge update` stops maintaining the
 package (the escape hatch for durable-by-default tracking).
 """
 from pathlib import Path
-from types import SimpleNamespace
 
 from sysforge.primitives.build_state import BuildState
 from sysforge.state_cmd import cmd_state_forget
+from cli_args import cli_args
 
 
 def _args(state_dir: Path, *pkgnames):
-    return SimpleNamespace(state_dir=str(state_dir), pkgnames=list(pkgnames))
+    return cli_args("state", "forget", "_", state_dir=str(state_dir), pkgnames=list(pkgnames))
 
 
 def _seed(state_dir: Path, pkgname: str, pkgbase: str, build_mode="source_built"):

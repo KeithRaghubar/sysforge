@@ -125,13 +125,11 @@ def test_log_missing_verb_log_does_not_fall_back(tmp_path, capsys):
 def test_every_run_log_writer_is_pageable():
     """Each verb's declared name is what the runner opens and what --verb
     accepts, so a verb that starts logging is pageable with no second edit."""
-    from types import SimpleNamespace
-
     from sysforge import log
     from sysforge.verbs.base import VerbGroup
     from sysforge.verbs.registry import COMMANDS, verb_log_names
     names = verb_log_names()
-    args = SimpleNamespace(apply=False, dry_run=False)
+    args = _args(None, None)  # read only by doctor pkg (apply/dry_run), absent elsewhere
     verbs = [v for e in COMMANDS for v in (e.members if isinstance(e, VerbGroup) else (e,))]
     for v in verbs:
         if v.wants_run_log:

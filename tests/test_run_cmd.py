@@ -174,3 +174,52 @@ def test_top_level_description_is_the_package_description():
     project = tomllib.loads(
         (Path(__file__).parent.parent / "pyproject.toml").read_text())["project"]
     assert _build_parser().description == project["description"]
+
+
+# 3.5.0-B129: `run kernel --keep-hotplug-drivers` was parsed and then dropped,
+# because the verb never copied it into RunOptions (which had no such field).
+
+def test_every_run_stage_flag_reaches_the_stage():
+    """Each `run <stage>` flag is read by that verb (into RunOptions, or by
+    load_config_with_overrides), so none is parsed and silently ignored."""
+    import ast
+    import re
+    from pathlib import Path
+
+    from sysforge.verbs.registry import build_parser
+    src = (Path(__file__).resolve().parent.parent / "sysforge/run_cmd.py").read_text()
+    classes = {n.name: ast.get_source_segment(src, n) for n in ast.parse(src).body
+               if isinstance(n, ast.ClassDef)}
+    root = build_parser()
+    global_dests = {a.dest for a in root._actions} | {"command", "run_stage", "verb_cls"}
+    stages = {"pipeline": "RunPipelineVerb", "hardware": "RunHardwareVerb",
+              "reconfigure": "RunReconfigureVerb", "toolchain": "RunToolchainVerb",
+              "packages": "RunPackagesVerb", "kernel": "RunKernelVerb"}
+    dropped = {}
+    for stage, cls in stages.items():
+        body = classes[cls]
+        execute = body[body.index("def execute"):]
+        read = set(re.findall(r"args\.(\w+)", execute)) | \
+            set(re.findall(r'getattr\(args, "(\w+)"', execute))
+        if "load_config_with_overrides(args)" in execute:
+            read |= {"packages", "profile_conf"}
+        lost = set(vars(root.parse_args(["run", stage]))) - global_dests - read
+        if lost:
+            dropped[stage] = sorted(lost)
+    assert not dropped, f"flags parsed but never passed on: {dropped}"
+
+
+def test_keep_hotplug_drivers_reaches_the_kernel_stage(monkeypatch):
+    from sysforge import run_cmd
+    from sysforge.pipeline import runner
+    from sysforge.verbs.registry import build_parser
+    seen = {}
+    monkeypatch.setattr(run_cmd, "load_config", lambda: {})
+    monkeypatch.setattr(runner, "run_stage_standalone",
+                        lambda stage, config, options: seen.setdefault("o", options))
+    for argv, want in ((["--keep-hotplug-drivers"], True),
+                       (["--no-keep-hotplug-drivers"], False), ([], None)):
+        seen.clear()
+        args = build_parser().parse_args(["run", "kernel", *argv])
+        run_cmd.RunKernelVerb().execute(args, None)
+        assert seen["o"].keep_hotplug_drivers is want

@@ -3,14 +3,14 @@ test_state_list.py — coverage for `sysforge state list`'s untracked-foreign
 section (C3) and the basic tabular output.
 """
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from sysforge.state_cmd import cmd_state_list
+from cli_args import cli_args
 
 
 def _args(state_dir: Path, no_pager: bool = True):
-    return SimpleNamespace(state_dir=str(state_dir), no_pager=no_pager)
+    return cli_args("state", "list", state_dir=str(state_dir), no_pager=no_pager)
 
 
 def _seed_state(state_dir: Path, entries: dict[str, dict]) -> None:
