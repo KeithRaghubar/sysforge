@@ -840,6 +840,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B136` — the "Initial setup is incomplete" notice clears once you have run setup.** After installing, sysforge reminds you to run `sudo sysforge run reconfigure` and `sudo sysforge run hardware`, and stops once both have completed. `run reconfigure` on its own never recorded that it had completed, so the reminder kept appearing on every command, however many times you ran it. It is now recorded, and the reminder clears.
 
+---
+
+- **`3.5.0-B137` — sysforge notices a second run again after a `sudo sysforge` command.** sysforge keeps a lock file so that two runs that build or install cannot overlap. The first `sudo sysforge run …` created it readable only, and from then on every run as your user failed to open it, so the check that stops a second run was off for good (with a warning shown only under `-v`). The lock file is now created group-writable, and a run that cannot write an older one still takes the lock.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.
