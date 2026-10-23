@@ -205,6 +205,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV20` — `make readme-preview` shows the README as GitHub will.** It renders `README.md`, or any Markdown file given as `FILE=`, through GitHub's own renderer, wraps it in GitHub's stylesheet at the repo page's width and opens it, with images and relative links loading from the working tree. Nothing is pushed.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---

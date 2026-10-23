@@ -1,4 +1,4 @@
-.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif \
+.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif readme-preview \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
         bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
@@ -410,6 +410,10 @@ man: ## Render the man page from the scdoc source
 # Re-record the README demo from the live config/state (needs vhs).
 demo-gif: ## Re-record the README terminal demo (docs/assets/demo.gif, needs vhs)
 	bash tools/record-demo.sh
+
+# GitHub's own renderer; FILE= previews any other Markdown file (a guide, a concept page).
+readme-preview: ## Render README.md (or FILE=) as GitHub does and open it in a browser
+	bash tools/readme-preview.sh $(FILE)
 
 clean: ## Remove build artefacts
 	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .ruff_cache/ .coverage coverage.json
