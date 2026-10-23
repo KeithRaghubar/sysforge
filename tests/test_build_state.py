@@ -1255,3 +1255,21 @@ def test_set_build_mode_restamps_an_existing_entry_only(tmp_path):
     bs.save()
     assert BuildState(tmp_path).get("clang")["build_mode"] == "bolt_llvm"
     assert BuildState(tmp_path).get("absent") is None
+
+
+def test_save_to_an_unwritable_dir_names_the_file(tmp_path):
+    """3.5.0-B135: an OSError here surfaced as a raw traceback from `update`.
+    A RuntimeError naming the file is what the verb runner reports cleanly."""
+    d = tmp_path / "state"
+    d.mkdir()
+    bs = BuildState(d)
+    bs.record(pkgname="foo", pkgver="1", pkgrel="1", epoch="0", pkgbase="foo",
+              pkgbuild_dir=tmp_path)
+    d.chmod(0o555)
+    try:
+        if os.access(d, os.W_OK):
+            pytest.skip("running as root: the dir stays writable")
+        with pytest.raises(RuntimeError, match=r"build_state\.toml"):
+            bs.save()
+    finally:
+        d.chmod(0o755)

@@ -1528,7 +1528,11 @@ def _record_build_state(pkgbuild_path, pkgmeta, resolved_profile, options,
         bs.save()
         _build_log.info(f"Recorded build state for {pkgbase!r}")
     except Exception as e:
-        _build_log.warn(f"Failed to record build state: {e}")
+        # An error, not a warning: the build installed, but without its record
+        # `sysforge update` will not maintain it (3.5.0-B135).
+        _build_log.error(
+            f"Built, but could not record the build, so `sysforge update` will not "
+            f"maintain it: {e}")
 
 
 # ---------------------------------------------------------------------------

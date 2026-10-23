@@ -832,6 +832,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B134` — your first session after installing can write SysForge's state.** The first time you run sysforge, it adds you to the `sysforge` group that owns `/var/lib/sysforge` and `/var/cache/sysforge`, but a login session only picks up a new group at the next login. Until then, the directories stayed closed to you even though sysforge said this run's writes were enabled: `sysforge build` finished but recorded nothing, so the package was not maintained, and `sysforge update` stopped with a Python traceback. sysforge now also grants your user access to those directories directly, with an ACL that files created below them inherit, until the group applies.
 
+---
+
+- **`3.5.0-B135` — a build sysforge could not record now says so.** When sysforge could not write its build record (`build_state.toml`), `sysforge build` reported it only as a warning, hidden unless you passed `-v`, and finished as if nothing were wrong, although `sysforge update` would then never maintain the package. It is now an error, shown at every verbosity, that says the package will not be maintained and why. When `sysforge update` cannot write the record, it now stops with a one-line error naming the file instead of a Python traceback.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

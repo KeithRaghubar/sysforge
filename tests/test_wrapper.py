@@ -216,6 +216,38 @@ def test_record_build_state_threads_measured_duration(tmp_path, monkeypatch):
     assert isinstance(captured["build_seconds"], int)
 
 
+def test_record_build_state_failure_is_an_error(tmp_path, monkeypatch, capsys):
+    """3.5.0-B135: a build whose record could not be written was reported with
+    warn(), hidden at the default verbosity, so the build looked fine while the
+    package was silently left unmaintained."""
+    import sysforge.primitives.build_state as bs_mod
+    from sysforge import log
+
+    class _FailingState(bs_mod.BuildState):
+        def save(self):
+            raise RuntimeError("cannot write /x/build_state.toml: Permission denied")
+
+    monkeypatch.setattr(bs_mod, "BuildState", _FailingState)
+    monkeypatch.setattr(log, "_VERBOSITY", 0)
+    pkgbuild = tmp_path / "PKGBUILD"
+    pkgbuild.write_text("pkgname=foo\npkgver=1\npkgrel=1\n")
+    options = makepkg_wrapper.BuildOptions(
+        state_dir=None, source=None, owner_stage=None, toolchain_variant=None,
+        toolchain_fingerprint=None, record_toolchain_variant=None,
+    )
+    pkgmeta = {"globals": {"pkgname": "foo", "pkgbase": "foo",
+                           "pkgver": "1", "pkgrel": "1", "epoch": "0"}}
+
+    makepkg_wrapper._record_build_state(
+        pkgbuild, pkgmeta, None, options,
+        rename=None, record_build_mode=None, build_elapsed=1,
+    )
+
+    out = capsys.readouterr()
+    shown = out.out + out.err
+    assert "[ERROR]" in shown and "build_state.toml" in shown
+
+
 @pytest.mark.parametrize("active, cc, owner, recorded, fingerprint", [
     ("pgo_llvm", "gcc", None, "gcc", None),           # --toolchain gcc on llvm
     ("gcc", "clang", None, "stock_llvm", None),       # --toolchain llvm on gcc
