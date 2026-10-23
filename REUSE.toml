@@ -14,6 +14,7 @@ path = [
     "tools/*.sh",
     "tools/vm/**",
     "tools/container/**",
+    "tools/demo/**",
     "**.md",
     "**.toml",
     "**.lock",

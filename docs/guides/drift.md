@@ -66,6 +66,11 @@ sysforge update --rebuild-on-flag-drift
 
 To rebuild a single package instead, use `sysforge build <pkg>`.
 
+The whole cycle on a fresh install: a package built with the shipped `standard` profile, the
+default switched to `optimized`, the drift reported, then rebuilt with the new flags.
+
+![sysforge update --dry-run --explain-drift lists the CFLAGS and LDFLAGS a package built with the standard profile would change to under optimized, then sysforge update --rebuild-on-flag-drift rebuilds it with -O3](../assets/drift.gif)
+
 ---
 
 ## What counts as flag drift

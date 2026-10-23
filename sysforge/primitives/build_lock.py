@@ -49,7 +49,20 @@ def build_lock(lock_path: Path, *, label: str, noun: str):
     """
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+    # Group-writable, so a lock root created opens read-write for the sysforge
+    # group; fchmod because the umask strips the group bit from the open mode.
+    # A file this process still cannot write (an older root-created 0644) is
+    # locked read-only: flock needs no write access, only the pid line does
+    # (3.5.0-B137).
+    try:
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o664)
+        writable = True
+        with contextlib.suppress(OSError):
+            if os.fstat(fd).st_uid == os.geteuid():
+                os.fchmod(fd, 0o664)
+    except PermissionError:
+        fd = os.open(str(lock_path), os.O_RDONLY | os.O_CLOEXEC)
+        writable = False
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -70,9 +83,10 @@ def build_lock(lock_path: Path, *, label: str, noun: str):
                 f"sysforge {label} {noun} lock at {lock_path} is held; "
                 f"refuse to start a second concurrent {noun}."
             ) from None
-        os.ftruncate(fd, 0)
-        os.write(fd, f"{os.getpid()}\n".encode())
-        os.fsync(fd)
+        if writable:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{os.getpid()}\n".encode())
+            os.fsync(fd)
         try:
             yield
         finally:

@@ -212,6 +212,6 @@ repos are built this way.
 ## In sysforge
 
 sysforge builds every package with makepkg, giving each build a temporary `makepkg.conf`
-with the flags of the profile that matches it. The [README](../../README.md) covers building,
-tracking and updating packages; the [freeze guide](../guides/freeze.md) covers reviewing
+with the flags of the profile that matches it. The [getting started guide](../guides/getting-started.md) covers
+building, tracking and updating packages; the [freeze guide](../guides/freeze.md) covers reviewing
 changed PKGBUILDs and fetching PGP keys.

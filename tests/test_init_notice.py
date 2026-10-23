@@ -142,3 +142,29 @@ def test_stage_config_notice_never_raises_on_a_broken_state(tmp_path):
             raise RuntimeError("state unreadable")
 
     assert maybe_emit_stage_config_notice("kernel", Broken()) is None
+
+
+def test_notice_clears_after_the_stages_the_quick_start_runs(tmp_path, monkeypatch):
+    """3.5.0-B136: reconfigure is stateless, so a standalone `run reconfigure`
+    never recorded a status and the notice, which waited for reconfigure to read
+    `done`, could never clear. Drive the real standalone runner, not mark_done."""
+    from sysforge.pipeline import runner as _runner
+    from sysforge.pipeline.stages.base import RunOptions, Stage
+
+    class _Ok(Stage):
+        def __init__(self, name, stateless):
+            self.name, self.stateless = name, stateless
+            self.description, self.depends_on = name, []
+
+        def run(self, config, state, options):
+            pass
+
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    _make_notice(tmp_path)
+    opts = RunOptions(resume=False, start_from=None, retry_failed=False, dry_run=False,
+                      state_dir=tmp_path, log_dir=tmp_path)
+    _runner.run_stage_standalone(_Ok("hardware", stateless=False), {}, opts)
+    _runner.run_stage_standalone(_Ok("reconfigure", stateless=True), {}, opts)
+
+    assert maybe_emit_init_notice(tmp_path) == "cleared"

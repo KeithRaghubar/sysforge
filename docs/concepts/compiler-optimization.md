@@ -177,7 +177,7 @@ They cost one register and a couple of instructions per call.
 
 sysforge applies these flags through profiles in `profiles.toml`: `standard` (`-march=native
 -O2`), `optimized` (`-O3`, `-fno-plt`, lld with `--icf=all`), `hardened` (`standard` plus
-extra hardening) and your own, chosen per package by rules. The [README](../../README.md) shows
-how a profile is chosen, and `sysforge resolve <pkg>` shows which one applies to a package and
+extra hardening) and your own, chosen per package by rules. The comments at the top of the shipped
+`profiles.toml` explain how a profile is chosen, and `sysforge resolve <pkg>` shows which one applies to a package and
 why. The hardening flags `/etc/makepkg.conf` sets are kept even when a profile replaces `CFLAGS`,
 unless the profile sets `preserve_system_tokens = false`.

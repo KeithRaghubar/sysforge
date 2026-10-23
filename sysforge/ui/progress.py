@@ -440,19 +440,20 @@ def _establish_seq() -> str:
     # the bottom of the screen, the post-Enter cursor sits at row N (below the
     # region) and newlines would pile every line onto the bottom row instead of
     # scrolling. So:
-    #   1. save the content cursor,
-    #   2. jump to the absolute bottom row and emit one index (ESC D): at the
-    #      bottom this scrolls the whole screen up by one, freeing row N for the
-    #      bar (works whether or not the screen was full),
-    #   3. set the DECSTBM region [1, N-1],
-    #   4. restore the saved (absolute) cursor, then move up one line to undo
-    #      the scroll — landing the cursor back on its content, now inside the
-    #      region.
+    #   1. emit one index (ESC D) at the content cursor: on row N it scrolls
+    #      the screen up by one, freeing row N for the bar; above it, the rows
+    #      below are already free and it only moves down (no line is pushed
+    #      into scrollback),
+    #   2. move up one line, back onto the content, now within [1, N-1],
+    #   3. save it, set the DECSTBM region [1, N-1] (which homes the cursor),
+    #      and restore it.
+    # Nothing scrolls while the cursor is saved: xterm.js restores a DECSC
+    # relative to the content, xterm relative to the screen, so a scroll in
+    # between left the cursor a line high on one of them (3.5.0-B133).
     # This also avoids the fresh-shell blank-line gap the old cursor-park caused.
     _bar.reserved = True
     _trace(f"establish rows={rows} cols={_bar.cols} region=[1,{rows - 1}]")
-    return (f"{_SAVE}{_ESC}[{rows};1H{_INDEX}{_ESC}[1;{rows - 1}r"
-            f"{_RESTORE}{_ESC}[1A")
+    return f"{_INDEX}{_ESC}[1A{_SAVE}{_ESC}[1;{rows - 1}r{_RESTORE}"
 
 
 def _release_seq() -> str:

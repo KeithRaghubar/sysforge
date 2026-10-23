@@ -1,5 +1,5 @@
-.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
-        dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
+.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif readme-preview \
+        dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-docs dev-deps-list \
         lint-py lint-sh \
         bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
         roadmap-table check-roadmap-table roadmap-view \
@@ -46,9 +46,12 @@ DEV_DEPS_VM        = qemu-desktop edk2-ovmf gtk-vnc socat
 DEV_DEPS_CONTAINER = podman
 # Release: GPG-signed commit/tag/tarball + the GitHub release upload.
 DEV_DEPS_RELEASE   = gnupg github-cli
+# Terminal recordings: demo-gif (plus the container tier's podman); the tapes
+# set Fira Code as their font.
+DEV_DEPS_DOCS      = vhs ttf-fira-code
 
 DEV_DEPS_ALL = $(DEV_DEPS_CORE) $(DEV_DEPS_PKG) $(DEV_DEPS_VM) \
-               $(DEV_DEPS_CONTAINER) $(DEV_DEPS_RELEASE)
+               $(DEV_DEPS_CONTAINER) $(DEV_DEPS_RELEASE) $(DEV_DEPS_DOCS)
 
 # $(call pacman_needed,<packages>) — install only if the set isn't already
 # satisfied, so a complete environment never prompts for sudo. `pacman -Qq`
@@ -119,6 +122,9 @@ dev-deps-container: ## Install the container test tier (podman)
 dev-deps-release: ## Install the release tier (gnupg, github-cli)
 	$(call pacman_needed,$(DEV_DEPS_RELEASE))
 
+dev-deps-docs: ## Install the recordings tier (vhs, Fira Code)
+	$(call pacman_needed,$(DEV_DEPS_DOCS))
+
 # Show what each tier needs and whether it is installed. Read-only, no sudo —
 # run this before dev-deps to see what a full install would add.
 dev-deps-list: ## Show each tier's deps and whether they are present
@@ -129,6 +135,7 @@ dev-deps-list: ## Show each tier's deps and whether they are present
 	@printf '%-12s %s\n' vm '$(DEV_DEPS_VM)'
 	@printf '%-12s %s\n' container '$(DEV_DEPS_CONTAINER)'
 	@printf '%-12s %s\n' release '$(DEV_DEPS_RELEASE)'
+	@printf '%-12s %s\n' docs '$(DEV_DEPS_DOCS)'
 	@echo
 	@for p in $(DEV_DEPS_ALL); do \
 		if pacman -Qq "$$p" >/dev/null 2>&1; then s=installed; else s=MISSING; fi; \
@@ -406,6 +413,14 @@ man: ## Render the man page from the scdoc source
 	  --template man/sysforge.1.scd.in \
 	  --out man/sysforge.1.scd
 	scdoc < man/sysforge.1.scd > man/sysforge.1
+
+# Real commands in a fresh Arch container (tools/demo/); TAPE= re-records just one.
+demo-gif: ## Re-record the terminal recordings in docs/assets/ (TAPE=, needs vhs + podman)
+	bash tools/record-demo.sh $(TAPE)
+
+# GitHub's own renderer; FILE= previews any other Markdown file (a guide, a concept page).
+readme-preview: ## Render README.md (or FILE=) as GitHub does and open it in a browser
+	bash tools/readme-preview.sh $(FILE)
 
 clean: ## Remove build artefacts
 	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .ruff_cache/ .coverage coverage.json

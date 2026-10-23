@@ -102,3 +102,31 @@ def test_is_held_true_while_held_and_keeps_holder_pid(tmp_path):
         assert is_held(lock) is True
         assert lock.read_text().strip() == str(os.getpid())
     assert is_held(lock) is False
+
+
+def test_a_lock_file_this_process_cannot_write_still_locks(tmp_path):
+    """3.5.0-B137: the first `sudo sysforge run …` creates the stage lock as
+    root, 0644, and every later run as the user then failed to open it
+    read-write, so concurrent-run detection was silently off for good. flock
+    needs no write access: lock through a read-only descriptor instead."""
+    lock = tmp_path / "stage_in_progress.lock"
+    lock.write_text("")
+    lock.chmod(0o444)
+    if os.access(lock, os.W_OK):
+        pytest.skip("running as root: the file stays writable")
+    with build_lock(lock, label="install", noun="stage"):
+        assert is_held(lock)
+    assert not is_held(lock)
+
+
+def test_a_new_lock_file_is_group_writable_whatever_the_umask(tmp_path):
+    """3.5.0-B137: so a lock created by root opens read-write for the
+    sysforge group, and the holder's pid can be written for the error."""
+    lock = tmp_path / "stage_in_progress.lock"
+    old = os.umask(0o022)
+    try:
+        with build_lock(lock, label="install", noun="stage"):
+            pass
+    finally:
+        os.umask(old)
+    assert lock.stat().st_mode & 0o777 == 0o664

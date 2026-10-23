@@ -347,17 +347,6 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # build (see build_throttle). The systemd-run scope keeps the controlling
     # TTY, so the interactive Popen path below still gets its prompts.
     throttle = resolve_throttle(resolved_profile)
-    prefix = wrapper_argv(throttle)
-    if prefix:
-        _makepkg_log.info(f"Throttling build: {' '.join(prefix)}")
-    # Per-build memory ceiling ([build] mem_limit, 2.2.0-F4). On the systemd-run
-    # --scope path wrapper_argv already carried it as MemoryMax, so
-    # resolve_child_mem_cap returns None here and the child preexec applies no
-    # rlimit; off that path it returns the byte cap for RLIMIT_AS. make_child_preexec
-    # always runs lift_for_child first, so the None case is exactly today's behaviour.
-    child_mem_cap = resolve_child_mem_cap(throttle)
-    if child_mem_cap is not None:
-        _makepkg_log.info(f"Capping build memory (RLIMIT_AS): {child_mem_cap} bytes")
     # Build sandbox ([security] sandbox_builds, 3.1.0-F7). Opt-in and
     # default-off: when on, the whole makepkg invocation is replaced by a
     # makechrootpkg one so prepare()/build()/package() execute inside a clean
@@ -366,6 +355,22 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     # directory and carries its own makepkg args after ``--``), so this is a
     # fork of the command, not another prefix entry — see build_sandbox.
     sandbox = build_sandbox.for_profile(build_sandbox.get_policy(), resolved_profile)
+    # The container runs in a scope of its own under the devtools slice, which
+    # neither a wrapping systemd-run scope nor an RLIMIT_AS on makechrootpkg
+    # reaches: under the sandbox both ceilings go on that slice instead
+    # (build_sandbox.slice_limits, entered below; 3.5.0-B131).
+    prefix = wrapper_argv(throttle, scope=not sandbox.enabled)
+    if prefix:
+        _makepkg_log.info(f"Throttling build: {' '.join(prefix)}")
+    # Per-build memory ceiling ([build] mem_limit, 2.2.0-F4). On the systemd-run
+    # --scope path wrapper_argv already carried it as MemoryMax, so
+    # resolve_child_mem_cap returns None here and the child preexec applies no
+    # rlimit; off that path it returns the byte cap for RLIMIT_AS. make_child_preexec
+    # always runs lift_for_child first, so the None case is exactly today's behaviour.
+    child_mem_cap = (resolve_child_mem_cap(throttle)
+                     if build_sandbox.mem_cap_applies(sandbox) else None)
+    if child_mem_cap is not None:
+        _makepkg_log.info(f"Capping build memory (RLIMIT_AS): {child_mem_cap} bytes")
     sandbox_cleanup = None
     # Whether the sandbox handed cargo a fixed progress width (3.5.0-B9), whose
     # frames the forwarder then clips to the live width (3.5.0-B121).
@@ -479,6 +484,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
         # artifacts back where the host path leaves them.
         env = build_sandbox.chroot_env(env)
         env.update(build_sandbox.dest_env_from_conf(conf_path))
+        # Lifted by the same sandbox_cleanup, so the slice is capped for
+        # exactly as long as the build runs.
+        _swap.enter_context(build_sandbox.slice_limits(sandbox, throttle, env))
         # 3.4.0-B3: after a successful build, fingerprint the compiler the
         # container actually used — the named working copy's — without running
         # it. makepkg's default `cc` is gcc when the profile exports no CC.
@@ -505,14 +513,6 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                 f"{len(install_pkgs)} package(s): "
                 + ", ".join(p.name for p in install_pkgs)
             )
-        if child_mem_cap is not None and not build_sandbox.mem_cap_applies(sandbox):
-            # The preexec would cap makechrootpkg, whose real work happens in a
-            # container several exec layers down and in its own cgroup.
-            _makepkg_log.warn(
-                "[build] mem_limit does not apply to sandboxed builds "
-                "(RLIMIT_AS would cap the chroot wrapper, not the build)"
-            )
-            child_mem_cap = None
     else:
         cmd = prefix + ["makepkg", "-p", pkgbuild_path.name] + flags
 

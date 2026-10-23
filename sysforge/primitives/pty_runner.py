@@ -168,6 +168,8 @@ _CARGO_FRAME_PREFIX_RE = re.compile(r" *(?:[A-Z][a-z]*(?: \[?)?)?")
 _PARTIAL_ESCAPE_RE = re.compile(r"\x1b(?:\[[0-9;:?]*[ -/]*)?$")
 # A line longer than this is not a frame; stop holding it back.
 _CARGO_FRAME_MAX = 4096
+# Erase from the cursor to the end of the line (EL 0), as cargo clears a frame.
+_ERASE_LINE = b"\x1b[K"
 
 
 def _clip_visible(seg: bytes, width: int) -> bytes:
@@ -201,21 +203,30 @@ class _CargoFrameClip:
     ``\\n`` and forwarded cut to ``cols - 1`` columns; any other line passes
     through as it arrives. Display only: ``line_callback`` sees the stream
     unchanged.
+
+    Cargo erases a frame (``ESC[K``) only when it may colour its output, which
+    the sandbox's piped cargo may not: the next line is just written over the
+    frame, and a ``Compiling`` line shorter than it left the frame's
+    ``] 12/431: a, b`` tail behind. So the line after a frame starts with that
+    erase, unless cargo sent it itself.
     """
 
     def __init__(self, cols: int) -> None:
         self.cols = cols        # updated on SIGWINCH
         self._line = b""        # held start of the current line
         self._holding = True    # the current line may still be a frame
+        self._frame_shown = False  # the cursor sits on a frame's row (after its \r)
 
     def feed(self, chunk: bytes) -> bytes:
         out = bytearray()
         for piece in re.split(rb"([\r\n])", chunk):
             if piece in (b"\r", b"\n"):
+                frame = self._holding and self._is_frame()
                 if self._holding:
-                    out += self._release(frame=self._is_frame())
+                    out += self._release(frame=frame)
                 out += piece
                 self._line, self._holding = b"", True
+                self._frame_shown = frame and piece == b"\r"
             elif piece:
                 if not self._holding:
                     out += piece
@@ -243,7 +254,10 @@ class _CargoFrameClip:
 
     def _release(self, *, frame: bool) -> bytes:
         held, self._line, self._holding = self._line, b"", False
-        return _clip_visible(held, max(1, self.cols - 1)) if frame else held
+        erase = self._frame_shown and not held.startswith(_ERASE_LINE)
+        self._frame_shown = False
+        out = _clip_visible(held, max(1, self.cols - 1)) if frame else held
+        return _ERASE_LINE + out if erase else out
 
 
 # How often the progress bar may be repainted while we forward a raw stream

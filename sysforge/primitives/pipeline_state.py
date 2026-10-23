@@ -128,10 +128,11 @@ class PipelineState:
             lines.append("")
 
         for stage_name, stage_data in self._data.get("stages", {}).items():
-            if "status" not in stage_data:
+            if "status" not in stage_data and "first_done_at" not in stage_data:
                 continue  # progress-only entry not yet formally assigned a status
             lines.append(f"[stages.{stage_name}]")
-            lines.append(f'status = "{stage_data["status"]}"')
+            if "status" in stage_data:
+                lines.append(f'status = "{stage_data["status"]}"')
             for key in ("started_at", "completed_at", "first_done_at"):
                 if key in stage_data:
                     lines.append(f'{key} = "{stage_data[key]}"')
@@ -200,6 +201,17 @@ class PipelineState:
         # Kept across later failures: `status` holds only the latest attempt
         # (3.5.0-B25).
         self._data["stages"][name].setdefault("first_done_at", now)
+
+    def note_completed(self, name):
+        """Record that ``name`` completed once, without giving it a status.
+
+        For a stateless stage run on its own: its status stays unset, so
+        ``run pipeline --resume`` still runs it, while ``stage_ever_done``
+        (the first-install notice's question) reads true (3.5.0-B136).
+        """
+        self._data.setdefault("stages", {}).setdefault(name, {}).setdefault(
+            "first_done_at", self._now())
+        self.touch()
 
     def stage_ever_done(self, name):
         """True once ``name`` has completed on this install, whatever its latest status."""

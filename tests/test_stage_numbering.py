@@ -6,7 +6,7 @@
 
 ``pipeline/stages/__init__.py`` ``STAGES`` is the one ordering. The pipeline
 once had eight stages (partition and base install were separate), and the
-old numbers survived in shipped config headers, the README, ``--help`` and
+old numbers survived in shipped config headers, the README and fresh-install guide, ``--help`` and
 module docstrings after the two merged into ``install``.
 """
 from __future__ import annotations
@@ -56,7 +56,8 @@ def test_bootstrap_toml_sections_name_the_stage_that_reads_them():
         assert m and int(m.group(1)) == NUMBER[stage], section
 
 
-@pytest.mark.parametrize("rel", ["README.md", "sysforge/run_cmd.py",
+@pytest.mark.parametrize("rel", ["README.md", "docs/guides/fresh-install.md",
+                                 "sysforge/run_cmd.py",
                                  "completions/_sysforge",
                                  "sysforge/pipeline/stages/reconfigure.py"])
 def test_no_stage_range_runs_past_the_last_stage(rel):
@@ -65,8 +66,8 @@ def test_no_stage_range_runs_past_the_last_stage(rel):
         assert 1 <= int(lo) <= int(hi) <= LAST, f"{rel}: stages {lo}-{hi}"
 
 
-def test_readme_resume_range_starts_at_reconfigure():
-    text = (REPO / "README.md").read_text(encoding="utf-8")
+def test_fresh_install_resume_range_starts_at_reconfigure():
+    text = (REPO / "docs/guides/fresh-install.md").read_text(encoding="utf-8")
     assert f"This runs stages {NUMBER['reconfigure']}–{LAST}:" in text
 
 

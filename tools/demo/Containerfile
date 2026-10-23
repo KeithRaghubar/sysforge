@@ -1,0 +1,18 @@
+# Container for the README/guide terminal recordings (docs/assets/*.tape).
+#
+# A fresh Arch system with an unprivileged `demo` user who can sudo without a
+# password, as a new user would be right after installing sysforge. sysforge
+# itself is built from the checkout by tools/record-demo.sh, not here, so the
+# image doesn't go stale with every commit.
+FROM docker.io/library/archlinux:base-devel
+
+# devtools: pkgctl, which `sysforge build` uses to check out a repo package's
+# PKGBUILD. less: the pager a review's [v]iew diff opens, as on most systems.
+RUN pacman -Syu --noconfirm --needed git sudo python pyalpm uv python-installer devtools less \
+    && pacman -Scc --noconfirm
+
+RUN useradd -m -G wheel demo \
+    && echo 'demo ALL=(ALL:ALL) NOPASSWD: ALL' > /etc/sudoers.d/demo \
+    && chmod 0440 /etc/sudoers.d/demo
+
+CMD ["sleep", "infinity"]

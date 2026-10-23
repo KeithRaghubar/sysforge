@@ -672,7 +672,13 @@ class BuildState:
         _log.debug(f"build_state save by {writer}: {len(self._data)} entries")
         if self._stat_sig() != self._disk_sig:
             self._warn_lost_updates(writer)
-        atomic_write.write_state(self.path, self._serialize())
+        try:
+            atomic_write.write_state(self.path, self._serialize())
+        except OSError as e:
+            # A RuntimeError is what the verb runner reports as one clean error
+            # line; a bare OSError reached the user as a traceback (3.5.0-B135).
+            raise RuntimeError(
+                f"cannot write {self.path}: {e.strerror or e}") from e
         self._disk_sig = self._stat_sig()
         self._loaded_built_at = {k: _built_at(v) for k, v in self._data.items()}
 

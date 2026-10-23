@@ -316,6 +316,21 @@ def test_standalone_stage_log_persisted_on_success(tmp_path, monkeypatch):
     assert "log cleared" not in body
 
 
+def test_standalone_stateless_stage_records_completion_not_status(tmp_path, monkeypatch):
+    """3.5.0-B136: a stateless stage leaves its status alone (run_pipeline
+    --resume must still run it again) but records that it has completed once,
+    which is what the first-install notice asks."""
+    from sysforge.pipeline import runner as _runner
+    monkeypatch.setattr(_runner, "emit_system_probes", lambda: None)
+    monkeypatch.setattr(_runner, "reset_session", lambda: None)
+    stage = OkStage("reconfigure")
+    stage.stateless = True
+    _runner.run_stage_standalone(stage, {}, make_options(state_dir=tmp_path, log_dir=tmp_path))
+    state = PipelineState(tmp_path)
+    assert state.stage_status("reconfigure") == "pending"
+    assert state.stage_ever_done("reconfigure")
+
+
 def test_standalone_stage_skips_log_on_dry_run(tmp_path, monkeypatch):
     """Dry runs write nothing."""
     from sysforge.pipeline import runner as _runner
@@ -375,7 +390,8 @@ def test_standalone_stateless_stage_writes_no_status(tmp_path, monkeypatch):
     stage = OkStage("reconfigure")
     stage.stateless = True
     _standalone(stage, tmp_path, monkeypatch)
-    assert not (tmp_path / "pipeline_state.toml").exists()
+    # Only its completion is recorded (3.5.0-B136), never a status.
+    assert "status" not in (tmp_path / "pipeline_state.toml").read_text()
 
 
 def test_standalone_dry_run_writes_no_status(tmp_path, monkeypatch):

@@ -108,7 +108,9 @@ def maybe_emit_init_notice(state_dir: Path | str | None = None) -> str | None:
         # Read the resolved dir's pipeline state directly (the marker lives in
         # the same dir as pipeline_state.toml).
         ps = PipelineState(path.parent)
-        pending = [s for s in _REQUIRED_STAGES if ps.stage_status(s) != "done"]
+        # Ever completed, not "status is done": reconfigure is stateless, so a
+        # standalone run records no status at all (3.5.0-B136).
+        pending = [s for s in _REQUIRED_STAGES if not ps.stage_ever_done(s)]
 
         if not pending:
             with contextlib.suppress(FileNotFoundError):

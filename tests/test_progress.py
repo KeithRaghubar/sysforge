@@ -543,24 +543,41 @@ def test_establish_scroll_reserves_bar_row(monkeypatch):
     # Establishing the region must land the cursor INSIDE [1, N-1] regardless of
     # where the prompt started — otherwise a bottom-of-screen prompt leaves the
     # cursor below the region and output collapses onto the bottom row. The
-    # "scroll up one to reserve" choreography: save → jump to bottom row → index
-    # (ESC D, scroll up one) → set region → restore → cursor-up one.
+    # choreography: index (ESC D) at the content cursor, which scrolls only when
+    # it is on the bottom row → cursor-up one, back onto its content → save →
+    # set region → restore.
     buf = _fake_tty_stderr(monkeypatch)
     progress.init()
     progress.phase("starting")   # establishes the region
     written = buf.getvalue()
     rows = progress._bar.rows
-    # Each step is present, in order, before the region is set.
-    bottom_jump = f"\x1b[{rows};1H"
-    i_save = written.index(progress._SAVE)
-    i_jump = written.index(bottom_jump, i_save)
-    i_index = written.index(progress._INDEX, i_jump)
-    i_region = written.index(f"\x1b[1;{rows - 1}r", i_index)
+    i_index = written.index(progress._INDEX)
+    i_up = written.index("\x1b[1A", i_index)
+    i_save = written.index(progress._SAVE, i_up)
+    i_region = written.index(f"\x1b[1;{rows - 1}r", i_save)
     i_restore = written.index(progress._RESTORE, i_region)
-    i_up = written.index("\x1b[1A", i_restore)
-    assert i_save < i_jump < i_index < i_region < i_restore < i_up
+    assert i_index < i_up < i_save < i_region < i_restore
     # Cursor handling stays balanced.
     assert written.count(progress._SAVE) == written.count(progress._RESTORE)
+
+
+def test_establish_never_scrolls_under_a_saved_cursor(monkeypatch):
+    """3.5.0-B133: terminals disagree on what a saved cursor (DECSC) means
+    across a scroll — xterm keeps the screen row, xterm.js (VS Code's terminal,
+    vhs) keeps the content line, which has moved up. The old establish saved,
+    jumped to the bottom row, scrolled with ESC D and restored, so on xterm.js
+    the cursor came back one line high and the first line of output overwrote
+    the command line. Jumping to the bottom to scroll also pushed a line into
+    scrollback on a screen with free rows below the prompt. Index at the
+    content cursor instead, before anything is saved."""
+    buf = _fake_tty_stderr(monkeypatch)
+    progress.init()
+    progress.phase("starting")   # establishes the region
+    written = buf.getvalue()
+    rows = progress._bar.rows
+    establish = written[:written.index(f"\x1b[1;{rows - 1}r")]
+    assert establish.index(progress._INDEX) < establish.index(progress._SAVE)
+    assert f"\x1b[{rows};1H" not in establish   # no jump to the bottom row to scroll
 
 
 # --- Compose (3.3.0-F2) -------------------------------------------------------

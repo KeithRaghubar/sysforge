@@ -201,6 +201,14 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV19` — `make demo-gif` records the docs' terminal recordings on a fresh system.** Three vhs tapes under `docs/assets/` record the README's Quick start (an AUR package reviewed, built, installed and maintained), a repo package rebuilt from source for the getting-started guide, and a profile change followed by its flag drift and rebuild for the drift guide. Each runs real commands in a fresh Arch container (`tools/demo/`) where sysforge is built from the branch's committed HEAD and the Quick start's one-time setup has run, so no recording depends on the machine it was made on. `TAPE=` re-records one, and `make dev-deps` now installs vhs and the tapes' font (`make dev-deps-docs`).
+
+---
+
+- **`3.5.0-DEV20` — `make readme-preview` shows the README as GitHub will.** It renders `README.md`, or any Markdown file given as `FILE=`, through GitHub's own renderer, wraps it in GitHub's stylesheet at the repo page's width and opens it, with images and relative links loading from the working tree. Nothing is pushed.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
@@ -250,6 +258,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DOC13` — the man page documents the journal records.** Commands that change installed packages or build state write a record to the systemd journal, queryable by field, but no user document said so. A new JOURNAL section names the fields (`SYSFORGE_VERB`, `SYSFORGE_TARGET`, `SYSFORGE_EXIT`), which commands write them, and two `journalctl` queries; it is generated from the field list the records are built from.
+
+---
+
+- **`3.5.0-DOC14` — a short README, with the detail in guides.** The README had grown to about 500 lines. It now opens with a short recording and the four Quick start commands, then gives each topic one paragraph and a link. What it used to say in full moved, largely unchanged, into new guides under `docs/guides/`: getting started (requirements, choosing gcc or LLVM, maintaining and un-maintaining packages, source review, plan confirmation and `setup` presets), everyday commands (including how SysForge fits with `makepkg` and `pacman`), sandboxed builds, fresh install from the Arch ISO, running from a git checkout, and verifying releases. A new guide, what SysForge touches, lists what the package installs, what it writes as your user, what it runs with `sudo` and for which commands, and how to undo it, for one package or entirely.
 
 ---
 
@@ -799,6 +811,38 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B129` — `run kernel --keep-hotplug-drivers` takes effect.** The flag and its `--no-` form were accepted and then dropped before the kernel stage read them, so the stage always used `kernel.toml`'s `keep_hotplug_drivers`. They now override it, as their help says. A new test checks that every flag of every `run` stage reaches the stage.
+
+---
+
+- **`3.5.0-B130` — cargo's progress line no longer leaves its end behind in the build sandbox.** In a sandboxed Rust build, a `Compiling` line written after cargo's `Building [=====>    ] 120/431: <crate>` line covered the bar but not what followed it, so text like `] 120/431: serde, syn` stayed at the end of the row. cargo clears its progress line before printing anything else only when it colours its output, and in the sandbox it writes to a pipe and doesn't colour it, so it just writes the next line over the old one. sysforge now clears the row itself before the next line. Builds outside the sandbox were not affected.
+
+---
+
+- **`3.5.0-B131` — `cpu_quota` and `mem_limit` now cap sandboxed builds.** With `sandbox_builds` on, the build runs in a container that systemd places under its own `devtools-<user>.slice`, outside the `systemd-run` scope sysforge opened to apply the limits, so neither limit reached the build and nothing said so. sysforge now sets them on that slice for as long as the build runs (`sudo systemctl set-property --runtime`) and removes them when it ends, including when it fails. If a run is killed before it can remove them, the next sandboxed build does, and a reboot always does. Limits you set on that slice yourself in `/etc` are left alone. Builds outside the sandbox were not affected.
+
+---
+
+- **`3.5.0-B132` — the shell prompt no longer lands on top of `update`'s output.** At the end of every `sysforge update` at a terminal, sysforge sends a reset in case a program it ran left the terminal on its alternate screen. In xterm and terminals built on xterm.js (VS Code's terminal among them), that reset also moves the cursor back to the last position the progress bar saved, even when nothing used the alternate screen, so the prompt and anything typed next were drawn over earlier lines of the run. sysforge now saves the current position just before the reset, so the cursor stays put, and a real return from the alternate screen still restores the cursor that program left.
+
+---
+
+- **`3.5.0-B133` — the first line of output no longer overwrites the command in VS Code's terminal.** The progress bar reserves the bottom row when a command starts. It used to save the cursor, scroll the screen up a line and restore the cursor, and terminals built on xterm.js (VS Code's terminal among them) restore a saved cursor relative to the text, which had just moved up, so the cursor came back one line too high and the first line of output was written over the command you typed. On a screen with free rows below the prompt, such as one just cleared, that scroll also pushed the top line off the screen. The bar now makes room without scrolling while a position is saved, and only scrolls when the prompt is on the bottom row.
+
+---
+
+- **`3.5.0-B134` — your first session after installing can write SysForge's state.** The first time you run sysforge, it adds you to the `sysforge` group that owns `/var/lib/sysforge` and `/var/cache/sysforge`, but a login session only picks up a new group at the next login. Until then, the directories stayed closed to you even though sysforge said this run's writes were enabled: `sysforge build` finished but recorded nothing, so the package was not maintained, and `sysforge update` stopped with a Python traceback. sysforge now also grants your user access to those directories directly, with an ACL that files created below them inherit, until the group applies.
+
+---
+
+- **`3.5.0-B135` — a build sysforge could not record now says so.** When sysforge could not write its build record (`build_state.toml`), `sysforge build` reported it only as a warning, hidden unless you passed `-v`, and finished as if nothing were wrong, although `sysforge update` would then never maintain the package. It is now an error, shown at every verbosity, that says the package will not be maintained and why. When `sysforge update` cannot write the record, it now stops with a one-line error naming the file instead of a Python traceback.
+
+---
+
+- **`3.5.0-B136` — the "Initial setup is incomplete" notice clears once you have run setup.** After installing, sysforge reminds you to run `sudo sysforge run reconfigure` and `sudo sysforge run hardware`, and stops once both have completed. `run reconfigure` on its own never recorded that it had completed, so the reminder kept appearing on every command, however many times you ran it. It is now recorded, and the reminder clears.
+
+---
+
+- **`3.5.0-B137` — sysforge notices a second run again after a `sudo sysforge` command.** sysforge keeps a lock file so that two runs that build or install cannot overlap. The first `sudo sysforge run …` created it readable only, and from then on every run as your user failed to open it, so the check that stops a second run was off for good (with a warning shown only under `-v`). The lock file is now created group-writable, and a run that cannot write an older one still takes the lock.
 
 ## Security
 

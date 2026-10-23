@@ -126,3 +126,16 @@ def test_scrub_with_no_user_pager_falls_back_to_less(monkeypatch):
     assert pager._pager_candidates()[0] == ["less", "-RF"]
     env = pager._sanitized_pager_env()
     assert env is not None and "LESS" not in env
+
+
+def test_terminal_reset_saves_cursor_before_leaving_alt_screen():
+    """3.5.0-B132: ``?1049l`` restores the cursor as DECRC does even when the
+    alternate screen was never entered (xterm, xterm.js). The progress bar's
+    frames leave a stale DECSC position behind, so a bare ``?1049l`` at the end
+    of every TTY ``update`` sent the cursor back up the screen and the shell
+    prompt overwrote the run's output. A DECSC right before it makes that
+    restore a no-op on the normal screen, while a real alt-screen exit still
+    gets the cursor its ``?1049h`` saved (the saved cursor is per buffer)."""
+    from sysforge.update import _TERMINAL_RESET
+
+    assert "\x1b7\x1b[?1049l" in _TERMINAL_RESET

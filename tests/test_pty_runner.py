@@ -830,15 +830,19 @@ def _frame(done: int, total: int = 31, width: int = 100) -> bytes:
             + text[len("    Building"):].ljust(width - 2).encode() + b"\r")
 
 
-def _compiling(n: int) -> bytes:
+def _compiling(n: int, colour: bool = True) -> bytes:
+    if not colour:
+        return b"   Compiling c%d v0.1.0\r\n" % n
     return b"\x1b[K\x1b[1m\x1b[92m   Compiling\x1b[0m c%d v0.1.0\r\n" % n
 
 
-def _cargo_stream(width: int = 100) -> bytes:
+def _cargo_stream(width: int = 100, colour: bool = True) -> bytes:
+    """Cargo erases a frame (``ESC[K``) only when it may colour its output; the
+    sandbox's piped, uncoloured cargo just lets the next line overwrite it."""
     out = b""
     for n in range(1, 12):
-        out += _compiling(n) + _frame(n, width=width)
-    return out + b"\x1b[K    Finished `dev` profile\r\n"
+        out += _compiling(n, colour) + _frame(n, width=width)
+    return out + (b"\x1b[K" if colour else b"") + b"    Finished `dev` profile\r\n"
 
 
 def _screen(stream: bytes, cols: int) -> list[str]:
@@ -895,15 +899,36 @@ def test_clipped_frames_leave_no_fragment_above_the_live_row():
     assert sum("Compiling" in r for r in rows) == 11
 
 
+def test_uncoloured_frames_are_erased_before_the_next_line():
+    """Uncoloured cargo never sends ESC[K: a shorter `Compiling` line written
+    over a frame left its `] 3/31: c3, c4` tail on screen."""
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    stream = _cargo_stream(width=100, colour=False)
+    assert any("] " in r for r in _screen(stream, cols=100))   # the bug, in the model
+    for cols in (70, 100, 140):
+        clip = _CargoFrameClip(cols=cols)
+        rows = _screen(clip.feed(stream) + clip.flush(), cols=cols)
+        assert _frame_rows(rows) == [] and not any("] " in r for r in rows), cols
+        assert sum("Compiling" in r for r in rows) == 11
+
+
+def test_a_frame_still_on_screen_at_the_end_is_erased():
+    from sysforge.primitives.pty_runner import _CargoFrameClip
+    clip = _CargoFrameClip(cols=100)
+    rows = _screen(clip.feed(_compiling(1, colour=False) + _frame(1)) + clip.flush(), cols=100)
+    assert _frame_rows(rows) == []
+
+
 def test_clip_is_independent_of_where_reads_split():
     from sysforge.primitives.pty_runner import _CargoFrameClip
-    stream = _cargo_stream(width=100)
-    whole = _CargoFrameClip(cols=70)
-    want = whole.feed(stream) + whole.flush()
-    for step in (1, 2, 3, 7, 64):
-        clip = _CargoFrameClip(cols=70)
-        got = b"".join(clip.feed(stream[i:i + step]) for i in range(0, len(stream), step))
-        assert got + clip.flush() == want, step
+    for colour in (True, False):
+        stream = _cargo_stream(width=100, colour=colour)
+        whole = _CargoFrameClip(cols=70)
+        want = whole.feed(stream) + whole.flush()
+        for step in (1, 2, 3, 7, 64):
+            clip = _CargoFrameClip(cols=70)
+            got = b"".join(clip.feed(stream[i:i + step]) for i in range(0, len(stream), step))
+            assert got + clip.flush() == want, (colour, step)
 
 
 def test_clip_leaves_frames_that_fit_and_other_lines_alone():
