@@ -836,6 +836,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B135` — a build sysforge could not record now says so.** When sysforge could not write its build record (`build_state.toml`), `sysforge build` reported it only as a warning, hidden unless you passed `-v`, and finished as if nothing were wrong, although `sysforge update` would then never maintain the package. It is now an error, shown at every verbosity, that says the package will not be maintained and why. When `sysforge update` cannot write the record, it now stops with a one-line error naming the file instead of a Python traceback.
 
+---
+
+- **`3.5.0-B136` — the "Initial setup is incomplete" notice clears once you have run setup.** After installing, sysforge reminds you to run `sudo sysforge run reconfigure` and `sudo sysforge run hardware`, and stops once both have completed. `run reconfigure` on its own never recorded that it had completed, so the reminder kept appearing on every command, however many times you ran it. It is now recorded, and the reminder clears.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

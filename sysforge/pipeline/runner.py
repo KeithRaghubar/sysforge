@@ -229,6 +229,11 @@ def run_stage_standalone(stage, config, options):
             if tracks_status:
                 state.mark_done(stage.name)
                 _checkpoint()
+            elif not options.dry_run:
+                # A stateless stage keeps no status, but the first-install
+                # notice still needs to know it has run (3.5.0-B136).
+                state.note_completed(stage.name)
+                _checkpoint()
             _log.info(f"{stage.name}: complete")
         success = True
     except Exception as e:  # noqa: BLE001 — every stage failure gets the same handling (3.5.0-B70)
