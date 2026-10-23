@@ -38,3 +38,21 @@ jobs:
 
       - name: Lint, suite and gates
         run: bash tools/ci.sh "$GITHUB_WORKSPACE"
+
+  # The end-to-end tier (3.5.0-DEV21): the same scenarios `make e2e` runs under
+  # podman, here directly in the job's fresh container, sharing one system. A
+  # `pre-release` prerequisite outside GATES, so listed in the Makefile's
+  # CI_JOBS; tests/test_ci_tooling.py holds the two to each other.
+  e2e:
+    runs-on: ubuntu-latest
+    container: docker.io/library/archlinux:base-devel
+    steps:
+      - name: Install git and make
+        run: pacman -Syu --noconfirm --needed git make
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: End-to-end scenarios
+        run: make e2e E2E_HERE=1

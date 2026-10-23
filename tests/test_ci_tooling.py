@@ -30,12 +30,26 @@ def _print_gates() -> list[str]:
 
 def test_pre_release_and_ci_resolve_to_the_same_gates():
     """`pre-release` depends on `$(GATES)` and ci.sh runs `print-gates`, so the
-    two lists are one list (3.5.0-DEV8)."""
+    two lists are one list (3.5.0-DEV8); the rest of `pre-release` is
+    `$(CI_JOBS)`, which CI runs as jobs of their own (3.5.0-DEV21)."""
     cs = _load_check_standards()
     text = (REPO / "Makefile").read_text(encoding="utf-8")
     m = re.search(r"^pre-release:([^#\n]*)", text, re.MULTILINE)
     assert m is not None
-    assert cs._expand_make_vars(m.group(1).split(), text) == _print_gates()
+    jobs = cs._expand_make_vars(["$(CI_JOBS)"], text)
+    assert cs._expand_make_vars(m.group(1).split(), text) == _print_gates() + jobs
+
+
+def test_every_ci_job_gate_has_its_own_ci_job():
+    """A `pre-release` prerequisite outside GATES (`CI_JOBS`) is run by a step
+    of .github/workflows/ci.yml, or CI would not run what `pre-release` does."""
+    cs = _load_check_standards()
+    text = (REPO / "Makefile").read_text(encoding="utf-8")
+    workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    jobs = cs._expand_make_vars(["$(CI_JOBS)"], text)
+    assert jobs and jobs != ["$(CI_JOBS)"]
+    for job in jobs:
+        assert re.search(rf"^\s*run: make {re.escape(job)}\b", workflow, re.MULTILINE), job
 
 
 def test_ci_sh_reads_the_gate_list_instead_of_spelling_it():

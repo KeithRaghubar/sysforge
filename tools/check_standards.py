@@ -1801,8 +1801,9 @@ def check_semver_bump(repo: Path,
 
 # `pre-release` prerequisites deliberately left to the heavier tier: the full
 # suite is minutes, not seconds (docs/RELEASE-CHECKLIST.md "Which command
-# does what").
-_RELEASE_GATE_EXEMPT = {"test"}
+# does what"), and the end-to-end tier (3.5.0-DEV21) is minutes too, needs
+# podman, and fetches from the AUR, so it could not be a deterministic gate.
+_RELEASE_GATE_EXEMPT = {"test", "e2e"}
 _PRE_RELEASE_RE = re.compile(r"^pre-release:([^#\n]*)", re.MULTILINE)
 _RELEASE_MAKE_RE = re.compile(r"\bmake\s+(?:--no-print-directory\s+)?([a-z][\w-]*)")
 _MAKE_VAR_REF_RE = re.compile(r"\$\((\w+)\)")

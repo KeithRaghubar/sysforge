@@ -31,6 +31,7 @@ for tape in "${tapes[@]}"; do
     vhs validate "$tape" >/dev/null || { vhs validate "$tape"; exit 1; }
 done
 branch=$(git branch --show-current)
+commit=$(git rev-parse HEAD)
 if [[ -n $(git status --porcelain) ]]; then
     echo "record-demo: note: uncommitted changes are not in the recording (it builds $branch's HEAD)" >&2
 fi
@@ -42,7 +43,7 @@ echo "==> Installing sysforge ($branch) and running the one-time setup"
 podman rm -f -t 0 sysforge-demo-prep >/dev/null 2>&1 || true
 podman run -d --name sysforge-demo-prep -v "$repo:/src/sysforge:ro" "$base" >/dev/null
 trap 'podman rm -f -t 0 sysforge-demo-prep >/dev/null 2>&1 || true' EXIT
-podman exec -u demo -w /home/demo sysforge-demo-prep /src/sysforge/tools/demo/prepare.sh "$branch" \
+podman exec -u demo -w /home/demo sysforge-demo-prep /src/sysforge/tools/demo/prepare.sh "$commit" \
     >/dev/null
 podman commit -q sysforge-demo-prep "$ready" >/dev/null
 podman rm -f -t 0 sysforge-demo-prep >/dev/null

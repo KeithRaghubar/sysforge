@@ -1,0 +1,18 @@
+# A local package for the end-to-end tier: compiles one C file with the
+# profile's CFLAGS, needing nothing from the network.
+pkgname=e2e-hello
+pkgver=1.0
+pkgrel=1
+pkgdesc="sysforge end-to-end test package"
+arch=('x86_64')
+license=('MIT')
+source=('hello.c')
+sha256sums=('SKIP')
+
+build() {
+    ${CC:-cc} $CPPFLAGS $CFLAGS $LDFLAGS -o e2e-hello hello.c
+}
+
+package() {
+    install -Dm755 e2e-hello "$pkgdir/usr/bin/e2e-hello"
+}

@@ -209,6 +209,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV21` — `make e2e` runs the documented paths on a fresh system.** Four scenarios under `tools/e2e/` run as an unprivileged user, each in a fresh Arch container from the demo image: the README's Quick start in one login session (the one-time setup, an AUR package through the review gate, `update`), a repo package's opt-in prompt and its saved answer, flag drift after a default-profile change, and a build that fails before installing anything. They check exit codes, `pacman -Qi`, the build record, `packages.toml` and leftover sentinels, answering prompts on a pseudo-terminal so `build` takes its interactive paths. They build local PKGBUILDs except the Quick start, the one scenario that needs the network. Built from the commit before `3.5.0-B134`, the Quick start fails on the lost build record. The last scenario finds a known bug, a stale sentinel left behind, and is marked as failing until that is fixed; once it passes it fails the run, so the marker comes off with the fix. `E2E_COMMIT=` builds an older revision with today's scenarios, `pre-release` runs the tier, CI runs it in a job of its own on every pull request, and the release checklist runs it before the container smokes.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
