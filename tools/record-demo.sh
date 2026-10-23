@@ -1,37 +1,57 @@
 #!/usr/bin/env bash
-# record-demo.sh -- regenerate docs/assets/demo.gif from docs/assets/demo.tape.
+# record-demo.sh -- re-record the terminal recordings under docs/assets/.
 #
-# The recording runs real commands against a throwaway copy of the live config
-# and state, so it shows packages this machine actually built. The copy resets
-# [log] verbosity to the shipped default and points HOME at a scratch dir, so no
-# personal path or narration reaches the GIF. The tape names packages that must
-# be in the state's build record (mesa, gamescope-nvidia); edit both together.
+# Usage: record-demo.sh [TAPE...]   (default: every docs/assets/*.tape)
+#
+# Each tape runs real commands in a fresh Arch container (tools/demo/), set up
+# to the end of the Quick start's step 3: sysforge built from this branch's
+# committed HEAD and the one-time setup done. That setup runs once and is saved
+# as an image; every tape then gets its own container from it, so no recording
+# depends on another or on this machine's packages, config or paths.
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-config=${SYSFORGE_CONFIG_DIR:-/etc/sysforge}
-state=${SYSFORGE_STATE_DIR:-/var/lib/sysforge}
-src=${PKGBUILD_SRC_DIR:-$HOME/src}
-demo=/tmp/sysforge-demo
+base=sysforge-demo:base
+ready=sysforge-demo:ready
 
-if ! command -v vhs >/dev/null; then
-    echo "record-demo: vhs is not installed (sudo pacman -S vhs)" >&2
-    exit 1
-fi
-
-rm -rf "$demo"
-mkdir -p "$demo/config" "$demo/state" "$demo/src/mesa"
-for f in profiles toolchain kernel; do
-    cp "$config/$f.toml" "$demo/config/"
+for tool in vhs podman; do
+    if ! command -v "$tool" >/dev/null; then
+        echo "record-demo: $tool is not installed (sudo pacman -S $tool)" >&2
+        exit 1
+    fi
 done
-cp "$repo/etc/sysforge/packages.toml" "$demo/config/"
-sed -E 's/^verbosity[[:space:]]*=.*/#verbosity = 0/' "$config/sysforge.toml" > "$demo/config/sysforge.toml"
-for f in build_state source_meta hardware_profile pipeline_state; do
-    cp "$state/$f.toml" "$demo/state/"
-done
-cp "$src/mesa/PKGBUILD" "$demo/src/mesa/"
 
 cd "$repo"
-SF_DEMO_HOME=$demo SYSFORGE_CONFIG_DIR=$demo/config SYSFORGE_STATE_DIR=$demo/state \
-    vhs docs/assets/demo.tape
-rm -rf "$demo"
+if [[ $# -gt 0 ]]; then
+    tapes=("$@")
+else
+    tapes=(docs/assets/*.tape)
+fi
+for tape in "${tapes[@]}"; do
+    vhs validate "$tape" >/dev/null || { vhs validate "$tape"; exit 1; }
+done
+branch=$(git branch --show-current)
+if [[ -n $(git status --porcelain) ]]; then
+    echo "record-demo: note: uncommitted changes are not in the recording (it builds $branch's HEAD)" >&2
+fi
+
+echo "==> Building $base"
+podman build -q -t "$base" -f tools/demo/Containerfile tools/demo >/dev/null
+
+echo "==> Installing sysforge ($branch) and running the one-time setup"
+podman rm -f -t 0 sysforge-demo-prep >/dev/null 2>&1 || true
+podman run -d --name sysforge-demo-prep -v "$repo:/src/sysforge:ro" "$base" >/dev/null
+trap 'podman rm -f -t 0 sysforge-demo-prep >/dev/null 2>&1 || true' EXIT
+podman exec -u demo -w /home/demo sysforge-demo-prep /src/sysforge/tools/demo/prepare.sh "$branch" \
+    >/dev/null
+podman commit -q sysforge-demo-prep "$ready" >/dev/null
+podman rm -f -t 0 sysforge-demo-prep >/dev/null
+
+for tape in "${tapes[@]}"; do
+    name=sysforge-demo-$(basename "$tape" .tape)
+    echo "==> Recording $tape"
+    podman rm -f -t 0 "$name" >/dev/null 2>&1 || true
+    podman run -d --name "$name" "$ready" >/dev/null
+    DEMO_CONTAINER=$name vhs "$tape"
+    podman rm -f -t 0 "$name" >/dev/null
+done

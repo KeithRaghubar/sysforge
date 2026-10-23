@@ -2,7 +2,7 @@
 
 SysForge is an AUR helper that builds and tracks packages tuned to your CPU. Every package it builds, from the AUR or your own PKGBUILDs, gets `-march=native`, LTO, or whichever rule-based compiler-flag profile matches its PKGBUILD. It can go further with profile-guided optimization (PGO): per package, for the kernel (AutoFDO and Propeller), and for its own LLVM/Clang toolchain, which it can also rewrite with BOLT. It records what it built and with which flags, so `sysforge update` can tell when a package's source, flags or toolchain have moved on. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-![sysforge resolve shows the -march=native, clang and lld flags a mesa build gets; sysforge update --dry-run then reports packages built under an older toolchain or different flags](docs/assets/demo.gif)
+![On a fresh install, sysforge build cbonsai -si reviews the AUR package's PKGBUILD, builds it with -march=native and installs it; sysforge update then finds nothing to rebuild](docs/assets/quickstart.gif)
 
 <sub><!--version-->v3.5.0<!--/version--></sub>
 

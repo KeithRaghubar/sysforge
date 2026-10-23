@@ -201,7 +201,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DEV19` — `make demo-gif` re-records the README's terminal demo.** `docs/assets/demo.tape` scripts the recording for vhs, and `tools/record-demo.sh` runs it against a throwaway copy of the live config and state, with `[log] verbosity` back at the shipped default and `HOME` pointed at a scratch directory so no personal path appears in the GIF.
+- **`3.5.0-DEV19` — `make demo-gif` records the docs' terminal recordings on a fresh system.** Three vhs tapes under `docs/assets/` record the README's Quick start (an AUR package reviewed, built, installed and maintained), a repo package rebuilt from source for the getting-started guide, and a profile change followed by its flag drift and rebuild for the drift guide. Each runs real commands in a fresh Arch container (`tools/demo/`) where sysforge is built from the branch's committed HEAD and the Quick start's one-time setup has run, so no recording depends on the machine it was made on. `TAPE=` re-records one, and `make dev-deps` now installs vhs and the tapes' font (`make dev-deps-docs`).
 
 ---
 

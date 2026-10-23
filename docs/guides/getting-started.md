@@ -67,7 +67,10 @@ compilers it needs to start. The [PGO guide](pgo.md) covers that path.
 
 Anything you `build` is then *maintained*: `sysforge update` rebuilds it from source as upstream
 advances. This works for repo packages too: `sysforge build mesa` keeps your optimized mesa
-current.
+current. The first time, `build` asks before it builds a repo package from source, and saves
+your answer in `packages.toml`:
+
+![sysforge build tree -si asks whether to build the repo package tree from source, compiles it with -march=native, and pacman -Qi then shows it in the sf-build group](../assets/repo-build.gif)
 
 To stop maintaining one:
 
