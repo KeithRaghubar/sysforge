@@ -158,8 +158,10 @@ from sysforge.update_version import _check_one_pkgbase
 # Escape sequences to restore the terminal after an interrupted child that
 # entered alt-screen / hid the cursor / left SGR state set (e.g. a pager
 # killed by Ctrl-C). Written verbatim to stdout from the cmd_update finally
-# block when stdout is a TTY.
-_TERMINAL_RESET = "\x1b[?1049l\x1b[?25h\x1b[0m"
+# block when stdout is a TTY. ``?1049l`` also restores the saved cursor even
+# when no alt-screen was entered (xterm, xterm.js), and the progress bar leaves
+# a stale one, so the leading DECSC makes that restore a no-op (3.5.0-B132).
+_TERMINAL_RESET = "\x1b7\x1b[?1049l\x1b[?25h\x1b[0m"
 
 
 def _resolve_drift_axes(args, update_cfg=None) -> tuple[bool, bool, bool]:
