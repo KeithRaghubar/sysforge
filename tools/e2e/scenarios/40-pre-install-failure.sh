@@ -3,7 +3,6 @@
 # run starts normally: a repo package's checkout needs pkgctl, and here it is
 # missing (as on a system without devtools).
 # start: ready
-# xfail: 3.5.0-B138
 
 sudo pacman -Rdd --noconfirm devtools
 

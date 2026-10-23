@@ -57,7 +57,7 @@ fails until fixed:
 ```bash
 # What the scenario shows, in a sentence or two.
 # start: ready
-# xfail: 3.5.0-B138
+# xfail: <roadmap ID>
 ```
 
 An `xfail` scenario's failure reports `XFAIL` and keeps the run green; once it passes it reports

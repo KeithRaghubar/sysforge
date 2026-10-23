@@ -1388,16 +1388,16 @@ spelling per meaning, across every verb:
 
 **Result types** (`PreCheckResult` and `ExecResult`) are plain dataclasses with `ctx` / `artifacts` dicts; the runner does not inspect their contents. This keeps phase boundaries loose enough for ad-hoc data flow within a verb without inventing a per-verb context class.
 
-**Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery=…, retry_cmd=…, **metadata)` (`recovery` is a `stage_sentinel.Recovery` from `verb.sentinel_recovery`, stored as a kind plus arguments, `3.5.0-B43`) from `primitives/stage_sentinel.py`. On entry, the sentinel writes `stage_in_progress.toml`; on normal completion (both phases pass), it clears. On `RuntimeError` or `CleanExitRequested`, the sentinel is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage: `build` and `update` stop before their next package (`interrupt.checkpoint()` in `build_core`), and a verb with no checkpoint stops when its `execute` + `post_validate` complete (`3.5.0-B44`). It additionally holds the `stage_in_progress.lock` liveness lock for the scope: if another run already holds it, entering the scope raises `RuntimeError` **before** `mark_started`, which the runner's existing handler converts to exit 1 without clobbering the live run's sentinel (§Pipeline layer, *Liveness guard*). The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
+**Sentinel handling.** Verbs whose `execute` mutates the live system set `requires_sentinel = True`. The runner wraps `execute + post_validate` in `sentinel_scope(state_dir, verb.name, recovery=…, retry_cmd=…, **metadata)` (`recovery` is a `stage_sentinel.Recovery` from `verb.sentinel_recovery`, stored as a kind plus arguments, `3.5.0-B43`) from `primitives/stage_sentinel.py`, with `arm_on_mutation=True` (`3.5.0-B138`): the scope takes the liveness lock on entry but writes `stage_in_progress.toml` only at the first escalation that changes the system, which `privilege.privileged_argv` announces to `privilege.on_mutation` listeners (§Privilege seam). A verb's `execute` does its checks first (`build` probes for `pkgctl`, resolves targets, builds), and a failure there leaves nothing for the next run to refuse on; before the fix it left `stage = "build"` behind and blocked a timer or cron run. On normal completion (both phases pass), the record clears. On `RuntimeError` or `CleanExitRequested` after the record was written, it is left in place so the next sysforge invocation blocks at the CLI-entry recovery prompt; a Ctrl-C before it says nothing changed. The pipeline stages keep the default (record on entry), since they open their scope around the install itself. `sentinel_scope` also installs an `InterruptScope`, so verbs participate in the same first-Ctrl-C-defers-to-safe-boundary behaviour as the toolchain stage: `build` and `update` stop before their next package (`interrupt.checkpoint()` in `build_core`), and a verb with no checkpoint stops when its `execute` + `post_validate` complete (`3.5.0-B44`). It additionally holds the `stage_in_progress.lock` liveness lock for the scope: if another run already holds it, entering the scope raises `RuntimeError` **before** `mark_started`, which the runner's existing handler converts to exit 1 without clobbering the live run's sentinel (§Pipeline layer, *Liveness guard*). The toolchain pipeline stage uses the same primitive — there is one implementation, shared.
 
 **Read-only verbs** (`env`, `help`, `resolve`, `log`, `config check`, `state list`, `state orphans` without `--delete`, `state failed` without `--clear`/`--clear-all`, `state profiles` without `--delete`, `state boot-entries`, `bench toolchain`, `packages list`, `doctor` without `--apply`) implement `execute` (the work is printing) and return `ExecResult()`; `post_validate` defaults to no-op and `requires_sentinel = False`. They use the same dispatch path as mutating verbs — no second code path.
 
 **`state boot-entries`** (`3.3.0-F5`, `StateBootEntriesVerb`, read-only, `requires_sentinel = False`) lists every `vmlinuz-*` in `/boot` with the loader entry that boots it. The table goes through the pager like `state profiles` (`--no-pager` disables it): columns KERNEL / ENTRY / OWNER (`you`, `sysforge` or `none`) / TEMPLATE, plus `(missing)` rows for managed entries whose kernel is gone. Under `bootloader = grub`/`none` it prints a one-line note instead; with `boot_entries = "off"` it notes that and still lists. Rows come from `boot_entries.rows_for`.
 
 **Error model.**
-- `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if active.
+- `RuntimeError` raised from any phase → `_log.error(msg)`, return 1. Sentinel preserved if written (a change had begun).
 - `SystemExit` → propagate verbatim (lets tests and signal handlers see the raw exit).
-- `CleanExitRequested` → caught inside `sentinel_scope`, logged, re-raised as `RuntimeError` with the verb's `retry_cmd` and recovery command in the message; sentinel preserved.
+- `CleanExitRequested` → caught inside `sentinel_scope`, logged, re-raised as `RuntimeError` with the verb's `retry_cmd` and recovery command in the message; sentinel preserved. Before the first change, the message says nothing changed and no record is left.
 
 **Per-verb phase mapping** (current shape; phases reflect where each piece of work lives, not which primitives it calls):
 
@@ -1919,6 +1919,8 @@ Bottom-anchored status line for batch operations (`[3/10] building · htop`). Du
 - **How the terminal is handed away** — `yield_terminal(kind)` and nothing else. `"prompt"` blanks the bar row in place and keeps the region, so the prompt prints in the normal content flow; it is deliberately not a full release, because resetting the region (`ESC[r`) makes the cursor-restore unreliable on some terminals and left prompts rendering off-view. `"child"` releases the region entirely, for a TTY-inheriting child that addresses the whole screen (the pager, a full-screen editor), which the region would otherwise clamp into the reserved band. While yielded, state keeps updating and nothing draws. Yields nest; the strongest kind applies (`child` > `prompt`), and the outermost exit re-establishes the region if it was released and **repaints immediately**. `reserved_rows()` is 1 while prompt-yielded and 0 while child-yielded. `clear()` is teardown only: it releases the region and keeps the state.
 - **When the bar repaints** — `_draw()` is the sole writer. It builds the whole frame (any pending resize, region establishment or release, and the painted row, glyph-downgraded then width-truncated) as one string and emits it with a **single write**, so another thread's log line can land before or after a frame but never inside it; an unchanged frame writes nothing. A module lock guards mutate-then-draw in every public entry point and the ticker, and is never held across a blocking call or a yield body. `SIGWINCH` only sets `resize_pending` (no I/O, no lock — a signal can interrupt a paint holding both); the next frame applies it. **A resize release erases from the content cursor down (`ESC[J`), never the old absolute row** (`3.5.0-B4`): a taller window makes the emulator pull scrollback in and shift everything, cursor and bar alike, down by the rows gained, so the old row then holds a content line, and establishment's index would scroll the stale bar into the output. Order is what a resize preserves, and the bar is always below the cursor. The emulator also resets DECSTBM on resize, so `pty_runner` repaints before forwarding the first chunk after a `SIGWINCH` instead of waiting out its one-second throttle. Events (tick, phase, yield exit) draw immediately; **exactly one scheduled painter** keeps the clock moving between them, chosen by whether a raw byte stream is being forwarded to the terminal. Single-write frames are safe against line-oriented writers (`log.*`, `print`, TTY-inheriting pacman/git), but a raw forwarder can be mid-escape or mid-UTF-8. By default the painter is a daemon **ticker** thread, started on the first TTY draw and stopped by `shutdown()`/`clear()`, which redraws every second unless yielded or forwarding; exceptions are swallowed and traced. While `pty_runner` forwards makepkg's raw output it enters `forwarding_output()` and becomes the painter itself, calling `refresh()` at most once a second and only at a stream boundary (§`pty_runner.py`). Cost: one wakeup a second, and about one short write a second only while a tracker is past the elapsed floor. **`heartbeat(detail)`** (`3.2.0-B13`) only sets `detail` — the scheduled painter shows it. It exists because a whole package build sits inside a single `tick()`: a trace once showed a 379-second gap between paints. The detail replaces rather than appends and the next tick/note/resume/phase clears it.
 - **Lifecycle** — `cli.main` wraps `_main()` in `progress.session()`, whose exit calls `shutdown()` (stop the ticker, release the region). The session exits before the `KeyboardInterrupt`/`BrokenPipeError` handlers, so the region is gone before `aborted (Ctrl-C)` prints, and a plain `sys.exit` or `log.fatal` releases on the way out too. `log` does not import `ui`. The `atexit` hook remains as the backstop for importers that don't go through `cli.main`; `shutdown()` is idempotent.
+
+**Tested on a terminal model** (`3.5.0-DEV22`). `tests/test_progress.py` checks the sequences the bar writes; `tests/test_terminal_model.py` replays them, and `update`'s `_TERMINAL_RESET`, through `tests/term_model.py`, a VT model of the sequences sysforge emits that raises on any other, and asserts what the screen holds: the command line survives, output follows it in order, the bar leaves nothing behind, the next prompt lands after the last line. Each runs under both rules terminals have for a saved cursor (DECSC) across a scroll: xterm keeps the screen row, xterm.js (VS Code's terminal, vhs) follows the content line. `3.5.0-B132` and `B133` both turned on that difference, and each has a test replaying its pre-fix sequence to show the model reproduces it. A new escape sequence in the bar is taught to the model in the same change.
 
 **One tracker at a time.** A tracker opened while another is open is a no-op that yields `progress_hooks._NoOpTick` and logs at debug, leaving the outer untouched; under tests (`_strict_nesting`, set by an autouse `tests/conftest.py` fixture that also gives every test a fresh `_bar` and no ticker) it raises `RuntimeError("tracker '<inner>' opened inside '<outer>'")`. A sub-step inside an item uses `tick.note()`/`tick.resume()` instead. The functions that open trackers call `require_no_tracker(owner)` (same strict/lenient policy) first thing, so a mis-nested caller fails before any sync or resolution side effect — the build-⊂-update invariant invites routing more callers through `build_and_install`. A stale `tick` after its tracker exits is a no-op. Tracker owners:
 
@@ -4551,23 +4553,23 @@ branch, no hand-rolled `["sudo", ...]` list.
 
 ### Two entry points
 
-- **`privileged_argv(argv, *, noninteractive=False) -> list[str]`** — builds
+- **`privileged_argv(argv, *, noninteractive=False, mutates=True) -> list[str]`** — builds
   the escalated argv and hands it back; the caller runs it with its own
   `subprocess.run` (or equivalent). Use this at sites that need to stream
   output to the TTY, inspect the return code themselves, or otherwise need
   control over how the command executes. When already root (`euid == 0`) the
   argv is returned unchanged (no `sudo` prefix); `noninteractive=True` inserts
   `-n` so `sudo` fails fast instead of prompting, when not already root.
-- **`run_privileged(argv, *, tag, **kwargs) -> subprocess.CompletedProcess`** —
+- **`run_privileged(argv, *, tag, mutates=True, **kwargs) -> subprocess.CompletedProcess`** —
   escalates via `privileged_argv` and executes it through
   `primitives/run.py`'s `run_or_raise` (raise-on-failure). This is the
-  available convenience for a new site that just wants "run this, raise if it
-  fails" with no further inspection. Note that the migrated sites do **not**
-  use it: each deliberately retains its own `subprocess.run` call to preserve
-  its established error handling and — critically — the per-module
-  `subprocess.run` monkeypatch seams the test suite relies on. `run_privileged`
-  therefore currently has no callers; it exists as the sanctioned raise-on-failure
-  path for future code, and routing an escalation through it must not replace a
+  convenience for a site that just wants "run this, raise if it fails" with no
+  further inspection; `atomic_write`, `artifacts`, `snapshot` and
+  `build_sandbox` use it. The sites migrated onto the seam earlier (pacman,
+  the kernel install, reconfigure) do **not**: each deliberately retains its
+  own `subprocess.run` call to preserve its established error handling and,
+  critically, the per-module `subprocess.run` monkeypatch seams the test suite
+  relies on. Routing an escalation through `run_privileged` must not replace a
   site whose tests patch that site's own `subprocess.run`.
 
 - **`ensure_credentials() -> bool`** — the one place a password prompt sysforge
@@ -4596,6 +4598,37 @@ This mirrors the streaming/returncode carve-out already established by
 `primitives/run.py` for the general subprocess seam (STD row 17):
 `run_privileged` is to `privileged_argv` what `run_or_raise` is to a raw
 `subprocess.run` call.
+
+### Announcing system changes — `on_mutation`
+
+The seam is also where a change to the system begins, so `privileged_argv`
+tells every `on_mutation(listener)` listener of each escalation before
+returning its argv (`3.5.0-B138`), with the unescalated argv and even when
+already root. The one listener is the verb runner's stage sentinel:
+`sentinel_scope(arm_on_mutation=True)` writes its record at the first
+announcement rather than on entry, so a verb that fails before changing
+anything leaves no recovery record (§CLI Verb Framework). A list of
+callables, not a call into `stage_sentinel`, because that module imports this
+one.
+
+`mutates=True` is the default, so a new escalation site arms the sentinel
+unless it says otherwise. A site passes `mutates=False` only for a command
+that cannot leave the system inconsistent if interrupted, each with its reason
+beside it:
+
+| Site | Why it is no change to recover from |
+|------|-------------------------------------|
+| `atomic_write.replace_file` (`install`, `mv`, `rm` of the staged file) | stage + rename is atomic: the old file or the new one |
+| `fs_provision._run_priv` | provisioning is idempotent; the next run redoes it |
+| `provides_lookup` `pacman -Fy` | a files-database download |
+| `build_sandbox`: chroot `install`, `arch-nspawn … pacman -Syu` | the build chroot, not the host |
+| `build_sandbox`: `systemctl set-property --runtime` (cap and reset) | runtime-only, reset after the build |
+| `build_sandbox` `pacman -Sw` | a download into the package cache |
+| `stage_sentinel.Recovery.argv(to_run=False)` (`display`, record validation) | built only to validate or print |
+
+The sandbox's slice reset runs in a `finally` after the build, so without the
+marker a failed sandbox build would arm the sentinel on its cleanup, which is
+`3.5.0-B138` again.
 
 ### Escalate / probe / drop-priv taxonomy
 
@@ -4706,7 +4739,8 @@ the operator is still present. The kernel stage, the PGO sequence and `--bolt-on
 each raise before building on a refused or timed-out prompt (`3.5.0-B55`).
 
 The kernel and toolchain stages additionally probe *before* entering
-`sentinel_scope`. By the sentinel contract any exception inside the scope leaves
+`sentinel_scope`. Their scopes write the record on entry (only the verb
+runner's waits for the first change), so any exception inside them leaves
 the record in place, so an auth failure raised inside it would demand a recovery
 (`mkinitcpio`, or a stock `pacman -S` of the LLVM suite that replaces a working
 PGO toolchain) for a mutation that never began. The toolchain's refusal names

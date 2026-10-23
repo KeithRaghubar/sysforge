@@ -302,7 +302,7 @@ def test_symlinked_sentinel_is_refused(tmp_path):
 def test_each_recovery_kind_rebuilds_its_command(tmp_path, monkeypatch):
     """pacman_sync and mkinitcpio rebuild from templates; pacman_upgrade
     accepts a root-owned archive in a pacman cache dir only."""
-    monkeypatch.setattr(ss, "privileged_argv", lambda argv: ["sudo", *argv])
+    monkeypatch.setattr(ss, "privileged_argv", lambda argv, **k: ["sudo", *argv])
     assert Recovery.pacman_sync(["llvm", "lib32-llvm-libs"]).argv() == [
         "sudo", "pacman", "-S", "--", "llvm", "lib32-llvm-libs"]
     assert Recovery.mkinitcpio().argv() == ["sudo", "mkinitcpio", "-P"]

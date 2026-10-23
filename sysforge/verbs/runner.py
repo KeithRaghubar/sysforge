@@ -14,7 +14,7 @@ parser sets ``args.verb_cls`` to the ``Verb`` subclass that built it
 
 Error model:
   • :class:`RuntimeError` raised from any phase → ``_log.error(msg)``,
-    return 1. Sentinel is preserved if active (the next sysforge run
+    return 1. Sentinel is preserved if written (the next sysforge run
     blocks at the CLI-entry recovery prompt).
   • :class:`SystemExit` propagates verbatim so tests and CLI hooks can
     see the raw exit code.
@@ -24,8 +24,12 @@ Error model:
 Sentinel handling (only when ``verb.requires_sentinel`` and pre_check
 proceeds): the runner enters
 :func:`~sysforge.primitives.stage_sentinel.sentinel_scope` for the
-duration of ``execute + post_validate``. The sentinel is written on
-entry, cleared on a clean exit, and left in place on any exception.
+duration of ``execute + post_validate``. The stage lock is taken on entry;
+the sentinel record is written at the first system change (``arm_on_mutation``,
+3.5.0-B138), cleared on a clean exit, and left in place on any exception
+after it was written. A verb that fails before changing anything, such as
+``build`` on a missing ``pkgctl``, so leaves nothing for the next run to
+refuse on.
 """
 from __future__ import annotations
 
@@ -89,6 +93,7 @@ def _run_verb_inner(verb: Verb, args, _log) -> int:
             verb.name,
             recovery=verb.sentinel_recovery(args, pre),
             retry_cmd=f"sysforge {verb.name}",
+            arm_on_mutation=True,
             **verb.sentinel_metadata(args, pre),
         )
     else:

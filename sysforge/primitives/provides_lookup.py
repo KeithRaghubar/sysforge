@@ -66,7 +66,9 @@ def sync_files_db() -> bool:
     if not shutil.which("pacman"):
         return False
     try:
-        result = subprocess.run(privileged_argv(["pacman", "-Fy"]), preexec_fn=lift_for_child)  # noqa: TID251 — privileged files-DB refresh streams, status inspected
+        # mutates=False: a files-DB download, no installed package changes.
+        argv = privileged_argv(["pacman", "-Fy"], mutates=False)
+        result = subprocess.run(argv, preexec_fn=lift_for_child)  # noqa: TID251 — privileged files-DB refresh streams, status inspected
     except FileNotFoundError:
         return False
     return result.returncode == 0

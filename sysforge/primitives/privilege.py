@@ -27,11 +27,23 @@ itself is made: it probes first and, only when sudo would ask, prompts with the
 terminal yielded so the progress bar is hidden and its clock paused (3.3.0-F3).
 Call it right before running something privileged — never from
 :func:`privileged_argv`, which also builds argv that a ``--dry-run`` only prints.
+
+The seam is also where a system change begins, so it tells
+:func:`on_mutation` listeners of every escalation that changes the live system
+before it runs (3.5.0-B138): the verb runner's stage sentinel records its run
+only then, so a verb that fails before changing anything leaves no recovery
+record behind. A site passes ``mutates=False`` only for a command that cannot
+leave the system inconsistent if interrupted (a download, a runtime-only
+setting, an atomic or idempotent write, a change inside the build sandbox's
+chroot) or an argv built only to validate or display; anything else arms the
+sentinel, so a new site is safe by default.
 """
 from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 
 from sysforge.primitives import progress_hooks
 from sysforge.primitives.run import run_or_raise
@@ -63,25 +75,49 @@ def ensure_credentials() -> bool:
                               preexec_fn=lift_for_child).returncode == 0
 
 
-def privileged_argv(argv: list[str], *, noninteractive: bool = False) -> list[str]:
+# Called with the unescalated argv of each system-changing escalation. A list
+# rather than a call into stage_sentinel, which imports this module.
+_mutation_listeners: list[Callable[[list[str]], None]] = []
+
+
+@contextmanager
+def on_mutation(listener: Callable[[list[str]], None]) -> Generator[None, None, None]:
+    """Call *listener* before each escalation that changes the live system
+    (every :func:`privileged_argv` without ``mutates=False``) for the block."""
+    _mutation_listeners.append(listener)
+    try:
+        yield
+    finally:
+        _mutation_listeners.remove(listener)
+
+
+def privileged_argv(
+    argv: list[str], *, noninteractive: bool = False, mutates: bool = True,
+) -> list[str]:
     """Return *argv* escalated to root.
 
     When already root (euid 0) the argv is returned unchanged. Otherwise it is
     prefixed with ``sudo``; ``noninteractive=True`` inserts ``-n`` so sudo fails
-    fast instead of prompting (moot when already root).
+    fast instead of prompting (moot when already root). Unless ``mutates`` is
+    False (see the module docstring for when), :func:`on_mutation` listeners
+    are told first, even when already root.
     """
+    if mutates:
+        for listener in list(_mutation_listeners):
+            listener(list(argv))
     if os.geteuid() == 0:
         return list(argv)
     return ["sudo", *(["-n"] if noninteractive else []), *argv]
 
 
 def run_privileged(
-    argv: list[str], *, tag: str, **kwargs
+    argv: list[str], *, tag: str, mutates: bool = True, **kwargs
 ) -> subprocess.CompletedProcess:
     """Escalate *argv* and run it through :func:`run_or_raise` (raise on non-zero).
 
     Credentials are acquired first via :func:`ensure_credentials`, so a prompt
-    never lands under the progress bar.
+    never lands under the progress bar. ``mutates`` as for
+    :func:`privileged_argv`.
     """
     ensure_credentials()
-    return run_or_raise(privileged_argv(argv), tag=tag, **kwargs)
+    return run_or_raise(privileged_argv(argv, mutates=mutates), tag=tag, **kwargs)

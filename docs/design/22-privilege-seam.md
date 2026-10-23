@@ -10,23 +10,23 @@ branch, no hand-rolled `["sudo", ...]` list.
 
 ### Two entry points
 
-- **`privileged_argv(argv, *, noninteractive=False) -> list[str]`** — builds
+- **`privileged_argv(argv, *, noninteractive=False, mutates=True) -> list[str]`** — builds
   the escalated argv and hands it back; the caller runs it with its own
   `subprocess.run` (or equivalent). Use this at sites that need to stream
   output to the TTY, inspect the return code themselves, or otherwise need
   control over how the command executes. When already root (`euid == 0`) the
   argv is returned unchanged (no `sudo` prefix); `noninteractive=True` inserts
   `-n` so `sudo` fails fast instead of prompting, when not already root.
-- **`run_privileged(argv, *, tag, **kwargs) -> subprocess.CompletedProcess`** —
+- **`run_privileged(argv, *, tag, mutates=True, **kwargs) -> subprocess.CompletedProcess`** —
   escalates via `privileged_argv` and executes it through
   `primitives/run.py`'s `run_or_raise` (raise-on-failure). This is the
-  available convenience for a new site that just wants "run this, raise if it
-  fails" with no further inspection. Note that the migrated sites do **not**
-  use it: each deliberately retains its own `subprocess.run` call to preserve
-  its established error handling and — critically — the per-module
-  `subprocess.run` monkeypatch seams the test suite relies on. `run_privileged`
-  therefore currently has no callers; it exists as the sanctioned raise-on-failure
-  path for future code, and routing an escalation through it must not replace a
+  convenience for a site that just wants "run this, raise if it fails" with no
+  further inspection; `atomic_write`, `artifacts`, `snapshot` and
+  `build_sandbox` use it. The sites migrated onto the seam earlier (pacman,
+  the kernel install, reconfigure) do **not**: each deliberately retains its
+  own `subprocess.run` call to preserve its established error handling and,
+  critically, the per-module `subprocess.run` monkeypatch seams the test suite
+  relies on. Routing an escalation through `run_privileged` must not replace a
   site whose tests patch that site's own `subprocess.run`.
 
 - **`ensure_credentials() -> bool`** — the one place a password prompt sysforge
@@ -55,6 +55,37 @@ This mirrors the streaming/returncode carve-out already established by
 `primitives/run.py` for the general subprocess seam (STD row 17):
 `run_privileged` is to `privileged_argv` what `run_or_raise` is to a raw
 `subprocess.run` call.
+
+### Announcing system changes — `on_mutation`
+
+The seam is also where a change to the system begins, so `privileged_argv`
+tells every `on_mutation(listener)` listener of each escalation before
+returning its argv (`3.5.0-B138`), with the unescalated argv and even when
+already root. The one listener is the verb runner's stage sentinel:
+`sentinel_scope(arm_on_mutation=True)` writes its record at the first
+announcement rather than on entry, so a verb that fails before changing
+anything leaves no recovery record (§CLI Verb Framework). A list of
+callables, not a call into `stage_sentinel`, because that module imports this
+one.
+
+`mutates=True` is the default, so a new escalation site arms the sentinel
+unless it says otherwise. A site passes `mutates=False` only for a command
+that cannot leave the system inconsistent if interrupted, each with its reason
+beside it:
+
+| Site | Why it is no change to recover from |
+|------|-------------------------------------|
+| `atomic_write.replace_file` (`install`, `mv`, `rm` of the staged file) | stage + rename is atomic: the old file or the new one |
+| `fs_provision._run_priv` | provisioning is idempotent; the next run redoes it |
+| `provides_lookup` `pacman -Fy` | a files-database download |
+| `build_sandbox`: chroot `install`, `arch-nspawn … pacman -Syu` | the build chroot, not the host |
+| `build_sandbox`: `systemctl set-property --runtime` (cap and reset) | runtime-only, reset after the build |
+| `build_sandbox` `pacman -Sw` | a download into the package cache |
+| `stage_sentinel.Recovery.argv(to_run=False)` (`display`, record validation) | built only to validate or print |
+
+The sandbox's slice reset runs in a `finally` after the build, so without the
+marker a failed sandbox build would arm the sentinel on its cleanup, which is
+`3.5.0-B138` again.
 
 ### Escalate / probe / drop-priv taxonomy
 
@@ -165,7 +196,8 @@ the operator is still present. The kernel stage, the PGO sequence and `--bolt-on
 each raise before building on a refused or timed-out prompt (`3.5.0-B55`).
 
 The kernel and toolchain stages additionally probe *before* entering
-`sentinel_scope`. By the sentinel contract any exception inside the scope leaves
+`sentinel_scope`. Their scopes write the record on entry (only the verb
+runner's waits for the first change), so any exception inside them leaves
 the record in place, so an auth failure raised inside it would demand a recovery
 (`mkinitcpio`, or a stock `pacman -S` of the LLVM suite that replaces a working
 PGO toolchain) for a mutation that never began. The toolchain's refusal names
