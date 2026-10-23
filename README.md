@@ -2,21 +2,15 @@
 
 SysForge is an AUR helper that builds and tracks packages tuned to your CPU. Every package it builds, from the AUR or your own PKGBUILDs, gets `-march=native`, LTO, or whichever rule-based compiler-flag profile matches its PKGBUILD. It can go further with profile-guided optimization (PGO): per package, for the kernel (AutoFDO and Propeller), and for its own LLVM/Clang toolchain, which it can also rewrite with BOLT. It records what it built and with which flags, so `sysforge update` can tell when a package's source, flags or toolchain have moved on. Pacman owns the package database; SysForge owns the build configuration layer above it.
 
-**Relationship to `makepkg` and `pacman`:**
+![sysforge resolve shows the -march=native, clang and lld flags a mesa build gets; sysforge update --dry-run then reports packages built under an older toolchain or different flags](docs/assets/demo.gif)
 
-- **`makepkg`:** `build` and `update` wrap it (with flag passthrough) to build the packages
-  SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`.
-  A profiled front-end for those packages, not a general `makepkg` replacement.
-- **`pacman`:** SysForge wraps *part* of the surface: search/query, install (through
-  `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion).
-  It deliberately does not cover all of pacman; pacman remains the package-database authority.
+```bash
+git clone https://aur.archlinux.org/sysforge.git && cd sysforge && makepkg -si
+```
 
-The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, which pulls in `llvm` and `compiler-rt`, and `lld`) and set `toolchain = "llvm"` in `[defaults]` or a profile. To build sysforge's own optimized LLVM, set `compiler = "llvm"` in `toolchain.toml` and run `sysforge run toolchain`, which installs the compilers it needs to start.
-
-**Commands.** The everyday set is in [Quick start](#quick-start) below, grouped by what
-you're trying to do. For the complete reference (every verb, subcommand and flag), use
-`sysforge --help` (or `sysforge help <command>`) and the [man page](man/sysforge.1);
-[DESIGN.md](DESIGN.md) documents the semantics behind them.
+Then follow [Quick start](#quick-start) for the one-time setup. Before you do,
+[What SysForge touches](#what-sysforge-touches) lists every file it writes, when it uses
+`sudo`, and how to undo it.
 
 <sub><!--version-->v3.5.0<!--/version--></sub>
 
@@ -269,6 +263,81 @@ semantics), see `sysforge --help`, the [man page](man/sysforge.1), and
 [DESIGN.md](DESIGN.md) (`glow -p DESIGN.md` to render in-shell). Planned features live in
 [ROADMAP.md](ROADMAP.md); ideas considered and rejected, with the reasoning, live in
 [docs/ROADMAP-ABANDONED.md](docs/ROADMAP-ABANDONED.md).
+
+---
+
+## How it fits with makepkg and pacman
+
+- **`makepkg`:** `build` and `update` wrap it (with flag passthrough) to build the packages
+  SysForge manages, injecting your compiler-flag profile via a temporary `makepkg.conf`.
+  A profiled front-end for those packages, not a general `makepkg` replacement.
+- **`pacman`:** SysForge wraps *part* of the surface: search/query, install (through
+  `build`/`update`/`packages`), and uninstall (`sudo pacman -R` plus build-state demotion).
+  It deliberately does not cover all of pacman; pacman remains the package-database authority.
+
+The default build profile uses the system gcc. LLVM (clang/lld) is fully supported but opt-in: install the LLVM `optdepends` (`clang`, which pulls in `llvm` and `compiler-rt`, and `lld`) and set `toolchain = "llvm"` in `[defaults]` or a profile. To build sysforge's own optimized LLVM, set `compiler = "llvm"` in `toolchain.toml` and run `sysforge run toolchain`, which installs the compilers it needs to start.
+
+For the complete command reference (every verb, subcommand and flag), use `sysforge --help`
+(or `sysforge help <command>`) and the [man page](man/sysforge.1);
+[DESIGN.md](DESIGN.md) documents the semantics behind them.
+
+---
+
+## What SysForge touches
+
+SysForge installs packages and edits a few system files, so here is where it writes before you
+run it. Every command it runs as root goes through `sudo` from one function in the code, and
+`makepkg` itself never runs as root.
+
+**The package install** adds:
+
+- the config files in `/etc/sysforge/` (pacman keeps your edits across upgrades),
+- a `sysforge` group, and the directories `/var/lib/sysforge` (build state, logs) and
+  `/var/cache/sysforge` (optimization profiles), owned by that group,
+- four pacman hooks (`/usr/share/libalpm/hooks/sysforge-*.hook`). After a pacman transaction they
+  append a timestamp (and, for three of them, the changed package names) to a file under
+  `/var/lib/sysforge/sentinels/`,
+  which the next `sysforge update` reads. They change nothing else,
+- the man page and shell completions.
+
+**As your user**, without `sudo`, it writes:
+
+- PKGBUILD checkouts in `~/src` (`pkgbuild_src_dir` under `[paths]` in `profiles.toml`) and
+  build trees in `~/builds` (`BUILDDIR`),
+- a temporary `makepkg.conf` per build, deleted when the build ends,
+- caches in `~/.cache/sysforge`, and the scripts, units and hooks you adopt with
+  `sysforge artifact` in `~/.local/share/sysforge`,
+- your own config overrides, if you create them, in `~/.config/sysforge/`.
+
+**With `sudo`**, only for the command that needs it:
+
+- `pacman -U`, `-S` and `-R` to install what it built and the build dependencies, and to remove or
+  revert packages. `pacman -Syu` runs only with `sysforge update --sysupgrade` or
+  `system_upgrade = true`, and `pacman -Fy` refreshes the file database when it needs to find
+  which package provides a file.
+- `sysforge setup` adds `IgnoreGroup = sf-build` to `/etc/pacman.conf`, after asking, so a plain
+  `pacman -Syu` doesn't replace your optimized builds with repo ones. `sysforge run reconfigure`
+  can set `EDITOR`/`VISUAL` in `/etc/environment`, if you choose that.
+- `sysforge run kernel` installs the kernel, runs `mkinitcpio -P` and updates the bootloader
+  (`bootctl update` or `grub-mkconfig`). On systemd-boot it adds a loader entry per kernel it
+  builds and never edits yours. `sysforge run toolchain` installs the LLVM/Clang it built.
+- The build sandbox, when you turn it on, adds a `[sysforge-local]` repo to the chroot's
+  `pacman.conf` and applies your `cpu_quota`/`mem_limit` to the container's systemd slice for as
+  long as the build runs.
+- `sysforge artifact deploy` and `remove` write or delete the files you adopted, and
+  `pre_build_snapshot = true` (off by default) takes a btrfs snapshot before builds.
+
+The fresh-install pipeline below is different: run from the Arch ISO, it partitions disks and
+installs a whole system.
+
+**Undoing it.** For one package, `sysforge revert-to-stock <pkg>` reinstalls the repo build, and
+`sysforge state forget <pkg>` stops maintaining it but keeps your build installed. To remove
+SysForge entirely, revert the packages you want back to stock, then `sudo pacman -Rns sysforge`.
+Pacman removes the hooks and package files and keeps any config you edited as
+`/etc/sysforge/*.pacsave`. Delete `/var/lib/sysforge`, `/var/cache/sysforge` and the `sysforge`
+directories under `~/.cache`, `~/.local/share` and `~/.config` yourself, remove `sf-build` from
+`IgnoreGroup` in `/etc/pacman.conf` if `setup` added it, and `sudo groupdel sysforge`. Packages it
+built stay installed and keep working.
 
 ---
 

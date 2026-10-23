@@ -201,6 +201,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV19` — `make demo-gif` re-records the README's terminal demo.** `docs/assets/demo.tape` scripts the recording for vhs, and `tools/record-demo.sh` runs it against a throwaway copy of the live config and state, with `[log] verbosity` back at the shipped default and `HOME` pointed at a scratch directory so no personal path appears in the GIF.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
@@ -250,6 +254,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DOC13` — the man page documents the journal records.** Commands that change installed packages or build state write a record to the systemd journal, queryable by field, but no user document said so. A new JOURNAL section names the fields (`SYSFORGE_VERB`, `SYSFORGE_TARGET`, `SYSFORGE_EXIT`), which commands write them, and two `journalctl` queries; it is generated from the field list the records are built from.
+
+---
+
+- **`3.5.0-DOC14` — the README opens with a demo and says what SysForge touches.** Under the opening paragraph, a short recording shows `sysforge resolve` printing the flags a package builds with and `sysforge update --dry-run` reporting toolchain and flag drift, followed by a one-line install. The `makepkg`/`pacman` relationship moved further down, into its own section. A new "What SysForge touches" section lists what the package installs, what it writes as your user, what it runs with `sudo` and for which commands, and how to undo it, for one package or entirely.
 
 ---
 

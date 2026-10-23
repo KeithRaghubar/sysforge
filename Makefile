@@ -1,4 +1,4 @@
-.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man \
+.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-list \
         lint-py lint-sh \
         bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
@@ -406,6 +406,10 @@ man: ## Render the man page from the scdoc source
 	  --template man/sysforge.1.scd.in \
 	  --out man/sysforge.1.scd
 	scdoc < man/sysforge.1.scd > man/sysforge.1
+
+# Re-record the README demo from the live config/state (needs vhs).
+demo-gif: ## Re-record the README terminal demo (docs/assets/demo.gif, needs vhs)
+	bash tools/record-demo.sh
 
 clean: ## Remove build artefacts
 	rm -rf dist/ __pycache__/ *.egg-info/ .pytest_cache/ .ruff_cache/ .coverage coverage.json
