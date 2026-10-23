@@ -44,7 +44,9 @@ Mechanism lives in the cited §DESIGN section.
   cpu_quota path it's an `RLIMIT_AS` clamp via the shared `resource_guard.make_child_preexec(cap)`
   preexec; with cpu_quota it becomes `-p MemoryMax=` on the systemd-run scope.
   `resolve_child_mem_cap` arbitrates so the two never double-apply (returns `None` when the scope
-  owns the cap). §Flag/Profile.
+  owns the cap). Under the build sandbox neither reaches the container (it gets its own scope
+  under `devtools-<user>.slice`): `wrapper_argv(scope=False)` + `build_sandbox.slice_limits`
+  carry `cgroup_properties` on that slice instead (`3.5.0-B131`). §Flag/Profile.
 - **Controller rlimit lift**: every child runs without the controller's 2 GiB `RLIMIT_AS`, or
   `sudo pacman` carries it into DKMS (`3.4.0-B11`). The `run`/`pty_runner` seams default
   `preexec_fn=lift_for_child`; a raw `subprocess` site passes `preexec_fn=` itself (`run_seam`

@@ -24,6 +24,8 @@ isolated, plus the seam that swaps the argv:
      - policy off  → plain `makepkg -p PKGBUILD`
      - policy on   → makechrootpkg, scratch conf written then removed
      - RLIMIT_AS cap dropped (it would cap the wrapper, not the build)
+     - cpu_quota/mem_limit held on the devtools slice for the build only
+       (3.5.0-B131), stale caps from a killed run cleared
      - session registry: dedupe, .sig skip, vanished files filtered
 
   5. Canonical-PKGBUILD swap (3.2.0-B1)
@@ -42,6 +44,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from sysforge.primitives import build_sandbox as bs
+from sysforge.primitives.build_throttle import BuildThrottle
 from sysforge.primitives.makepkg_invoke import invoke_makepkg
 
 
@@ -65,6 +68,14 @@ def _no_host_foreign_or_provides():
             patch("sysforge.primitives.pacman.read_pkginfo_relations",
                   return_value={"depend": set(), "provides": set()}):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_host_slice_dropins(tmp_path, monkeypatch):
+    """Keep slice_limits' stale-cap probe off this machine's real
+    /run/systemd/system.control, whose contents would otherwise decide
+    whether a test escalates."""
+    monkeypatch.setattr(bs, "_CONTROL_DIR", tmp_path / "system.control")
 
 
 def _chroot(tmp_path: Path) -> Path:
@@ -401,6 +412,121 @@ def test_mem_cap_does_not_apply_under_sandbox(tmp_path):
     assert bs.mem_cap_applies(_policy(tmp_path)) is False
 
 
+# -- slice_limits (3.5.0-B131) ----------------------------------------------
+#
+# arch-nspawn runs the container in a scope of its own under
+# devtools-<user>.slice, so a cgroup ceiling only binds the build when it sits
+# on that slice.
+
+_SLICE = "devtools-me.slice"
+
+
+def test_systemd_escape_matches_the_tool():
+    assert bs._systemd_escape("keith") == "keith"
+    assert bs._systemd_escape("a-b") == "a\\x2db"
+    assert bs._systemd_escape(".x") == "\\x2ex"
+    assert bs._systemd_escape("a.b_c:d") == "a.b_c:d"
+
+
+def test_devtools_slice_names_the_invoking_user():
+    """makechrootpkg re-execs under sudo, so arch-nspawn reads SUDO_USER: the
+    user sysforge runs as, whatever the environment says."""
+    with patch.object(bs.os, "geteuid", return_value=1000), \
+            patch.object(bs.os, "getuid", return_value=1000), \
+            patch.object(bs.pwd, "getpwuid",
+                         return_value=MagicMock(pw_name="me")):
+        assert bs.devtools_slice({"USER": "other"}) == "devtools-me.slice"
+
+
+def test_devtools_slice_as_root_reads_sudo_user_then_user():
+    with patch.object(bs.os, "geteuid", return_value=0):
+        assert bs.devtools_slice({"SUDO_USER": "me", "USER": "root"}) == "devtools-me.slice"
+        assert bs.devtools_slice({"USER": "root"}) == "devtools-root.slice"
+
+
+def _slice_calls(tmp_path, throttle, *, body=None, policy=None, fail=False):
+    calls = []
+
+    def fake_priv(argv, **_kw):
+        calls.append(argv[4:])
+        if fail:
+            raise RuntimeError("sudo: a password is required")
+
+    with patch.object(bs, "run_privileged", side_effect=fake_priv), \
+            patch.object(bs, "devtools_slice", return_value=_SLICE):
+        with bs.slice_limits(policy or _policy(tmp_path), throttle, {}):
+            if body:
+                body()
+    return calls
+
+
+def test_slice_limits_apply_then_reset(tmp_path):
+    calls = _slice_calls(tmp_path, BuildThrottle(cpu_quota="600%", mem_limit_bytes=1024))
+    assert calls == [["CPUQuota=600%", "MemoryMax=1024"],
+                     ["CPUQuota=", "MemoryMax=infinity"]]
+
+
+def test_slice_limits_reset_only_what_they_set(tmp_path):
+    calls = _slice_calls(tmp_path, BuildThrottle(mem_limit_bytes=1024))
+    assert calls == [["MemoryMax=1024"], ["MemoryMax=infinity"]]
+
+
+def test_slice_limits_reset_when_the_build_raises(tmp_path):
+    calls = []
+    with patch.object(bs, "run_privileged",
+                      side_effect=lambda argv, **_kw: calls.append(argv[4:])), \
+            patch.object(bs, "devtools_slice", return_value=_SLICE):
+        with pytest.raises(OSError):
+            with bs.slice_limits(_policy(tmp_path), BuildThrottle(cpu_quota="600%"), {}):
+                raise OSError("pty blew up")
+    assert calls == [["CPUQuota=600%"], ["CPUQuota="]]
+
+
+def test_slice_limits_noop_without_ceilings_or_sandbox(tmp_path):
+    assert _slice_calls(tmp_path, BuildThrottle(nice=19)) == []
+    assert _slice_calls(tmp_path, BuildThrottle(cpu_quota="600%"),
+                        policy=bs.SandboxPolicy(enabled=False)) == []
+
+
+def test_slice_limits_failure_warns_and_builds_uncapped(tmp_path, capsys):
+    """Throttling is best-effort: an unapplied cap is reported, never fatal,
+    and there is nothing to reset afterwards."""
+    ran = []
+    calls = _slice_calls(tmp_path, BuildThrottle(cpu_quota="600%"),
+                         body=lambda: ran.append(1), fail=True)
+    assert ran == [1]
+    assert calls == [["CPUQuota=600%"]]
+    assert "devtools-me.slice" in capsys.readouterr().err
+
+
+def _stale(tmp_path, key, value):
+    d = tmp_path / "system.control" / f"{_SLICE}.d"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"50-{key}.conf").write_text(
+        f"# This is a drop-in unit file extension, created via \"systemctl set-property\"\n"
+        f"# or an equivalent operation. Do not edit.\n[Slice]\n{key}={value}\n")
+
+
+def test_slice_limits_clear_a_cap_left_by_a_killed_run(tmp_path):
+    """A run killed mid-build never reached its reset; the runtime drop-in it
+    left would quietly cap every later uncapped sandboxed build."""
+    _stale(tmp_path, "CPUQuota", "600%")
+    _stale(tmp_path, "MemoryMax", "infinity")
+    assert _slice_calls(tmp_path, BuildThrottle()) == [["CPUQuota="]]
+
+
+def test_slice_limits_fold_a_stale_reset_into_the_apply(tmp_path):
+    _stale(tmp_path, "CPUQuota", "600%")
+    calls = _slice_calls(tmp_path, BuildThrottle(mem_limit_bytes=1024))
+    assert calls == [["CPUQuota=", "MemoryMax=1024"], ["MemoryMax=infinity"]]
+
+
+def test_slice_limits_ignore_a_reset_drop_in(tmp_path):
+    _stale(tmp_path, "CPUQuota", "")
+    _stale(tmp_path, "MemoryMax", "infinity")
+    assert _slice_calls(tmp_path, BuildThrottle()) == []
+
+
 # ---------------------------------------------------------------------------
 # 4. Session artifact registry
 # ---------------------------------------------------------------------------
@@ -443,12 +569,17 @@ def test_reset_session_clears_registry(tmp_path):
 # 5. The invocation seam
 # ---------------------------------------------------------------------------
 
-def _invoke(pkgbuild, conf, profile, **kwargs):
-    """Run invoke_makepkg with the subprocess seams stubbed; return capture."""
+def _invoke(pkgbuild, conf, profile, *, events=None, **kwargs):
+    """Run invoke_makepkg with the subprocess seams stubbed; return capture.
+
+    ``events``, when given, gets ``"build"`` appended as makepkg runs, so a
+    test can order other recorded calls around the build."""
     captured = {}
 
     def fake_pty(cmd, *, cwd, env, line_callback, forward_bytes,
                  preexec_fn=None, **_kw):
+        if events is not None:
+            events.append("build")
         captured["cmd"] = list(cmd)
         captured["env"] = dict(env)
         captured["preexec"] = preexec_fn
@@ -634,16 +765,40 @@ def test_seam_refuses_rather_than_downgrading(tmp_path):
 
 
 def test_seam_drops_rlimit_cap_under_sandbox(tmp_path):
-    """RLIMIT_AS on the child would cap makechrootpkg, not the build."""
+    """RLIMIT_AS on the child would cap makechrootpkg, not the build; the
+    slice carries the memory ceiling instead."""
     pb, conf = _pkg_and_conf(tmp_path)
     profile = {"mem_limit": "8G"}
     bs.set_policy(_policy(tmp_path))
     with patch("sysforge.primitives.makepkg_invoke.resolve_child_mem_cap",
-               return_value=8 * 1024**3) as cap_fn, \
-            patch("sysforge.primitives.makepkg_invoke.make_child_preexec") as preexec:
+               return_value=8 * 1024**3), \
+            patch("sysforge.primitives.makepkg_invoke.make_child_preexec") as preexec, \
+            patch("sysforge.primitives.build_sandbox.run_privileged"):
         _invoke(pb, conf, profile)
-    assert cap_fn.called
     preexec.assert_called_once_with(None)
+
+
+def test_seam_caps_the_devtools_slice_around_the_build(tmp_path):
+    """3.5.0-B131: the container runs in a scope arch-nspawn allocates under
+    devtools-<user>.slice, outside any systemd-run --user scope wrapping
+    makechrootpkg. The ceilings go on that slice, for the build only."""
+    pb, conf = _pkg_and_conf(tmp_path)
+    bs.set_policy(_policy(tmp_path))
+    events = []
+    with patch("sysforge.primitives.build_sandbox.run_privileged",
+               side_effect=lambda argv, **_kw: events.append(argv)), \
+            patch("sysforge.primitives.build_sandbox.devtools_slice",
+                  return_value="devtools-me.slice"):
+        cap = _invoke(pb, conf, {"cpu_quota": "600%", "mem_limit": "8G"},
+                      events=events)
+    assert "systemd-run" not in cap["cmd"]
+    assert events == [
+        ["systemctl", "set-property", "--runtime", "devtools-me.slice",
+         "CPUQuota=600%", f"MemoryMax={8 * 1024**3}"],
+        "build",
+        ["systemctl", "set-property", "--runtime", "devtools-me.slice",
+         "CPUQuota=", "MemoryMax=infinity"],
+    ]
 
 
 def test_seam_keeps_rlimit_cap_on_the_host_path(tmp_path):

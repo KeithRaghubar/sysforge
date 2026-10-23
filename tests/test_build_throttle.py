@@ -344,3 +344,29 @@ def test_child_mem_cap_none_when_mem_limit_unset(monkeypatch):
     monkeypatch.setattr(bt.shutil, "which", _HAS_SYSTEMD_RUN)
     assert resolve_child_mem_cap(BuildThrottle(cpu_quota="600%")) is None
     assert resolve_child_mem_cap(BuildThrottle()) is None
+
+
+# ---------------------------------------------------------------------------
+# cgroup_properties / wrapper_argv(scope=False) — the sandbox's slice carries the
+# ceilings instead of a scope, which the container's own scope would escape
+# (3.5.0-B131).
+
+
+def test_cgroup_properties_lists_both_ceilings_in_scope_order():
+    props = bt.cgroup_properties(BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB))
+    assert props == ["CPUQuota=600%", f"MemoryMax={24 * _GiB}"]
+
+
+def test_cgroup_properties_empty_without_a_ceiling():
+    assert bt.cgroup_properties(BuildThrottle(nice=19, ionice="idle", jobs=6)) == []
+
+
+def test_wrapper_without_scope_keeps_only_the_front_ends(monkeypatch):
+    monkeypatch.setattr(bt.shutil, "which", lambda _: "/usr/bin/" + _)
+    rec = _WarnRecorder()
+    monkeypatch.setattr(bt, "_throttle_log", rec)
+    argv = wrapper_argv(
+        BuildThrottle(cpu_quota="600%", mem_limit_bytes=24 * _GiB, nice=19),
+        scope=False)
+    assert argv == ["nice", "-n", "19"]
+    assert rec.messages == []

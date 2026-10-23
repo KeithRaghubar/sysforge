@@ -114,6 +114,9 @@ clone_timeout = 60
 #   it). Enforced via a transient systemd-run --scope cgroup; if the user slice
 #   lacks CPU-controller delegation or systemd-run is missing, sysforge warns and
 #   falls back to nice/ionice. Unlike nice, this is a firm cap, not a soft yield.
+#   A sandboxed build (sandbox_builds) is capped on its container's slice
+#   instead, devtools-<user>.slice, via sudo systemctl set-property --runtime,
+#   and the cap is lifted when the build ends.
 #cpu_quota = "600%"
 #
 # jobs — parallel build jobs; rewrites the -j token in the emitted MAKEFLAGS
@@ -126,7 +129,8 @@ clone_timeout = 60
 #   sanitizer, LTO) can't take down the workstation. A byte count or a binary
 #   size suffix (e.g. "24G", "512M"). Off the cpu_quota path it's an RLIMIT_AS
 #   clamp on the makepkg child; with cpu_quota set it's delivered as the tighter
-#   cgroup MemoryMax on the systemd-run scope instead. Unset = no ceiling.
+#   cgroup MemoryMax on the systemd-run scope instead; a sandboxed build gets it
+#   on its container's slice, like cpu_quota. Unset = no ceiling.
 #mem_limit = "24G"
 
 # pre_build_snapshot — take an optional btrfs snapshot before builds run.

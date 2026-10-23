@@ -804,6 +804,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B130` — cargo's progress line no longer leaves its end behind in the build sandbox.** In a sandboxed Rust build, a `Compiling` line written after cargo's `Building [=====>    ] 120/431: <crate>` line covered the bar but not what followed it, so text like `] 120/431: serde, syn` stayed at the end of the row. cargo clears its progress line before printing anything else only when it colours its output, and in the sandbox it writes to a pipe and doesn't colour it, so it just writes the next line over the old one. sysforge now clears the row itself before the next line. Builds outside the sandbox were not affected.
 
+---
+
+- **`3.5.0-B131` — `cpu_quota` and `mem_limit` now cap sandboxed builds.** With `sandbox_builds` on, the build runs in a container that systemd places under its own `devtools-<user>.slice`, outside the `systemd-run` scope sysforge opened to apply the limits, so neither limit reached the build and nothing said so. sysforge now sets them on that slice for as long as the build runs (`sudo systemctl set-property --runtime`) and removes them when it ends, including when it fails. If a run is killed before it can remove them, the next sandboxed build does, and a reboot always does. Limits you set on that slice yourself in `/etc` are left alone. Builds outside the sandbox were not affected.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

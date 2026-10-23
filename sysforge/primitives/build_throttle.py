@@ -276,7 +276,27 @@ def resolve_throttle(
     )
 
 
-def wrapper_argv(throttle: BuildThrottle) -> list[str]:
+# What each cgroup ceiling reads as when nothing caps it: the value that undoes
+# a ``systemctl set-property`` of it.
+CGROUP_PROPERTY_DEFAULTS = {"CPUQuota": "", "MemoryMax": "infinity"}
+
+
+def cgroup_properties(throttle: BuildThrottle) -> list[str]:
+    """The hard ceilings as systemd unit properties (``KEY=value``), or ``[]``.
+
+    One rendering for both places a ceiling lands: the ``systemd-run --scope``
+    of a host build (:func:`wrapper_argv`) and the devtools slice a sandboxed
+    build's container runs under (``build_sandbox.slice_limits``, 3.5.0-B131).
+    """
+    props = []
+    if throttle.cpu_quota is not None:
+        props.append(f"CPUQuota={throttle.cpu_quota}")
+    if throttle.mem_limit_bytes is not None:
+        props.append(f"MemoryMax={throttle.mem_limit_bytes}")
+    return props
+
+
+def wrapper_argv(throttle: BuildThrottle, *, scope: bool = True) -> list[str]:
     """Build the argv prefix that wraps the ``makepkg`` invocation for the
     scheduling/IO/quota knobs (``jobs`` is delivered separately, via MAKEFLAGS).
 
@@ -288,6 +308,10 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
     ``systemd-run -p``: ``--scope`` runs the command in the caller's context (so the
     controlling TTY is kept for prompts), so systemd never execs it and rejects exec
     properties like ``Nice=`` / ``IOSchedulingClass=`` ("Unknown assignment").
+
+    ``scope=False`` leaves the scope out: a sandboxed build's container runs in
+    a scope of its own that a wrapping one cannot reach, so its ceilings go on
+    the devtools slice instead (``build_sandbox.slice_limits``, 3.5.0-B131).
 
     Every tool is guarded by :func:`shutil.which`; a missing tool drops just that
     piece with a warning — throttling is best-effort and must never fail a build.
@@ -313,17 +337,15 @@ def wrapper_argv(throttle: BuildThrottle) -> list[str]:
     # makepkg's whole fork tree, whereas an RLIMIT_AS preexec set on this client
     # leaks across the fork tree and is escapable. So we open a scope whenever
     # either ceiling is configured — not only for cpu_quota.
-    wants_scope = throttle.cpu_quota is not None or throttle.mem_limit_bytes is not None
-    if wants_scope:
+    props = cgroup_properties(throttle) if scope else []
+    if props:
         if shutil.which("systemd-run"):
             argv = ["systemd-run", "--scope", "--user", "--quiet"]
-            if throttle.cpu_quota is not None:
-                argv += ["-p", f"CPUQuota={throttle.cpu_quota}"]
             # MemoryMax reaches the scoped payload (a child of PID 1); the client's
             # preexec rlimit would not. resolve_child_mem_cap suppresses the rlimit
             # path here so the two mechanisms never double-apply.
-            if throttle.mem_limit_bytes is not None:
-                argv += ["-p", f"MemoryMax={throttle.mem_limit_bytes}"]
+            for prop in props:
+                argv += ["-p", prop]
             return argv + front
         # No systemd-run: we cannot enforce a hard cgroup ceiling. A cpu_quota has
         # no fallback, so warn; a mem_limit degrades silently to the RLIMIT_AS

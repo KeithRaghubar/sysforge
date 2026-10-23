@@ -42,7 +42,11 @@ Why this is not just another ``build_throttle.wrapper_argv`` prefix entry
   channel that survives ``sudo -iu builduser``).
 * The throttle wrapper applies *outside* the container (nice/ionice propagate
   to children; a ``RLIMIT_AS`` cap would only bind ``makechrootpkg`` itself,
-  not the build — :func:`mem_cap_applies` says so, and the caller warns).
+  not the build — :func:`mem_cap_applies` says so). The cgroup ceilings miss
+  it too: ``arch-nspawn`` runs the container in a scope of its own under
+  ``devtools-<user>.slice``, outside any ``systemd-run`` scope around
+  ``makechrootpkg``. :func:`slice_limits` puts ``CPUQuota``/``MemoryMax`` on
+  that slice for the build's duration instead (3.5.0-B131).
 * Dependencies built earlier in the same run exist only as artifacts (batch
   mode installs on the host after the whole batch), so the container cannot
   see them.  The session registry (:func:`register_artifacts` /
@@ -63,6 +67,8 @@ Public API:
     audit_chroot_conf(conf_text, policy) -> None   (raises SandboxUnavailable)
     chroot_env(env) -> dict
     mem_cap_applies(policy) -> bool
+    devtools_slice(env) -> str
+    slice_limits(policy, throttle, env) -> ctx
     missing_toolchain(policy, exports) -> dict
     provision_toolchain(policy, exports) -> None
     register_artifacts(paths) / install_args(pkgbuild, ..., exports, conf_path) / reset_session()
@@ -83,6 +89,8 @@ Public API:
 from __future__ import annotations
 
 import contextlib
+import os
+import pwd
 import re
 import shlex
 import shutil
@@ -93,6 +101,11 @@ from pathlib import Path
 
 from sysforge import log
 from sysforge.primitives import run
+from sysforge.primitives.build_throttle import (
+    CGROUP_PROPERTY_DEFAULTS,
+    BuildThrottle,
+    cgroup_properties,
+)
 from sysforge.primitives.privilege import run_privileged
 
 _log = log.get_logger("SANDBOX")
@@ -722,9 +735,109 @@ def mem_cap_applies(policy: SandboxPolicy) -> bool:
 
     False under the sandbox: the preexec would cap ``makechrootpkg``, whose
     real work happens in an ``systemd-nspawn`` container several exec layers
-    down and in its own cgroup. Reported rather than silently ignored.
+    down and in its own cgroup. The memory ceiling goes on that cgroup's
+    slice instead (:func:`slice_limits`).
     """
     return not policy.enabled
+
+
+# Where ``systemctl set-property --runtime`` keeps what it sets: one
+# ``50-<Property>.conf`` per property under ``<unit>.d/``, gone at reboot.
+_CONTROL_DIR = Path("/run/systemd/system.control")
+
+
+def _systemd_escape(text: str) -> str:
+    """``systemd-escape <text>``: what ``arch-nspawn`` runs on the user name."""
+    out = []
+    for i, ch in enumerate(text):
+        if ch == "/":
+            out.append("-")
+        elif ch.isascii() and (ch.isalnum() or ch in ":_.") and not (i == 0 and ch == "."):
+            out.append(ch)
+        else:
+            out.extend(f"\\x{b:02x}" for b in ch.encode())
+    return "".join(out)
+
+
+def devtools_slice(env: dict) -> str:
+    """The slice ``arch-nspawn`` puts the build's container under.
+
+    It passes ``--slice=devtools-$(systemd-escape "${SUDO_USER:-$USER}")``
+    from inside ``makechrootpkg``'s root re-exec, so ``SUDO_USER`` is the user
+    sysforge runs as unless sysforge is already root, when ``makechrootpkg``
+    skips the re-exec and reads the *env* it is launched with.
+    """
+    if os.geteuid() == 0:
+        user = env.get("SUDO_USER") or env.get("USER") or "root"
+    else:
+        user = pwd.getpwuid(os.getuid()).pw_name
+    return f"devtools-{_systemd_escape(user)}.slice"
+
+
+def _stale_slice_properties(slice_name: str) -> list[str]:
+    """Resets for runtime ceilings a killed run left on the slice.
+
+    A run that never reached :func:`slice_limits`' reset leaves its
+    ``50-<Property>.conf`` behind, capping every later sandboxed build until
+    reboot. One that holds a non-default value is reset; a reset one is not.
+    """
+    resets = []
+    for key, default in CGROUP_PROPERTY_DEFAULTS.items():
+        try:
+            text = (_CONTROL_DIR / f"{slice_name}.d" / f"50-{key}.conf").read_text()
+        except OSError:
+            continue
+        values = [line.split("=", 1)[1].strip() for line in text.splitlines()
+                  if line.startswith(f"{key}=")]
+        if values and values[-1] != default:
+            resets.append(f"{key}={default}")
+    return resets
+
+
+@contextlib.contextmanager
+def slice_limits(policy: SandboxPolicy, throttle: BuildThrottle, env: dict):
+    """Hold the throttle's cgroup ceilings on the devtools slice while the
+    sandboxed build runs (3.5.0-B131).
+
+    ``arch-nspawn`` passes ``--slice`` without ``--keep-unit``, so the
+    container runs in a scope the system manager allocates under
+    ``devtools-<user>.slice``, never under the scope sysforge runs in. Slice
+    ceilings apply to everything below it, so that is the one place a
+    ``CPUQuota``/``MemoryMax`` binds the build. Set ``--runtime`` (gone at
+    reboot, and a persistent ``/etc`` setting of the same property outranks
+    it) and reset on the way out, failure included.
+
+    Best-effort like the rest of the throttle: an unapplied ceiling warns and
+    the build runs uncapped. A no-op off the sandbox.
+    """
+    if not policy.enabled:
+        yield
+        return
+    slice_name = devtools_slice(env)
+    applied = cgroup_properties(throttle)
+    keys = [prop.split("=", 1)[0] for prop in applied]
+    props = [prop for prop in _stale_slice_properties(slice_name)
+             if prop.split("=", 1)[0] not in keys] + applied
+    if props:
+        _log.info(f"Capping the sandbox slice {slice_name}: {' '.join(props)}")
+        try:
+            run_privileged(["systemctl", "set-property", "--runtime", slice_name, *props],
+                           tag="SANDBOX")
+        except Exception as exc:
+            _log.warn(f"could not cap the sandbox slice {slice_name} ({exc}): "
+                      "the build runs without its cpu_quota/mem_limit")
+            keys = []
+    try:
+        yield
+    finally:
+        if keys:
+            resets = [f"{key}={CGROUP_PROPERTY_DEFAULTS[key]}" for key in keys]
+            try:
+                run_privileged(["systemctl", "set-property", "--runtime", slice_name, *resets],
+                               tag="SANDBOX")
+            except Exception as exc:
+                _log.warn(f"could not lift the cap on {slice_name} ({exc}): the next "
+                          "sandboxed build clears it, or a reboot does")
 
 
 def chroot_env(env: dict) -> dict:
