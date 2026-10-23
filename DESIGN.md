@@ -4496,7 +4496,7 @@ verified with `git tag -v`), and a detached signature of the source tarball
 maintainer signature at install time. `tools/release.sh` preflight refuses to run
 without a usable signing key, and refuses to publish while the placeholder
 fingerprint sentinel is still in the PKGBUILD. See **Release Process** and the
-*Verifying releases* section of `README.md`.
+`docs/guides/verifying-releases.md` guide.
 
 ### Adding or changing a standard
 

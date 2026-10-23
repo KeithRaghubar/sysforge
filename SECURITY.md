@@ -28,7 +28,7 @@ Releases are GPG-signed end to end with the maintainer key:
 The AUR `sysforge` package declares the maintainer key in `validpgpkeys` and
 lists the detached signature as a source, so `makepkg` verifies the maintainer
 signature at install time and aborts on mismatch. To verify manually, see the
-*Verifying releases* section of [README.md](README.md). The maintainer public key
+[verifying releases](docs/guides/verifying-releases.md) guide. The maintainer public key
 (and its fingerprint) lives at [`keys/sysforge.asc`](keys/sysforge.asc).
 
 Signing applies from the first release cut after this policy landed; earlier

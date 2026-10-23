@@ -261,7 +261,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-DOC14` — the README opens with a demo and says what SysForge touches.** Under the opening paragraph, a short recording shows `sysforge resolve` printing the flags a package builds with and `sysforge update --dry-run` reporting toolchain and flag drift, followed by a one-line install. The `makepkg`/`pacman` relationship moved further down, into its own section. A new "What SysForge touches" section lists what the package installs, what it writes as your user, what it runs with `sudo` and for which commands, and how to undo it, for one package or entirely.
+- **`3.5.0-DOC14` — a short README, with the detail in guides.** The README had grown to about 500 lines. It now opens with a short recording and the four Quick start commands, then gives each topic one paragraph and a link. What it used to say in full moved, largely unchanged, into new guides under `docs/guides/`: getting started (requirements, choosing gcc or LLVM, maintaining and un-maintaining packages, source review, plan confirmation and `setup` presets), everyday commands (including how SysForge fits with `makepkg` and `pacman`), sandboxed builds, fresh install from the Arch ISO, running from a git checkout, and verifying releases. A new guide, what SysForge touches, lists what the package installs, what it writes as your user, what it runs with `sudo` and for which commands, and how to undo it, for one package or entirely.
 
 ---
 
