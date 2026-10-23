@@ -28,6 +28,8 @@ run it. Every command it runs as root goes through `sudo` from one function in t
 
 ## With sudo, only for the command that needs it
 
+- `usermod -aG sysforge <you>` and a per-user ACL on `/var/lib/sysforge` and `/var/cache/sysforge`,
+  the first time you run it, so you can write them before the group applies at your next login.
 - `pacman -U`, `-S` and `-R` to install what it built and the build dependencies, and to remove or
   revert packages. `pacman -Syu` runs only with `sysforge update --sysupgrade` or
   `system_upgrade = true`, and `pacman -Fy` refreshes the file database when it needs to find

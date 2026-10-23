@@ -18,8 +18,8 @@ afterwards. The [README](../../README.md#quick-start) has the short version.
 SysForge's writable runtime directories (`/var/lib/sysforge`, `/var/cache/sysforge`) are owned by
 the `sysforge` group. The package install creates the group; the first privileged run also adds
 your user to it. Group membership only takes effect after you log out and back in. Until then
-SysForge repairs the directory permissions per run, so nothing breaks, you may just be prompted
-for `sudo` once more than usual.
+SysForge gives your user access to those directories directly (an ACL), so nothing breaks; you
+may just be prompted for `sudo` once more than usual.
 
 ---
 

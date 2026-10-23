@@ -828,6 +828,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-B133` — the first line of output no longer overwrites the command in VS Code's terminal.** The progress bar reserves the bottom row when a command starts. It used to save the cursor, scroll the screen up a line and restore the cursor, and terminals built on xterm.js (VS Code's terminal among them) restore a saved cursor relative to the text, which had just moved up, so the cursor came back one line too high and the first line of output was written over the command you typed. On a screen with free rows below the prompt, such as one just cleared, that scroll also pushed the top line off the screen. The bar now makes room without scrolling while a position is saved, and only scrolls when the prompt is on the bottom row.
 
+---
+
+- **`3.5.0-B134` — your first session after installing can write SysForge's state.** The first time you run sysforge, it adds you to the `sysforge` group that owns `/var/lib/sysforge` and `/var/cache/sysforge`, but a login session only picks up a new group at the next login. Until then, the directories stayed closed to you even though sysforge said this run's writes were enabled: `sysforge build` finished but recorded nothing, so the package was not maintained, and `sysforge update` stopped with a Python traceback. sysforge now also grants your user access to those directories directly, with an ACL that files created below them inherit, until the group applies.
+
 ## Security
 
 - **`3.5.0-B37` — the root pacman hook no longer follows links in the state directory.** The hook helper runs as root in every pacman transaction and wrote into `/var/lib/sysforge/sentinels`, whose parent any `sysforge` group member can write to. A member could swap `sentinels` for a symlink to another directory, which the next transaction made group-writable, or symlink one of its files so the hook appended to any file as root. The helper now enters the directory and acts only if it is the real `sentinels`, owned by root. It appends only to a regular file, opened so that a symlink is refused and a planted FIFO cannot stall the transaction. As before, it never fails a transaction.

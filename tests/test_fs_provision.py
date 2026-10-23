@@ -191,6 +191,45 @@ def test_ensure_writable_dir_existing_group_skips_usermod(tmp_path, monkeypatch)
     assert ["sudo", "chgrp", SYSFORGE_GROUP, str(target)] in flat
 
 
+def _slow_path_calls(target, *, holds_group, user="buildbot", monkeypatch):
+    monkeypatch.setenv("SUDO_USER", user)
+
+    def raise_eacces(*a, **k):
+        raise PermissionError(13, "Permission denied")
+
+    with patch("pathlib.Path.mkdir", side_effect=raise_eacces), \
+         patch.object(fs_provision, "_group_exists", return_value=True), \
+         patch.object(fs_provision, "_user_in_group", return_value=False), \
+         patch.object(fs_provision, "_process_holds_group", return_value=holds_group), \
+         patch("subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+        ensure_writable_dir(target)
+    return [c.args[0] for c in mock_run.call_args_list]
+
+
+def test_slow_path_grants_an_acl_until_the_group_takes_effect(tmp_path, monkeypatch):
+    """3.5.0-B134: `usermod -aG` only counts from the next login, and a
+    group-writable dir is no use to a process outside the group, so the first
+    session after install could not write the state dir at all: builds went
+    unrecorded and `update` crashed. A per-user ACL (inherited by what is
+    created below it) makes the dir writable in this session too."""
+    target = tmp_path / "var" / "lib" / "sysforge"
+    calls = _slow_path_calls(target, holds_group=False, monkeypatch=monkeypatch)
+    assert ["sudo", "setfacl", "-R", "-m", "u:buildbot:rwX,d:u:buildbot:rwX",
+            str(target)] in calls
+
+
+def test_slow_path_needs_no_acl_once_the_group_is_held(tmp_path, monkeypatch):
+    target = tmp_path / "var" / "lib" / "sysforge"
+    calls = _slow_path_calls(target, holds_group=True, monkeypatch=monkeypatch)
+    assert not any(c[:2] == ["sudo", "setfacl"] for c in calls)
+
+
+def test_slow_path_grants_root_no_acl(tmp_path, monkeypatch):
+    target = tmp_path / "var" / "lib" / "sysforge"
+    calls = _slow_path_calls(target, holds_group=False, user="root", monkeypatch=monkeypatch)
+    assert not any(c[:2] == ["sudo", "setfacl"] for c in calls)
+
+
 def test_ensure_writable_dir_no_sudo_allowed_raises(tmp_path):
     """allow_sudo=False over a non-writable target raises FsProvisionError so
     callers (e.g. state-dir resolution) can fall back to an XDG location."""

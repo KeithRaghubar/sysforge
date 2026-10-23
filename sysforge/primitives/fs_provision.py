@@ -22,9 +22,10 @@ llvm-pgo`` failing with ``EACCES`` on the final ``rmdir`` because the parent was
 This primitive is the single home for that logic. :func:`ensure_writable_dir`
 creates the directory tree, owns it ``root:sysforge`` with the setgid mode
 ``2775`` (so freshly-created leaves inherit the group), and — when the user is
-not yet in the ``sysforge`` group — both adds them durably (``usermod -aG``,
-takes effect next login) and repairs the on-disk group/mode this run (``chgrp``
-/ ``chmod``) so the directory is usable *immediately*. It is fail-safe: when
+not yet in the ``sysforge`` group — adds them durably (``usermod -aG``, takes
+effect next login), repairs the on-disk group/mode (``chgrp`` / ``chmod``) and,
+until the group reaches this session, grants them a per-user ACL so the
+directory is usable *immediately* (3.5.0-B134). It is fail-safe: when
 ``sudo`` is unavailable it raises :class:`FsProvisionError` so callers can fall
 back to a user-writable location (e.g. the XDG state dir).
 
@@ -98,6 +99,20 @@ def _user_in_group(user: str, group: str) -> bool:
         import grp
 
         return user in grp.getgrnam(group).gr_mem
+    except KeyError:
+        return False
+
+
+def _process_holds_group(group: str) -> bool:
+    """Whether this process carries ``group`` now, not just in ``/etc/group``.
+
+    ``usermod -aG`` updates the group database at once, but a running login
+    session keeps the groups it started with until the next login.
+    """
+    try:
+        import grp
+
+        return grp.getgrnam(group).gr_gid in os.getgroups()
     except KeyError:
         return False
 
@@ -262,16 +277,21 @@ def ensure_writable_dir(
         _run_priv(["groupadd", "-f", group])
     if user != "root" and not _user_in_group(user, group):
         _run_priv(["usermod", "-aG", group, user])
-        _log.warn(
-            f"Added {user} to group {group}; this takes effect on next login. "
-            f"This run's writes are enabled via a direct chmod/chgrp repair."
-        )
+        _log.warn(f"Added {user} to group {group}; this takes effect on next login.")
 
     # Create the target (idempotent) with the right group+mode in one step, then
     # repair ownership/mode in case it (or an ancestor) already existed wrong.
     _run_priv(["install", "-d", "-m", f"{mode:o}", "-g", group, str(path)])
     _run_priv(["chgrp", group, str(path)])
     _run_priv(["chmod", f"{mode:o}", str(path)])
+
+    # The group only reaches this session at its next login, so until then a
+    # group-writable tree is still closed to it (3.5.0-B134). A per-user ACL,
+    # inherited (d:) by what is created below, opens it now; once the group
+    # applies, it changes nothing.
+    if user != "root" and not _process_holds_group(group):
+        _run_priv(["setfacl", "-R", "-m", f"u:{user}:rwX,d:u:{user}:rwX", str(path)])
+        _log.info(f"Granted {user} access to {path} until the {group} group applies.")
     return path
 
 
