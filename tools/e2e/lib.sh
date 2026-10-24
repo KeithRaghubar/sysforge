@@ -30,6 +30,49 @@ expect_exit() {
     [[ $got == "$want" ]] || fail "\`$*\` exited $got, expected $want"
 }
 
+# expect_exit_in "CODES" COMMAND...: run COMMAND, fail unless its exit code is
+# one of CODES (space-separated). For a report whose findings depend on the
+# host, where any answer is fine but a crash is not.
+expect_exit_in() {
+    local want=" $1 " got=0
+    shift
+    "$@" || got=$?
+    [[ $want == *" $got "* ]] || fail "\`$*\` exited $got, expected one of:$want"
+}
+
+# json_report "CODES" COMMAND...: run COMMAND (a --json report), fail unless it
+# exits one of CODES and prints valid JSON. Not a pipe: under pipefail a
+# report's exit 1 for findings would fail the pipeline.
+json_report() {
+    local want=" $1 " got=0 out
+    shift
+    out=$("$@") || got=$?
+    [[ $want == *" $got "* ]] || fail "\`$*\` exited $got, expected one of:$want"
+    assert_json <<<"$out"
+}
+
+# output_has PATTERN COMMAND...: run COMMAND, then succeed if its output
+# matches PATTERN. Both streams: a command's answer goes through ui(), which
+# writes to stderr. Captured first: `COMMAND | grep -q` can SIGPIPE COMMAND
+# under pipefail once grep has its match.
+output_has() {
+    local pattern=$1 out
+    shift
+    out=$("$@" 2>&1) || fail "\`$*\` failed: $out"
+    grep -q -- "$pattern" <<<"$out"
+}
+
+# assert_json: stdin parses as JSON.
+assert_json() {
+    python3 -c 'import json, sys; json.load(sys.stdin)' || fail "not valid JSON"
+}
+
+assert_not_installed() {
+    if pacman -Qi "$1" >/dev/null 2>&1; then
+        fail "$1 is still installed"
+    fi
+}
+
 assert_installed() {
     pacman -Qi "$1" >/dev/null 2>&1 || fail "$1 is not installed"
 }

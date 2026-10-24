@@ -42,11 +42,30 @@ sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-t
 | `20-repo-optin` | a repo package refused without a terminal, the opt-in prompt, the saved answer |
 | `30-flag-drift` | a default-profile change reported by `update --dry-run` and rebuilt by `--rebuild-on-flag-drift` |
 | `40-pre-install-failure` | a build failing before any install leaves no sentinel |
+| `50-maintain` | `state list`, `resolve`, `log`, `packages add`/`list`/`remove`/`add-group`, `state forget` and `uninstall` on a source-built package |
+| `60-revert-to-stock` | a source-built repo package replaced by the stock one, its record dropped |
+| `70-config` | `config check`, `clean` and `reset`, and `setup --preset` undone by `config reset` |
+| `80-inspect` | the read-only commands (`state` reports, `doctor`, `env`, `fetch`) change nothing |
+| `85-artifacts` | a user script discovered, adopted, reviewed, edited, deployed and removed |
+| `90-source-policy` | `[aur] enabled = false` and `freeze_sources` refuse before any checkout; `search` with the AUR off |
+| `95-stage-dry-run` | `run toolchain`/`run kernel --dry-run` with non-default configs change nothing; `xfail` until the kernel plan shows (`3.5.0-B141`) |
 
 Packages come from `pkgs/`, local PKGBUILDs with no network sources, so an outage can't flake the
-tier. `10-quickstart` is the one networked scenario (the AUR, and pacman for build dependencies).
+tier. Three scenarios need the network, because it is the point: `10-quickstart` (the AUR, and
+pacman for build dependencies), `60-revert-to-stock` (the stock package from the mirrors) and
+`90-source-policy` (the AUR lookup a frozen build makes before refusing the clone).
 `pkgs/tree` is a stand-in named after a repo package, which puts `build` on its repo opt-in path
 without fetching Arch's packaging repo.
+
+## Coverage
+
+Every command in `tests/data/surface.json` is either run by a scenario or listed in
+`uncovered.toml` with the reason none can run it (a disk install, a multi-hour build, a
+bootloader the container lacks). `tests/test_e2e_coverage.py` fails the suite on a command in
+neither, and on a listing a scenario has since made redundant, so a new command cannot go
+untested unnoticed. `make e2e-coverage` prints both sets. A command counts once a scenario line
+runs it (`sysforge <command>`, also inside `answer`, `expect_exit` or `output_has`), however
+little it checks: the check finds a missing scenario, not a weak one.
 
 ## Writing a scenario
 
