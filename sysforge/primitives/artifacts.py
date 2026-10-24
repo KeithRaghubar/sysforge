@@ -50,7 +50,31 @@ ARTIFACT_CLASSES = (CLASS_SCRIPT, CLASS_UNIT, CLASS_HOOK)
 
 _REGISTRY_NAME = "artifacts.toml"
 _IGNORE_NAME = "artifacts-ignored.toml"
-_DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
+
+
+def _state_dir_for_read(state_dir) -> tuple[Path, bool]:
+    """The state directory through the one resolver, without provisioning it.
+
+    Reading never provisions (that can ask for sudo); see
+    :func:`_state_dir_for_write`. Returns the directory and whether it was
+    given explicitly.
+    """
+    if state_dir is not None:
+        return Path(state_dir), True
+    return paths.resolve_state_dir(None, provision=False)[0], False
+
+
+def _state_dir_for_write(current: Path, explicit: bool) -> Path:
+    """The directory a write goes to, provisioned for this user if need be.
+
+    The registry resolved its directory itself and so never provisioned it: in
+    a first session, before the ``sysforge`` group applies, an ``artifact``
+    write ended in a PermissionError (3.5.0-B142). The resolver opens the
+    default with the same group and ACL a build's run does.
+    """
+    if explicit:
+        return current
+    return paths.resolve_state_dir(None, provision=True)[0]
 
 
 class ArtifactError(Exception):
@@ -142,12 +166,7 @@ class ArtifactRegistry:
     """Reads/writes ``artifacts.toml`` and locates authoritative content."""
 
     def __init__(self, state_dir=None, data_dir=None):
-        if state_dir is not None:
-            base = Path(state_dir)
-        else:
-            env = os.environ.get("SYSFORGE_STATE_DIR")
-            base = Path(env) if env else _DEFAULT_STATE_DIR
-        self._state_dir = base
+        self._state_dir, self._explicit = _state_dir_for_read(state_dir)
         self._data_dir = Path(data_dir) if data_dir is not None else paths.USER_DATA_DIR
 
     @property
@@ -206,6 +225,7 @@ class ArtifactRegistry:
 
     def save(self, entries: dict[str, Artifact]) -> None:
         """Write the registry atomically (temp file + replace)."""
+        self._state_dir = _state_dir_for_write(self._state_dir, self._explicit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = [
             "# sysforge artifact registry: metadata only, never content.",
@@ -252,12 +272,7 @@ class IgnoreList:
     """
 
     def __init__(self, state_dir=None):
-        if state_dir is not None:
-            base = Path(state_dir)
-        else:
-            env = os.environ.get("SYSFORGE_STATE_DIR")
-            base = Path(env) if env else _DEFAULT_STATE_DIR
-        self._state_dir = base
+        self._state_dir, self._explicit = _state_dir_for_read(state_dir)
 
     @property
     def path(self) -> Path:
@@ -304,6 +319,7 @@ class IgnoreList:
 
     def save(self, entries: dict[Path, str]) -> None:
         """Write the ignore-list atomically (temp file + replace)."""
+        self._state_dir = _state_dir_for_write(self._state_dir, self._explicit)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lines: list[str] = [
             "# sysforge artifact ignore-list: declined discovery candidates.",

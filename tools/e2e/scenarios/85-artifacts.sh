@@ -1,13 +1,10 @@
 # shellcheck shell=bash
 # User-authored scripts under management: discovered, adopted (by name, and
 # by review), edited in the managed copy, deployed back to the live file, then
-# removed. A build runs first: the registry does not provision the state
-# directory itself (3.5.0-B142), and in CI's shared system an earlier scenario
-# always has, so starting provisioned keeps both modes alike.
+# removed. In its own container it is the user's first session with nothing
+# built, so the first registry write provisions the state directory itself
+# (3.5.0-B142).
 # start: ready
-
-step "a build provisions the state directory, as after the Quick start"
-sysforge build "$(stage_pkg e2e-hello)" -si --rebuild </dev/null
 
 live=~/.local/bin/e2e-tool
 other=~/.local/bin/e2e-other
