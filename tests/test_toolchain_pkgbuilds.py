@@ -433,3 +433,27 @@ def test_resolve_syncs_the_trees_when_asked(tmp_path, monkeypatch, no_sync_pkgba
     pb.resolve_all_pkgbuilds(["llvm"], {"paths": {"pkgbuild_src_dir": str(src)}},
                              update=False, cleansrc=True)
     assert seen == [{"cleansrc": True, "cleansrc_force": False}]
+
+
+# 3.5.0-B141: a dry run reads only what is on disk; a missing checkout is
+# named, never cloned, synced or purged.
+
+def test_dry_run_resolves_what_is_on_disk_without_syncing(tmp_path):
+    make_pkgbuild(tmp_path, "llvm")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+    with patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs") as sync:
+        result = resolve_all_pkgbuilds(["llvm"], config, update=True, cleansrc=True, dry_run=True)
+    assert result["llvm"].name == "PKGBUILD"
+    sync.assert_not_called()
+
+
+def test_dry_run_names_missing_checkouts_instead_of_cloning(tmp_path):
+    from sysforge.pipeline.stages.toolchain.pkgbuilds import CheckoutsMissing
+
+    make_pkgbuild(tmp_path, "llvm")
+    config = {"paths": {"pkgbuild_src_dir": str(tmp_path)}}
+    with patch("sysforge.primitives.config.find_pkgbuild") as find:
+        with pytest.raises(CheckoutsMissing) as exc:
+            resolve_all_pkgbuilds(["llvm", "spirv-llvm-translator"], config, dry_run=True)
+    find.assert_not_called()
+    assert exc.value.pkgbases == ["spirv-llvm-translator"]

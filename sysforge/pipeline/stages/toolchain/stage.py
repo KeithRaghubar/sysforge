@@ -260,12 +260,18 @@ class ToolchainStage(Stage):
         # unless --no-update was passed; --cleansrc[/-force] forces the sync
         # path even with --no-update so an explicit purge isn't silently
         # skipped.
-        pkgbuild_map = pkgbuilds.resolve_all_pkgbuilds(
-            all_names, sysforge_config,
-            update=not options.no_update,
-            cleansrc=getattr(options, "cleansrc", False),
-            cleansrc_force=getattr(options, "cleansrc_force", False),
-        )
+        try:
+            pkgbuild_map = pkgbuilds.resolve_all_pkgbuilds(
+                all_names, sysforge_config,
+                update=not options.no_update,
+                cleansrc=getattr(options, "cleansrc", False),
+                cleansrc_force=getattr(options, "cleansrc_force", False),
+                dry_run=options.dry_run,
+            )
+        except pkgbuilds.CheckoutsMissing as missing:
+            _log.ui(f"[dry-run] would clone {', '.join(missing.pkgbases)}; the preview "
+                    "stops here, since the rest of the plan reads their PKGBUILDs")
+            return
 
         # LLVM safety pre-flight: refuse-by-default on dirty/diverged trees.
         # Strict mode is rule-driven from sysforge.toml [safety]; the CLI

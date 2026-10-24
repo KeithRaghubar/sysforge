@@ -208,11 +208,24 @@ def install_names(pkgbuild_map: dict[str, Path]) -> set[str]:
     return names
 
 
+class CheckoutsMissing(RuntimeError):
+    """A dry run met packages whose PKGBUILD is not checked out (3.5.0-B141).
+
+    ``pkgbases`` are what a real run would clone. A preview never downloads,
+    so it names them and stops: the plan after this point needs the PKGBUILDs.
+    """
+
+    def __init__(self, pkgbases: list[str]):
+        self.pkgbases = pkgbases
+        super().__init__(f"not checked out: {', '.join(pkgbases)}")
+
+
 def resolve_all_pkgbuilds(
     names: list[str], config: dict, *,
     update: bool = True,
     cleansrc: bool = False,
     cleansrc_force: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Path]:
     """
     Resolve PKGBUILD paths for all package names.
@@ -232,6 +245,10 @@ def resolve_all_pkgbuilds(
     verbatim. Blocker statuses raise ``RuntimeError``.
 
     Returns {name: pkgbuild_path}. Raises RuntimeError on any miss.
+
+    ``dry_run`` reads only what is on disk: no clone, sync or purge. A name
+    left unresolved raises :class:`CheckoutsMissing` naming the pkgbases a real
+    run would clone.
     """
     from sysforge.primitives.pkgbuild_meta import parse_pkgbuild
 
@@ -293,6 +310,11 @@ def resolve_all_pkgbuilds(
             else:
                 still_remaining.append(name)
         remaining = still_remaining
+
+    if dry_run:
+        if remaining:
+            raise CheckoutsMissing(sorted({source_of[n] for n in remaining}))
+        return resolved
 
     # Pass 3 — full resolution with potential clone; re-scan for split packages after each success
     errors = []

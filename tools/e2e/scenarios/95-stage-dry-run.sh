@@ -29,6 +29,7 @@ before=$(records)
 step "the toolchain dry run changes nothing"
 sysforge run toolchain --dry-run --no-update </dev/null
 [[ $(records) == "$before" ]] || fail "a toolchain dry run changed a record"
+[[ ! -e ~/src/llvm ]] || fail "a toolchain dry run cloned the llvm PKGBUILD"
 assert_no_sentinel
 
 step "the kernel dry run changes nothing"
