@@ -126,3 +126,20 @@ def test_at_a_terminal_pacman_asks(tmp_path, monkeypatch):
     res, calls = _run(tmp_path, monkeypatch, yes=False, tty=True)
     assert res.exit_code == 0
     assert calls == [[]]
+
+
+def test_unattended_refusal_says_unattended_not_no_terminal(tmp_path, monkeypatch, capsys):
+    """At a terminal, "no terminal" would read as wrong (3.5.0-F21)."""
+    monkeypatch.setattr(uninstall_cmd.prompt.sys.stdin, "isatty", lambda: True,
+                        raising=False)
+    uninstall_cmd.prompt.set_unattended(True)
+    monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
+                        lambda names, extra_flags=None: None)
+    monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
+                        lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
+    args = cli_args("uninstall", "nano", "--state-dir", str(tmp_path))
+    verb = uninstall_cmd.UninstallVerb()
+    res = verb.execute(args, verb.pre_check(args))
+    err = capsys.readouterr().err
+    assert res.exit_code == 2
+    assert "unattended run" in err and "no terminal" not in err

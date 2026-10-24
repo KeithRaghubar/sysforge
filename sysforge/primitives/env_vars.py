@@ -46,6 +46,10 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("SYSFORGE_MERGE", "user",
            "Merge tool for *config merge*. Checked first, then sysforge.toml [ui] "
            "merge, $DIFFPROG, then vimdiff."),
+    EnvVar("SYSFORGE_UNATTENDED", "user",
+           "1/true/yes/on: never prompt, as *--unattended* does. Any other value, "
+           "including empty, turns off sysforge.toml [ui] unattended for this run. "
+           "*--unattended* wins over it."),
     EnvVar("SYSFORGE_ASCII", "user",
            "Any non-empty value prints ASCII in place of decorative glyphs "
            "(arrows, bullets, progress fills), for terminals and fonts without them."),

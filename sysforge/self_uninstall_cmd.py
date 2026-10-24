@@ -201,7 +201,7 @@ class SelfUninstallVerb(Verb):
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show the plan without changing anything.")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="Do it without asking (needed without a terminal).")
+            help="Do it without asking (needed without a terminal or with --unattended).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.set_defaults(verb_cls=cls)
@@ -236,7 +236,7 @@ class SelfUninstallVerb(Verb):
 
         if not args.yes:
             if not prompt.is_interactive():
-                _log.error("refusing without a terminal; pass --yes")
+                _log.error(f"refusing ({prompt.no_prompt_reason()}); pass --yes")
                 return ExecResult(exit_code=2)
             ans = prompt.prompt_choice(
                 "Remove sysforge as above? [y/N] ", ["y", "n"],

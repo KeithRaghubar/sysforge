@@ -224,6 +224,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--unattended",
+        action="store_true",
+        help=(
+            "Never prompt, even at a terminal: every question takes the answer "
+            "it gets when there is no terminal (a safe default, or a refusal "
+            "that names the flag to pass). Overrides SYSFORGE_UNATTENDED and "
+            "the [ui] unattended config key."
+        ),
+    )
+    parser.add_argument(
         "--frozen",
         action="store_true",
         dest="frozen",

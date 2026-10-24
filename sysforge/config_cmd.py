@@ -290,7 +290,7 @@ def _write_all(args, writes: list[tuple[Path, str, str]], question: str) -> int:
         return 0
     answer = _consent(args, question)
     if answer is None:
-        _log.error("refusing to edit config files without a terminal to confirm on; "
+        _log.error(f"refusing to edit config files ({prompt.no_prompt_reason()}); "
                    "pass --yes (or --dry-run to only look)")
         return 2
     if not answer:
@@ -364,7 +364,7 @@ def cmd_config_reset(args) -> int:
         return 0
     answer = _consent(args, f"Replace {path} with the shipped default?")
     if answer is None:
-        _log.error("refusing to replace a config file without a terminal to confirm on; "
+        _log.error(f"refusing to replace a config file ({prompt.no_prompt_reason()}); "
                    "pass --yes (or --dry-run to only look)")
         return 2
     if not answer:
@@ -428,7 +428,7 @@ class ConfigCleanVerb(Verb):
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show the diff without writing anything.")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="Write without asking (needed without a terminal).")
+            help="Write without asking (needed without a terminal or with --unattended).")
         p.set_defaults(verb_cls=cls)
         return p
 
@@ -462,7 +462,7 @@ class ConfigResetVerb(Verb):
         p.add_argument("--dry-run", action="store_true", dest="dry_run",
             help="Show the diff without writing anything.")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="Write without asking (needed without a terminal).")
+            help="Write without asking (needed without a terminal or with --unattended).")
         p.set_defaults(verb_cls=cls)
         return p
 

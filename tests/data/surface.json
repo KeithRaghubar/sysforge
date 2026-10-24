@@ -16,6 +16,7 @@
     "--thaw": null,
     "--timings": null,
     "--turbo": null,
+    "--unattended": null,
     "--verbose": null,
     "--version": null
    },
@@ -582,7 +583,8 @@
   "SYSFORGE_PROFILE_STORE",
   "SYSFORGE_PROGRESS_TRACE",
   "SYSFORGE_PTY_RAW_DUMP",
-  "SYSFORGE_STATE_DIR"
+  "SYSFORGE_STATE_DIR",
+  "SYSFORGE_UNATTENDED"
  ],
  "journal_fields": [
   "SYSFORGE_EXIT",
@@ -657,7 +659,8 @@
     "ui": [
      "color",
      "editor",
-     "merge"
+     "merge",
+     "unattended"
     ],
     "update": [
      "rebuild_on_drift",

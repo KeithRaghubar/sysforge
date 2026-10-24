@@ -262,11 +262,14 @@ class KernelStage(Stage):
         # collision, diverged-source confirm) already use. Without the TTY leg
         # the stage promised an nconfig review that a piped/captured run could
         # never render, then silently EOF'd through it.
-        from sysforge.primitives.prompt import is_interactive as _tty
+        from sysforge.primitives import prompt as _prompt
         cfg_interactive = kernel_cfg.interactive
         flag_non_interactive = bool(getattr(options, "non_interactive", False))
-        interactive = cfg_interactive and not flag_non_interactive and _tty()
-        if cfg_interactive and not flag_non_interactive and not interactive:
+        interactive = cfg_interactive and not flag_non_interactive and _prompt.is_interactive()
+        if cfg_interactive and not flag_non_interactive and _prompt.unattended():
+            # Asked for (3.5.0-F21), so narration rather than a warning.
+            _log.info("unattended run: skipping the interactive kconfig review")
+        elif cfg_interactive and not flag_non_interactive and not interactive:
             _log.warn(
                 "interactive kconfig review requested (kernel.toml "
                 "interactive = true) but no TTY is attached: running "

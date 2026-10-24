@@ -102,6 +102,16 @@ def _reset_narrated():
 
 
 @pytest.fixture(autouse=True)
+def _reset_unattended(monkeypatch):
+    """Start every test attended (3.5.0-F21): ``prompt.set_unattended`` is a
+    module global, and a test that runs ``cli.main`` would otherwise leave it
+    set for every later test's prompts."""
+    from sysforge.primitives import prompt
+    monkeypatch.setattr(prompt, "_UNATTENDED", False, raising=False)
+    monkeypatch.delenv("SYSFORGE_UNATTENDED", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_saved_user_pager(monkeypatch):
     """
     Forget any PAGER/LESS saved by ``update._suppress_pagers_in_env``.

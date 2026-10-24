@@ -231,7 +231,7 @@ Used by: \fBbuild\fR, \fBupdate\fR, \fBstate list\fR, \fBstate repair\fR, \fBsta
 .RE
 \fB\-\-yes\fR
 .RS 4
-Write without asking (needed without a terminal).\&
+Write without asking (needed without a terminal or with \-\-unattended).\&
 Used by: \fBconfig clean\fR, \fBconfig reset\fR.\&
 .PP
 .RE
@@ -422,7 +422,7 @@ Purge each package'\&s src dir and re\-clone before building.\& Per\-package fat
 .RE
 \fB\-\-review\fR
 .RS 4
-Review changed sources of every type, including trusted ones (by default Arch'\&s own packaging repos).\& Without this flag, update prompts at a terminal for untrusted changes and refuses them with no terminal.\&
+Review changed sources of every type, including trusted ones (by default Arch'\&s own packaging repos).\& Without this flag, update prompts at a terminal for untrusted changes and refuses them with no terminal or with \-\-unattended.\&
 .PP
 .RE
 \fB\-\-no\-review\fR
@@ -852,7 +852,7 @@ Delete one profile store, METHOD or METHOD/TARGET as listed (e.\&g.\& pgo/mesa, 
 .RE
 \fB\-\-yes\fR
 .RS 4
-With \-\-delete: delete without the y/N prompt (needed without a TTY).\&
+With \-\-delete: delete without the y/N prompt (needed without a terminal or with \-\-unattended).\&
 .PP
 .RE
 \fB\-\-state\-dir\fR \fIDIR\fR
@@ -1512,7 +1512,7 @@ Package name(s) to remove (stock or \-sysforge name).\&
 .RE
 \fB\-\-yes\fR
 .RS 4
-Remove without pacman'\&s confirmation prompt (needed without a terminal).\&
+Remove without pacman'\&s confirmation prompt (needed without a terminal or with \-\-unattended).\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
@@ -1535,7 +1535,7 @@ Show the plan without changing anything.\&
 .RE
 \fB\-\-yes\fR
 .RS 4
-Do it without asking (needed without a terminal).\&
+Do it without asking (needed without a terminal or with \-\-unattended).\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
@@ -1622,6 +1622,13 @@ sysforge.\&toml [ui] editor, $EDITOR and $VISUAL.\&
 SYSFORGE_MERGE
 .RS 4
 Merge tool for \fBconfig merge\fR.\& Checked first, then sysforge.\&toml [ui] merge, $DIFFPROG, then vimdiff.\&
+.PP
+.RE
+SYSFORGE_UNATTENDED
+.RS 4
+1/true/yes/on: never prompt, as \fB\-\-unattended\fR does.\& Any other
+value, including empty, turns off sysforge.\&toml [ui] unattended
+for this run.\& \fB\-\-unattended\fR wins over it.\&
 .PP
 .RE
 SYSFORGE_ASCII

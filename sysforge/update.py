@@ -110,7 +110,7 @@ from sysforge.primitives.pkgbuild_review import (
     change_summary,
     resolve_review_policy,
 )
-from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_choice
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.profile import (
@@ -1579,8 +1579,8 @@ def _phase_confirm(run: UpdateRun) -> int | None:
         return None
     if getattr(run.args, "yes", False) or run.build_cfg.get("confirm_plan", True) is False:
         return None
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        _log.info("plan confirmation skipped: no terminal")
+    if not (is_interactive() and sys.stdout.isatty()):
+        _log.info(f"plan confirmation skipped: {no_prompt_reason()}")
         return None
     _ui_progress.phase(None)
     for line in update_plan.render_plan(run.plan):
@@ -2077,7 +2077,7 @@ class UpdateVerb(Verb):
             help="Review changed sources of every type, including trusted ones "
                  "(by default Arch's own packaging repos). Without this flag, update "
                  "prompts at a terminal for untrusted changes and refuses them with "
-                 "no terminal.")
+                 "no terminal or with --unattended.")
         review_group.add_argument("--no-review", action="store_true", dest="no_review",
             help="Skip the PKGBUILD review gate entirely. "
                  "Also configurable via [build] review = false in packages.toml.")

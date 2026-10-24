@@ -82,7 +82,8 @@ or for good, in `kernel.toml`:
 interactive = false
 ```
 
-The review step is dropped, and any interactive step the PKGBUILD has of its own (`make
+A global `--unattended` (or `[ui] unattended = true` in `sysforge.toml`) has the same effect
+on the kernel stage. The review step is dropped, and any interactive step the PKGBUILD has of its own (`make
 nconfig`, `menuconfig`, `oldconfig` and the like) is rewritten to `make olddefconfig`, which
 takes the kernel's default for every option the config doesn't set.
 

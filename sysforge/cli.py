@@ -95,6 +95,7 @@ _GLOBAL_HOIST_FLAGS = {
     "--py-profile-out": True,
     "--timings": False,
     "--color": True,
+    "--unattended": False,
     "--no-throttle": False,
     "--turbo": False,
     "--frozen": False,
@@ -129,6 +130,31 @@ def _resolve_color_mode(flag_value):
     except Exception:
         cfg = None
     return cfg if cfg in ("auto", "always", "never") else "auto"
+
+
+_ENV_TRUE = ("1", "true", "yes", "on")
+
+
+def _resolve_unattended(flag_value):
+    """Resolve whether this run may prompt (3.5.0-F21): ``--unattended`` >
+    ``SYSFORGE_UNATTENDED`` > ``[ui] unattended`` > off.
+
+    The env var works in both directions, so ``SYSFORGE_UNATTENDED=0`` gets
+    prompts back for one run when the config turns them off; any value other
+    than 1/true/yes/on (case-insensitive) counts as off. A non-bool config
+    value is ignored, and an unreadable config never aborts startup.
+    """
+    if flag_value:
+        return True
+    env = os.environ.get("SYSFORGE_UNATTENDED")
+    if env is not None:
+        return env.strip().lower() in _ENV_TRUE
+    try:
+        from sysforge.primitives.config import load_sysforge_toml
+        cfg = (load_sysforge_toml().get("ui", {}) or {}).get("unattended")
+    except Exception:
+        cfg = None
+    return cfg is True
 
 
 def _hoist_global_flags(argv):
@@ -361,6 +387,8 @@ def _main():
     args = parser.parse_args()
     log.set_verbosity(_resolve_verbosity(args))
     log.set_color_mode(_resolve_color_mode(getattr(args, "color", None)))
+    from sysforge.primitives import prompt
+    prompt.set_unattended(_resolve_unattended(getattr(args, "unattended", False)))
     # --json (3.4.0-F7): stdout carries only the verb's document, so the guard
     # starts before any startup logging (which --dry-run sends to stdout).
     from sysforge.primitives import json_out

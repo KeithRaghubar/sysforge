@@ -1633,6 +1633,31 @@ def test_kernel_stage_non_interactive_flag_flips_to_false(tmp_path):
     assert build_opts.interactive is False
 
 
+def test_kernel_stage_unattended_skips_review_without_warning(tmp_path, monkeypatch):
+    """An unattended run at a terminal drops the review as asked (3.5.0-F21):
+    narration, not the no-TTY warning meant for a run that wanted the review."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.pipeline.stages.kernel import stage as _ks
+    from sysforge.primitives import prompt
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(prompt.sys.stdin, "isatty", lambda: True, raising=False)
+    prompt.set_unattended(True)
+
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
+         patch.object(_ks, "_log") as mock_log, \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    assert mock_build.call_args.kwargs["options"].interactive is False
+    assert not any("kconfig review" in str(c) for c in mock_log.warn.call_args_list)
+    assert any("unattended run" in str(c) for c in mock_log.info.call_args_list)
+
+
 def test_kernel_stage_kernel_toml_interactive_false(tmp_path):
     import sysforge.pipeline.stages.kernel as _km
     builds = tmp_path / "builds"

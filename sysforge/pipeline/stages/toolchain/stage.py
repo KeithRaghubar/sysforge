@@ -376,9 +376,9 @@ class ToolchainStage(Stage):
 
         # Prompt for confirmation (interactive only)
         try:
-            import sys as _sys
+            from sysforge.primitives import prompt as _prompt
 
-            if _sys.stdin.isatty() and not options.dry_run:
+            if _prompt.is_interactive() and not options.dry_run:
                 pkgbuilds.confirm_or_abort(
                     options.state_dir, mode=no_build,
                     standalone=bool(getattr(options, "standalone", False)))

@@ -20,6 +20,12 @@ Three functions are provided:
 
 Plus :func:`is_interactive` for stages that need to gate prompts on a TTY.
 
+Unattended runs (3.5.0-F21): :func:`set_unattended` (called once by ``cli``
+from ``--unattended`` / ``SYSFORGE_UNATTENDED`` / ``[ui] unattended``) makes
+:func:`is_interactive` false even at a terminal, and makes the three helpers
+take their EOF path without reading, so a run behaves exactly as it does with
+stdin closed. This module is the only place that asks whether stdin is a TTY.
+
 Every helper reads its input inside
 ``progress_hooks.hooks().yield_terminal("prompt")``, so an interactive prompt
 never collides with stale status text. Call sites no longer manage this
@@ -39,10 +45,32 @@ from sysforge.primitives import progress_hooks
 
 _log = log.get_logger("PROMPT")
 
+_UNATTENDED = False
+
+
+def set_unattended(on: bool) -> None:
+    """Never prompt for the rest of this run, even at a terminal."""
+    global _UNATTENDED
+    _UNATTENDED = bool(on)
+
+
+def unattended() -> bool:
+    """True when the run was set unattended (not merely missing a TTY)."""
+    return _UNATTENDED
+
+
+def no_prompt_reason() -> str:
+    """Why this run will not ask, for a message that refuses or skips instead.
+
+    An unattended run at a terminal is told so rather than "no terminal", which
+    would read as wrong to someone looking at one.
+    """
+    return "unattended run" if _UNATTENDED else "no terminal"
+
 
 def is_interactive() -> bool:
-    """True when stdin is attached to a TTY."""
-    return sys.stdin.isatty()
+    """True when stdin is attached to a TTY and the run is not unattended."""
+    return not _UNATTENDED and sys.stdin.isatty()
 
 
 def _format_prefix(tag: str | None, level: str) -> str:
@@ -68,6 +96,8 @@ def prompt_text(
     stdin raises ``OSError("reading from stdin while output is captured")``,
     and any other unreadable-stdin scenario should fall back gracefully too.
     """
+    if _UNATTENDED:
+        return default if eof_default is None else eof_default
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     with progress_hooks.hooks().yield_terminal("prompt"):
         try:
@@ -102,6 +132,8 @@ def prompt_choice(
       - ``False`` — return ``default`` immediately. Use this for destructive
         prompts where any non-confirming input should fall through to abort.
     """
+    if _UNATTENDED:
+        return default if eof_default is None else eof_default
     choices_t = tuple(c.lower() for c in choices)
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     with progress_hooks.hooks().yield_terminal("prompt"):
@@ -145,8 +177,11 @@ def prompt_key(
     it as ``\\x03`` rather than a signal); Ctrl-D / EOF / unreadable stdin
     raise ``EOFError`` so callers hit the same abort path as line prompts.
     A bare Enter (or empty line in fallback mode) returns ``""`` — "no
-    answer", distinct from EOF — so callers can re-prompt.
+    answer", distinct from EOF — so callers can re-prompt. An unattended run
+    raises ``EOFError`` without reading.
     """
+    if _UNATTENDED:
+        raise EOFError
     full = log.downgrade_glyphs(_format_prefix(tag, level) + msg)
     with progress_hooks.hooks().yield_terminal("prompt"):
         return _read_key(full)
