@@ -714,8 +714,9 @@ class KernelStage(Stage):
             # sentinel so an interrupted install / mkinitcpio / bootloader regen
             # blocks the next run with a recovery command (the failure mode that
             # leaves the system kernel-installed but initramfs-missing →
-            # unbootable).
-            with sentinel_scope(
+            # unbootable). A dry run installs nothing, so it takes no sentinel
+            # or lock (3.5.0-B141).
+            with (contextlib.nullcontext() if options.dry_run else sentinel_scope(
                 options.state_dir,
                 "kernel",
                 recovery=constants.kernel_recovery(),
@@ -723,7 +724,7 @@ class KernelStage(Stage):
                 pkgname=fdo_eff_pkgname,
                 bootloader=bootloader,
                 compiler=compiler or "default",
-            ):
+            )):
                 if options.dry_run:
                     _log.ui(f"[dry-run] would install {fdo_eff_pkgname} and wire it into boot")
                 else:

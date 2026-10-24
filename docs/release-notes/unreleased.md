@@ -877,6 +877,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B141` — `run kernel`, `run toolchain` and the other stage commands preview with `--dry-run`.** `--dry-run` promised to show what would run, but the stage never ran: sysforge logged one line that the default verbosity hid, so the command printed nothing and read nothing from `kernel.toml` or `toolchain.toml` past `enabled`. A dry run now goes through the stage up to the point where it would change something, and says what it would do instead: `run kernel --dry-run` prints its "Kernel build plan" (compiler and where it came from, bootloader, source, kconfig counts, the safety gates) and the build and install it would run, so a mistake in the config shows before a build of an hour or more. The run still installs, builds, records and locks nothing. `run pipeline --dry-run` keeps listing the stages it would run.
+
+---
+
 - **`3.5.0-B142` — the `artifact` commands work in your first session.** Run before anything else after installing, `sysforge artifact adopt` (or any command that saves the artifact list) ended in a Python traceback, `PermissionError` on `/var/lib/sysforge`: the artifact commands found SysForge's state directory on their own and never opened it to you the way `build` does until the `sysforge` group applies at your next login. They now go through the same step, and the read-only ones still never ask for `sudo`.
 
 ## Security

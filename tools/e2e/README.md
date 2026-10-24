@@ -48,7 +48,7 @@ sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-t
 | `80-inspect` | the read-only commands (`state` reports, `doctor`, `env`, `fetch`) change nothing |
 | `85-artifacts` | a user script discovered, adopted, reviewed, edited, deployed and removed |
 | `90-source-policy` | `[aur] enabled = false` and `freeze_sources` refuse before any checkout; `search` with the AUR off |
-| `95-stage-dry-run` | `run toolchain`/`run kernel --dry-run` with non-default configs change nothing; `xfail` until the kernel plan shows (`3.5.0-B141`) |
+| `95-stage-dry-run` | `run toolchain`/`run kernel --dry-run` with non-default configs change nothing, and the kernel's shows its plan |
 
 Packages come from `pkgs/`, local PKGBUILDs with no network sources, so an outage can't flake the
 tier. Three scenarios need the network, because it is the point: `10-quickstart` (the AUR, and

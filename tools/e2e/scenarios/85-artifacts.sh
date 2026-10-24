@@ -27,6 +27,7 @@ output_has e2e-other sysforge artifact list </dev/null || fail "artifact review 
 step "edit the managed copy, then deploy it"
 editor=~/e2e/append-line.sh
 mkdir -p ~/e2e
+# shellcheck disable=SC2016  # $1 belongs to the script being written
 printf '#!/bin/sh\necho "# edited" >>"$1"\n' >"$editor"
 chmod +x "$editor"
 EDITOR=$editor sysforge artifact edit e2e-tool </dev/null

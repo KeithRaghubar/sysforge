@@ -1,10 +1,8 @@
 # shellcheck shell=bash
 # The long stages previewed with non-default toolchain.toml and kernel.toml:
 # a dry run changes nothing, and the kernel's shows the plan it resolved from
-# kernel.toml. The plan never shows yet: the runner skips the stage on a dry
-# run (3.5.0-B141).
+# kernel.toml (3.5.0-B141: the runner used to skip the stage on a dry run).
 # start: ready
-# xfail: 3.5.0-B141
 
 tc=/etc/sysforge/toolchain.toml
 kc=/etc/sysforge/kernel.toml
@@ -21,20 +19,23 @@ printf '%s\n' 'pkgbase=linux-sysforge' 'pkgname=(linux-sysforge linux-sysforge-h
     'pkgver=6.1' 'pkgrel=1' 'arch=(x86_64)' 'prepare() { make olddefconfig; }' \
     >~/src/linux-sysforge/PKGBUILD
 
-profiles=$(sha256sum /etc/sysforge/profiles.toml)
-state=$(ls "$STATE_DIR")
+# The records a run changes. Caches (source_meta.toml) may fill in.
+records() {
+    sha256sum /etc/sysforge/profiles.toml
+    sha256sum "$STATE_DIR"/pipeline_state.toml "$STATE_DIR"/build_state.toml 2>/dev/null || true
+}
+before=$(records)
 
 step "the toolchain dry run changes nothing"
 sysforge run toolchain --dry-run --no-update </dev/null
-[[ $(sha256sum /etc/sysforge/profiles.toml) == "$profiles" ]] \
-    || fail "a toolchain dry run rewrote profiles.toml"
+[[ $(records) == "$before" ]] || fail "a toolchain dry run changed a record"
 assert_no_sentinel
 
 step "the kernel dry run changes nothing"
 out=$(sysforge run kernel --dry-run --no-update </dev/null 2>&1) || fail "run kernel --dry-run failed: $out"
 echo "$out"
 assert_not_installed linux-sysforge
-[[ $(ls "$STATE_DIR") == "$state" ]] || fail "a dry run added state: $(ls "$STATE_DIR")"
+[[ $(records) == "$before" ]] || fail "a kernel dry run changed a record"
 assert_no_sentinel
 
 step "the kernel dry run shows the plan it resolved"
