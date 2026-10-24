@@ -26,7 +26,7 @@ _sysforge() {
 
     # Ordered by usage tier to mirror `sysforge --help` (2.5.0-F1):
     # Everyday, then Inspect, then Maintain.
-    local commands="build update fetch search help doctor resolve env log state bench artifact setup config packages run revert-to-stock uninstall"
+    local commands="build update fetch search help doctor resolve env log state bench artifact setup config packages run revert-to-stock uninstall self-uninstall"
 
     # Locate the top-level verb (first non-flag arg after `sysforge`) and an
     # optional subverb (first non-flag arg after the verb).
@@ -80,6 +80,7 @@ _sysforge() {
         search)      _sysforge_search      ;;
         setup)       _sysforge_setup       ;;
         uninstall)   _sysforge_uninstall   ;;
+        self-uninstall) _sysforge_self_uninstall ;;
         env)         _sysforge_env         ;;
         log)         _sysforge_log         ;;
         help)        _sysforge_help        ;;
@@ -421,6 +422,11 @@ _sysforge_uninstall() {
     else
         _sysforge_installed_pkg_names
     fi
+}
+
+_sysforge_self_uninstall() {
+    _sysforge_flag_arg && return
+    [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "--keep-data --dry-run --yes --state-dir" -- "$cur") )
 }
 
 _sysforge_run() {

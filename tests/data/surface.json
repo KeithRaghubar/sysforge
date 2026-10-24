@@ -446,6 +446,15 @@
     "TERM": null
    }
   },
+  "self-uninstall": {
+   "flags": {
+    "--dry-run": null,
+    "--keep-data": null,
+    "--state-dir": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
   "setup": {
    "flags": {
     "--pacman-conf": null,

@@ -169,6 +169,80 @@ def _is_split(entries: dict, key: str) -> bool:
                                  if e.get("pkgbase") == pkgbase) > 1
 
 
+def apply_reverts(actionable: list, state_dir) -> int:
+    """Carry out ``actionable`` plans (none ``skip``); return an exit code.
+
+    The one home for a revert's pacman steps, forget and reconcile, shared by
+    ``revert-to-stock`` and ``self-uninstall``. Stops at the first failure
+    (exit 1, nothing changed for that target); raises ``RuntimeError`` when a
+    derename removed a package but could not reinstall its stock one, so a
+    caller's sentinel keeps its recovery.
+    """
+    store_names = profile_store_names(
+        state_dir, [p.pkgname for p in actionable if p.pkgname])
+    for p in actionable:
+        if p.action == "derename":
+            # Coexist rename: remove the renamed build first, then reinstall
+            # stock. Name the step that actually failed so a remove-step
+            # failure doesn't wrongly claim the system was left bare.
+            try:
+                pacman.remove_pkgs([p.pkgname])
+            except subprocess.CalledProcessError as exc:
+                _log.error(
+                    f"[revert] {p.target}: removal of {p.pkgname} failed "
+                    f"({exc}); nothing changed")
+                _log.error("[revert] stopping: remaining targets not processed")
+                return 1
+            try:
+                pacman.reinstall_repo_pkgs([p.stock_pkg])
+            except subprocess.CalledProcessError as exc:
+                # Raise, not return: the package is gone, so the sentinel
+                # must keep its recovery for the next run (3.5.0-B93).
+                raise RuntimeError(
+                    f"[revert] {p.target}: removed {p.pkgname} but stock "
+                    f"reinstall of {p.stock_pkg} FAILED ({exc}); system "
+                    f"left without this package; run "
+                    f"`sudo pacman -S {p.stock_pkg}` to recover. Remaining "
+                    "targets not processed") from exc
+        elif p.action == "replace":
+            # Conflict-mode: one atomic `pacman -S` over every installed
+            # member; on failure nothing changed.
+            stocks = [st for _, st in p.members]
+            try:
+                pacman.reinstall_repo_pkgs(stocks, replace=True)
+            except subprocess.CalledProcessError as exc:
+                _log.error(
+                    f"[revert] {p.target}: reinstall of {', '.join(stocks)} "
+                    f"failed ({exc}); nothing changed")
+                _log.error("[revert] stopping: remaining targets not processed")
+                return 1
+            forget_packages(state_dir, [n for n, _ in p.members],
+                            opt_out=VIA_REVERT)
+            continue
+        else:  # "reinstall" (plain) — one atomic `pacman -S`; on failure
+               # nothing changed.
+            names = [n for n, _ in p.members] or [p.stock_pkg]
+            try:
+                pacman.reinstall_repo_pkgs(names)
+            except subprocess.CalledProcessError as exc:
+                _log.error(
+                    f"[revert] {p.target}: reinstall of {', '.join(names)} "
+                    f"failed ({exc})")
+                _log.error("[revert] stopping: remaining targets not processed")
+                return 1
+            forget_packages(state_dir, names, opt_out=VIA_REVERT)
+            continue
+        # forget this entry so `update` stops rebuilding it
+        forget_packages(state_dir, [p.pkgname], opt_out=VIA_REVERT)
+
+    # Demote any that pacman now owns (belt-and-suspenders alongside forget).
+    bs = BuildState(state_dir)
+    if install_reconcile.consume_external_installs(bs).changed:
+        bs.save()
+    emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[revert] {line}"))
+    return 0
+
+
 class RevertToStockVerb(Verb):
     """Undo a source-built/optimized package back to the repo version."""
 
@@ -238,68 +312,6 @@ class RevertToStockVerb(Verb):
                 _log.ui("[revert] aborted")
                 return ExecResult(exit_code=2)
 
-        store_names = profile_store_names(
-            pre.ctx["state_dir"], [p.pkgname for p in actionable if p.pkgname])
-        for p in actionable:
-            if p.action == "derename":
-                # Coexist rename: remove the renamed build first, then reinstall
-                # stock. Name the step that actually failed so a remove-step
-                # failure doesn't wrongly claim the system was left bare.
-                try:
-                    pacman.remove_pkgs([p.pkgname])
-                except subprocess.CalledProcessError as exc:
-                    _log.error(
-                        f"[revert] {p.target}: removal of {p.pkgname} failed "
-                        f"({exc}); nothing changed")
-                    _log.error("[revert] stopping: remaining targets not processed")
-                    return ExecResult(exit_code=1)
-                try:
-                    pacman.reinstall_repo_pkgs([p.stock_pkg])
-                except subprocess.CalledProcessError as exc:
-                    # Raise, not return: the package is gone, so the sentinel
-                    # must keep its recovery for the next run (3.5.0-B93).
-                    raise RuntimeError(
-                        f"[revert] {p.target}: removed {p.pkgname} but stock "
-                        f"reinstall of {p.stock_pkg} FAILED ({exc}); system "
-                        f"left without this package; run "
-                        f"`sudo pacman -S {p.stock_pkg}` to recover. Remaining "
-                        "targets not processed") from exc
-            elif p.action == "replace":
-                # Conflict-mode: one atomic `pacman -S` over every installed
-                # member; on failure nothing changed.
-                stocks = [st for _, st in p.members]
-                try:
-                    pacman.reinstall_repo_pkgs(stocks, replace=True)
-                except subprocess.CalledProcessError as exc:
-                    _log.error(
-                        f"[revert] {p.target}: reinstall of {', '.join(stocks)} "
-                        f"failed ({exc}); nothing changed")
-                    _log.error("[revert] stopping: remaining targets not processed")
-                    return ExecResult(exit_code=1)
-                forget_packages(pre.ctx["state_dir"], [n for n, _ in p.members],
-                                opt_out=VIA_REVERT)
-                continue
-            else:  # "reinstall" (plain) — one atomic `pacman -S`; on failure
-                   # nothing changed.
-                names = [n for n, _ in p.members] or [p.stock_pkg]
-                try:
-                    pacman.reinstall_repo_pkgs(names)
-                except subprocess.CalledProcessError as exc:
-                    _log.error(
-                        f"[revert] {p.target}: reinstall of {', '.join(names)} "
-                        f"failed ({exc})")
-                    _log.error("[revert] stopping: remaining targets not processed")
-                    return ExecResult(exit_code=1)
-                forget_packages(pre.ctx["state_dir"], names, opt_out=VIA_REVERT)
-                continue
-            # forget this entry so `update` stops rebuilding it
-            forget_packages(pre.ctx["state_dir"], [p.pkgname], opt_out=VIA_REVERT)
-
-        # Demote any that pacman now owns (belt-and-suspenders alongside forget).
-        bs = BuildState(pre.ctx["state_dir"])
-        if install_reconcile.consume_external_installs(bs).changed:
-            bs.save()
-        emit_orphaned_profiles(store_names, lambda line: _log.ui(f"[revert] {line}"))
-        return ExecResult(exit_code=0)
+        return ExecResult(exit_code=apply_reverts(actionable, pre.ctx["state_dir"]))
 
 

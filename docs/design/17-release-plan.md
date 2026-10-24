@@ -43,7 +43,7 @@ codes, `pacman -Qi`, the state files and leftover sentinels, with prompts answer
 pseudo-terminal. It covers what the unit suite stubs: root versus the user, group membership that
 applies only at the next login, the state one command leaves for the next. It builds sysforge from
 the checkout itself, so it needs no `vm-pkg-stable`. `pre-release` runs it; the release preflight
-does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and three networked scenarios, so not
+does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and four networked scenarios, so not
 deterministic). CI runs the same scenarios in an `e2e` job of its own, directly in the job's
 container (`make e2e E2E_HERE=1`), listed in the Makefile's `CI_JOBS` beside `GATES`. A scenario
 marked `xfail: <ID>` fails until that item is fixed and reports `XFAIL`; once it passes it fails

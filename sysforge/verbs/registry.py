@@ -32,6 +32,7 @@ from sysforge.resolve import ResolveVerb
 from sysforge.revert_cmd import RevertToStockVerb
 from sysforge.run_cmd import RUN_GROUP
 from sysforge.search_cmd import SearchVerb
+from sysforge.self_uninstall_cmd import SelfUninstallVerb
 from sysforge.setup_cmd import SetupVerb
 from sysforge.state_cmd import STATE_GROUP
 from sysforge.uninstall_cmd import UninstallVerb
@@ -58,6 +59,7 @@ COMMANDS: tuple[type[Verb] | VerbGroup, ...] = (
     SearchVerb,
     SetupVerb,
     UninstallVerb,
+    SelfUninstallVerb,
     EnvVerb,
     HelpVerb,
     LogVerb,
@@ -87,7 +89,8 @@ _COMMAND_TIERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Everyday", ("build", "update", "fetch", "search", "help")),
     ("Inspect", ("doctor", "resolve", "env", "log", "state", "bench", "artifact")),
     ("Maintain",
-     ("setup", "config", "packages", "run", "revert-to-stock", "uninstall")),
+     ("setup", "config", "packages", "run", "revert-to-stock", "uninstall",
+      "self-uninstall")),
 )
 
 

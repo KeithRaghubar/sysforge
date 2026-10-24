@@ -57,9 +57,23 @@ partitions disks and installs a whole system.
 For one package, `sysforge revert-to-stock <pkg>` reinstalls the repo build, and
 `sysforge state forget <pkg>` stops maintaining it but keeps your build installed.
 
-To remove SysForge entirely, revert the packages you want back to stock, then
-`sudo pacman -Rns sysforge`. Pacman removes the hooks and package files and keeps any config you
-edited as `/etc/sysforge/*.pacsave`. Delete `/var/lib/sysforge`, `/var/cache/sysforge` and the
-`sysforge` directories under `~/.cache`, `~/.local/share` and `~/.config` yourself, remove
-`sf-build` from `IgnoreGroup` in `/etc/pacman.conf` if `setup` added it, and
-`sudo groupdel sysforge`. Packages it built stay installed and keep working.
+To remove SysForge entirely, run:
+
+```bash
+sysforge self-uninstall --dry-run   # see what it will do
+sysforge self-uninstall
+```
+
+It puts back the repo build of every package SysForge built that a repo carries. A build no repo
+carries, such as an AUR package or your own kernel, stays installed and keeps working, since
+there is nothing to go back to. Then it takes `sf-build` out of `IgnoreGroup` in
+`/etc/pacman.conf` and the build sandbox's local repo out of the chroot's `pacman.conf`, removes
+the package, and deletes `/etc/sysforge`, `/var/lib/sysforge`, `/var/cache/sysforge` (with any
+optimization profiles), the `sysforge` directories under `~/.cache`, `~/.local/share`,
+`~/.config` and `~/.local/state`, and the `sysforge` group. If a revert fails, it stops there,
+with SysForge still installed, so you can fix it and run the command again.
+
+`--keep-data` removes only the package: config you edited stays as `/etc/sysforge/*.pacsave`,
+and the state, profiles, group and your own directories stay too. Scripts you adopted with
+`sysforge artifact` stay where you deployed them either way; only SysForge's copies go. A
+`sysforge run reconfigure` setting in `/etc/environment` is yours to remove.

@@ -49,11 +49,13 @@ sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-t
 | `85-artifacts` | a user script discovered, adopted, reviewed, edited, deployed and removed |
 | `90-source-policy` | `[aur] enabled = false` and `freeze_sources` refuse before any checkout; `search` with the AUR off |
 | `95-stage-dry-run` | `run toolchain`/`run kernel --dry-run` with non-default configs change nothing, and the kernel's shows its plan |
+| `99-self-uninstall` | a repo package reverted, a local one kept, then the package, its data, group and `IgnoreGroup` entry gone; last, since nothing runs after it |
 
 Packages come from `pkgs/`, local PKGBUILDs with no network sources, so an outage can't flake the
-tier. Three scenarios need the network, because it is the point: `10-quickstart` (the AUR, and
-pacman for build dependencies), `60-revert-to-stock` (the stock package from the mirrors) and
-`90-source-policy` (the AUR lookup a frozen build makes before refusing the clone).
+tier. Four scenarios need the network, because it is the point: `10-quickstart` (the AUR, and
+pacman for build dependencies), `60-revert-to-stock` and `99-self-uninstall` (the stock package
+from the mirrors) and `90-source-policy` (the AUR lookup a frozen build makes before refusing the
+clone).
 `pkgs/tree` is a stand-in named after a repo package, which puts `build` on its repo opt-in path
 without fetching Arch's packaging repo.
 

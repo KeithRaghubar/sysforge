@@ -131,6 +131,41 @@ def _patch_conf_text(conf_text: str) -> str:
 # Write helper
 # ---------------------------------------------------------------------------
 
+def _unpatch_conf_text(conf_text: str) -> str:
+    """Return conf_text with sf-build taken out of every IgnoreGroup line.
+
+    The reverse of :func:`_patch_conf_text`, for ``self-uninstall``: other
+    groups on the line stay, and a line left with none is dropped, so the file
+    is what it was before ``setup`` touched it.
+    """
+    def _drop(m: re.Match) -> str:
+        kept = [g for g in m.group(1).split() if g != _IGNORE_GROUP]
+        if not kept:
+            return "\0"  # marker: the whole line goes
+        return m.group(0).replace(m.group(1), " ".join(kept))
+
+    text = _IGNOREGROUP_RE.sub(_drop, conf_text)
+    return re.sub(r"^\0\n?", "", text, flags=re.MULTILINE)
+
+
+def remove_ignore_group(path: Path = PACMAN_CONF) -> bool:
+    """Take sf-build out of ``path``'s IgnoreGroup; True when it was there.
+
+    Raises ``RuntimeError`` when the line is there but the write fails, so the
+    caller can stop before removing anything else.
+    """
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    if not _check_ignore_group(text):
+        return False
+    if not _write_conf(path, _unpatch_conf_text(text)):
+        raise RuntimeError(f"could not remove {_IGNORE_GROUP} from IgnoreGroup in {path}")
+    return True
+
+
+
 def _write_conf(path: Path, text: str) -> bool:
     """Atomically replace ``path`` with ``text`` (escalating when root-owned).
 

@@ -34,6 +34,7 @@ sysforge resolve PKG            # show which profile applies to PKG, and why
 sysforge search cosmic          # search installed, repo, and AUR for a term
 sysforge uninstall mesa         # remove a package (demotes it out of build state)
 sysforge revert-to-stock mesa   # undo a source-built package back to the repo version
+sysforge self-uninstall         # revert everything to stock, then remove SysForge itself
 ```
 
 ## Manifest and build state
