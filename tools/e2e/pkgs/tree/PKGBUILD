@@ -1,0 +1,19 @@
+# A local stand-in for the repo package `tree`: a PKGBUILD whose name is a repo
+# package's takes build's repo opt-in path without fetching Arch's packaging
+# repo or tree's sources.
+pkgname=tree
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="sysforge end-to-end stand-in for the tree repo package"
+arch=('x86_64')
+license=('MIT')
+source=('tree.c')
+sha256sums=('SKIP')
+
+build() {
+    ${CC:-cc} $CPPFLAGS $CFLAGS $LDFLAGS -o tree tree.c
+}
+
+package() {
+    install -Dm755 tree "$pkgdir/usr/bin/tree"
+}

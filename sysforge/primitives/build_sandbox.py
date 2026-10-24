@@ -600,7 +600,7 @@ def provision_profile_data(policy: SandboxPolicy, exports: dict | None,
             # 644: the container builds as builduser, which is not this uid.
             run_privileged(
                 ["install", "-Dm644", str(src), str(dest)],
-                tag="SANDBOX",
+                tag="SANDBOX", mutates=False,  # the build chroot, not the host
             )
         except Exception as exc:
             raise SandboxUnavailable(
@@ -658,7 +658,7 @@ def provision_toolchain(policy: SandboxPolicy, exports: dict | None,
         run_privileged(
             ["arch-nspawn", str(root), "pacman", "-Syu", "--needed",
              "--noconfirm", *packages],
-            tag="SANDBOX",
+            tag="SANDBOX", mutates=False,  # the build chroot, not the host
         )
     except Exception as exc:
         raise SandboxUnavailable(
@@ -822,7 +822,7 @@ def slice_limits(policy: SandboxPolicy, throttle: BuildThrottle, env: dict):
         _log.info(f"Capping the sandbox slice {slice_name}: {' '.join(props)}")
         try:
             run_privileged(["systemctl", "set-property", "--runtime", slice_name, *props],
-                           tag="SANDBOX")
+                           tag="SANDBOX", mutates=False)  # runtime only
         except Exception as exc:
             _log.warn(f"could not cap the sandbox slice {slice_name} ({exc}): "
                       "the build runs without its cpu_quota/mem_limit")
@@ -834,7 +834,7 @@ def slice_limits(policy: SandboxPolicy, throttle: BuildThrottle, env: dict):
             resets = [f"{key}={CGROUP_PROPERTY_DEFAULTS[key]}" for key in keys]
             try:
                 run_privileged(["systemctl", "set-property", "--runtime", slice_name, *resets],
-                               tag="SANDBOX")
+                               tag="SANDBOX", mutates=False)  # runtime only
             except Exception as exc:
                 _log.warn(f"could not lift the cap on {slice_name} ({exc}): the next "
                           "sandboxed build clears it, or a reboot does")
@@ -1333,7 +1333,8 @@ def fetch_repo_packages(names, why: str = _RUST_WHY) -> list[Path]:
         )
     try:
         run_privileged(["pacman", "-Sw", "--noconfirm",
-                        *[f"{rows[n][0]}/{n}" for n in names]], tag="SANDBOX")
+                        *[f"{rows[n][0]}/{n}" for n in names]],
+                       tag="SANDBOX", mutates=False)  # download only
     except Exception as exc:
         raise SandboxUnavailable(
             f"refusing to sandbox: could not download the repo build of "

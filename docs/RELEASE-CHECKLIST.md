@@ -15,6 +15,7 @@ make next-bump                  # 1. what level the release notes require
 make design roadmap-table       # 2. regenerate, then commit anything that moved
 make ci-local                   # 3. every static gate + full suite, clean container
 make coverage-ratchet audit     # 3. the two checks no gate runs
+make e2e                                                                     # 4a
 make vm-pkg-stable && make container-smoke && make container-smoke-cachyos   # 4a
 make vm-snapshot && make vm-test && make vm-stop                             # 4b (+ git flavor)
 # 5. /release-notes skill
@@ -70,6 +71,7 @@ In more detail:
 | `lint` (ruff + shellcheck) | yes | yes | yes | yes |
 | `typecheck` (pyright) | yes | yes | no | yes |
 | full test suite | yes (`test`) | yes (`test`) | yes (`coverage`) | no |
+| end-to-end tier (`e2e`) | yes | no (its own CI job) | no | no |
 | `check-shipped` (includes version markers, completions) | yes | yes | subset | yes |
 | `check-personal`, `check-design`, `check-roadmap-table`, `check-standards` | yes | yes | no | yes |
 | clean environment (not your workstation) | no | yes | no | no |
@@ -142,6 +144,20 @@ is unavailable (no podman, no network, base image unpullable). `3` is an infrast
 pass: fix it or record the tier as unrun.
 
 ### 4a. Container tier: fast, run first
+
+The end-to-end tier first: the documented paths (the Quick start, a repo package's opt-in, flag
+drift, a failed build's cleanup) run as an unprivileged user on a fresh system, one container per
+scenario. It builds sysforge from the checkout itself, so it needs no `vm-pkg-stable`. CI runs the
+same scenarios on every pull request; run it here for the release commit. An `XFAIL` is a known,
+filed bug and does not block; an `XPASS` fails the run (remove the scenario's `xfail` marker).
+
+```bash
+make e2e                        # tools/e2e/README.md
+```
+
+- [ ] `make e2e` exits 0
+
+The smokes then check the packaging itself.
 
 Seconds rather than a boot. The CachyOS arm is the one that actually exercises portability (repo/AUR
 shadowing, a different `makepkg.conf` baseline, bumped pkgrels on core packages).

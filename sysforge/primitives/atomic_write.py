@@ -162,13 +162,17 @@ def _replace_privileged(target: Path, data: bytes, mode: int, uid, gid, tag: str
         owner = ["-o", str(uid if uid is not None else 0),
                  "-g", str(gid if gid is not None else 0)]
         _log.info(f"  Writing (sudo): {target}")
+        # mutates=False: stage + rename is atomic, so an interrupted write
+        # leaves the old file or the new one, nothing to recover (3.5.0-B138).
         try:
             run_privileged(["install", "-m", f"{mode:o}", *owner, str(src), str(staged)],
-                           tag=tag, operation="install")
-            run_privileged(["mv", "-fT", str(staged), str(target)], tag=tag, operation="mv")
+                           tag=tag, mutates=False, operation="install")
+            run_privileged(["mv", "-fT", str(staged), str(target)],
+                           tag=tag, mutates=False, operation="mv")
         except RuntimeError as e:
             with contextlib.suppress(RuntimeError):
-                run_privileged(["rm", "-f", str(staged)], tag=tag, operation="rm")
+                run_privileged(["rm", "-f", str(staged)], tag=tag, mutates=False,
+                               operation="rm")
             raise OSError(f"{e}: {target} unchanged") from e
     finally:
         src.unlink(missing_ok=True)

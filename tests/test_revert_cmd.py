@@ -199,9 +199,15 @@ def test_failed_derename_keeps_the_sentinel(tmp_path, monkeypatch):
                                   "pkgbase": "linux-sysforge", "origin_pkgbase": "linux"}
     bs.save()
     args = _args(packages=["linux-sysforge"], yes=True)
-    with patch.object(revert_cmd.pacman, "reinstall_repo_pkgs",
-                      side_effect=subprocess.CalledProcessError(1, ["pacman"])), \
-         patch.object(revert_cmd.pacman, "remove_pkgs"):
+
+    # Stubbed below the real helpers, so their escalations go through the
+    # privilege seam: the record is written at the `-R` (3.5.0-B138).
+    def pacman_run(argv, **kw):
+        if "-S" in argv:
+            raise subprocess.CalledProcessError(1, argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    with patch.object(revert_cmd.pacman.subprocess, "run", side_effect=pacman_run):
         assert runner.run_verb(revert_cmd.RevertToStockVerb(), args) == 1
     assert StageSentinel(tmp_path).get_active() is not None
 

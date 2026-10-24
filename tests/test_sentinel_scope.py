@@ -5,7 +5,8 @@ manager used by both the toolchain pipeline stage and the CLI verb runner.
 Mirrors the behaviour previously tested only via the toolchain stage's
 inline copy; the shared primitive must guarantee:
 
-  • Sentinel is written on entry and cleared on a clean exit.
+  • Sentinel is written on entry (or, with arm_on_mutation, at the first
+    system change) and cleared on a clean exit.
   • Sentinel is left in place on any exception inside the body.
   • CleanExitRequested is translated to a RuntimeError that surfaces
     both ``retry_cmd`` and ``recovery_cmd`` to the operator.
@@ -137,3 +138,82 @@ def test_verb_over_stale_record_keeps_it_non_interactive(tmp_path):
         with sentinel_scope(tmp_path, "state-repair"):
             pass
     assert StageSentinel(tmp_path).get_active()["stage"] == "toolchain"
+
+
+# ---------------------------------------------------------------------------
+# arm_on_mutation: the verb runner's record waits for the first change
+# (3.5.0-B138)
+# ---------------------------------------------------------------------------
+
+def _install_argv():
+    from sysforge.primitives.privilege import privileged_argv
+    return privileged_argv(["pacman", "-U", "--noconfirm", "--", "x.pkg.tar.zst"])
+
+
+def test_armed_scope_writes_nothing_until_the_first_change(tmp_path):
+    with sentinel_scope(tmp_path, "build", arm_on_mutation=True):
+        assert StageSentinel(tmp_path).get_active() is None
+        _install_argv()
+        assert StageSentinel(tmp_path).get_active()["stage"] == "build"
+    assert StageSentinel(tmp_path).get_active() is None
+
+
+def test_armed_scope_failure_before_a_change_leaves_no_record(tmp_path):
+    with pytest.raises(RuntimeError), sentinel_scope(tmp_path, "build", arm_on_mutation=True):
+        raise RuntimeError("pkgctl not found on PATH")
+    assert StageSentinel(tmp_path).get_active() is None
+
+
+def test_armed_scope_failure_after_a_change_keeps_the_record(tmp_path):
+    rec = Recovery.pacman_sync(["llvm"])
+    with pytest.raises(RuntimeError), sentinel_scope(
+            tmp_path, "update", recovery=rec, arm_on_mutation=True, compiler="llvm"):
+        _install_argv()
+        raise RuntimeError("install failed")
+    record = StageSentinel(tmp_path).get_active()
+    assert record["stage"] == "update"
+    assert record["recovery_kind"] == "pacman_sync"
+    assert record["compiler"] == "llvm"
+
+
+def test_armed_scope_writes_the_record_once(tmp_path):
+    with sentinel_scope(tmp_path, "update", arm_on_mutation=True):
+        _install_argv()
+        with patch.object(StageSentinel, "mark_started") as again:
+            _install_argv()
+        again.assert_not_called()
+
+
+def test_armed_scope_holds_the_lock_before_any_change(tmp_path):
+    """Liveness does not wait for the record: a second run is refused while
+    the first is still in its checks."""
+    from sysforge.primitives.stage_sentinel import check_and_recover_stale_sentinel
+    with sentinel_scope(tmp_path, "build", arm_on_mutation=True):
+        assert check_and_recover_stale_sentinel(tmp_path) is False
+
+
+def test_armed_scope_ctrl_c_before_a_change_says_nothing_changed(tmp_path):
+    with pytest.raises(RuntimeError) as exc_info, sentinel_scope(
+            tmp_path, "build", recovery=Recovery.pacman_sync(["llvm"]),
+            retry_cmd="sysforge build", arm_on_mutation=True):
+        raise CleanExitRequested()
+    msg = str(exc_info.value)
+    assert "before anything on the system changed" in msg
+    assert "pacman" not in msg
+    assert StageSentinel(tmp_path).get_active() is None
+
+
+def test_armed_scope_stops_listening_after_the_body(tmp_path):
+    with sentinel_scope(tmp_path, "build", arm_on_mutation=True):
+        pass
+    _install_argv()
+    assert StageSentinel(tmp_path).get_active() is None
+
+
+def test_recovery_display_is_not_a_change(tmp_path):
+    """The stages print their recovery command mid-body; rendering it must
+    not arm the record."""
+    rec = Recovery.pacman_sync(["llvm"])
+    with sentinel_scope(tmp_path, "build", recovery=rec, arm_on_mutation=True):
+        rec.display()
+        assert StageSentinel(tmp_path).get_active() is None

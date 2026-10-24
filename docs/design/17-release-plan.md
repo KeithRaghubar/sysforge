@@ -35,6 +35,20 @@ the gates — they need a booted VM or a working podman and network, neither of 
 prerequisite of a lint run — but a minor or major release that skips them is untested against a
 real install. See `tools/vm/README.md` and `tools/container/README.md`.
 
+The **end-to-end tier** (`make e2e`, `tools/e2e/`, `3.5.0-DEV21`) runs the documented paths the way
+a new user meets them: the Quick start in one login session, a repo package's opt-in, flag drift
+after a profile change, a failed build's cleanup. Each runs as an unprivileged user in a fresh
+container built from the demo image (`tools/demo/`, shared with `make demo-gif`), asserting on exit
+codes, `pacman -Qi`, the state files and leftover sentinels, with prompts answered on a
+pseudo-terminal. It covers what the unit suite stubs: root versus the user, group membership that
+applies only at the next login, the state one command leaves for the next. It builds sysforge from
+the checkout itself, so it needs no `vm-pkg-stable`. `pre-release` runs it; the release preflight
+does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and one networked scenario, so not
+deterministic). CI runs the same scenarios in an `e2e` job of its own, directly in the job's
+container (`make e2e E2E_HERE=1`), listed in the Makefile's `CI_JOBS` beside `GATES`. A scenario
+marked `xfail: <ID>` fails until that item is fixed and reports `XFAIL`; once it passes it fails
+the run, so the marker comes off with the fix.
+
 **CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on each pull request (a newer push to
 it cancels the superseded run) and on each push to `main`, in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the
 core dev tier (`make dev-deps-core`) installed. Its job is

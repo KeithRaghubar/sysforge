@@ -196,7 +196,9 @@ Mechanism lives in the cited §DESIGN section.
 - **Install sentinel**: `stage_sentinel.sentinel_scope()` — record *and* its liveness lock
   (`stage_in_progress.lock`, via `build_lock`; never roll a second flock path or a PID field).
   Scopes are sequential, never nested. Contention is strict (refuse, no override, no prompt);
-  `OSError` stays lenient. §Toolchain stage.
+  `OSError` stays lenient. The verb runner's scope (`arm_on_mutation=True`, `3.5.0-B138`) takes
+  the lock on entry but writes the record at the first mutating `privileged_argv`, announced via
+  `privilege.on_mutation`, so a pre-install failure leaves none; stages arm on entry. §Toolchain stage.
 - **`doctor` axes**: each a producer → `list[diagnostics.Finding]`, read-only (no `pacman -Sy` /
   `BuildState.save()`; never import `pipeline`). Register in `doctor.py` (the producer plus its
   flag in `_add_system_axis_flags`) + both completions + manpage + each axis's `clean_msg` in the
@@ -208,7 +210,10 @@ Mechanism lives in the cited §DESIGN section.
   `stage_ownership.owner_of`; `lib32-*` excluded from prefix-ownership. §Toolchain stage.
 - **Privilege escalation**: `primitives/privilege.py` (`privileged_argv`/
   `run_privileged`) — never hand-roll `["sudo", …]`; auth probes (`-v`/`-n true`)
-  and drop-priv (`-u`) are the only exceptions. §22.
+  and drop-priv (`-u`) are the only exceptions. Every escalation arms the verb sentinel
+  unless it passes `mutates=False`, which is only for a command an interruption cannot leave
+  inconsistent (download, runtime setting, atomic/idempotent write, the sandbox chroot) or an
+  argv only displayed, with the reason beside it. §22.
 - **Sudo credential *lifetime*** (orthogonal to escalation): `primitives/sudo_session.py`
   — `authenticate()` (returns usability, so "not authorized, nothing ran" is
   distinguishable from "ran and failed") + `keepalive(tag=…, enabled=…)` context

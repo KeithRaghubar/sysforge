@@ -12,6 +12,7 @@ import argparse
 import pytest
 
 from sysforge.primitives.config import ConfigError
+from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.stage_sentinel import Recovery, StageSentinel
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, run_verb
 
@@ -260,14 +261,18 @@ class _SentinelVerb(Verb):
     name = "sentverb"
     requires_sentinel = True
 
-    def __init__(self, *, fail_execute=False, recovery=None):
+    def __init__(self, *, fail_execute=False, recovery=None, mutate=True):
         self._fail_execute = fail_execute
         self._recovery = recovery or Recovery.mkinitcpio()
+        self._mutate = mutate
 
     def pre_check(self, args) -> PreCheckResult:
         return PreCheckResult()
 
     def execute(self, args, pre) -> ExecResult:
+        if self._mutate:
+            # The escalation a real install builds right before running it.
+            privileged_argv(["pacman", "-U", "--noconfirm", "--", "x.pkg.tar.zst"])
         if self._fail_execute:
             raise RuntimeError("execute failed")
         return ExecResult()
@@ -285,7 +290,8 @@ def test_sentinel_cleared_on_success(tmp_path):
 
 
 def test_sentinel_preserved_on_failure(tmp_path):
-    """Verb RuntimeError → sentinel left in place for next-run recovery."""
+    """Verb RuntimeError after a system change → sentinel left in place for
+    next-run recovery."""
     v = _SentinelVerb(fail_execute=True)
     rc = run_verb(v, _args(state_dir=str(tmp_path)))
     assert rc == 1
@@ -293,6 +299,29 @@ def test_sentinel_preserved_on_failure(tmp_path):
     assert record is not None
     assert record["stage"] == "sentverb"
     assert record["recovery_kind"] == "mkinitcpio"
+
+
+def test_failure_before_any_change_leaves_no_sentinel(tmp_path):
+    """3.5.0-B138: `build` failing on a missing pkgctl, before installing
+    anything, left `stage = "build"` behind and the next run refused."""
+    v = _SentinelVerb(fail_execute=True, mutate=False)
+    rc = run_verb(v, _args(state_dir=str(tmp_path)))
+    assert rc == 1
+    assert StageSentinel(tmp_path).get_active() is None
+
+
+def test_non_mutating_escalation_does_not_arm_the_sentinel(tmp_path):
+    """A download or an atomic config write (mutates=False) is no change a
+    recovery record is for."""
+
+    class _DownloadVerb(_SentinelVerb):
+        def execute(self, args, pre):
+            privileged_argv(["pacman", "-Sw", "--noconfirm", "x"], mutates=False)
+            raise RuntimeError("build failed")
+
+    rc = run_verb(_DownloadVerb(mutate=False), _args(state_dir=str(tmp_path)))
+    assert rc == 1
+    assert StageSentinel(tmp_path).get_active() is None
 
 
 def test_sentinel_skipped_when_requires_sentinel_false(tmp_path):

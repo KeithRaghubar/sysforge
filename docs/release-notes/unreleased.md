@@ -209,6 +209,14 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DEV21` — `make e2e` runs the documented paths on a fresh system.** Four scenarios under `tools/e2e/` run as an unprivileged user, each in a fresh Arch container from the demo image: the README's Quick start in one login session (the one-time setup, an AUR package through the review gate, `update`), a repo package's opt-in prompt and its saved answer, flag drift after a default-profile change, and a build that fails before installing anything. They check exit codes, `pacman -Qi`, the build record, `packages.toml` and leftover sentinels, answering prompts on a pseudo-terminal so `build` takes its interactive paths. They build local PKGBUILDs except the Quick start, the one scenario that needs the network. Built from the commit before `3.5.0-B134`, the Quick start fails on the lost build record. The last is the regression test for `3.5.0-B138`. A scenario can be marked as failing until a filed bug is fixed; once it passes it fails the run, so the marker comes off with the fix. `E2E_COMMIT=` builds an older revision with today's scenarios, `pre-release` runs the tier, CI runs it in a job of its own on every pull request, and the release checklist runs it before the container smokes.
+
+---
+
+- **`3.5.0-DEV22` — the progress bar is tested on a model terminal.** `3.5.0-B132` and `B133` drew output over earlier lines in xterm and VS Code's terminal, which the progress bar's tests could not see: they check the escape sequences it writes, not what those do to a screen. A small terminal model under `tests/` now replays the bar's real output, and `update`'s end-of-run reset, and checks the screen: the command line survives, output follows it in order, the bar leaves nothing behind and the next prompt lands after the last line. Every check runs under both rules terminals follow for a saved cursor when the screen scrolls, xterm's and xterm.js's. Replayed through it, the sequences each fix replaced show their bug. The model refuses a sequence it has not been taught, so a new one cannot be misread silently.
+
+---
+
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
 
 ---
@@ -843,6 +851,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B137` — sysforge notices a second run again after a `sudo sysforge` command.** sysforge keeps a lock file so that two runs that build or install cannot overlap. The first `sudo sysforge run …` created it readable only, and from then on every run as your user failed to open it, so the check that stops a second run was off for good (with a warning shown only under `-v`). The lock file is now created group-writable, and a run that cannot write an older one still takes the lock.
+
+---
+
+- **`3.5.0-B138` — a command that fails before changing anything no longer blocks the next run.** `build`, `update`, `uninstall`, `revert-to-stock` and the other commands that change the system write a record when they start, so that if one is interrupted mid-install the next run stops and offers to restore the system. The record was written before the command's own checks, so a harmless early failure, such as `sysforge build` on a system without `pkgctl`, left it behind: the next run then refused to start ("Stale stage-in-progress sentinel present"), asking for a recovery at a terminal and simply failing under a timer or cron. The record is now written at the first change to the system, the first package install, removal or boot update. Downloads, the build sandbox's own setup and config-file writes do not count, since an interruption cannot leave them half done. A second run is still refused while the first is running, and a Ctrl-C before anything changed says so.
 
 ## Security
 

@@ -53,6 +53,52 @@ def test_run_privileged_escalates_then_delegates_to_run_or_raise():
 
 
 # ---------------------------------------------------------------------------
+# on_mutation (3.5.0-B138) — the stage sentinel arms at the first change
+# ---------------------------------------------------------------------------
+
+def test_listener_sees_each_mutating_escalation_unescalated():
+    seen = []
+    with patch("sysforge.primitives.privilege.os.geteuid", return_value=1000), \
+         privilege.on_mutation(seen.append):
+        argv = privilege.privileged_argv(["pacman", "-U", "x.pkg"])
+    assert seen == [["pacman", "-U", "x.pkg"]]
+    assert argv == ["sudo", "pacman", "-U", "x.pkg"]
+
+
+def test_listener_told_when_already_root():
+    seen = []
+    with patch("sysforge.primitives.privilege.os.geteuid", return_value=0), \
+         privilege.on_mutation(seen.append):
+        privilege.privileged_argv(["mkinitcpio", "-P"])
+    assert seen == [["mkinitcpio", "-P"]]
+
+
+def test_non_mutating_escalation_is_not_announced():
+    seen = []
+    with privilege.on_mutation(seen.append):
+        privilege.privileged_argv(["pacman", "-Sw", "x"], mutates=False)
+    assert seen == []
+
+
+def test_run_privileged_forwards_mutates(monkeypatch):
+    seen = []
+    monkeypatch.setattr(privilege, "ensure_credentials", lambda: True)
+    monkeypatch.setattr(privilege, "run_or_raise", lambda cmd, **kw: "OK")
+    with privilege.on_mutation(seen.append):
+        privilege.run_privileged(["systemctl", "set-property", "x"], tag="T", mutates=False)
+        privilege.run_privileged(["systemctl", "daemon-reload"], tag="T")
+    assert seen == [["systemctl", "daemon-reload"]]
+
+
+def test_listener_removed_after_the_block():
+    seen = []
+    with privilege.on_mutation(seen.append):
+        pass
+    privilege.privileged_argv(["pacman", "-U", "x.pkg"])
+    assert seen == []
+
+
+# ---------------------------------------------------------------------------
 # ensure_credentials (3.3.0-F3) — prompt with the progress bar yielded
 # ---------------------------------------------------------------------------
 

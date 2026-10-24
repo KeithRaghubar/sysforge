@@ -75,7 +75,8 @@ def _run_priv(argv: list[str]) -> None:
     """Run a privileged command via sudo, translating failure into
     FsProvisionError so callers get one exception type to catch."""
     try:
-        subprocess.run(privileged_argv(argv), check=True, preexec_fn=lift_for_child)  # noqa: TID251 — privileged; CalledProcessError translated to FsProvisionError
+        # mutates=False: provisioning is idempotent, the next run redoes it.
+        subprocess.run(privileged_argv(argv, mutates=False), check=True, preexec_fn=lift_for_child)  # noqa: TID251 — privileged; CalledProcessError translated to FsProvisionError
     except FileNotFoundError as e:  # sudo not installed
         raise FsProvisionError(f"sudo not available: {e}") from e
     except subprocess.CalledProcessError as e:

@@ -14,7 +14,10 @@ against the prior ``llvm``/``clang``/``lld`` versions.
 This primitive writes a small TOML sentinel into ``<state_dir>/
 stage_in_progress.toml`` just before the stage performs the first
 mutation, and clears it only after the stage's post-install verification
-passes. Any subsequent sysforge invocation that loads state checks for a
+passes. (A stage writes it when its scope opens, around the install; the
+verb runner's scope writes it at the first escalation that changes the
+system, via :func:`~sysforge.primitives.privilege.on_mutation`, 3.5.0-B138.)
+Any subsequent sysforge invocation that loads state checks for a
 stale sentinel via :func:`get_active` and surfaces a recovery prompt
 before proceeding — converting "silently broken system" into "loud
 blocker at next run".
@@ -75,7 +78,7 @@ import shlex
 import subprocess
 import tomllib
 from collections.abc import Generator, Iterable
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,7 +87,7 @@ from sysforge import log
 from sysforge.primitives import atomic_write
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
-from sysforge.primitives.privilege import privileged_argv
+from sysforge.primitives.privilege import on_mutation, privileged_argv
 from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
 
@@ -198,9 +201,13 @@ class Recovery:
             return ["mkinitcpio", "-P"]
         raise ValueError(f"unknown recovery kind {self.kind!r}")
 
-    def argv(self) -> list[str]:
-        """The escalated argv to run. Raises ``ValueError`` when invalid."""
-        return privileged_argv(self._command())
+    def argv(self, *, to_run: bool = True) -> list[str]:
+        """The escalated argv to run. Raises ``ValueError`` when invalid.
+
+        ``to_run=False`` for an argv only validated or shown, which is no
+        system change (``privileged_argv(mutates=False)``).
+        """
+        return privileged_argv(self._command(), mutates=to_run)
 
     def display(self) -> str:
         """The command as a copy-pasteable shell line, for messages.
@@ -209,7 +216,7 @@ class Recovery:
         string. An invalid record renders as its kind alone.
         """
         try:
-            return shlex.join(self.argv())
+            return shlex.join(self.argv(to_run=False))
         except ValueError:
             return f"<invalid {self.kind} recovery>"
 
@@ -231,7 +238,7 @@ def recovery_from_record(record: dict) -> "Recovery | None":
         return None
     rec = Recovery(kind, tuple(args))
     try:
-        rec.argv()
+        rec.argv(to_run=False)
     except ValueError as e:
         _log.warn(f"Recorded recovery refused: {e}")
         return None
@@ -540,6 +547,7 @@ def sentinel_scope(
     *,
     recovery: Recovery | None = None,
     retry_cmd: str | None = None,
+    arm_on_mutation: bool = False,
     **metadata,
 ) -> Generator["StageSentinel", None, None]:
     """Install a stage sentinel for the duration of the block.
@@ -582,6 +590,13 @@ def sentinel_scope(
         retry_cmd: command the operator can re-run to resume from a clean
             state, surfaced in the ``CleanExitRequested`` → ``RuntimeError``
             message (e.g. ``sysforge run toolchain``).
+        arm_on_mutation: write the record at the body's first system change
+            (the first :func:`~sysforge.primitives.privilege.privileged_argv`
+            that mutates) instead of on entry (3.5.0-B138). The verb runner
+            sets it: a verb's ``execute`` does its checks first, and a failure
+            there, before anything changed, must leave no record for the next
+            run to refuse on. The lock is still taken on entry. The stages
+            keep the default: they open their scope around the install itself.
         **metadata: extra fields persisted in the sentinel (e.g.
             ``compiler="llvm"``, ``pgo=True``).
 
@@ -626,19 +641,33 @@ def sentinel_scope(
                 "detection will be unavailable for this run"
             )
 
-        try:
-            sentinel.mark_started(stage_name, **extra, **metadata)
-        except (OSError, PermissionError) as e:
-            _log.warn(
-                f"Cannot write stage sentinel ({e}); interrupted-run "
-                "detection will be unavailable for this run"
-            )
+        armed = False
 
+        def arm(_argv: list[str] | None = None) -> None:
+            nonlocal armed
+            if armed:
+                return
+            armed = True
+            try:
+                sentinel.mark_started(stage_name, **extra, **metadata)
+            except (OSError, PermissionError) as e:
+                _log.warn(
+                    f"Cannot write stage sentinel ({e}); interrupted-run "
+                    "detection will be unavailable for this run"
+                )
+
+        if not arm_on_mutation:
+            arm()
         scope = InterruptScope()
         try:
-            with scope:
+            with scope, on_mutation(arm) if arm_on_mutation else nullcontext():
                 yield sentinel
         except CleanExitRequested:
+            if not armed:
+                raise RuntimeError(
+                    f"[{stage_name.upper()}] interrupted by user (Ctrl-C) before "
+                    "anything on the system changed."
+                ) from None
             _log.warn(
                 f"{stage_name} interrupted at a safe boundary. Stage sentinel "
                 "left in place; the next sysforge invocation will detect the "

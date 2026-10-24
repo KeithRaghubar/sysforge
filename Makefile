@@ -7,7 +7,7 @@
         preflight release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
-        container-build container-smoke container-smoke-cachyos container-shell container-clean \
+        container-build container-smoke container-smoke-cachyos container-shell container-clean e2e \
         ci-local
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ DEV_DEPS_CORE      = python-pytest ruff shellcheck scdoc uv git base-devel zsh
 DEV_DEPS_PKG       = devtools
 # QEMU test VM: vm-boot, vm-snapshot, vm-console, vm-monitor (socat), …
 DEV_DEPS_VM        = qemu-desktop edk2-ovmf gtk-vnc socat
-# Container test tier: container-smoke, container-smoke-cachyos.
+# Container test tier: container-smoke, container-smoke-cachyos, e2e.
 DEV_DEPS_CONTAINER = podman
 # Release: GPG-signed commit/tag/tarball + the GitHub release upload.
 DEV_DEPS_RELEASE   = gnupg github-cli
@@ -374,10 +374,13 @@ sync-config: ## Merge new shipped defaults into the live config dir
 ##@ Release
 # The gate list, in run order, written once (3.5.0-DEV8): `pre-release`
 # depends on it and tools/ci.sh reads it through `print-gates`, so the release
-# gate and CI cannot drift apart.
+# gate and CI cannot drift apart. CI_JOBS are the rest of `pre-release`: CI
+# runs each in a job of its own (`make <job>` in .github/workflows/ci.yml), not
+# as a gate of tools/ci.sh (3.5.0-DEV21).
 GATES := lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards check-surface
+CI_JOBS := e2e
 
-pre-release: $(GATES) ## Composite gate: lint, types, tests, all checks
+pre-release: $(GATES) $(CI_JOBS) ## Composite gate: lint, types, tests, all checks, end-to-end tier
 
 print-gates: ## Print the gate list pre-release and CI run
 	@echo $(GATES)
@@ -646,6 +649,14 @@ container-shell: ## Open a shell in the test container
 
 container-clean: ## Remove the test container and image
 	./tools/container/harness.sh clean --distro=$(or $(DISTRO),arch)
+
+# End-to-end tier (3.5.0-DEV21): the documented paths run as an unprivileged
+# user on a fresh system, each scenario in its own container from the demo
+# image (tools/e2e/README.md). SCENARIO= runs only the named ones; E2E_COMMIT=
+# builds that revision instead of HEAD. E2E_HERE=1 runs them on this system
+# as root, without podman: CI's e2e job, in its own fresh container.
+e2e: ## Run the end-to-end scenarios in fresh Arch containers (SCENARIO=, needs podman)
+	E2E_COMMIT=$(E2E_COMMIT) bash tools/e2e/run.sh $(if $(E2E_HERE),--here) $(SCENARIO)
 
 # Replay the CI job (.github/workflows/ci.yml, 3.4.0-DEV1) against the working
 # tree, uncommitted edits included, in the same base image. The tree is mounted
