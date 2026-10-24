@@ -157,8 +157,39 @@
 # bootstrap.toml [desktop] environment for unattended installs).
 # =============================================================================
 
+# Example: the core COSMIC desktop (every member of the repo `cosmic` group)
+# tracked as AUR -git packages.
 #[group.cosmic]
-#packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
+#packages = [
+#    "cosmic-app-library-git",
+#    "cosmic-applets-git",
+#    "cosmic-bg-git",
+#    "cosmic-comp-git",
+#    "cosmic-edit-git",
+#    "cosmic-files-git",
+#    "cosmic-greeter-git",
+#    "cosmic-idle-git",
+#    "cosmic-initial-setup-git",
+#    "cosmic-launcher-git",
+#    "cosmic-monitor-git",
+#    "cosmic-notifications-git",
+#    "cosmic-osd-git",
+#    "cosmic-osk-git",
+#    "cosmic-panel-git",
+#    "cosmic-player-git",
+#    "cosmic-randr-git",
+#    "cosmic-screenshot-git",
+#    "cosmic-session-git",
+#    "cosmic-settings-daemon-git",
+#    "cosmic-settings-git",
+#    "cosmic-sound-theme-git",
+#    "cosmic-store-git",
+#    "cosmic-term-git",
+#    "cosmic-viewer-git",
+#    "cosmic-wallpapers-git",
+#    "cosmic-workspaces-git",
+#    "xdg-desktop-portal-cosmic-git",
+#]
 
 
 # =============================================================================

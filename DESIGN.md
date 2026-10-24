@@ -427,7 +427,7 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 
 ```toml
 [group.cosmic]
-packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git"]
+packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git", ...]
 # Optional defaults inherited by every member:
 # enable_build_from_source = true
 ```

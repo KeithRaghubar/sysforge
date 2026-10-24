@@ -288,6 +288,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-DOC16` — the `packages.toml` COSMIC group example lists the whole core desktop.** The commented `[group.cosmic]` example named only three packages (`cosmic-session-git`, `cosmic-comp-git`, `cosmic-settings-git`), so uncommenting it gave you a compositor and settings app but no panel, launcher, greeter, file manager or portal. It now lists the `-git` build of every member of the repo `cosmic` group, 28 packages, so uncommenting it tracks a complete desktop.
+
+---
+
 - **`3.5.0-F2` — `run toolchain` builds the LLVM toolchain from upstream's single `llvm` package.** The repos now build clang, lld, polly, compiler-rt and openmp, along with lldb, libclc and others, as part of the `llvm` package. With PGO on, the whole set now goes through the profiling build together, which also means clang's own code (`libclang-cpp`) is optimized with the profile for the first time; before, only libLLVM was. Building them separately would have meant building the entire llvm source tree two extra times. When it installs, the toolchain stage now also replaces the other packages that come from the same build and that you already have installed (for example lldb and libclc), so they match the new libLLVM, and the rollback covers them too. Packages from that build you never installed, such as the WebAssembly runtimes, are built but not installed. Your `[packages]` lists in `toolchain.toml` keep working unchanged.
 
 ---
