@@ -56,10 +56,11 @@ from sysforge.primitives.config import (
     load_config,
     load_conflict_groups,
     load_consumes_inference,
+    load_sysforge_toml,
     parse_system_makepkg_conf,
 )
 from sysforge.primitives.dep_analysis import run_dep_analysis
-from sysforge.primitives.failure import handle_failure
+from sysforge.primitives.failure import handle_failure, resolve_failure_handling
 
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
 # Re-exported here so emit_makepkg_conf and the CLI/update call sites
@@ -1048,10 +1049,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
         # ── Pre-flight: .SRCINFO drift regeneration ─────────────────────
         from sysforge.primitives import auto_repair as _ar
-        _failure_cfg = (config or {}).get("failure_handling", {})
-        _srcinfo_behaviour = _failure_cfg.get(
-            "srcinfo_drift", "auto_repair_with_warning"
-        )
+        _failure_cfg = resolve_failure_handling((config or {}).get("failure_handling"))
+        _srcinfo_behaviour = _failure_cfg["srcinfo_drift"]
         try:
             _ar.preflight_srcinfo(pkgbuild_path.parent, _srcinfo_behaviour)
         except RuntimeError as _e:
@@ -1147,7 +1146,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     _ar.REGISTRY,
                     _accum,
                     pkgbuild_dir=pkgbuild_path.parent,
-                    behaviour_for=lambda key: _failure_cfg.get(key, "auto_repair"),
+                    behaviour_for=_failure_cfg.get,
                     batch=_batch_mode,
                     already_repaired=_repaired_scenarios,
                 )
@@ -1564,6 +1563,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
 
     config_paths = [Path(options.profile_conf)] if options.profile_conf is not None else None
     config = load_config(config_paths=config_paths)
+    # [failure_handling] is a sysforge.toml table; every reader below takes it
+    # from this dict, which is otherwise profiles.toml (3.5.0-B140).
+    config = {**config, "failure_handling": resolve_failure_handling(
+        load_sysforge_toml().get("failure_handling"))}
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
     # pkg log is open — they go to the unified log (if open) and terminal only.
 

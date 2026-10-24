@@ -607,8 +607,11 @@
      "pkg_cache_warn_gb"
     ],
     "failure_handling": [
+     "abi_mismatch",
      "checksum_mismatch",
+     "makedep_probe_failed",
      "pgp_key_missing",
+     "pkgbuild_unparseable",
      "srcinfo_drift",
      "vendored_deps_missing"
     ],
