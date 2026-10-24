@@ -435,7 +435,7 @@ _sysforge_packages_add() {
     '--packages[path to packages.toml]:file:_files' \
     '--source[pin routing (metadata only)]:source:(repo aur local)' \
     '--enable-build-from-source[build from source]' \
-    '--no-cache[disable ccache/sccache (required for PGO)]' \
+    '--no-cache[build this package with ccache and sccache off]' \
     '--reason[free-form note attached to the entry]:text' \
     '1: :_sysforge_pkg_names'
 }

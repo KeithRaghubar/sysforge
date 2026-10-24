@@ -51,6 +51,7 @@ from sysforge.primitives.cache_probe import (
 )
 from sysforge.primitives.config import (
     _active_profiles_path,
+    cache_disabled_for,
     find_pkgbuild,
     load_config,
     load_conflict_groups,
@@ -587,6 +588,24 @@ def _pkgname_from_meta(pkgmeta: dict | None) -> str:
     if isinstance(name, list):
         name = name[0] if name else "unknown"
     return name or "unknown"
+
+
+# A packages.toml `cache = false` entry (3.5.0-B139). CCACHE_DISABLE reaches
+# ccache however it was invoked, BUILDENV's or a ccache directory first on PATH;
+# the empty RUSTC_WRAPPER wins over one the shell or the profile exports.
+_CACHE_OFF_ENV = {"CCACHE_DISABLE": "1", "RUSTC_WRAPPER": ""}
+
+
+def _with_cache_opt_out(env: dict | None, config: dict, pkgmeta: dict | None,
+                        pkgbuild_path: Path) -> dict | None:
+    """``env`` plus the cache-off keys when packages.toml opts this build out."""
+    globals_ = (pkgmeta or {}).get("globals", {})
+    names = [globals_.get("pkgbase"), pkgbuild_path.parent.name,
+             *((pkgmeta or {}).get("pkgnames") or [])]
+    if not cache_disabled_for(config, names):
+        return env
+    _build_log.info("packages.toml cache = false: ccache and sccache off for this build")
+    return {**(env or {}), **_CACHE_OFF_ENV}
 
 
 def _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir: str | None) -> bool:
@@ -1892,7 +1911,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 compiler_flags_extra=effective_flags_extra,
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,
-                injected_env=options.extra_env,
+                injected_env=_with_cache_opt_out(
+                    options.extra_env, config, pkgmeta, pkgbuild_path),
                 strip_flags=effective_strip_flags,
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                 state_dir=options.state_dir,

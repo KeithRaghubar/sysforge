@@ -279,7 +279,7 @@ class PackagesAddVerb(Verb):
             help="Build this repo package from source instead of installing the "
                  "binary via pacman.")
         p.add_argument("--no-cache", action="store_true", dest="no_cache",
-            help="Disable ccache/sccache for this package (required for PGO).")
+            help="Build this package with ccache and sccache off.")
         p.add_argument("--reason", metavar="TEXT", dest="reason",
             help="Free-form note attached to the entry.")
         p.add_argument("--packages", metavar="FILE", dest="packages",

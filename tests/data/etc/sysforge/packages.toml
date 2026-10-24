@@ -12,7 +12,8 @@
 #                            classification is ambiguous or you want to force routing
 #   enable_build_from_source optional  true = build this repo package from source
 #                            instead of installing the binary via pacman
-#   cache          optional  false = disable ccache/sccache (required for PGO)
+#   cache          optional  false = build this package with ccache and
+#                            sccache off
 #
 # An entry with only `name` (or only `name` + `source`) has no override
 # effect at steady-state — `source` is metadata only. `sysforge packages add`
