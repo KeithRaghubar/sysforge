@@ -10,11 +10,11 @@ toolchain = "gcc"        # global package-compiler default (see "Toolchain field
 [profiles.bare]
 # Fallback profile, no flags
 
+# No profile names a compiler or linker: both come from `toolchain` (see
+# "Toolchain field"). Override individual CC/CXX/AR/… keys to win over it.
+
 [profiles.standard]
 extends = "bare"
-# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
-# Override individual CC/CXX/AR/… keys to win over the bundle, or set
-# `toolchain = "llvm"` here / in a rule to switch the whole bundle.
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"

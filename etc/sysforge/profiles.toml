@@ -2,7 +2,7 @@
 # profiles.toml — compiler flag profiles, package matching rules, and
 # flag-resolution reference data (conflict groups + consumes inference)
 #
-# Everything down to line 225 ("END OF HEADER") is documentation;
+# Everything down to line 226 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # SysForge resolves a profile for each package by evaluating [[rules]] in
@@ -84,13 +84,14 @@
 #     Arch's makepkg.conf sets _FORTIFY_SOURCE in CFLAGS (-Wp,…=3, kept by
 #     [preserved_system_tokens]); defining it here again defines it twice.
 #
-#   LDFLAGS — use -fuse-ld=lld to select lld. Flag guards in
-#     emit_makepkg_conf handle incompatibilities automatically: lld-only
-#     flags (--icf=*) stripped when lld is not the linker; RUSTFLAGS linker
-#     reconciled to match LDFLAGS; -flto=thin rewritten to -flto for GCC;
-#     LTO disabled entirely when CC=gcc + linker=lld (GCC LTO bitcode is
-#     incompatible with lld).
-#   LDFLAGS  = "-fuse-ld=lld -Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
+#   LDFLAGS — linker flags. The linker itself comes from `toolchain` (llvm
+#     adds -fuse-ld=lld); name a -fuse-ld= token here only to pick another
+#     one (e.g. mold). Flag guards in emit_makepkg_conf then reconcile it:
+#     lld-only flags (--icf=*) stripped when lld is not the linker;
+#     RUSTFLAGS linker reconciled to match LDFLAGS; -flto=thin rewritten to
+#     -flto for GCC; LTO disabled entirely when CC=gcc + linker=lld (GCC LTO
+#     bitcode is incompatible with lld).
+#   LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 #   DEBUG_CFLAGS   = "-g"
 #   DEBUG_CXXFLAGS = "-g"
 #   DEBUG_LDFLAGS  = ""
@@ -242,6 +243,10 @@ toolchain = "gcc"   # global package-compiler default: "gcc" | "llvm" (see heade
 # =============================================================================
 # What each flag below changes and costs (-O2/-O3, -march=native, LTO, the
 # linker options, the hardening flags): docs/concepts/compiler-optimization.md
+#
+# No profile names a compiler or linker: both come from [defaults] `toolchain`
+# ("gcc" → gcc/g++ + system ld; "llvm" → clang/clang++ + llvm-* + lld). Set
+# `toolchain` in a profile to switch just that profile.
 
 [profiles.bare]
 # Fallback — no flags injected
@@ -249,10 +254,6 @@ BUILDDIR = "$HOME/builds"
 
 [profiles.standard]
 extends = "bare"
-# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
-# That expands to CC=gcc/CXX=g++ + system binutils, or CC=clang/CXX=clang++ +
-# llvm-* binutils + -fuse-ld=lld for "llvm". Set `toolchain = "llvm"` here or in
-# a rule to switch, or override individual CC/CXX/AR/… keys to win over it.
 CFLAGS   = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -263,9 +264,8 @@ makepkg_flags = ["--noconfirm"]
 [profiles.optimized]
 extends = "standard"
 CFLAGS  = "-march=native -O3 -pipe -fno-plt"
-# No -fuse-ld= here: the llvm toolchain adds lld itself, and under gcc an lld
-# link would cost LTO (GCC LTO bitcode is incompatible with lld). --icf=all is
-# lld-only and is stripped when another linker is in use.
+# --icf=all (fold identical functions) is an lld option, so it only takes
+# effect under toolchain = "llvm"; under gcc's linker it is stripped at build.
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
 makepkg_flags = ["--noconfirm", "--cleanbuild"]
 

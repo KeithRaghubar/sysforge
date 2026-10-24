@@ -79,12 +79,14 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   vocabulary outside the closing "In sysforge" section, upstream sources cited, no numbers
   measured on one machine (`tests/test_concept_pages.py` checks the closing sections, the upstream
   links and the vocabulary); guides link them (and the glossary) rather than re-explaining.
-- **`DOC` IDs are for user-facing docs only** (`docs/guides/`, `docs/concepts/`, README, man page) and file under
+- **`DOC` IDs are for user-facing docs only** (`docs/guides/`, `docs/concepts/`, README, man page,
+  comments in shipped `etc/sysforge/*.toml`) and file under
   `## Changed` (patch; lint-enforced). Internal docs (design, CLAUDE.md, ROADMAP) get no ID;
   wrong `--help`/man output is a `B`, since it is CLI behaviour.
 - **`DEV` IDs are for contributor-only work** (only `tests/`, `tools/`, `Makefile`, `.claude/`,
   dev docs) and file their release-note entry under `## Changed` only, like `DOC` (lint-enforced,
-  `3.4.0-STD1`). Touching `sysforge/` or a shipped file makes it `B`/`F`.
+  `3.4.0-STD1`). Touching `sysforge/` or a shipped file makes it `B`/`F` (a comment-only edit to a
+  shipped config is `DOC`).
 - **Completions stay in lockstep with the CLI** (`completions/_sysforge` + bash) in the same change.
 - **A user-facing change regenerates `tests/data/surface.json`** (`make surface`) and names what
   changed in the release notes; `make check-surface` (a required CI gate) enforces both.

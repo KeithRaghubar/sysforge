@@ -4,8 +4,8 @@
 # Everything down to line 25 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
-# Used by the bootstrap pipeline stages (partition, base_install, hardware,
-# configure). Edit this file before running sysforge run pipeline from a live
+# Used by the bootstrap pipeline stages (install, hardware, configure).
+# Edit this file before running sysforge run pipeline from a live
 # Arch install environment. Inert outside `sysforge run pipeline` — on an
 # already-installed system this file is never read.
 #
@@ -20,8 +20,8 @@
 #   # text          prose. Explanation only; nothing to uncomment.
 #   #key = value    a real setting, shown at its default or with an example
 #                   value. Delete the single leading `#` to activate it.
-# Section headers are always live — only their keys are commented out, so
-# activating a setting is a one-line edit.
+# Section headers are never commented out, even where every key under one
+# is, so activating a setting is a one-line edit.
 # ============================== END OF HEADER ================================
 
 # Mount point for the new system during install.
@@ -61,10 +61,10 @@ root_fs = "ext4"
 # pacman ParallelDownloads (default: 5)
 #parallel_downloads = 5
 
-# Account created by the base_install stage. Defaults to "builder".
+# Account created by the install stage. Defaults to "builder".
 #username = "builder"
 
-# Passwords applied during base_install. Leave unset to skip (run `passwd`
+# Passwords applied by the install stage. Leave unset to skip (run `passwd`
 # manually inside the chroot or after first boot). Values are not retained
 # on disk after a successful pipeline run.
 #user_password = ""

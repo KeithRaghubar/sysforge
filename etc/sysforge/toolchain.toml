@@ -1,7 +1,7 @@
 # =============================================================================
 # toolchain.toml — custom LLVM or GCC toolchain build (stage 5 / sysforge run toolchain)
 #
-# Everything down to line 30 ("END OF HEADER") is documentation;
+# Everything down to line 28 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # This stage is opt-in. Building a custom toolchain is a deliberate choice;
@@ -14,19 +14,17 @@
 # paths into pipeline state and returns. Stock gcc-libs from pacman's
 # base-devel provides the runtime; sysforge never builds GCC from source.
 #
-# "llvm" is opt-in only and enables the 4-pass PGO bootstrap, which is
-# fragile across LLVM major bumps. Leave on "gcc" unless you specifically
-# want PGO LLVM.
-#
-# The built compiler is automatically propagated to subsequent stages via
-# pipeline state: packages and kernel will use CC/CXX from this result.
+# The compiler this stage registers carries over: the packages and kernel
+# stages of the same pipeline build with it (kernel.toml `compiler` can
+# override), and profiles.toml's [defaults] toolchain is rewritten to match,
+# so later `sysforge build` / `update` runs use it too.
 #
 # COMMENT CONVENTION — two kinds of `#` lines appear below:
 #   # text          prose. Explanation only; nothing to uncomment.
 #   #key = value    a real setting, shown at its default or with an example
 #                   value. Delete the single leading `#` to activate it.
-# Section headers are always live — only their keys are commented out, so
-# activating a setting is a one-line edit.
+# Section headers are never commented out, even where every key under one
+# is, so activating a setting is a one-line edit.
 # ============================== END OF HEADER ================================
 
 enabled = false
@@ -84,15 +82,15 @@ drift_detect = "fingerprint"
 #pgo_store = "/var/cache/sysforge/llvm-pgo"
 #
 # profile_store — root directory of the other profile stores: build --pgo's
-#   pgo/<pkgbase>, the kernel's autofdo/ and propeller/, and bolt/. Overridden
-#   by SYSFORGE_PROFILE_STORE when unset here.
+#   pgo/<pkgbase>, the kernel's autofdo/ and propeller/, and bolt/. When unset,
+#   SYSFORGE_PROFILE_STORE is used if set, else the default shown.
 #profile_store = "/var/cache/sysforge"
 
 # ---------------------------------------------------------------------------
 # Build-safety gates (LLVM path only — the GCC path is register-only and skips
 # all gates). Gate 1 runs cheap pre-build checks and hard-aborts before any
 # build time is spent on a condition that will definitely fail or break the
-# live toolchain. See DESIGN.md §Toolchain stage boot-safety.
+# live toolchain.
 # ---------------------------------------------------------------------------
 
 # min_build_free_gb — minimum free space (GiB) required on each filesystem
@@ -199,6 +197,9 @@ enabled = false
 # member of those PKGBUILDs that is already installed (e.g. lldb); members you
 # never installed are built but left out.
 #
+# The [packages] section only applies to compiler = "llvm" (the GCC path is
+# register-only — no build, no package list).
+#
 [packages]
 #pgo     = ["llvm", "llvm-libs"]
 #non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
@@ -215,16 +216,13 @@ enabled = false
 #   non-fatal (the run continues with LLVM-only data). Default ["llvm"]
 #   (self-build only). LLVM/PGO path only.
 #training_corpus = ["llvm", "mesa"]
-
-# The [packages] section only applies to compiler = "llvm" (the GCC path is
-# register-only — no build, no package list).
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # LLVM_TARGETS_TO_BUILD filtering
 #
 # When sysforge builds an LLVM PKGBUILD (llvm, clang, compiler-rt, lld, …),
-# pkgbuild_patcher injects -DLLVM_TARGETS_TO_BUILD="<list>" into the cmake
+# sysforge injects -DLLVM_TARGETS_TO_BUILD="<list>" into the cmake
 # invocation so the built toolchain only carries the backends this host
 # actually uses.
 #
