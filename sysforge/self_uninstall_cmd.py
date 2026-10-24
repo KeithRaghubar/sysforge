@@ -8,7 +8,7 @@ Remove SysForge from the system in one command, in the order that leaves
 nothing half-done:
 
 1. revert every source-built package a repo carries (``revert-to-stock``'s
-   own steps, :func:`revert_cmd.apply_reverts`); a build no repo carries (an
+   own steps, :func:`verbs.shared.apply_reverts`); a build no repo carries (an
    AUR or local package, a custom kernel) stays installed and keeps working,
    since there is nothing to revert it to;
 2. take ``sf-build`` out of ``IgnoreGroup`` in ``/etc/pacman.conf`` and the
@@ -41,8 +41,15 @@ from sysforge.primitives.config import load_sysforge_toml
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives.resource_guard import lift_for_child
 from sysforge.primitives.stage_sentinel import Recovery, sentinel_scope
-from sysforge.revert_cmd import RevertPlan, apply_reverts, plan_revert
-from sysforge.setup_cmd import PACMAN_CONF, _IGNORE_GROUP, _check_ignore_group, remove_ignore_group
+from sysforge.verbs.shared import (
+    IGNORE_GROUP,
+    PACMAN_CONF,
+    RevertPlan,
+    apply_reverts,
+    has_ignore_group,
+    plan_revert,
+    remove_ignore_group,
+)
 from sysforge.verbs.base import ExecResult, PreCheckResult, Verb
 
 _log = log.get_logger("SELF-UNINSTALL")
@@ -99,7 +106,7 @@ def plan_self_uninstall(bs: BuildState, *, in_repo, owner: str | None,
         else:
             plan.reverts.append(rp)
     try:
-        plan.ignore_group = _check_ignore_group(pacman_conf.read_text())
+        plan.ignore_group = has_ignore_group(pacman_conf.read_text())
     except OSError:
         plan.ignore_group = False
     if chroot_conf is not None and local_repo.has_chroot_section(chroot_conf):
@@ -158,7 +165,7 @@ def _describe(plan: SelfUninstallPlan, *, keep_data: bool) -> list[str]:
         lines.append("Keep installed (built by sysforge, kept working):")
         lines += [f"  {n}: {why}" for n, why in plan.kept]
     if plan.ignore_group:
-        lines.append(f"Remove {_IGNORE_GROUP} from IgnoreGroup in {PACMAN_CONF}")
+        lines.append(f"Remove {IGNORE_GROUP} from IgnoreGroup in {PACMAN_CONF}")
     if plan.chroot_conf:
         lines.append(f"Remove [{local_repo.REPO_NAME}] from {plan.chroot_conf}")
     if plan.package:

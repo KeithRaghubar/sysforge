@@ -8,7 +8,8 @@ import pytest
 from sysforge import self_uninstall_cmd as su
 from sysforge.primitives import paths
 from sysforge.primitives.build_state import BuildState
-from sysforge.setup_cmd import _patch_conf_text, _unpatch_conf_text
+from sysforge.setup_cmd import _patch_conf_text
+from sysforge.verbs.shared import drop_ignore_group as _unpatch_conf_text
 from tests.cli_args import cli_args
 
 

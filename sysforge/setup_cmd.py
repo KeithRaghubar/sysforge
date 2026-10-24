@@ -50,6 +50,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from sysforge.verbs import shared as _shared
 from sysforge.primitives import config as _config
 from sysforge.primitives import atomic_write, config_presets, pacman_hooks
 from sysforge.primitives.fs_provision import FsProvisionError
@@ -70,11 +71,11 @@ from sysforge.primitives.prompt import prompt_choice
 from sysforge.primitives.render import arrow
 
 
-PACMAN_CONF = Path("/etc/pacman.conf")
-_IGNORE_GROUP = "sf-build"
-
-# Pattern matching any uncommented IgnoreGroup line (case-insensitive key).
-_IGNOREGROUP_RE = re.compile(r"^[ \t]*IgnoreGroup[ \t]*=[ \t]*(.+)$", re.MULTILINE | re.IGNORECASE)
+# The IgnoreGroup line's facts live in verbs/shared.py, beside the removal
+# self-uninstall needs (3.5.0-F19); setup adds the line.
+PACMAN_CONF = _shared.PACMAN_CONF
+_IGNORE_GROUP = _shared.IGNORE_GROUP
+_IGNOREGROUP_RE = _shared.IGNOREGROUP_RE
 
 
 # ---------------------------------------------------------------------------
@@ -83,11 +84,7 @@ _IGNOREGROUP_RE = re.compile(r"^[ \t]*IgnoreGroup[ \t]*=[ \t]*(.+)$", re.MULTILI
 
 def _check_ignore_group(conf_text: str) -> bool:
     """Return True if sf-build is already in an uncommented IgnoreGroup line."""
-    for m in _IGNOREGROUP_RE.finditer(conf_text):
-        groups = m.group(1).split()
-        if _IGNORE_GROUP in groups:
-            return True
-    return False
+    return _shared.has_ignore_group(conf_text)
 
 
 def _patch_conf_text(conf_text: str) -> str:
@@ -130,41 +127,6 @@ def _patch_conf_text(conf_text: str) -> str:
 # ---------------------------------------------------------------------------
 # Write helper
 # ---------------------------------------------------------------------------
-
-def _unpatch_conf_text(conf_text: str) -> str:
-    """Return conf_text with sf-build taken out of every IgnoreGroup line.
-
-    The reverse of :func:`_patch_conf_text`, for ``self-uninstall``: other
-    groups on the line stay, and a line left with none is dropped, so the file
-    is what it was before ``setup`` touched it.
-    """
-    def _drop(m: re.Match) -> str:
-        kept = [g for g in m.group(1).split() if g != _IGNORE_GROUP]
-        if not kept:
-            return "\0"  # marker: the whole line goes
-        return m.group(0).replace(m.group(1), " ".join(kept))
-
-    text = _IGNOREGROUP_RE.sub(_drop, conf_text)
-    return re.sub(r"^\0\n?", "", text, flags=re.MULTILINE)
-
-
-def remove_ignore_group(path: Path = PACMAN_CONF) -> bool:
-    """Take sf-build out of ``path``'s IgnoreGroup; True when it was there.
-
-    Raises ``RuntimeError`` when the line is there but the write fails, so the
-    caller can stop before removing anything else.
-    """
-    try:
-        text = path.read_text()
-    except OSError:
-        return False
-    if not _check_ignore_group(text):
-        return False
-    if not _write_conf(path, _unpatch_conf_text(text)):
-        raise RuntimeError(f"could not remove {_IGNORE_GROUP} from IgnoreGroup in {path}")
-    return True
-
-
 
 def _write_conf(path: Path, text: str) -> bool:
     """Atomically replace ``path`` with ``text`` (escalating when root-owned).
