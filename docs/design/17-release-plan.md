@@ -43,11 +43,14 @@ codes, `pacman -Qi`, the state files and leftover sentinels, with prompts answer
 pseudo-terminal. It covers what the unit suite stubs: root versus the user, group membership that
 applies only at the next login, the state one command leaves for the next. It builds sysforge from
 the checkout itself, so it needs no `vm-pkg-stable`. `pre-release` runs it; the release preflight
-does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and one networked scenario, so not
+does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and four networked scenarios, so not
 deterministic). CI runs the same scenarios in an `e2e` job of its own, directly in the job's
 container (`make e2e E2E_HERE=1`), listed in the Makefile's `CI_JOBS` beside `GATES`. A scenario
 marked `xfail: <ID>` fails until that item is fixed and reports `XFAIL`; once it passes it fails
-the run, so the marker comes off with the fix.
+the run, so the marker comes off with the fix. Every command in `tests/data/surface.json` is run by a scenario or
+listed, with its reason, in `tools/e2e/uncovered.toml` (`3.5.0-DEV23`); `tools/e2e_coverage.py`
+does the comparison, `tests/test_e2e_coverage.py` fails the suite on a command in neither set or
+a listing a scenario has made redundant, and `make e2e-coverage` prints both.
 
 **CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on each pull request (a newer push to
 it cancels the superseded run) and on each push to `main`, in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the

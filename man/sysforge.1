@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-22"
+.TH "sysforge" "1" "2026\-10\-24"
 .PP
 .PP
 .SH NAME
@@ -226,7 +226,7 @@ Used by: \fBrun pipeline\fR, \fBrun packages\fR.\&
 \fB\-\-state\-dir\fR \fIDIR\fR
 .RS 4
 Override state directory.\&
-Used by: \fBbuild\fR, \fBupdate\fR, \fBstate list\fR, \fBstate repair\fR, \fBstate failed\fR, \fBstate forget\fR, \fBrun pipeline\fR, \fBrun hardware\fR, \fBrun reconfigure\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR, \fBrevert\-to\-stock\fR, \fBuninstall\fR.\&
+Used by: \fBbuild\fR, \fBupdate\fR, \fBstate list\fR, \fBstate repair\fR, \fBstate failed\fR, \fBstate forget\fR, \fBrun pipeline\fR, \fBrun hardware\fR, \fBrun reconfigure\fR, \fBrun toolchain\fR, \fBrun packages\fR, \fBrun kernel\fR, \fBrevert\-to\-stock\fR, \fBuninstall\fR, \fBself\-uninstall\fR.\&
 .PP
 .RE
 \fB\-\-yes\fR
@@ -1187,7 +1187,7 @@ Build this repo package from source instead of installing the binary via pacman.
 .RE
 \fB\-\-no\-cache\fR
 .RS 4
-Disable ccache/sccache for this package (required for PGO).\&
+Build this package with ccache and sccache off.\&
 .PP
 .RE
 \fB\-\-reason\fR \fITEXT\fR
@@ -1508,6 +1508,34 @@ Remove package(s); demote any sysforge\-tracked ones out of build state.\&
 \fBPKG\fR
 .RS 4
 Package name(s) to remove (stock or \-sysforge name).\&
+.PP
+.RE
+\fB\-\-yes\fR
+.RS 4
+Remove without pacman'\&s confirmation prompt (needed without a terminal).\&
+.PP
+.RE
+\fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)
+.PP
+.SS self\-uninstall
+.PP
+\fBsysforge self\-uninstall\fR [\fIOPTIONS\fR]
+.PP
+Revert the packages sysforge built to the repo versions, then remove sysforge, its state and its config.\&
+.PP
+\fB\-\-keep\-data\fR
+.RS 4
+Remove only the package: keep edited config (as .\&pacsave), state, PGO profiles and the sysforge group.\&
+.PP
+.RE
+\fB\-\-dry\-run\fR
+.RS 4
+Show the plan without changing anything.\&
+.PP
+.RE
+\fB\-\-yes\fR
+.RS 4
+Do it without asking (needed without a terminal).\&
 .PP
 .RE
 \fBShared options:\fR \fB\-\-state\-dir\fR (see SHARED OPTIONS)

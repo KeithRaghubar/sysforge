@@ -78,6 +78,11 @@ def resolve_packages_path(config: dict) -> Path:
 # for one cycle so existing imports keep working.
 
 DEFAULT_STATE_DIR = Path("/var/lib/sysforge")
+
+# Where the package itself puts things (PKGBUILD, tmpfiles.d), whatever
+# SYSFORGE_CONFIG_DIR / SYSFORGE_STATE_DIR point at: `self-uninstall` deletes
+# exactly these, never a directory an env override names (3.5.0-F19).
+PACKAGE_DIRS = (Path("/etc/sysforge"), DEFAULT_STATE_DIR, Path("/var/cache/sysforge"))
 FALLBACK_STATE_DIR = USER_STATE_DIR
 
 

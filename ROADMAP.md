@@ -44,7 +44,8 @@ neighbour by a `---` rule, so a single item is readable on its own rather than
 running into the next one. `docs/release-notes/` entries use the same two rules.
 
 **`DOC` covers user-facing documentation only** — guides under `docs/guides/`, concept
-pages under `docs/concepts/`, `README.md`, the man page — so doc work stays visible in release notes without
+pages under `docs/concepts/`, `README.md`, the man page, and the comments in shipped config files
+(`etc/sysforge/*.toml`) — so doc work stays visible in release notes without
 being forced into `F` or `B`. A `DOC` entry always lands under `## Changed`: the
 section drives the derived SemVer bump, and documentation changes no API (a
 `DOC` under `## Added` would demand a minor release). `make check-standards`

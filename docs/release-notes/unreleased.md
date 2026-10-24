@@ -52,6 +52,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B143` — `sysforge uninstall --yes`, for scripts and timers.** `uninstall` passed its confirmation to pacman and had no `--yes`, so without a terminal pacman printed the whole transaction, read nothing at its `[Y/n]` and gave up, and sysforge reported the raw command that failed. `--yes` now removes without asking, and without it and without a terminal `uninstall` refuses before doing anything and says to pass `--yes`, as `revert-to-stock` does. At a terminal nothing changes: pacman still asks.
+
+---
+
 - **`3.5.0-F1` — `bench toolchain` gets past an out-of-date sync database.** The bench downloads the stock `clang` and `llvm-libs` that your sync database names. When the repo rebuilt them after your last `pacman -Sy`, every mirror had already dropped those files, so each download failed with HTTP 404 and the bench stopped. It now notices that every mirror failed, downloads a fresh copy of the sync database into its own temporary directory, and compares against the build the repo carries now. It does this as your user with `fakeroot` (from `base-devel`), never with sudo, and your system's sync database is left alone, because syncing it without upgrading would leave the system partially upgraded. The report shows the stock version it used, so a newer stock build is flagged as a version difference, as before. If the refresh fails too, the error says so and suggests `pacman -Syu`. `--offline` never refreshes. The PGO guide describes the fallback.
 
 ---
@@ -90,7 +94,6 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-F12` — a per-package compiler swap switches the whole toolchain.** When a build failed and you picked gcc (or clang) from the build-failure menu, sysforge retried and remembered the choice in `profiles.toml`'s `[package_compiler_overrides]`, but only the C and C++ compiler and the linker changed: a gcc swap on an LLVM profile kept `llvm-ar`, `llvm-nm`, `llvm-ranlib`, `llvm-strip` and lld. A row can now say `toolchain = "gcc"` or `"llvm"`, which switches the whole set the way a `[[rules]]` profile's `toolchain` does, and the menu writes that form and retries with the whole set. At its linker question, leaving the answer blank now means the chosen toolchain's own linker. Rows that name `cc`, `cxx` and `ld` directly keep working and remain the way to name a compiler outside the two sets. When `sysforge build --cc`, `--cxx` or `--ld` overrides a row for a package, `-vv` says so. The comment above the table in `profiles.toml` lists which setting wins; `sysforge config merge` picks it up.
 
-
 ---
 
 - **`3.5.0-F13` — `sysforge log --verb` pages the log a verb left.** `log` could page only the unified log and per-package logs, although `build`, `update`, `doctor`, `fetch`, `setup`, `uninstall`, `revert-to-stock`, `config merge`, `state repair`, `state forget` and each `run <stage>` leave their own `sysforge-<name>.log`, which the end of the run named once. `sysforge log --verb update` (or `build`, `state-repair`, `run-toolchain` and so on; Tab lists them) pages it, and `--log-dir` finds a log written with the same `--log-dir`, for verb, unified and per-package logs alike.
@@ -102,6 +105,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-F18` — find and fix retired or misspelt settings in your config files.** An upgrade never rewrites your config files, so a setting sysforge stopped reading stayed there, silently ignored, and a misspelt key was never reported. `sysforge config check` lists both, with the line (`--json` prints them as one JSON document for scripts): settings sysforge renamed or retired (such as `[git] pull_timeout`, the per-package `pkgbuild_patch`, `repo_mode = "profiled"` and `build_mode = "patched_pkgbuild"`) and keys it does not know. `sysforge config clean` gives retired settings their current name or value, keeping your comments, and with `--unknown` removes the unknown ones. `sysforge config reset FILE [KEY ...]` puts keys back to the shipped default, or the whole file, keeping the old one as `FILE.bak-<time>`. Both show the change first and ask (or take `--yes`; `--dry-run` only shows it). `sysforge doctor system --config`, part of the default sweep, reports the same findings. The shipped defaults are now installed with the package for this, and `toolchain.toml` documents `profile_store` and `profiles.toml` documents `extends_system`, both read but listed nowhere. A test keeps every setting sysforge reads documented in the shipped files, so `config check` never calls a working setting unknown.
+
+---
+
+- **`3.5.0-F19` — `sysforge self-uninstall` removes SysForge in one command.** Removing SysForge used to be a list of steps in the "What SysForge touches" guide: revert each package by hand, remove the package, delete four directories, edit `/etc/pacman.conf`, delete the group. `sysforge self-uninstall` does all of it. It first puts back the repo build of every package SysForge built that a repo carries, the same way `revert-to-stock` does, and leaves anything no repo carries (an AUR package, your own kernel) installed and working. Then it takes `sf-build` out of `IgnoreGroup` and the build sandbox's local repo out of the chroot, removes the package, and deletes SysForge's config, state, caches and optimization profiles, your own `sysforge` directories and the `sysforge` group. `--dry-run` shows the plan first; `--yes` skips the question, and without a terminal it is required; `--keep-data` removes only the package, keeping your edited config as `.pacsave` along with the state and profiles; `--state-dir` reads build state from another directory. If a revert fails it stops with SysForge still installed. The guide also said `pacman -Rns` keeps edited config as `.pacsave`; `-n` is what discards it, and the guide now describes the command instead.
 
 ## Changed
 
@@ -215,6 +222,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-DEV22` — the progress bar is tested on a model terminal.** `3.5.0-B132` and `B133` drew output over earlier lines in xterm and VS Code's terminal, which the progress bar's tests could not see: they check the escape sequences it writes, not what those do to a screen. A small terminal model under `tests/` now replays the bar's real output, and `update`'s end-of-run reset, and checks the screen: the command line survives, output follows it in order, the bar leaves nothing behind and the next prompt lands after the last line. Every check runs under both rules terminals follow for a saved cursor when the screen scrolls, xterm's and xterm.js's. Replayed through it, the sequences each fix replaced show their bug. The model refuses a sequence it has not been taught, so a new one cannot be misread silently.
 
+
+---
+
+- **`3.5.0-DEV23` — the end-to-end tier runs 35 of the 42 commands, and a new one cannot be missed.** Six scenarios join the four under `tools/e2e/`: maintaining a package and letting it go (`state list`, `resolve`, `log`, the `packages` commands, `state forget`, `uninstall`), `revert-to-stock`, keeping the config healthy (`config check`, `clean` and `reset`, and a `setup --preset` undone by `config reset`), the read-only reports changing nothing (`state`, `doctor`, `env`, `fetch`), a user script through the `artifact` commands, and `[aur] enabled = false` and `freeze_sources` refusing before any checkout, with `search` still answering from the repos. A seventh previews `run toolchain` and `run kernel` with non-default `toolchain.toml` and `kernel.toml`; it is marked to fail until their dry run shows something, a bug it found. `make e2e-coverage` lists which scenario runs each command, and `tests/test_e2e_coverage.py` fails the suite on a command that no scenario runs and `tools/e2e/uncovered.toml` does not excuse with a reason; seven are excused, such as `run pipeline`, which installs Arch from the live ISO. The `artifact` scenario also found that those commands crash in a user's first session when nothing has prepared the state directory yet; both bugs are on the roadmap.
 ---
 
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
@@ -270,6 +281,10 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DOC14` — a short README, with the detail in guides.** The README had grown to about 500 lines. It now opens with a short recording and the four Quick start commands, then gives each topic one paragraph and a link. What it used to say in full moved, largely unchanged, into new guides under `docs/guides/`: getting started (requirements, choosing gcc or LLVM, maintaining and un-maintaining packages, source review, plan confirmation and `setup` presets), everyday commands (including how SysForge fits with `makepkg` and `pacman`), sandboxed builds, fresh install from the Arch ISO, running from a git checkout, and verifying releases. A new guide, what SysForge touches, lists what the package installs, what it writes as your user, what it runs with `sudo` and for which commands, and how to undo it, for one package or entirely.
+
+---
+
+- **`3.5.0-DOC15` — the shipped config files explain themselves accurately.** The comments in the files under `/etc/sysforge` are the reference for their keys, and several were wrong or misleading. `profiles.toml` explained why the `optimized` profile has no `-fuse-ld=` flag, which made it look as if it chose its linker differently. No profile names a compiler or linker: both come from `[defaults] toolchain`, and the file now says so once, above the profiles. Its `LDFLAGS` reference no longer suggests adding `-fuse-ld=lld` yourself. `kernel.toml` said the kconfig fragment is applied with `scripts/config` (sysforge merges it in the PKGBUILD's `prepare()`), said there is "no kernel PGO" just above its own AutoFDO/Propeller `[fdo]` section, and listed optional keys under "Required fields". `toolchain.toml` now says how the compiler it registers reaches later builds, and how `profile_store` and `SYSFORGE_PROFILE_STORE` combine. `bootstrap.toml` named install stages that do not exist (`partition`, `base_install`). `packages.toml` gave its last example a heading about recommended dependencies that matched neither the example nor any key. `sysforge.toml` described a per-user override file that sysforge never reads, and listed only `run reconfigure` for `[ui] editor`. Pointers to `DESIGN.md` sections, which the package does not install, were removed.
 
 ---
 
@@ -855,6 +870,22 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-B138` — a command that fails before changing anything no longer blocks the next run.** `build`, `update`, `uninstall`, `revert-to-stock` and the other commands that change the system write a record when they start, so that if one is interrupted mid-install the next run stops and offers to restore the system. The record was written before the command's own checks, so a harmless early failure, such as `sysforge build` on a system without `pkgctl`, left it behind: the next run then refused to start ("Stale stage-in-progress sentinel present"), asking for a recovery at a terminal and simply failing under a timer or cron. The record is now written at the first change to the system, the first package install, removal or boot update. Downloads, the build sandbox's own setup and config-file writes do not count, since an interruption cannot leave them half done. A second run is still refused while the first is running, and a Ctrl-C before anything changed says so.
+
+---
+
+- **`3.5.0-B139` — `cache = false` on a package entry now turns the compiler caches off.** `sysforge packages add <pkg> --no-cache` recorded the setting and `packages list` showed it, but no build read it, so ccache and sccache kept running for that package. Builds now honour it, from a `[[package]]` entry or a `[group.*]` default: ccache is off however it is reached (makepkg's `BUILDENV` or a ccache directory first on `PATH`), and so is a `RUSTC_WRAPPER` such as sccache, even one your shell exports. The `--no-cache` help, the man page and `packages.toml` no longer say the setting is required for PGO; it is not.
+
+---
+
+- **`3.5.0-B140` — `[failure_handling]` in `sysforge.toml` now takes effect.** The section was documented in `sysforge.toml`, but sysforge read it from `profiles.toml`, so an edit to the documented section changed nothing and every build used the defaults. It is now read from `sysforge.toml`; if you had added the table to `profiles.toml` to make it work, move it. Each key now accepts only the values that mean something for it, listed beside it in the shipped file, and any other value falls back to that key's default with a warning, where before some fell back to a silent repair. `checksum_mismatch` accepts only `prompt_user` or `abort`, so neither an edit nor a typo can make sysforge update a failed checksum without asking. Three keys that were configurable but never documented are now in the shipped file: `pkgbuild_unparseable`, `abi_mismatch` and `makedep_probe_failed`. `vendored_deps_missing` and `pgp_key_missing` no longer accept `prompt_user`, which never asked anything.
+
+---
+
+- **`3.5.0-B141` — `run kernel`, `run toolchain` and the other stage commands preview with `--dry-run`.** `--dry-run` promised to show what would run, but the stage never ran: sysforge logged one line that the default verbosity hid, so the command printed nothing and read nothing from `kernel.toml` or `toolchain.toml` past `enabled`. A dry run now goes through the stage up to the point where it would change something, and says what it would do instead: `run kernel --dry-run` prints its "Kernel build plan" (compiler and where it came from, bootloader, source, kconfig counts, the safety gates) and the build and install it would run, so a mistake in the config shows before a build of an hour or more. The run still installs, builds, records, locks and downloads nothing: where `run toolchain` would first clone a PKGBUILD it has not checked out, the preview names it and stops there. `run pipeline --dry-run` keeps listing the stages it would run.
+
+---
+
+- **`3.5.0-B142` — the `artifact` commands work in your first session.** Run before anything else after installing, `sysforge artifact adopt` (or any command that saves the artifact list) ended in a Python traceback, `PermissionError` on `/var/lib/sysforge`: the artifact commands found SysForge's state directory on their own and never opened it to you the way `build` does until the `sysforge` group applies at your next login. They now go through the same step, and the read-only ones still never ask for `sudo`.
 
 ## Security
 

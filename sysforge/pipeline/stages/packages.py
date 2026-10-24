@@ -35,6 +35,7 @@ AUR/git package PKGBUILD lookup order (via find_pkgbuild):
   2. profiles.toml [paths] pkgbuild_src_dir/<name>/PKGBUILD  (if set)
   3. AUR clone into pkgbuild_src_dir if package is found on AUR
 """
+import contextlib
 import subprocess
 import tomllib
 from sysforge import log
@@ -396,12 +397,13 @@ class PackagesStage(Stage):
             1 for n in all_names
             if n not in built and n not in skipped and n not in skip_set
         )
-        with sentinel_scope(
+        # A dry run changes nothing, so it takes no sentinel or lock (3.5.0-B141).
+        with (contextlib.nullcontext() if options.dry_run else sentinel_scope(
             options.state_dir,
             "packages",
             retry_cmd="sysforge run packages",
             remaining=n_remaining,
-        ):
+        )):
             if aur_names and not options.dry_run:
                 all_aur_deps = []
                 for name in aur_names:

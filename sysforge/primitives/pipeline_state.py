@@ -75,7 +75,11 @@ class PipelineState:
     when a stage fails and needs intervention before resuming.
     """
 
-    def __init__(self, state_dir):
+    def __init__(self, state_dir, *, read_only: bool = False):
+        # read_only: a dry run's state. Stages checkpoint mid-run (a toolchain
+        # result, package progress); under --dry-run none of it may reach the
+        # file, and this is the one place that holds for every stage (3.5.0-B141).
+        self._read_only = read_only
         self._dir = Path(state_dir)
         self.path = self._dir / "pipeline_state.toml"
         self._data = self._load()
@@ -92,6 +96,8 @@ class PipelineState:
 
     def save(self):
         """Write current state to disk atomically (write + rename)."""
+        if self._read_only:
+            return
         atomic_write.write_state(self.path, self._serialize())
 
     def _now(self):

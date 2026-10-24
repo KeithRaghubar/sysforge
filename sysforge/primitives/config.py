@@ -17,6 +17,7 @@ Public API:
     load_sysforge_toml()                   -> dict
     find_pkgbuild(pkg, config=None)        -> Path   (AUR clone on miss if pkgbuild_src_dir set)
     resolve_pkgbuild_src_dir(config, build_cfg=None) -> str | None
+    cache_disabled_for(config, names)      -> bool   (packages.toml `cache = false`)
 """
 import json
 import pprint
@@ -405,6 +406,26 @@ def expand_package_groups(data: dict) -> list[dict]:
             seen.add(name)
             entries.append({"name": name, **defaults, "group": gname})
     return entries
+
+
+def cache_disabled_for(config: dict, names) -> bool:
+    """True when packages.toml opts any of ``names`` out of the compiler caches.
+
+    ``names`` are one build's identities (pkgbase, every pkgname, the checkout
+    directory), since an entry may name any of them. The opt-out is an entry's
+    or group default's ``cache = false``, written by ``packages add --no-cache``
+    (3.5.0-B139). A missing or unreadable manifest opts nothing out: the caches
+    only make a build faster, so the lookup never fails one.
+    """
+    from sysforge.primitives.paths import resolve_packages_path
+    try:
+        with resolve_packages_path(config).open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    wanted = {n for n in names if n}
+    return any(e.get("name") in wanted and e.get("cache") is False
+               for e in expand_package_groups(data))
 
 
 def load_config(config_paths=None) -> dict:

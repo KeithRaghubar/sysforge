@@ -420,16 +420,16 @@ REGISTRY: tuple[RepairScenario, ...] = (
 # (`preflight_srcinfo`), not a retry-on-failure scenario.
 
 
-_ALLOWED_BEHAVIOURS = frozenset({
-    "auto_repair", "auto_repair_with_warning", "prompt_user",
-    "abort", "warn_and_fallback", "fallback", "error",
-})
+_ALLOWED_BEHAVIOURS = frozenset({"auto_repair", "auto_repair_with_warning", "prompt_user", "abort"})
 
 
 def _normalise_behaviour(behaviour: object) -> str:
+    # failure.resolve_failure_handling has already validated the table; a value
+    # that still slips through stops the build rather than repairing it unasked,
+    # which for checksum_mismatch would mask a tampered source (3.5.0-B140).
     if isinstance(behaviour, str) and behaviour in _ALLOWED_BEHAVIOURS:
         return behaviour
-    return "auto_repair"  # safe default for the three silent scenarios
+    return "abort"
 
 
 def apply_first_match(

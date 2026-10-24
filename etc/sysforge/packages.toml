@@ -1,10 +1,10 @@
 # =============================================================================
 # packages.toml — SysForge package manifest
 #
-# Everything down to line 51 ("END OF HEADER") is documentation;
+# Everything down to line 52 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
-# Roles (see DESIGN.md §Package Manifest):
+# Roles:
 #   - Pipeline `run packages` (bootstrap): every entry is installed.
 #   - `sysforge update` / `sysforge build` (steady-state): entries are
 #     build-rule OVERRIDES applied to the live install set.
@@ -26,7 +26,8 @@
 #   enable_build_from_source
 #                  optional  true = build this repo package from source
 #                            instead of installing the binary via pacman
-#   cache          optional  false = disable ccache/sccache (required for PGO)
+#   cache          optional  false = build this package with ccache and
+#                            sccache off
 #
 # An entry with only `name` (or only `name` + `source`) has no override
 # effect at steady-state. `sysforge packages add` rejects such calls, and
@@ -51,7 +52,8 @@
 # ============================== END OF HEADER ================================
 
 [build]
-# pkgbuild_src_dir — override the path from profiles.toml for this manifest
+# pkgbuild_src_dir — used by `sysforge update` and `run packages` in place of
+#   profiles.toml [paths] pkgbuild_src_dir (a differing value warns once)
 #pkgbuild_src_dir = "~/src"
 #
 # repo_mode — "pacman" (default) | "build_from_source" — bootstrap mode for
@@ -149,7 +151,8 @@
 # for group members.
 #
 # Curated desktop-environment groups can be written without hand-editing TOML:
-#   sysforge packages add-group gnome      # or: kde
+#   sysforge packages add-group gnome      # or kde, xfce, mate, cinnamon,
+#                                          #   lxqt, budgie, cosmic
 # The bootstrap configure stage offers the same selection (or reads it from
 # bootstrap.toml [desktop] environment for unattended installs).
 # =============================================================================
@@ -159,13 +162,10 @@
 
 
 # =============================================================================
-# SysForge recommended dependencies
+# Packages — one [[package]] table per entry (fields in the header above)
 #
-# ccache/sccache are used automatically when a profile enables them in
-# profiles.toml — the "ccache" token in BUILDENV, plus RUSTC_WRAPPER /
-# CCACHE_DIR / SCCACHE_DIR in the profile's env keys. Set `cache = false` on a
-# [[package]] entry above to opt a single package out (required for PGO).
-# reflector is used by the configure stage to set up /etc/pacman.d/mirrorlist.
+# Example: install sysforge's own development package from the AUR during
+# bootstrap.
 # =============================================================================
 
 #[[package]]

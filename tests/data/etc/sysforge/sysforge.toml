@@ -75,11 +75,14 @@ clone_timeout = 60
 # pre_build_snapshot = false
 
 [failure_handling]
-# Build-failure auto-repair (DESIGN.md §1242).
+# Build-failure handling; see etc/sysforge/sysforge.toml for full docs.
 vendored_deps_missing = "auto_repair"
 pgp_key_missing       = "auto_repair"
 srcinfo_drift         = "auto_repair_with_warning"
 checksum_mismatch     = "prompt_user"
+pkgbuild_unparseable  = "warn_and_fallback"
+abi_mismatch          = "warn_and_fallback"
+makedep_probe_failed  = "warn_and_fallback"
 
 [safety]
 # LLVM source pre-flight. See etc/sysforge/sysforge.toml for full docs.

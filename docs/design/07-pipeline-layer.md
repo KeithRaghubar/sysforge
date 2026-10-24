@@ -156,7 +156,7 @@ The hardware stage (stage 2) needs no config — it auto-detects and writes `har
 - On `NotImplementedError`: prints `--start-from` guidance and exits
 - On `BootstrapRebootRequired`: saves state, prints reboot + resume instructions, exits 0 (clean stop, not failure)
 - On `RuntimeError`: saves state and exits with resume instructions
-- `--dry-run`: logs what would run without calling `stage.run()`
+- `--dry-run`: `run pipeline` lists the stages it would run without calling `stage.run()` (the bootstrap stages are not dry-run safe). A standalone `run <stage> --dry-run` calls `stage.run()` with `options.dry_run` set, after a `[dry-run] <stage>` line through `ui()`: each stage stops short of its own changes and says what it would do, so the preview reads the real config (the kernel's "Kernel build plan", the toolchain's install set). The runner opens `PipelineState(read_only=True)`, so a stage's mid-run checkpoints never reach the file, the kernel and packages stages take no sentinel, and the toolchain stage's `resolve_all_pkgbuilds(dry_run=True)` reads only checked-out PKGBUILDs, raising `CheckoutsMissing` (the stage names what it would clone and ends the preview) instead of cloning, syncing or purging (`3.5.0-B141`; before it the runner returned before `stage.run()` and logged one INFO line, so the preview showed nothing).
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 

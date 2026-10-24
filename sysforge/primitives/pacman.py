@@ -1226,6 +1226,27 @@ def get_foreign_packages() -> dict[str, str]:
     return packages
 
 
+def get_sync_pkgnames() -> set[str]:
+    """Every package name the sync repos carry (``pacman -Slq``), in one call.
+
+    For a question asked of many names at once (``self-uninstall`` checking
+    each source build for a stock version), where a ``pacman -Si`` per name
+    would cost seconds. Empty when pacman cannot answer.
+    """
+    if _use_pyalpm():
+        try:
+            names: set[str] = set()
+            for db in _get_alpm_handle().get_syncdbs():
+                names.update(pkg.name for pkg in db.pkgcache)
+            return names
+        except _alpm().error:
+            pass
+    result = run.probe(["pacman", "-Slq"])
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
 def get_pacman_sync_version(pkgname: str) -> str | None:
     """Return the version available in pacman sync databases, or None if not found."""
     if _use_pyalpm():

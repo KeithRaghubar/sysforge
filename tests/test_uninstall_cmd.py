@@ -3,11 +3,10 @@
 # SPDX-License-Identifier: MIT
 
 """Tests for the uninstall verb."""
-from types import SimpleNamespace
-
 from sysforge.primitives.build_state import BuildState
 from sysforge import uninstall_cmd
 from sysforge.verbs.base import PreCheckResult
+from tests.cli_args import cli_args
 
 
 def _bs(tmp_path, entries):
@@ -54,7 +53,8 @@ def test_execute_removes_then_forgets_and_reconciles(tmp_path, monkeypatch):
                         lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
 
     verb = uninstall_cmd.UninstallVerb()
-    args = SimpleNamespace(packages=["mesa"], pacman_flags=[], state_dir=str(tmp_path))
+    monkeypatch.setattr(uninstall_cmd.prompt, "is_interactive", lambda: True)
+    args = cli_args("uninstall", "mesa", "--state-dir", str(tmp_path))
     pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, ["mesa"]),
                               "state_dir": str(tmp_path)})
     res = verb.execute(args, pre)
@@ -82,9 +82,47 @@ def test_execute_names_a_profile_store_the_uninstall_leaves_behind(
     monkeypatch.setattr(state_cmd, "orphaned_profile_lines",
                         lambda names: seen.append(set(names)) or ["profile store kept: /s"])
     verb = uninstall_cmd.UninstallVerb()
-    args = SimpleNamespace(packages=["mesa"], pacman_flags=[], state_dir=str(tmp_path))
+    monkeypatch.setattr(uninstall_cmd.prompt, "is_interactive", lambda: True)
+    args = cli_args("uninstall", "mesa", "--state-dir", str(tmp_path))
     pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, ["mesa"]),
                               "state_dir": str(tmp_path)})
     verb.execute(args, pre)
     assert seen and "mesa" in seen[0]
     assert "profile store kept: /s" in "".join(capsys.readouterr())
+
+
+# 3.5.0-B143: without a terminal pacman's own [Y/n] read EOF and aborted, after
+# printing the transaction; --yes confirms up front, and without it the verb
+# refuses before anything runs.
+
+def _run(tmp_path, monkeypatch, *, yes, tty):
+    calls = []
+    monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
+                        lambda names, extra_flags=None: calls.append(extra_flags))
+    monkeypatch.setattr(uninstall_cmd.prompt, "is_interactive", lambda: tty)
+    monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
+                        lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
+    argv = ["uninstall", "nano", "--state-dir", str(tmp_path)] + (["--yes"] if yes else [])
+    args = cli_args(*argv)
+    verb = uninstall_cmd.UninstallVerb()
+    res = verb.execute(args, verb.pre_check(args))
+    return res, calls
+
+
+def test_yes_removes_without_asking(tmp_path, monkeypatch):
+    res, calls = _run(tmp_path, monkeypatch, yes=True, tty=False)
+    assert res.exit_code == 0
+    assert calls == [["--noconfirm"]]
+
+
+def test_without_yes_or_a_terminal_it_refuses_before_pacman(tmp_path, monkeypatch, capsys):
+    res, calls = _run(tmp_path, monkeypatch, yes=False, tty=False)
+    assert res.exit_code == 2
+    assert calls == []
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_at_a_terminal_pacman_asks(tmp_path, monkeypatch):
+    res, calls = _run(tmp_path, monkeypatch, yes=False, tty=True)
+    assert res.exit_code == 0
+    assert calls == [[]]

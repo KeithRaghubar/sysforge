@@ -735,3 +735,39 @@ def test_standalone_os_error_records_failed(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         _standalone(OsFail("toolchain"), tmp_path, monkeypatch)
     assert PipelineState(tmp_path).stage_status("toolchain") == "failed"
+
+
+# ---------------------------------------------------------------------------
+# A standalone dry run runs the stage (3.5.0-B141)
+# ---------------------------------------------------------------------------
+# The runner used to return before stage.run, logging one line at INFO, so
+# `run kernel --dry-run` printed nothing and never showed the plan the stage
+# resolves. The stages carry their own dry-run handling; the runner's job is to
+# reach it and to keep the state file untouched.
+
+def test_standalone_dry_run_runs_the_stage(tmp_path, monkeypatch):
+    seen = {}
+
+    class Recording(OkStage):
+        def run(self, config, state, options):
+            seen["dry_run"] = options.dry_run
+
+    _standalone(Recording("kernel"), tmp_path, monkeypatch, dry_run=True)
+    assert seen == {"dry_run": True}
+
+
+def test_standalone_dry_run_says_so_at_default_verbosity(tmp_path, monkeypatch, capsys):
+    _standalone(OkStage("kernel"), tmp_path, monkeypatch, dry_run=True)
+    assert "[dry-run] kernel" in capsys.readouterr().err
+
+
+def test_standalone_dry_run_drops_the_stages_own_saves(tmp_path, monkeypatch):
+    _standalone(ResultStage("toolchain"), tmp_path, monkeypatch, dry_run=True)
+    assert not (tmp_path / "pipeline_state.toml").exists()
+
+
+def test_a_read_only_state_never_writes(tmp_path):
+    state = PipelineState(tmp_path, read_only=True)
+    state.set_stage_result("toolchain", {"cc": "x"})
+    state.save()
+    assert not (tmp_path / "pipeline_state.toml").exists()

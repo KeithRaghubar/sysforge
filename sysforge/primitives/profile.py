@@ -63,6 +63,8 @@ SYSFORGE_KEYS = {
     "clean_builddir",
     "consumes",
     "cpu_quota",
+    # Read from sysforge.toml now (3.5.0-B140); kept so a stale per-profile
+    # table is not passed into the build env or into flag drift.
     "failure_handling",
     "ionice",
     "jobs",

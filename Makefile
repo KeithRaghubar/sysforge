@@ -7,7 +7,7 @@
         preflight release-major release-minor release-patch release-resume \
         vm-deps vm-image vm-boot vm-boot-gui vm-snapshot vm-loadvm vm-iso vm-monitor vm-console vm-savevm vm-snapshots vm-ssh vm-ssh-builder vm-stop vm-clean \
         vm-pkg-stable vm-pkg-git vm-pkg-all vm-install-stable vm-install-git vm-smoke vm-test \
-        container-build container-smoke container-smoke-cachyos container-shell container-clean e2e \
+        container-build container-smoke container-smoke-cachyos container-shell container-clean e2e e2e-coverage \
         ci-local
 
 # ---------------------------------------------------------------------------
@@ -657,6 +657,12 @@ container-clean: ## Remove the test container and image
 # as root, without podman: CI's e2e job, in its own fresh container.
 e2e: ## Run the end-to-end scenarios in fresh Arch containers (SCENARIO=, needs podman)
 	E2E_COMMIT=$(E2E_COMMIT) bash tools/e2e/run.sh $(if $(E2E_HERE),--here) $(SCENARIO)
+
+# Which commands a scenario runs and which tools/e2e/uncovered.toml excuses,
+# with its reason (3.5.0-DEV23). tests/test_e2e_coverage.py fails the suite on
+# a command in neither set, so this is the readable view of that check.
+e2e-coverage: ## List the commands the end-to-end scenarios run, and the excused rest
+	uv run --no-sync python tools/e2e_coverage.py
 
 # Replay the CI job (.github/workflows/ci.yml, 3.4.0-DEV1) against the working
 # tree, uncommitted edits included, in the same base image. The tree is mounted

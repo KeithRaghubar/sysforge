@@ -5,14 +5,14 @@
 # the settings themselves start below it.
 #
 # System default: /etc/sysforge/sysforge.toml
-# Override individual values by creating this file or editing it in place.
+# sysforge reads only this one copy (there is no per-user file): edit it here.
 #
 # COMMENT CONVENTION — two kinds of `#` lines appear below:
 #   # text          prose. Explanation only; nothing to uncomment.
 #   #key = value    a real setting, shown at its default or with an example
 #                   value. Delete the single leading `#` to activate it.
-# Section headers are always live — only their keys are commented out, so
-# activating a setting is a one-line edit.
+# Section headers are never commented out, even where every key under one
+# is, so activating a setting is a one-line edit.
 # ============================== END OF HEADER ================================
 
 [ui]
@@ -20,7 +20,8 @@
 # NO_COLOR / FORCE_COLOR; "always" forces colour on (e.g. piping into a pager);
 # "never" disables it. The --color CLI flag overrides this.
 color = "auto"
-#editor = "vim"       # Override $EDITOR for sysforge run reconfigure
+#editor = "vim"       # Override $EDITOR wherever sysforge opens an editor:
+#                      # run reconfigure, artifact edit, build-failure menu
 #merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
@@ -47,8 +48,8 @@ clone_timeout = 60
 
 [aur]
 # Politeness / rate-limit throttling for AUR (and gitlab repo) source fetches,
-# applied by the source-sync scheduler. Both have safe defaults; uncomment to
-# tune for a slow or rate-limit-sensitive connection.
+# applied by the source-sync scheduler. All three keys have safe defaults;
+# uncomment to tune for a slow or rate-limit-sensitive connection.
 #
 # enabled: false = never contact the AUR. No clones, no RPC lookups, no
 #   package-list download. Packages tracked with source = "aur" are reported as
@@ -144,17 +145,34 @@ clone_timeout = 60
 #pre_build_snapshot = false
 
 [failure_handling]
-# Per-scenario behaviour for build-failure auto-repair (DESIGN.md §1242).
-# Values: "auto_repair" | "auto_repair_with_warning" | "prompt_user" |
-#         "abort" | "warn_and_fallback" | "fallback" | "error".
-# Defaults below match what auto_repair.py uses when a key is absent:
-# silent fixes for the safe scenarios, explicit user consent for
-# checksum_mismatch — silent auto-fix would mask supply-chain compromise,
-# DO NOT relax this without an equivalent compensating control.
+# What a build does when it meets each named problem. Every key is shown at its
+# default; a value a key does not accept takes that default, with a warning.
+#
+# Build-failure auto-repair: recognised in a failed build's output, repaired,
+# and the build retried. "auto_repair" | "auto_repair_with_warning" | "abort".
 #vendored_deps_missing = "auto_repair"
 #pgp_key_missing       = "auto_repair"
+#
+# srcinfo_drift — a .SRCINFO out of step with its PKGBUILD, checked before the
+#   build: "auto_repair" | "auto_repair_with_warning" (regenerate it),
+#   "warn_and_fallback" (warn and build anyway) | "abort".
 #srcinfo_drift         = "auto_repair_with_warning"
+#
+# checksum_mismatch — a source file failed its checksum: "prompt_user" (show
+#   the files and ask before running updpkgsums; a run with no terminal, or a
+#   batch profile, aborts) | "abort". Updating the sums unasked would mask a
+#   tampered source, so no other value is accepted.
 #checksum_mismatch     = "prompt_user"
+#
+# Problems a build can go on past: "warn_and_fallback" (warn and go on) |
+# "fallback" (go on quietly) | "abort" | "error" (both stop the build).
+#   pkgbuild_unparseable — sysforge could not read the PKGBUILD's metadata
+#   abi_mismatch         — a declared .so dependency is not on this system
+#   makedep_probe_failed — a makedepends that needs a working runtime (such as
+#                          libguestfs) failed its check
+#pkgbuild_unparseable  = "warn_and_fallback"
+#abi_mismatch          = "warn_and_fallback"
+#makedep_probe_failed  = "warn_and_fallback"
 
 [safety]
 # LLVM source-tree safety pre-flight. Surfaces variant, origin, dirty

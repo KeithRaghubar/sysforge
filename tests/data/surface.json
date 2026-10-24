@@ -446,6 +446,15 @@
     "TERM": null
    }
   },
+  "self-uninstall": {
+   "flags": {
+    "--dry-run": null,
+    "--keep-data": null,
+    "--state-dir": null,
+    "--yes": null
+   },
+   "positionals": {}
+  },
   "setup": {
    "flags": {
     "--pacman-conf": null,
@@ -516,7 +525,8 @@
   },
   "uninstall": {
    "flags": {
-    "--state-dir": null
+    "--state-dir": null,
+    "--yes": null
    },
    "positionals": {
     "PKG": null
@@ -607,8 +617,11 @@
      "pkg_cache_warn_gb"
     ],
     "failure_handling": [
+     "abi_mismatch",
      "checksum_mismatch",
+     "makedep_probe_failed",
      "pgp_key_missing",
+     "pkgbuild_unparseable",
      "srcinfo_drift",
      "vendored_deps_missing"
     ],

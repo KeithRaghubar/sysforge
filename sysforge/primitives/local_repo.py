@@ -287,6 +287,14 @@ def ensure_chroot_section(policy, state_dir) -> None:
         ) from exc
 
 
+def has_chroot_section(conf_path: Path) -> bool:
+    """Whether ``conf_path`` (a chroot's pacman.conf) lists the managed repo."""
+    try:
+        return bool(_BLOCK_RE.search(conf_path.read_text()))
+    except OSError:
+        return False
+
+
 def remove_chroot_section(policy) -> None:
     """Drop the managed block when the local repo is turned off.
 

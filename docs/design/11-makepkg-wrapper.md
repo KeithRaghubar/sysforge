@@ -53,23 +53,18 @@ Preflight refuses rather than downgrades — missing `devtools`, a missing `<chr
 
 ### Failure handling
 
-Each scenario has a configurable behaviour in `[failure_handling]`:
+Each scenario has a configurable behaviour in `sysforge.toml [failure_handling]`. `failure.SCENARIOS` is the one home for the keys: each names the values it accepts and its default, and `failure.resolve_failure_handling` validates the table (an absent key or a value outside the key's set takes the default, an invalid one with a warning; an unknown key is ignored with a warning). `makepkg_wrapper.run` resolves it from `load_sysforge_toml()` and folds it into the `config` dict every reader already receives (`3.5.0-B140`): that dict is otherwise `profiles.toml`, where the table was read from before, so the documented section did nothing.
+
+`failure.handle_failure` serves the scenarios a build can go on past:
 
 ```toml
 [failure_handling]
-pkgbuild_unparseable  = "warn_and_fallback"
-no_rule_matched       = "fallback"
-profile_missing       = "abort"
-profile_cycle         = "abort"
-tempfile_write_failed = "abort"
-env_conflict          = "warn_and_fallback"
+pkgbuild_unparseable  = "warn_and_fallback"   # abort | error | warn_and_fallback | fallback
 abi_mismatch          = "warn_and_fallback"
-dep_unsatisfied       = "warn_and_fallback"
+makedep_probe_failed  = "warn_and_fallback"
 ```
 
-**Behaviours:** `abort`, `warn_and_fallback`, `fallback`, `error`
-
-`profile_missing` and `tempfile_write_failed` always abort regardless of config.
+`tempfile_write_failed` always aborts and is not configurable; a scenario name not in `SCENARIOS` aborts too.
 
 ### Interactive mode
 
@@ -117,16 +112,16 @@ To make the pattern scan work for every build mode, `invoke_makepkg` uses a `Pop
 
 **Interactive-failure diagnosis (BUILDDIR/LOGDEST-aware).** In the interactive branch `captured_output` stays empty on purpose although the lines are captured (`3.2.0-F19`): auto-repair walks it and may rewrite the build tree, which an interactive build has never been subject to. The diagnosis gets the captured failure tail first, then what it recovers from on-disk artifacts: `makepkg_env._effective_build_dir(pkgbuild_path, resolved_profile)` locates the meson/cmake side-car logs (`meson-log.txt`, `CMakeError.log`) under `$BUILDDIR/<pkgbase>/src`, and `makepkg_env._logdest_tail(pkgbuild_path)` reads the tail of the newest `$LOGDEST/<pkgbase>-*.log` (makepkg's captured stdout when `OPTIONS+=log`). Both `BUILDDIR` and `LOGDEST` are resolved through `pacman.get_builddir()` / `pacman.get_logdest()` — env first, then the layered system `makepkg.conf` — so a user who configures these only in `/etc/makepkg.conf` still gets a diagnosis. Don't read `os.environ["BUILDDIR"]` or assume `~/builds` directly here.
 
-Configuration extends `[failure_handling]` with four scenario keys:
+Auto-repair has four keys of its own in the same table:
 
 ```toml
-vendored_deps_missing = "auto_repair"
+vendored_deps_missing = "auto_repair"               # auto_repair | auto_repair_with_warning | abort
 pgp_key_missing       = "auto_repair"
-srcinfo_drift         = "auto_repair_with_warning"
-checksum_mismatch     = "prompt_user"
+srcinfo_drift         = "auto_repair_with_warning"  # … | warn_and_fallback (preflight only)
+checksum_mismatch     = "prompt_user"               # prompt_user | abort, nothing else
 ```
 
-Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fallback` / `error` set: `auto_repair` (repair silently, retry, log at info), `auto_repair_with_warning` (repair, retry, log at `[WARN]`), `prompt_user` (surface the diff and require explicit consent before repairing). In **batch mode** (`batch=true` on the resolved profile) the `prompt_user` behaviour is short-circuited to `aborted` — auto-repair never runs unattended for security-sensitive scenarios. This is the load-bearing rule for `checksum_mismatch`.
+`auto_repair` repairs, retries and logs at info; `auto_repair_with_warning` logs the same at `[WARN]`; `prompt_user` surfaces the failing files and requires explicit consent before repairing. `checksum_mismatch` accepts only `prompt_user` or `abort`, so neither an edit nor a typo can select an unattended `updpkgsums`, which would mask a tampered source. In **batch mode** (`batch=true` on the resolved profile) `prompt_user` is short-circuited to `aborted`, so the repair never runs unattended. `auto_repair._normalise_behaviour` maps anything unexpected that still reaches it to `abort`, never to a repair.
 
 `.SRCINFO` drift is the one scenario that is **not** in `REGISTRY` — it has a different lifecycle. `_run_build` calls `auto_repair.preflight_srcinfo(pkgbuild_dir, behaviour)` before the build starts, regenerating `.SRCINFO` (with a `[WARN]` by default) when `makepkg --printsrcinfo` differs from the committed file. The other three scenarios fire on retry from a captured failure.
 

@@ -478,7 +478,7 @@ Log tag: `[PROV]`. The `suggest_*` / `files_db_present` queries are pure read-on
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
 
-`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `sysforge.toml [failure_handling]`, validated per key by `resolve_failure_handling` against `SCENARIOS` (the one home for every key's values and default). `tempfile_write_failed` always aborts regardless of config, as does a scenario not in `SCENARIOS`.
 
 ### `run.py`
 

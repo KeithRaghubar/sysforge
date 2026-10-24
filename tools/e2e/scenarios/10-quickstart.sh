@@ -3,7 +3,7 @@
 # the one-time setup, an AUR build (the review gate accepted), then `update`.
 # The setup adds the user to the sysforge group, which only applies at the next
 # login, so every step after it runs without that membership (3.5.0-B134).
-# The tier's one networked scenario: the AUR, and pacman for build deps.
+# Networked: the AUR, and pacman for build deps.
 # start: installed
 
 step "one-time setup"

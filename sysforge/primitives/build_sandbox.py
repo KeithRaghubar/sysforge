@@ -100,7 +100,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from sysforge import log
-from sysforge.primitives import run
+from sysforge.primitives import paths, run
 from sysforge.primitives.build_throttle import (
     CGROUP_PROPERTY_DEFAULTS,
     BuildThrottle,
@@ -1158,17 +1158,13 @@ def _source_built_packages(state_dir) -> set:
     *files*, one per pkgname. Unreadable state degrades to "nothing is
     source-built", which costs fidelity rather than correctness.
     """
-    import os
-
     from sysforge.primitives.build_state import BUILD_MODE_PACMAN, BuildState
 
     if state_dir is None:
-        # Same resolution ArtifactRegistry uses, and for the same reason: this
-        # is a primitive, so it cannot reach pipeline.resolve_state_dir, and a
-        # caller several layers up that forgets to thread the value would
-        # silently degrade injection to "nothing is source-built".
-        env = os.environ.get("SYSFORGE_STATE_DIR")
-        state_dir = Path(env) if env else Path("/var/lib/sysforge")
+        # Resolved here so a caller several layers up that forgets to thread the
+        # value does not silently degrade injection to "nothing is
+        # source-built". Read-only, so never provisioned (3.5.0-B142).
+        state_dir = paths.resolve_state_dir(None, provision=False)[0]
 
     try:
         packages = BuildState(state_dir).all_packages()

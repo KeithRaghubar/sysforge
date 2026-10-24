@@ -40,6 +40,7 @@ _sysforge() {
         search)   _sysforge_search   ;;
         setup)    _sysforge_setup    ;;
         uninstall) _sysforge_uninstall ;;
+        self-uninstall) _sysforge_self_uninstall ;;
         env)      _sysforge_env      ;;
         help)     _sysforge_help     ;;
         log)      _sysforge_log      ;;
@@ -95,6 +96,7 @@ _sysforge_commands() {
     'run:build toolchain, kernel or packages; or bootstrap'
     'revert-to-stock:restore a source-built package to the repo version'
     'uninstall:remove package(s); demote tracked ones from build state'
+    'self-uninstall:revert sysforge'"'"'s builds to stock, then remove sysforge'
   )
   _describe 'command' commands
 }
@@ -435,7 +437,7 @@ _sysforge_packages_add() {
     '--packages[path to packages.toml]:file:_files' \
     '--source[pin routing (metadata only)]:source:(repo aur local)' \
     '--enable-build-from-source[build from source]' \
-    '--no-cache[disable ccache/sccache (required for PGO)]' \
+    '--no-cache[build this package with ccache and sccache off]' \
     '--reason[free-form note attached to the entry]:text' \
     '1: :_sysforge_pkg_names'
 }
@@ -582,8 +584,17 @@ _sysforge_search() {
 
 _sysforge_uninstall() {
   _arguments \
+    '--yes[remove without pacman'"'"'s confirmation prompt]' \
     '--state-dir[override state directory]:dir:_directories' \
     '*:installed package:_sysforge_installed_pkg_names'
+}
+
+_sysforge_self_uninstall() {
+  _arguments \
+    '--keep-data[remove only the package; keep config, state and profiles]' \
+    '--dry-run[show the plan without changing anything]' \
+    '--yes[do it without asking]' \
+    '--state-dir[override state directory]:dir:_directories'
 }
 
 _sysforge_run() {

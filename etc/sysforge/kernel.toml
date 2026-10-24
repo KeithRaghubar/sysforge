@@ -1,7 +1,7 @@
 # =============================================================================
 # kernel.toml — custom kernel build (stage 7 / sysforge run kernel)
 #
-# Everything down to line 22 ("END OF HEADER") is documentation;
+# Everything down to line 23 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # This stage is opt-in. Building a custom kernel is a deliberate choice;
@@ -17,14 +17,15 @@
 #   # text          prose. Explanation only; nothing to uncomment.
 #   #key = value    a real setting, shown at its default or with an example
 #                   value. Delete the single leading `#` to activate it.
-# Section headers are always live — only their keys are commented out, so
-# activating a setting is a one-line edit.
+# Section headers are never commented out, so activating a setting is a
+# one-line edit. The [[kconfig]] examples at the bottom are the exception:
+# each is a whole entry, so uncomment all of one block or none of it.
 # ============================== END OF HEADER ================================
 
 enabled = false
 
 # ---------------------------------------------------------------------------
-# Required fields
+# Which kernel to build — set pkgname, upstream_pkgname, or both
 # ---------------------------------------------------------------------------
 
 # pkgname — LOCAL package name to build/install as. For a pure-local tree it
@@ -90,8 +91,9 @@ pkgname = "linux-sysforge"
 #   unset, the kernel inherits whatever the toolchain stage registered (or
 #   profile defaults when toolchain is disabled).
 #   NOTE: compiler = "llvm" builds the kernel WITH clang; it does NOT apply
-#   PGO profile data. The profdata trains the clang binary itself, not the
-#   linux kernel target — there is no kernel PGO here.
+#   the toolchain's PGO profile data, which trains the clang binary itself,
+#   not the kernel. The kernel's own profile-guided path is AutoFDO/Propeller
+#   (see [fdo] below).
 #compiler = "gcc"
 
 # pkgbuild_src_dir — optional per-kernel override of the global [paths]
@@ -140,7 +142,6 @@ pkgname = "linux-sysforge"
 # controller, or core boot infrastructure), and a post-install boot-readiness
 # check (vmlinuz + initramfs present and referenced by a boot entry; DKMS
 # modules rebuilt). Brick-class findings hard-fail; everything else warns.
-# See DESIGN.md §Kernel stage boot-safety.
 # ---------------------------------------------------------------------------
 
 # require_fallback_kernel — default: true — refuse to install a custom
@@ -276,10 +277,10 @@ pkgname = "linux-sysforge"
 # ---------------------------------------------------------------------------
 # kconfig — kernel config fragment
 #
-# Entries are written to a sysforge.config fragment and applied via
-# scripts/config before the build. Precedence (highest first): manual entries
-# below > hardware_profile [kconfig] > hardware_profile [kconfig_devices];
-# manual overrides warn on conflict.
+# Entries are written to a sysforge.config fragment, which sysforge merges in
+# the PKGBUILD's prepare() (merge_config.sh). Precedence (highest first):
+# manual entries below > hardware_profile [kconfig] > hardware_profile
+# [kconfig_devices]; manual overrides warn on conflict.
 #
 # Each override is one [[kconfig]] array-of-tables entry with an 'option' and a
 # 'value'. Note this is NOT the same shape as hardware_profile.toml's [kconfig]

@@ -1,0 +1,15 @@
+# Commands no end-to-end scenario runs, each with the reason (3.5.0-DEV23).
+#
+# tools/e2e_coverage.py compares the commands in tests/data/surface.json with
+# the `sysforge <command>` lines in tools/e2e/scenarios/. A command must be run
+# by a scenario or listed here; a listed command a scenario now runs fails too,
+# so this file only ever names real gaps. `make e2e-coverage` prints both sets.
+
+[uncovered]
+"" = "the bare command prints usage"
+help = "prints usage"
+"run pipeline" = "partitions a disk and installs Arch; it runs from the live ISO, not on an installed system"
+"run packages" = "installs every packages.toml entry, a fresh-install step; the scenarios share one manifest in CI"
+"bench toolchain" = "compares the stock clang with one `run toolchain` built, a build of several hours"
+"state boot-entries" = "lists systemd-boot entries for booted kernels; the container has no bootloader"
+"config merge" = "needs a .sfnew that a package upgrade left and an interactive merge tool"

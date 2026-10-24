@@ -51,14 +51,16 @@ from sysforge.primitives.cache_probe import (
 )
 from sysforge.primitives.config import (
     _active_profiles_path,
+    cache_disabled_for,
     find_pkgbuild,
     load_config,
     load_conflict_groups,
     load_consumes_inference,
+    load_sysforge_toml,
     parse_system_makepkg_conf,
 )
 from sysforge.primitives.dep_analysis import run_dep_analysis
-from sysforge.primitives.failure import handle_failure
+from sysforge.primitives.failure import handle_failure, resolve_failure_handling
 
 # Flag-string manipulation lives in makepkg_flags (owns the [FLAG] tag).
 # Re-exported here so emit_makepkg_conf and the CLI/update call sites
@@ -589,6 +591,24 @@ def _pkgname_from_meta(pkgmeta: dict | None) -> str:
     return name or "unknown"
 
 
+# A packages.toml `cache = false` entry (3.5.0-B139). CCACHE_DISABLE reaches
+# ccache however it was invoked, BUILDENV's or a ccache directory first on PATH;
+# the empty RUSTC_WRAPPER wins over one the shell or the profile exports.
+_CACHE_OFF_ENV = {"CCACHE_DISABLE": "1", "RUSTC_WRAPPER": ""}
+
+
+def _with_cache_opt_out(env: dict | None, config: dict, pkgmeta: dict | None,
+                        pkgbuild_path: Path) -> dict | None:
+    """``env`` plus the cache-off keys when packages.toml opts this build out."""
+    globals_ = (pkgmeta or {}).get("globals", {})
+    names = [globals_.get("pkgbase"), pkgbuild_path.parent.name,
+             *((pkgmeta or {}).get("pkgnames") or [])]
+    if not cache_disabled_for(config, names):
+        return env
+    _build_log.info("packages.toml cache = false: ccache and sccache off for this build")
+    return {**(env or {}), **_CACHE_OFF_ENV}
+
+
 def _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir: str | None) -> bool:
     """Steer a staged toolchain pass (1b/3b/3c) at the staged libLLVM prefix.
 
@@ -1029,10 +1049,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
 
         # ── Pre-flight: .SRCINFO drift regeneration ─────────────────────
         from sysforge.primitives import auto_repair as _ar
-        _failure_cfg = (config or {}).get("failure_handling", {})
-        _srcinfo_behaviour = _failure_cfg.get(
-            "srcinfo_drift", "auto_repair_with_warning"
-        )
+        _failure_cfg = resolve_failure_handling((config or {}).get("failure_handling"))
+        _srcinfo_behaviour = _failure_cfg["srcinfo_drift"]
         try:
             _ar.preflight_srcinfo(pkgbuild_path.parent, _srcinfo_behaviour)
         except RuntimeError as _e:
@@ -1128,7 +1146,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                     _ar.REGISTRY,
                     _accum,
                     pkgbuild_dir=pkgbuild_path.parent,
-                    behaviour_for=lambda key: _failure_cfg.get(key, "auto_repair"),
+                    behaviour_for=_failure_cfg.get,
                     batch=_batch_mode,
                     already_repaired=_repaired_scenarios,
                 )
@@ -1545,6 +1563,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
 
     config_paths = [Path(options.profile_conf)] if options.profile_conf is not None else None
     config = load_config(config_paths=config_paths)
+    # [failure_handling] is a sysforge.toml table; every reader below takes it
+    # from this dict, which is otherwise profiles.toml (3.5.0-B140).
+    config = {**config, "failure_handling": resolve_failure_handling(
+        load_sysforge_toml().get("failure_handling"))}
     # Note: load_config() debug dumps (full flag_profiles etc.) fire here, before the
     # pkg log is open — they go to the unified log (if open) and terminal only.
 
@@ -1892,7 +1914,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 compiler_flags_extra=effective_flags_extra,
                 linker_flags_extra=options.linker_flags_extra,
                 strip_full_lto=options.strip_full_lto,
-                injected_env=options.extra_env,
+                injected_env=_with_cache_opt_out(
+                    options.extra_env, config, pkgmeta, pkgbuild_path),
                 strip_flags=effective_strip_flags,
                 pkgbuild_has_hardcoded_gcc=pkgbuild_has_hardcoded_gcc,
                 state_dir=options.state_dir,

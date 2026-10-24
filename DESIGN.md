@@ -394,7 +394,7 @@ The orthogonality of the roles means:
 Each entry overrides at most these fields (all optional except `name`):
 - `source` — `repo` (pacman) vs `aur`/`git`/`local`. A **routing hint**: it tells the bootstrap/build paths how to obtain the package, falling through to pacman / AUR RPC inference if omitted. It does **not** by itself put a package under steady-state tracking — tracking comes from sysforge having built the package (build_state), not from a manifest entry. So an entry with only `name` + `source` has no override effect at steady-state, and `sysforge packages add` rejects it (pair it with a behavior-changing field — `enable_build_from_source`, `cache`, `reason` — for the entry to override anything). When sysforge builds a package, it records the resolved `source` in build_state, so the registry is self-describing without re-inferring origin later.
 - `enable_build_from_source` *(bool)* — if `true`, this **repo** package is built from source (via `pkgctl repo clone` + makepkg with sysforge flag profiles) instead of installed as the binary via pacman. It also opts the package into `sysforge build` without a confirmation prompt (see §`build`). The boolean replaced the misleadingly-named `pkgbuild_patch` (which never patched anything — real PKGBUILD patching is gated by separate predicates); as of 3.0.0 the legacy `pkgbuild_patch` key is no longer honored on read (`config.normalize_package_entry` is now an identity function) — a manifest that still spells it no longer opts the package into a source build. `packages_cmd` still rewrites the key to the current name on the next `packages.toml` write (`add`/`remove`), so a file touched since the rename self-cleans; a never-rewritten file keeps the stale key inert.
-- `cache` *(bool)* — `false` disables ccache/sccache for this package (required for PGO stages).
+- `cache` *(bool)* — `false` builds this package with ccache and sccache off: `CCACHE_DISABLE=1` and an empty `RUSTC_WRAPPER` in its makepkg environment (`config.cache_disabled_for`, applied in `makepkg_wrapper.run`).
 
 ```toml
 [build]
@@ -780,7 +780,7 @@ The hardware stage (stage 2) needs no config — it auto-detects and writes `har
 - On `NotImplementedError`: prints `--start-from` guidance and exits
 - On `BootstrapRebootRequired`: saves state, prints reboot + resume instructions, exits 0 (clean stop, not failure)
 - On `RuntimeError`: saves state and exits with resume instructions
-- `--dry-run`: logs what would run without calling `stage.run()`
+- `--dry-run`: `run pipeline` lists the stages it would run without calling `stage.run()` (the bootstrap stages are not dry-run safe). A standalone `run <stage> --dry-run` calls `stage.run()` with `options.dry_run` set, after a `[dry-run] <stage>` line through `ui()`: each stage stops short of its own changes and says what it would do, so the preview reads the real config (the kernel's "Kernel build plan", the toolchain's install set). The runner opens `PipelineState(read_only=True)`, so a stage's mid-run checkpoints never reach the file, the kernel and packages stages take no sentinel, and the toolchain stage's `resolve_all_pkgbuilds(dry_run=True)` reads only checked-out PKGBUILDs, raising `CheckoutsMissing` (the stage names what it would clone and ends the preview) instead of cloning, syncing or purging (`3.5.0-B141`; before it the runner returned before `stage.run()` and logged one INFO line, so the preview showed nothing).
 
 Guard against accidental state clobber: if a state file exists and neither `--resume` nor `--start-from` is passed, the runner exits with instructions rather than overwriting. Both flags are supported on `sysforge run pipeline`.
 
@@ -1421,7 +1421,8 @@ spelling per meaning, across every verb:
 | `revert-to-stock` | resolve state dir + `plan_revert` over `BuildState` (pure, no mutation) | prompt/`--yes`/`--dry-run` gate, then per-target reinstall / atomic replace / derename-then-reinstall via `pacman` | (state written inline) | yes |
 | `bench toolchain` | null | resolve preconditions → workload → unprivileged stock fetch + extract → interleaved timing → report → `bench.toml` | null | no |
 | `search` | null | print installed → repo → AUR sections (fixed order, empty omitted) for one term, with in-line installed / stand-in (`-sysforge`, `-git` drop-in) markers | null | no |
-| `uninstall` | resolve state dir + `plan_uninstall` over `BuildState` (pure) | `pacman -Rnsu`, then demote any tracked target via `state forget` + reconcile | (state written inline) | yes |
+| `uninstall` | resolve state dir + `plan_uninstall` over `BuildState` (pure) | `--yes`/terminal gate, `pacman -Rnsu`, then demote any tracked target via `state forget` + reconcile | (state written inline) | yes |
+| `self-uninstall` | `plan_self_uninstall` over `BuildState`, the sync DB, pacman.conf and the package dirs (reads only) | `--dry-run`/`--yes` gate; `apply_reverts` under its own sentinel; drop `IgnoreGroup` and the chroot repo block; one `sudo sh -c` removing the package, then the data and group | null | own scope, reverts only |
 | `run …` namespace | build `RunOptions` | delegate to `pipeline.run_pipeline` / `run_stage_standalone` | pipeline framework | (pipeline owns it) |
 | `artifact list` | null | `primitives/artifacts.unified_rows()` + PATH check + optional `scan()` for `--unmanaged` | null | no |
 | `artifact review` | `--all`, `--include-unknown` | interactively offer discovered candidates for adoption via `primitives/artifacts.iter_offerable()`; off-TTY lists candidates + adopt hint; `--all` bulk-adopts the same offer set without prompting | null | no |
@@ -1432,7 +1433,7 @@ spelling per meaning, across every verb:
 
 ### `revert-to-stock`
 
-Undoes a source-built or optimized package back to its official repo version. `pre_check` resolves the state dir and calls `plan_revert(bs, targets)` (pure — no mutation) to classify each target against `BuildState`, including a reverse lookup via the shared `install_reconcile.resolve_installed_name(bs, name)` helper (iterated in sorted key order so a stock base always resolves to the same pkgname deterministically) so naming the *stock* base of a renamed build (e.g. `mesa` when the tracked entry is `mesa-sysforge`) still resolves, as does a renamed split member's own stock name (`vulkan-radeon` → `vulkan-radeon-sysforge`, whose `origin_pkgbase` is `mesa`, `3.5.0-B62`). That helper is the single home for the reverse lookup — `uninstall` uses it too. Four actions, distinguished by `profile.is_optimized_build_mode(mode)` and — for optimized builds — `profile.rename_mode_for_build_mode(mode)`:
+Undoes a source-built or optimized package back to its official repo version. `pre_check` resolves the state dir and calls `plan_revert(bs, targets)` (pure — no mutation) to classify each target against `BuildState`, including a reverse lookup via the shared `install_reconcile.resolve_installed_name(bs, name)` helper (iterated in sorted key order so a stock base always resolves to the same pkgname deterministically) so naming the *stock* base of a renamed build (e.g. `mesa` when the tracked entry is `mesa-sysforge`) still resolves, as does a renamed split member's own stock name (`vulkan-radeon` → `vulkan-radeon-sysforge`, whose `origin_pkgbase` is `mesa`, `3.5.0-B62`). That helper is the single home for the reverse lookup — `uninstall` uses it too. `plan_revert` and `apply_reverts(actionable, state_dir)` live in `verbs/shared.py`, shared with `self-uninstall`. Four actions, distinguished by `profile.is_optimized_build_mode(mode)` and — for optimized builds — `profile.rename_mode_for_build_mode(mode)`:
 
 - **`skip`** — untracked or already `build_mode = "pacman"`; nothing to do.
 - **`reinstall`** — plain `source_built` (or `bolt_llvm`, a BOLTed toolchain member, which also keeps its stock name), installed under the stock name: just reinstall the repo package (`pacman -S <name>`). The name is the member itself, never its pkgbase (`pacman -S mesa` left a source-built `vulkan-radeon` in place); naming the pkgbase of a split set reinstalls every installed member, matching what `forget_packages` drops (`3.5.0-B62`).
@@ -1465,7 +1466,13 @@ Read-only (`3.4.0-F6`, `BenchToolchainVerb` under the `bench` `VerbGroup`, Inspe
 
 ### `uninstall`
 
-Mutating lifecycle verb (`requires_sentinel = True`). `pre_check` resolves each name through the shared `resolve_installed_name` (so naming a stock base reaches its `-sysforge` build) and builds a pure `plan_uninstall` classifying each target's installed name + whether it's tracked. `execute` narrates the plan, removes via `pacman.uninstall_pkgs` (`pacman -Rnsu`, interactive — pacman prints its own confirmation; a `CalledProcessError` returns exit 1 and demotes nothing), clears the removed targets' recorded build failures through `install_reconcile.clear_removed_failures` (tracked or not, before the forget whose deleted records map a split member to its pkgbase; `3.5.0-B120`), then for any tracked target demotes it out of the build-state authority via `cmd_state_forget` (the same `state forget` code) followed by an `install_reconcile.consume_external_installs(bs)` pass. This is the exact demotion composition `revert-to-stock` uses — no parallel path — so `update` stops rebuilding an uninstalled package.
+Mutating lifecycle verb (`requires_sentinel = True`). `pre_check` resolves each name through the shared `resolve_installed_name` (so naming a stock base reaches its `-sysforge` build) and builds a pure `plan_uninstall` classifying each target's installed name + whether it's tracked. `execute` narrates the plan, removes via `pacman.uninstall_pkgs` (`pacman -Rnsu`, interactive — pacman prints its own confirmation; a `CalledProcessError` returns exit 1 and demotes nothing), clears the removed targets' recorded build failures through `install_reconcile.clear_removed_failures` (tracked or not, before the forget whose deleted records map a split member to its pkgbase; `3.5.0-B120`), then for any tracked target demotes it out of the build-state authority via `cmd_state_forget` (the same `state forget` code) followed by an `install_reconcile.consume_external_installs(bs)` pass. This is the exact demotion composition `revert-to-stock` uses — no parallel path — so `update` stops rebuilding an uninstalled package. Without a terminal it refuses before pacman runs unless `--yes` is given, which passes `--noconfirm`: pacman's own `[Y/n]` read EOF and aborted after printing the transaction (`3.5.0-B143`).
+
+### `self-uninstall`
+
+Removes SysForge in one command (`3.5.0-F19`), replacing the manual list the "What SysForge touches" guide gave. `pre_check` builds a `SelfUninstallPlan` by reading only: every `build_state` entry not built by pacman goes through `plan_revert`, a split set planned once; a plan whose stock names (`pacman.get_sync_pkgnames`, one `pacman -Slq`) a repo carries is reverted, any other (an AUR or local build, a custom kernel, an FDO kernel whose plain kernel is itself local) is kept installed with the reason. It also records whether `/etc/pacman.conf` has `sf-build` in `IgnoreGroup` (`verbs.shared.has_ignore_group`), whether the sandbox chroot lists the local repo (`local_repo.has_chroot_section`), the package that owns `sysforge/__init__.py` (none from a checkout), which of `paths.PACKAGE_DIRS` and the XDG user dirs exist, and whether the `sysforge` group exists. `PACKAGE_DIRS` is fixed (`/etc/sysforge`, `/var/lib/sysforge`, `/var/cache/sysforge`), never `SYSFORGE_CONFIG_DIR`/`SYSFORGE_STATE_DIR`, which can name a developer's own tree.
+
+`execute` prints the plan, stops on `--dry-run`, and otherwise needs `--yes` or a terminal's `y` and an authorised `sudo`. Order is what makes a failure safe: (1) the reverts through `verbs.shared.apply_reverts`, the one home `revert-to-stock` also calls, inside the verb's own `sentinel_scope` (recovery: reinstall the stock packages) — the verb sets `requires_sentinel = False` and `wants_run_log = False` because the runner's scope and log live in the state dir it is about to delete; a failed revert stops the run with sysforge still installed; (2) `verbs.shared.remove_ignore_group` (`drop_ignore_group`, the inverse of setup's `_patch_conf_text`; the IgnoreGroup facts live in `verbs/shared.py`, since a verb module may not import a sibling) and `local_repo.remove_chroot_section`; (3) `removal_script`, one `sudo sh -c` running `pacman -Rns --noconfirm <pkg>`, then `rm -rf` of the package dirs and `groupdel sysforge`. Step 3 is last and single because once pacman has deleted the package this process must import nothing more from it; after it only `shutil.rmtree` of the user dirs and a `print` run. The package's pacman hooks are gone before pacman runs post-transaction hooks, so none writes into the state dir being deleted. `--keep-data` uses `pacman -Rs` (edited config kept as `.pacsave`) and skips the data, group and user dirs. `tools/e2e/scenarios/99-self-uninstall.sh`, the tier's last scenario, runs the whole thing on a live system.
 
 ### `artifact list`
 
@@ -2366,7 +2373,7 @@ Log tag: `[PROV]`. The `suggest_*` / `files_db_present` queries are pure read-on
 
 Cross-cutting failure scenario handler. Imported by `makepkg_wrapper` and `dep_analysis` to avoid circular imports.
 
-`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `[failure_handling]` config. `profile_missing` and `tempfile_write_failed` always abort regardless of config.
+`handle_failure(scenario, message, config, fallback=None)` dispatches to `abort`, `error`, `warn_and_fallback`, or `fallback` based on `sysforge.toml [failure_handling]`, validated per key by `resolve_failure_handling` against `SCENARIOS` (the one home for every key's values and default). `tempfile_write_failed` always aborts regardless of config, as does a scenario not in `SCENARIOS`.
 
 ### `run.py`
 
@@ -2963,11 +2970,11 @@ toolchain = "gcc"        # global package-compiler default (see "Toolchain field
 [profiles.bare]
 # Fallback profile, no flags
 
+# No profile names a compiler or linker: both come from `toolchain` (see
+# "Toolchain field"). Override individual CC/CXX/AR/… keys to win over it.
+
 [profiles.standard]
 extends = "bare"
-# Compiler comes from the `toolchain` field (defaults to "gcc" via [defaults]).
-# Override individual CC/CXX/AR/… keys to win over the bundle, or set
-# `toolchain = "llvm"` here / in a rule to switch the whole bundle.
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
@@ -3427,23 +3434,18 @@ Preflight refuses rather than downgrades — missing `devtools`, a missing `<chr
 
 ### Failure handling
 
-Each scenario has a configurable behaviour in `[failure_handling]`:
+Each scenario has a configurable behaviour in `sysforge.toml [failure_handling]`. `failure.SCENARIOS` is the one home for the keys: each names the values it accepts and its default, and `failure.resolve_failure_handling` validates the table (an absent key or a value outside the key's set takes the default, an invalid one with a warning; an unknown key is ignored with a warning). `makepkg_wrapper.run` resolves it from `load_sysforge_toml()` and folds it into the `config` dict every reader already receives (`3.5.0-B140`): that dict is otherwise `profiles.toml`, where the table was read from before, so the documented section did nothing.
+
+`failure.handle_failure` serves the scenarios a build can go on past:
 
 ```toml
 [failure_handling]
-pkgbuild_unparseable  = "warn_and_fallback"
-no_rule_matched       = "fallback"
-profile_missing       = "abort"
-profile_cycle         = "abort"
-tempfile_write_failed = "abort"
-env_conflict          = "warn_and_fallback"
+pkgbuild_unparseable  = "warn_and_fallback"   # abort | error | warn_and_fallback | fallback
 abi_mismatch          = "warn_and_fallback"
-dep_unsatisfied       = "warn_and_fallback"
+makedep_probe_failed  = "warn_and_fallback"
 ```
 
-**Behaviours:** `abort`, `warn_and_fallback`, `fallback`, `error`
-
-`profile_missing` and `tempfile_write_failed` always abort regardless of config.
+`tempfile_write_failed` always aborts and is not configurable; a scenario name not in `SCENARIOS` aborts too.
 
 ### Interactive mode
 
@@ -3491,16 +3493,16 @@ To make the pattern scan work for every build mode, `invoke_makepkg` uses a `Pop
 
 **Interactive-failure diagnosis (BUILDDIR/LOGDEST-aware).** In the interactive branch `captured_output` stays empty on purpose although the lines are captured (`3.2.0-F19`): auto-repair walks it and may rewrite the build tree, which an interactive build has never been subject to. The diagnosis gets the captured failure tail first, then what it recovers from on-disk artifacts: `makepkg_env._effective_build_dir(pkgbuild_path, resolved_profile)` locates the meson/cmake side-car logs (`meson-log.txt`, `CMakeError.log`) under `$BUILDDIR/<pkgbase>/src`, and `makepkg_env._logdest_tail(pkgbuild_path)` reads the tail of the newest `$LOGDEST/<pkgbase>-*.log` (makepkg's captured stdout when `OPTIONS+=log`). Both `BUILDDIR` and `LOGDEST` are resolved through `pacman.get_builddir()` / `pacman.get_logdest()` — env first, then the layered system `makepkg.conf` — so a user who configures these only in `/etc/makepkg.conf` still gets a diagnosis. Don't read `os.environ["BUILDDIR"]` or assume `~/builds` directly here.
 
-Configuration extends `[failure_handling]` with four scenario keys:
+Auto-repair has four keys of its own in the same table:
 
 ```toml
-vendored_deps_missing = "auto_repair"
+vendored_deps_missing = "auto_repair"               # auto_repair | auto_repair_with_warning | abort
 pgp_key_missing       = "auto_repair"
-srcinfo_drift         = "auto_repair_with_warning"
-checksum_mismatch     = "prompt_user"
+srcinfo_drift         = "auto_repair_with_warning"  # … | warn_and_fallback (preflight only)
+checksum_mismatch     = "prompt_user"               # prompt_user | abort, nothing else
 ```
 
-Three new behaviour values join the existing `abort` / `warn_and_fallback` / `fallback` / `error` set: `auto_repair` (repair silently, retry, log at info), `auto_repair_with_warning` (repair, retry, log at `[WARN]`), `prompt_user` (surface the diff and require explicit consent before repairing). In **batch mode** (`batch=true` on the resolved profile) the `prompt_user` behaviour is short-circuited to `aborted` — auto-repair never runs unattended for security-sensitive scenarios. This is the load-bearing rule for `checksum_mismatch`.
+`auto_repair` repairs, retries and logs at info; `auto_repair_with_warning` logs the same at `[WARN]`; `prompt_user` surfaces the failing files and requires explicit consent before repairing. `checksum_mismatch` accepts only `prompt_user` or `abort`, so neither an edit nor a typo can select an unattended `updpkgsums`, which would mask a tampered source. In **batch mode** (`batch=true` on the resolved profile) `prompt_user` is short-circuited to `aborted`, so the repair never runs unattended. `auto_repair._normalise_behaviour` maps anything unexpected that still reaches it to `abort`, never to a repair.
 
 `.SRCINFO` drift is the one scenario that is **not** in `REGISTRY` — it has a different lifecycle. `_run_build` calls `auto_repair.preflight_srcinfo(pkgbuild_dir, behaviour)` before the build starts, regenerating `.SRCINFO` (with a `[WARN]` by default) when `makepkg --printsrcinfo` differs from the committed file. The other three scenarios fire on retry from a captured failure.
 
@@ -3861,7 +3863,7 @@ This gives hand-crafted prose with OPTIONS that stay automatically in sync with 
 ---
 ## Hardware Detection
 
-Pipeline stage 3. Probes the running system via `/proc/cpuinfo` and `lspci`, emits `hardware_profile.toml` to `state_dir`. The file feeds kconfig automation (kernel stage) and is shown in the reconfigure config review.
+Pipeline stage 2. Probes the running system via `/proc/cpuinfo` and `lspci`, emits `hardware_profile.toml` to `state_dir`. The file feeds kconfig automation (kernel stage) and is shown in the reconfigure config review.
 
 **Detections and kconfig output:**
 
@@ -4111,11 +4113,14 @@ codes, `pacman -Qi`, the state files and leftover sentinels, with prompts answer
 pseudo-terminal. It covers what the unit suite stubs: root versus the user, group membership that
 applies only at the next login, the state one command leaves for the next. It builds sysforge from
 the checkout itself, so it needs no `vm-pkg-stable`. `pre-release` runs it; the release preflight
-does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and one networked scenario, so not
+does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and four networked scenarios, so not
 deterministic). CI runs the same scenarios in an `e2e` job of its own, directly in the job's
 container (`make e2e E2E_HERE=1`), listed in the Makefile's `CI_JOBS` beside `GATES`. A scenario
 marked `xfail: <ID>` fails until that item is fixed and reports `XFAIL`; once it passes it fails
-the run, so the marker comes off with the fix.
+the run, so the marker comes off with the fix. Every command in `tests/data/surface.json` is run by a scenario or
+listed, with its reason, in `tools/e2e/uncovered.toml` (`3.5.0-DEV23`); `tools/e2e_coverage.py`
+does the comparison, `tests/test_e2e_coverage.py` fails the suite on a command in neither set or
+a listing a scenario has made redundant, and `make e2e-coverage` prints both.
 
 **CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on each pull request (a newer push to
 it cancels the superseded run) and on each push to `main`, in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the
@@ -4231,7 +4236,7 @@ Escape hatches:
 
 **Config defaults.** All three drift-rebuild flags (`--rebuild-on-drift`, `--rebuild-on-toolchain-drift`, `--rebuild-on-flag-drift`) fall back to a sysforge.toml `[update]` default (`rebuild_on_drift`, `rebuild_on_toolchain_drift`, `rebuild_on_flag_drift` respectively) via `_resolve_drift_axes`, which resolves each axis through `config.resolve_flag_default`. The CLI flag always wins when explicitly passed; the config value only supplies the default when it isn't.
 
-**PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain`. The toolchain stage itself also reuses compatible profdata — see the **Profdata reuse** section under stage 6.
+**PGO toolchain packages** (`build_mode = "pgo_llvm_toolchain"`) are handled specially during update. `makepkg_wrapper.run()` reads `toolchain.toml → pgo_store`, checks for a saved `clang.profdata` and its `clang.profdata.version` sidecar, and compares the sidecar's LLVM major version against the PKGBUILD's `pkgver` major. If they match, `-fprofile-use=<profdata>` is injected and the build proceeds as a PGO-optimised build. If profdata is absent or version-mismatched (e.g. after a major LLVM bump), the user is prompted: **[p]lain build or [s]kip (default: skip)**. In non-interactive mode the build is skipped automatically. Skipped packages are counted separately in the update summary and do not count as failures. To rebuild profdata after a major version bump, run `sysforge run toolchain`. The toolchain stage itself also reuses compatible profdata — see the **Profdata reuse** section under stage 5.
 
 **Stale-profraw post-build check.** After every non-PGO-managed build, `makepkg_wrapper.run()` globs `pgo_store` for `*.profraw` files. Any file with `mtime >= build_start - 1s` is treated as **fresh** — it was written by the build just completed, which means an instrumented LLVM is still installed on the system and the build was leaking profile data. The wrapper fatals, telling the user to reinstall `llvm`/`llvm-libs` or run `sysforge run toolchain`. Files strictly older than `build_start` are **orphans** left behind by a prior failed or partial toolchain run whose instrumented binaries the user has since cleaned up; these are unlinked in place and an info line is logged. The split makes the safety net self-healing: once the system is clean, the next build purges the residue automatically instead of requiring manual cleanup of `pgo_store`. **Neither verdict applies while a toolchain PGO run is in progress** (`3.3.0-B8`): if `build_lock.is_held(makepkg_pgo.resolve_pgo_lock_path(tcfg))` reports the `sysforge-pgo.lock` held, the store is that run's live Pass-3 training data, so a fresh file is not a leak and an "orphan" is data its merge monitor has not read yet. The check logs that it is deferring and touches nothing. Before this, a `sysforge build` started alongside `run toolchain` either fatally aborted on the training data or deleted whatever the monitor had not yet merged. `is_held` is a read-only probe: it never creates the lock file or overwrites the holder's PID.
 

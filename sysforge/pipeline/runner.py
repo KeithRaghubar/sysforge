@@ -179,7 +179,7 @@ def run_stage_standalone(stage, config, options):
     _log = log.get_logger(stage.name.upper())
 
     state_dir, _ = resolve_state_dir(cli_override=options.state_dir)
-    state = PipelineState(state_dir)
+    state = PipelineState(state_dir, read_only=options.dry_run)
 
     reset_session()
     emit_system_probes()
@@ -214,7 +214,11 @@ def run_stage_standalone(stage, config, options):
     success = False
     try:
         if options.dry_run:
-            _log.info(f"[dry-run] would run stage: {stage.name}; {stage.description}")
+            # The stage runs: each one stops short of its own changes and says
+            # what it would do, so the preview reads the real config. Only the
+            # bookkeeping around it is skipped (3.5.0-B141).
+            _log.ui(f"[dry-run] {stage.name}: {stage.description}; nothing will be changed")
+            stage.run(config, state, options)
         else:
             _log.info(f"── Stage: {stage.name} ── {stage.description}")
             # 3.1.0-F5: point a fresh install at the TOML that decides what
@@ -269,7 +273,7 @@ def run_pipeline(config, options, stages=None):
     state_dir, state_source = resolve_state_dir(
         cli_override=options.state_dir,
     )
-    state = PipelineState(state_dir)
+    state = PipelineState(state_dir, read_only=options.dry_run)
 
     stage_names = [s.name for s in stages]
 
