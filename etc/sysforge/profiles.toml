@@ -2,7 +2,7 @@
 # profiles.toml — compiler flag profiles, package matching rules, and
 # flag-resolution reference data (conflict groups + consumes inference)
 #
-# Everything down to line 226 ("END OF HEADER") is documentation;
+# Everything down to line 228 ("END OF HEADER") is documentation;
 # the settings themselves start below it.
 #
 # SysForge resolves a profile for each package by evaluating [[rules]] in
@@ -132,11 +132,13 @@
 #   PKG_CONFIG_PATH              = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
-#   makepkg_flags — common: --noconfirm --noprogressbar --log --cleanbuild
-#     --force. sysforge installs dependencies and the built packages itself,
-#     so it strips --syncdeps/-s and --install/-i from every build, and
-#     --rmdeps has nothing to remove.
-#   makepkg_flags = ["--noconfirm"]
+#   makepkg_flags — common: --noprogressbar --log --cleanbuild --force.
+#     sysforge installs dependencies and the built packages itself, so it
+#     strips --syncdeps/-s and --install/-i from every build, and --rmdeps has
+#     nothing to remove. --noconfirm is not needed: sysforge adds it to every
+#     build except an interactive one (`sysforge build --interactive`, or an
+#     interactive kernel configuration).
+#   makepkg_flags = ["--cleanbuild"]
 #
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode — "source_built" | "pgo_llvm_toolchain" | "kernel"; omit for
@@ -259,7 +261,6 @@ CXXFLAGS = "$CFLAGS"
 LDFLAGS  = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 RUSTC_WRAPPER                = "sccache"
-makepkg_flags = ["--noconfirm"]
 
 [profiles.optimized]
 extends = "standard"
@@ -267,7 +268,7 @@ CFLAGS  = "-march=native -O3 -pipe -fno-plt"
 # --icf=all (fold identical functions) is an lld option, so it only takes
 # effect under toolchain = "llvm"; under gcc's linker it is stripped at build.
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now,--icf=all"
-makepkg_flags = ["--noconfirm", "--cleanbuild"]
+makepkg_flags = ["--cleanbuild"]
 
 # hardened: standard's -O2 build plus compiler hardening beyond what
 #   [preserved_system_tokens] restores from /etc/makepkg.conf, from the OpenSSF
@@ -304,13 +305,13 @@ build_mode = "source_built"   # extracts the PKGBUILD's embedded profile
 extends = "bare"
 build_mode = "kernel"
 batch = true
-makepkg_flags = ["--noconfirm", "-f", "-c"]
+makepkg_flags = ["-f", "-c"]
 
 [profiles.batch]
 extends = "standard"
 batch = true
 clean_builddir = true
-makepkg_flags = ["--noconfirm", "--noprogressbar", "--log", "--cleanbuild"]
+makepkg_flags = ["--noprogressbar", "--log", "--cleanbuild"]
 
 # =============================================================================
 # Rules — add your own below

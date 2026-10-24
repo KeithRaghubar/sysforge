@@ -298,6 +298,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-F3` — `[bolt] enabled` can now run, and optimizes clang's library inside the toolchain build.** The BOLT option in `toolchain.toml` could never work: it tried to build the BOLT tools in a way the LLVM packages cannot support, then would have rewritten the 117 KB `clang` launcher instead of the library that holds clang's code, and it relied on a CPU feature (branch sampling) that Zen 3 processors lack. It now runs during `sysforge run toolchain`, right after the optimized LLVM is built and before anything is installed: it profiles `libclang-cpp` (and `libLLVM`, with `libllvm = true`) while compiling a sample of LLVM's own source, rewrites them, checks the result still compiles, and packages it. It uses the BOLT tools from the same build, so it needs the repos' single `llvm` package, and it no longer needs `perf`. Any failure warns and the toolchain installs without BOLT. Still experimental and off by default: it has not yet been through a full toolchain build.
 
+---
+
+- **`3.5.0-F20` — sysforge decides whether makepkg may ask questions; profiles no longer carry `--noconfirm`.** Every build sysforge runs on its own now gets `--noconfirm` whether or not the profile lists it, and `sysforge build --interactive` or an interactive kernel configuration runs without it, as before. The shipped profiles no longer list it, so `makepkg_flags` describes only how a package is built. Profiles you wrote yourself keep working unchanged: a `--noconfirm` in them is recognised rather than passed twice. Removing it from a profile no longer makes builds ask questions, since only `--interactive` does that. The `--interactive` help, man page and completion now say what it does without referring to profile flags.
+
 ## Removed
 
 - **`3.5.0-F15` — one spelling per flag across every command.** **Breaking:** these spellings no longer parse; each has a direct replacement.

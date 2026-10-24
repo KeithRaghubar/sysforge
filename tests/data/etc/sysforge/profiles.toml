@@ -81,9 +81,10 @@
 #   PKG_CONFIG_PATH = "/usr/local/lib/pkgconfig"
 #
 #   # makepkg invocation flags
-#   makepkg_flags = ["--noconfirm"]
-#                 # common flags: --noconfirm --noprogressbar --log --cleanbuild
-#                 #               --force (--syncdeps/--install are always stripped)
+#   makepkg_flags = ["--cleanbuild"]
+#                 # common flags: --noprogressbar --log --cleanbuild --force
+#                 # (--syncdeps/--install are always stripped; --noconfirm is
+#                 # added by sysforge except on an interactive build)
 #
 #   # SysForge behaviour keys  (not written to conf or env)
 #   build_mode    = "source_built"      # "source_built" | "pgo_llvm_toolchain" | "kernel"
@@ -165,13 +166,12 @@ STRIP    = "llvm-strip"
 CFLAGS = "-march=native -O2 -pipe"
 CXXFLAGS = "$CFLAGS"
 LDFLAGS = "-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
-makepkg_flags = ["--noconfirm"]
 CARGO_NET_GIT_FETCH_WITH_CLI = "true"
 RUSTC_WRAPPER                = "sccache"
 
 [profiles.clean]
 extends = "standard"
-makepkg_flags = ["--noconfirm", "--cleanbuild"]
+makepkg_flags = ["--cleanbuild"]
 
 [profiles.optimized]
 extends = "clean"
@@ -202,12 +202,12 @@ CXX = "g++"
 extends = "bare"
 build_mode = "kernel"
 batch = true
-makepkg_flags = ["--noconfirm", "-f", "-c"]
+makepkg_flags = ["-f", "-c"]
 
 [profiles.batch]
 extends = "standard"
 batch = true
-makepkg_flags = ["--noconfirm", "--noprogressbar", "--log", "--cleanbuild"]
+makepkg_flags = ["--noprogressbar", "--log", "--cleanbuild"]
 clean_builddir = true
 
 [profiles.unattended]

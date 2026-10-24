@@ -257,6 +257,18 @@ def _append_flags(flags: list[str], extra: list[str]) -> list[str]:
     return out
 
 
+def _base_flags(resolved_profile, interactive: bool) -> list[str]:
+    """The profile's ``makepkg_flags`` with sysforge's prompt policy applied.
+
+    Whether makepkg may ask questions is decided by the run, not the profile
+    (3.5.0-F20): a batch build always gets ``--noconfirm``, an interactive one
+    never does. A profile written before that still carries the flag, so it is
+    deduplicated rather than doubled, and stripped for an interactive run.
+    """
+    flags = [f for f in resolved_profile.get("makepkg_flags", []) if f != "--noconfirm"]
+    return flags if interactive else ["--noconfirm", *flags]
+
+
 def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
                    extra_env=None, extra_flags=None, interactive=False,
                    strip_flags=None):
@@ -328,10 +340,9 @@ def invoke_makepkg(pkgbuild_path, conf_path, resolved_profile,
     if _build_python is not None:
         env["PATH"] = str(_build_python.parent) + os.pathsep + env.get("PATH", "")
 
-    flags = list(resolved_profile.get("makepkg_flags", []))
+    flags = _base_flags(resolved_profile, interactive)
     if interactive:
-        flags = [f for f in flags if f != "--noconfirm"]
-        _makepkg_log.info("--interactive: stripped --noconfirm from profile flags")
+        _makepkg_log.info("Interactive build: makepkg runs without --noconfirm")
     if extra_flags:
         flags = _append_flags(flags, extra_flags)
         _makepkg_log.info(f"Appending CLI flags: {extra_flags}")

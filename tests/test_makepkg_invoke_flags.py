@@ -21,6 +21,26 @@ def test_append_flags_keeps_a_flag_that_takes_a_value():
         "--config", "a.conf", "--config", "b.conf"]
 
 
+def test_base_flags_add_noconfirm_when_the_profile_omits_it():
+    """Unattended is sysforge's policy, not profile data (3.5.0-F20)."""
+    assert mi._base_flags({"makepkg_flags": ["--cleanbuild"]}, interactive=False) == [
+        "--noconfirm", "--cleanbuild"]
+    assert mi._base_flags({}, interactive=False) == ["--noconfirm"]
+
+
+def test_base_flags_do_not_repeat_a_profile_noconfirm():
+    """A profile written before 3.5.0-F20 still carries the flag; it is not doubled."""
+    assert mi._base_flags({"makepkg_flags": ["--noconfirm", "-f"]},
+                          interactive=False) == ["--noconfirm", "-f"]
+
+
+def test_base_flags_leave_noconfirm_off_an_interactive_build():
+    """`build --interactive` and an interactive kernel run get pacman's prompts."""
+    assert mi._base_flags({"makepkg_flags": ["--noconfirm", "-f"]},
+                          interactive=True) == ["-f"]
+    assert mi._base_flags({"makepkg_flags": ["-f"]}, interactive=True) == ["-f"]
+
+
 def test_merge_extra_env_warns_only_when_the_value_changes(monkeypatch, capsys):
     from sysforge import log
     monkeypatch.setattr(log, "_VERBOSITY", 1)
