@@ -130,7 +130,7 @@ def test_uninstall_writes_no_record(tmp_path, monkeypatch):
     monkeypatch.setattr(uninstall_cmd.install_reconcile, "consume_external_installs",
                         lambda bs: uninstall_cmd.install_reconcile.Reconciled([], []))
     bs = BuildState(tmp_path)
-    args = SimpleNamespace(packages=["htop"], pacman_flags=[], state_dir=str(tmp_path))
+    args = cli_args("uninstall", "htop", "--yes", "--state-dir", str(tmp_path))
     pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, ["htop"]),
                               "state_dir": str(tmp_path)})
     assert uninstall_cmd.UninstallVerb().execute(args, pre).exit_code == 0

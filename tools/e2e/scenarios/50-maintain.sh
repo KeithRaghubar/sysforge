@@ -46,7 +46,9 @@ assert_installed e2e-hello
 step "uninstall removes the package and its record"
 sysforge build "$dir" -si --rebuild </dev/null
 assert_recorded e2e-hello
-# pacman asks to confirm the removal; uninstall has no --yes.
+# Without a terminal it refuses rather than let pacman's prompt read EOF.
+expect_exit 2 sysforge uninstall e2e-hello </dev/null
+assert_installed e2e-hello
 answer 'remove these packages' 'y\n' -- sysforge uninstall e2e-hello
 assert_not_installed e2e-hello
 [[ -z $(state_get e2e-hello build_mode) ]] || fail "uninstall left e2e-hello's record"

@@ -113,7 +113,6 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `3.5.0-B141` | run kernel/toolchain/packages --dry-run shows nothing and skips the stage | med | medium | patch |
-| `3.5.0-B143` | sysforge uninstall cannot run without a terminal | low | small | minor |
 <!-- END roadmap-table -->
 
 ### Features
@@ -136,18 +135,6 @@ canonical ordering.
   `ui()`; `run pipeline --dry-run` shares the runner and needs the same check.
   *Priority: med · Effort: medium · Bump: patch* — a documented preview flag that previews
   nothing; the stage runs that most need one take hours.
-
-- **`3.5.0-B143` — `sysforge uninstall` cannot run without a terminal.**
-  The verb hands the confirmation to `pacman -Rnsu` (`pacman.uninstall_pkgs`) and has no `--yes`,
-  unlike `revert-to-stock`. Run from a script, a timer or with stdin closed, pacman reads EOF at
-  its `[Y/n]`, aborts, and sysforge reports `pacman removal failed (Command '['sudo', 'pacman',
-  '-Rnsu', '--', …]' returned non-zero exit status 1.)`: a raw command line instead of a reason,
-  after printing the whole transaction. Found by the `3.5.0-DEV23` end-to-end scenario
-  `50-maintain`, which answers the prompt on a pseudo-terminal to get past it. Fix: add `--yes`
-  (passes `--noconfirm`), and without it and without a terminal refuse before anything runs,
-  naming `--yes`, as `revert-to-stock` does; completions and man page in step.
-  *Priority: low · Effort: small · Bump: minor* — a new flag; until then a scripted removal
-  needs `pacman -R` plus `state forget` by hand.
 
 ### Developer tooling
 

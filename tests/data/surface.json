@@ -516,7 +516,8 @@
   },
   "uninstall": {
    "flags": {
-    "--state-dir": null
+    "--state-dir": null,
+    "--yes": null
    },
    "positionals": {
     "PKG": null

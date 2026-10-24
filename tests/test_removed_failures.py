@@ -7,7 +7,6 @@ test_removed_failures.py — a removed package's build failure is cleared
 (3.5.0-B120), whoever removed it, while a never-installed failure and a split
 pkgbase with a member still installed keep theirs.
 """
-from types import SimpleNamespace
 
 import pytest
 
@@ -159,7 +158,7 @@ def _uninstall(tmp_path, monkeypatch, targets):
     monkeypatch.setattr(uninstall_cmd.pacman, "uninstall_pkgs",
                         lambda names, extra_flags=None: None)
     bs = BuildState(tmp_path)
-    args = SimpleNamespace(packages=targets, pacman_flags=[], state_dir=str(tmp_path))
+    args = cli_args("uninstall", *targets, "--yes", "--state-dir", str(tmp_path))
     pre = PreCheckResult(ctx={"items": uninstall_cmd.plan_uninstall(bs, targets),
                               "state_dir": str(tmp_path)})
     assert uninstall_cmd.UninstallVerb().execute(args, pre).exit_code == 0

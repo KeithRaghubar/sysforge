@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from sysforge import log
 from sysforge.pipeline.state import resolve_state_dir
-from sysforge.primitives import install_reconcile, journal, pacman
+from sysforge.primitives import install_reconcile, journal, pacman, prompt
 from sysforge.primitives.build_state import BuildState
 from sysforge.verbs.shared import (
     emit_orphaned_profiles,
@@ -63,6 +63,8 @@ class UninstallVerb(Verb):
             help="Remove package(s); demote any sysforge-tracked ones out of build state.")
         p.add_argument("packages", nargs="+", metavar="PKG",
             help="Package name(s) to remove (stock or -sysforge name).")
+        p.add_argument("--yes", action="store_true", dest="yes",
+            help="Remove without pacman's confirmation prompt (needed without a terminal).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.set_defaults(verb_cls=cls)
@@ -86,11 +88,16 @@ class UninstallVerb(Verb):
             tag = "sysforge-tracked" if it.tracked else "repo/untracked"
             _log.ui(f"[uninstall] {it.target}{renamed}: {tag}")
 
+        # pacman asks at a terminal; with none it reads EOF at its [Y/n] and
+        # aborts after printing the transaction, so refuse first (3.5.0-B143).
+        if not args.yes and not prompt.is_interactive():
+            _log.error("[uninstall] refusing without a terminal; pass --yes")
+            return ExecResult(exit_code=2)
+
         names = [it.installed_name for it in items]
         store_names = profile_store_names(pre.ctx["state_dir"], names)
         try:
-            # Interactive: pacman prints its own transaction + confirmation.
-            pacman.uninstall_pkgs(names, extra_flags=list(getattr(args, "pacman_flags", []) or []))
+            pacman.uninstall_pkgs(names, extra_flags=["--noconfirm"] if args.yes else [])
         except subprocess.CalledProcessError as exc:
             _log.error(f"[uninstall] pacman removal failed ({exc}); nothing demoted")
             return ExecResult(exit_code=1)

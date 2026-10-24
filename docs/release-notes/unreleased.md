@@ -52,6 +52,10 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
+- **`3.5.0-B143` — `sysforge uninstall --yes`, for scripts and timers.** `uninstall` passed its confirmation to pacman and had no `--yes`, so without a terminal pacman printed the whole transaction, read nothing at its `[Y/n]` and gave up, and sysforge reported the raw command that failed. `--yes` now removes without asking, and without it and without a terminal `uninstall` refuses before doing anything and says to pass `--yes`, as `revert-to-stock` does. At a terminal nothing changes: pacman still asks.
+
+---
+
 - **`3.5.0-F1` — `bench toolchain` gets past an out-of-date sync database.** The bench downloads the stock `clang` and `llvm-libs` that your sync database names. When the repo rebuilt them after your last `pacman -Sy`, every mirror had already dropped those files, so each download failed with HTTP 404 and the bench stopped. It now notices that every mirror failed, downloads a fresh copy of the sync database into its own temporary directory, and compares against the build the repo carries now. It does this as your user with `fakeroot` (from `base-devel`), never with sudo, and your system's sync database is left alone, because syncing it without upgrading would leave the system partially upgraded. The report shows the stock version it used, so a newer stock build is flagged as a version difference, as before. If the refresh fails too, the error says so and suggests `pacman -Syu`. `--offline` never refreshes. The PGO guide describes the fallback.
 
 ---
@@ -89,7 +93,6 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-F12` — a per-package compiler swap switches the whole toolchain.** When a build failed and you picked gcc (or clang) from the build-failure menu, sysforge retried and remembered the choice in `profiles.toml`'s `[package_compiler_overrides]`, but only the C and C++ compiler and the linker changed: a gcc swap on an LLVM profile kept `llvm-ar`, `llvm-nm`, `llvm-ranlib`, `llvm-strip` and lld. A row can now say `toolchain = "gcc"` or `"llvm"`, which switches the whole set the way a `[[rules]]` profile's `toolchain` does, and the menu writes that form and retries with the whole set. At its linker question, leaving the answer blank now means the chosen toolchain's own linker. Rows that name `cc`, `cxx` and `ld` directly keep working and remain the way to name a compiler outside the two sets. When `sysforge build --cc`, `--cxx` or `--ld` overrides a row for a package, `-vv` says so. The comment above the table in `profiles.toml` lists which setting wins; `sysforge config merge` picks it up.
-
 
 ---
 
