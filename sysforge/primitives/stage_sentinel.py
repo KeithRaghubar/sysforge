@@ -88,7 +88,7 @@ from sysforge.primitives import atomic_write
 from sysforge.primitives.build_lock import build_lock
 from sysforge.primitives.interrupt import CleanExitRequested, InterruptScope
 from sysforge.primitives.privilege import on_mutation, privileged_argv
-from sysforge.primitives.prompt import is_interactive, prompt_choice
+from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_choice
 from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("SENTINEL")
@@ -353,8 +353,8 @@ def check_and_recover_stale_sentinel(state_dir: Path | str | None = None) -> boo
     # Emit explicit instructions instead so the manual path is obvious.
     if not is_interactive():
         _log.error(
-            "Cannot prompt for recovery: stdin is not a TTY. "
-            "Run sysforge in an interactive terminal to use the prompt, "
+            f"Cannot prompt for recovery ({no_prompt_reason()}). "
+            "Run sysforge at a terminal, without --unattended, to use the prompt, "
             f"or clear the sentinel manually: rm {sentinel.path}"
         )
         if recovery_cmd:

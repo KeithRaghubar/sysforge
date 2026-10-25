@@ -194,7 +194,7 @@ def test_check_stale_non_tty_emits_loud_error_and_blocks(tmp_path, capsys):
     # Sentinel left in place; user must clear manually.
     assert StageSentinel(tmp_path).get_active() is not None
     err = capsys.readouterr().err
-    assert "stdin is not a TTY" in err
+    assert "Cannot prompt for recovery (no terminal)" in err
     assert str(tmp_path / "stage_in_progress.toml") in err
     assert "sudo pacman -S -- llvm" in err
 
@@ -416,3 +416,18 @@ def test_declined_restore_is_false_and_runs_nothing(tmp_path, capsys):
     assert result is False
     run.assert_not_called()
     assert StageSentinel(tmp_path).get_active() is not None
+
+
+def test_unattended_recovery_refusal_names_the_unattended_run(tmp_path, monkeypatch, capsys):
+    """At a terminal, "no terminal" would read as wrong (3.5.0-F21)."""
+    from sysforge.primitives import prompt
+    StageSentinel(tmp_path).mark_started(
+        "toolchain", **Recovery.pacman_sync(['llvm']).record_fields(),
+    )
+    monkeypatch.setattr(prompt.sys.stdin, "isatty", lambda: True, raising=False)
+    prompt.set_unattended(True)
+    with patch("sysforge.primitives.stage_sentinel.subprocess.run") as run_mock:
+        assert check_and_recover_stale_sentinel(tmp_path) is False
+    run_mock.assert_not_called()
+    err = capsys.readouterr().err
+    assert "Cannot prompt for recovery (unattended run)" in err

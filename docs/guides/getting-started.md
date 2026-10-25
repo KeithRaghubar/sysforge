@@ -108,7 +108,9 @@ running, an `ssh -t` script), pass `--unattended`, or set `unattended = true` un
 then gets the answer it would get with no terminal: an unreviewed change is refused, no PGP key
 is imported, `update` goes ahead without asking `Proceed?`, and a removal refuses unless you
 pass `--yes`. Apart from the plan question, which only confirms what you asked for, it never
-answers yes for you.
+answers yes for you. It does not ask for your sudo password either, so a run that installs
+anything needs sudo credentials that are already cached or a `NOPASSWD` rule; without them it
+stops before changing anything.
 
 If you have one clear goal, `sysforge setup` first offers a preset that sets several of these at
 once, showing each change before it writes anything: `performance` (the LLVM toolchain and the
