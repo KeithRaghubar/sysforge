@@ -25,6 +25,7 @@ Public API:
                        preserved_system_tokens=None,
                        sandbox_policy=None, state_dir=None) -> FlagDriftResult
     current_sandboxed(entry, config, conflict_groups, policy) -> bool | None
+    builds_with_repo_compiler(entry, config, conflict_groups, policy) -> bool | None
     current_compiler(entry, config, conflict_groups) -> str | None
 """
 from __future__ import annotations
@@ -189,6 +190,25 @@ def current_sandboxed(entry: dict, config: dict, conflict_groups, policy) -> boo
         return None
     build_mode, resolved = current
     return _sandboxed_for(entry, resolved, policy, build_mode)
+
+
+def builds_with_repo_compiler(entry: dict, config: dict, conflict_groups,
+                              policy) -> bool | None:
+    """Whether a fresh build of a recorded package would compile with the
+    repo LLVM in the sandbox, not the host toolchain (3.5.0-B145).
+
+    That is the case ``build_sandbox.recorded_toolchain`` stamps as
+    ``sandbox|…``: the package builds sandboxed and pulls Arch's ``rust``,
+    which links the repo LLVM, so the sandbox swaps that in. Toolchain drift
+    asks this before reporting such a stamp, since a rebuild would record it
+    again. None when the PKGBUILD is missing or unparsable.
+    """
+    from sysforge.primitives.build_sandbox import needs_repo_rust
+
+    sandboxed = current_sandboxed(entry, config, conflict_groups, policy)
+    if sandboxed is None:
+        return None
+    return sandboxed and needs_repo_rust(Path(entry["pkgbuild_dir"]) / "PKGBUILD")
 
 
 def current_compiler(entry: dict, config: dict, conflict_groups) -> str | None:
