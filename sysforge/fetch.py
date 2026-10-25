@@ -64,7 +64,6 @@ def cmd_fetch(args) -> int:
     scheduler = get_scheduler(
         cleansrc=cleansrc,
         cleansrc_force=cleansrc_force,
-        force_devel=getattr(args, "devel", False),
         repo_track=resolve_repo_track(load_sysforge_toml().get("build", {})),
     )
 

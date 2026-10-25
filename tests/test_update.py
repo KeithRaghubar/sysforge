@@ -1438,7 +1438,7 @@ def test_sync_sources_skips_vcs_without_devel(tmp_path, monkeypatch):
     seen: list[str] = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
@@ -1478,7 +1478,7 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     seen: list[str] = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
@@ -1510,7 +1510,7 @@ def test_sync_sources_primes_the_rpc_with_split_members(tmp_path, monkeypatch):
     reqs: list = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):
             primed.append((bases, members))

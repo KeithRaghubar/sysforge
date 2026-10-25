@@ -273,6 +273,30 @@ def is_aur_checkout(pkgbuild_dir) -> bool:
 
 _AUR_HOST = urllib.parse.urlsplit(AUR_GIT_BASE).hostname
 
+
+def aur_origin_pkgbase(pkgbuild_dir) -> str | None:
+    """The AUR pkgbase this checkout's ``origin`` clones, else ``None``.
+
+    Strict, unlike :func:`is_aur_checkout` (which fails open for the
+    AUR-disabled gate): no checkout, no origin, an unreadable one or another
+    host all give ``None``. The source-sync short-circuit uses it to decide
+    whether the AUR RPC entry of a name can vouch for a checkout (3.5.0-B144).
+    """
+    d = Path(pkgbuild_dir)
+    if not (d / ".git").exists():
+        return None
+    try:
+        proc = run.probe(["git", "-C", str(d), "remote", "get-url", "origin"])
+    except OSError:
+        return None
+    url = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    if not url or _url_host(url) != _AUR_HOST:
+        return None
+    path = (urllib.parse.urlsplit(url).path if "://" in url
+            else url.split(":", 1)[1]).strip("/")
+    name = path.removesuffix(".git")
+    return name if name and "/" not in name else None
+
 # Where `pkgctl repo clone` checks out an official package: one project per
 # pkgbase under this group.
 _REPO_HOST = "gitlab.archlinux.org"

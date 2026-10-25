@@ -123,6 +123,15 @@ class SourceMetaCache:
         if last_fetch_at is not None:
             entry["last_fetch_at"] = last_fetch_at
 
+    def forget_rpc(self, pkgbase: str) -> None:
+        """Drop the cached AUR RPC fields for pkgbase, which :meth:`update`
+        cannot do (it preserves unset fields). Without them the source-sync
+        short-circuit cannot match, so the next sync fetches (3.5.0-B144)."""
+        entry = self._data.get(pkgbase)
+        if entry:
+            for key in ("rpc_version", "rpc_last_modified", "rpc_package_base"):
+                entry.pop(key, None)
+
     def mark_rpc_sync(self, timestamp: str | None = None) -> None:
         """Record the timestamp of the last successful RPC batch query."""
         self._meta["last_rpc_at"] = timestamp or _now_iso()
