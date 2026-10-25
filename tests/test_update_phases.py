@@ -231,3 +231,34 @@ def test_toolchain_drift_phase_honours_a_deliberate_other_family(
     run.results = [_result("foo")]
     update._phase_toolchain_drift(run)
     assert bool(run.drifted) is drifts
+
+
+# 3.5.0-B145: the sandbox builds a Rust package with Arch's rust, and so with
+# the repo LLVM, and records that as a `sandbox|` fingerprint. While the next
+# build would do the same, a host toolchain change cannot reach it: rebuilding
+# would record the same thing, so it is not drift.
+
+_SANDBOX_FP = "sandbox|clang|size=1|mtime=2|libllvm=3:4"
+
+
+@pytest.mark.parametrize("fingerprint, active, repo_compiler, drifts", [
+    (_SANDBOX_FP, "pgo_llvm", True, False),    # Rust in the sandbox, as before
+    (_SANDBOX_FP, "stock_llvm", True, False),  # same variant, other fingerprint
+    (_SANDBOX_FP, "pgo_llvm", False, True),    # sandbox off now / no repo rust
+    (_SANDBOX_FP, "pgo_llvm", None, True),     # PKGBUILD gone: report as before
+    ("/usr/bin/clang|size=9", "pgo_llvm", True, True),  # a host build: unchanged
+])
+def test_toolchain_drift_phase_skips_a_repo_compiler_sandbox_build(
+        tmp_path, monkeypatch, fingerprint, active, repo_compiler, drifts):
+    monkeypatch.setattr(update, "load_conflict_groups", lambda: {})
+    monkeypatch.setattr(update, "current_compiler", lambda *a: "clang")
+    monkeypatch.setattr(update, "builds_with_repo_compiler", lambda *a: repo_compiler)
+    run = _run(tmp_path)
+    run.bs.record("foo-git", "1", "1", "0", "foo-git", tmp_path,
+                  build_mode="source_built", toolchain_variant="stock_llvm",
+                  toolchain_fingerprint=fingerprint)
+    run.active_variant = active
+    run.active_fingerprint = "/usr/bin/clang|size=7"
+    run.results = [_result("foo-git")]
+    update._phase_toolchain_drift(run)
+    assert bool(run.drifted) is drifts

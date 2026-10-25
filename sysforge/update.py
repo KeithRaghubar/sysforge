@@ -79,6 +79,7 @@ from sysforge.primitives.config import (
 )
 from sysforge.primitives.flag_drift import (
     STATUS_PARSE_ERROR,
+    builds_with_repo_compiler,
     current_compiler,
     current_sandboxed,
     drift_candidate,
@@ -1148,6 +1149,17 @@ def _phase_toolchain_drift(run: UpdateRun) -> int | None:
                 rec_variant = rec.get("toolchain_variant")
                 if rec_variant is None:
                     continue
+                # Built in the sandbox with the repo LLVM (a Rust package:
+                # Arch's rust links it), recorded as `sandbox|…`. While the next
+                # build would do the same, the host toolchain is not its
+                # compiler and a rebuild would record the same stamp, so it is
+                # not drift (3.5.0-B145; the B125 rule, for the same family).
+                if str(rec.get("toolchain_fingerprint") or "").startswith("sandbox|"):
+                    if _cgroups is None:
+                        _cgroups = load_conflict_groups()
+                    if builds_with_repo_compiler(rec, run.config, _cgroups,
+                                                 build_sandbox.get_policy()):
+                        break
                 if rec_variant != run.active_variant:
                     # The other family on purpose (a [package_compiler_overrides]
                     # row, a profile's toolchain): the build used the compiler

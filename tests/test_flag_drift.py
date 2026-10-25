@@ -603,3 +603,21 @@ def test_inputs_diff_resolves_with_the_profiles_compiler(tmp_path, monkeypatch):
     assert seen["cc"] == "clang"
     _inputs_diff({"build_inputs": ""}, {}, {}, tmp_path)
     assert seen["cc"] == "gcc"
+
+
+
+# 3.5.0-B145: the one predicate for "the next build records a sandbox
+# repo-compiler stamp" — sandboxed now, and Arch's rust in the build deps.
+
+@pytest.mark.parametrize("sandboxed, repo_rust, expected", [
+    (True, True, True),
+    (True, False, False),     # sandboxed, but builds with the host LLVM
+    (False, True, False),     # a host build uses the host toolchain
+    (None, True, None),       # PKGBUILD gone or unparsable: unknown
+])
+def test_builds_with_repo_compiler(tmp_path, monkeypatch, sandboxed, repo_rust, expected):
+    from sysforge.primitives import build_sandbox, flag_drift
+    monkeypatch.setattr(flag_drift, "current_sandboxed", lambda *a: sandboxed)
+    monkeypatch.setattr(build_sandbox, "needs_repo_rust", lambda path: repo_rust)
+    entry = {"pkgbuild_dir": str(tmp_path)}
+    assert flag_drift.builds_with_repo_compiler(entry, {}, {}, None) is expected
