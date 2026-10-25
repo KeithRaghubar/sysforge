@@ -156,15 +156,24 @@ def collect_state_result(state_dir: Path | str | None = None,
         when = rec.get("failed_at", "?")
         fix_cmd = rec.get("fix_cmd")
         signature = rec.get("signature")
-        detail = f"{pkgbase} build failed ({when})"
-        if signature:
-            detail += f" [{signature}]"
-        if msg:
-            detail += f": {msg}"
-        remediation = fix_cmd or (
-            f"inspect with `sysforge log {pkgbase}`; clears on the next successful build "
-            "or once the package is removed"
-        )
+        if rec.get("kind") == "review":
+            # Refused at the review gate, usually by an unattended run (3.5.0-F23):
+            # nothing failed, the change is waiting for a person.
+            detail = f"{pkgbase} refused at review ({when})"
+            if msg:
+                detail += f": {msg.removeprefix('refused at review: ')}"
+            remediation = ("review and build it at a terminal: `sysforge build --failed`; "
+                           "clears once it builds or the package is removed")
+        else:
+            detail = f"{pkgbase} build failed ({when})"
+            if signature:
+                detail += f" [{signature}]"
+            if msg:
+                detail += f": {msg}"
+            remediation = fix_cmd or (
+                f"inspect with `sysforge log {pkgbase}`; clears on the next successful "
+                "build or once the package is removed"
+            )
         # Intentional-revert escape hatch: the warning is correct but
         # dead-ends a user who deliberately went back to the repo package.
         remediation += (

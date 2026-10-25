@@ -204,3 +204,16 @@ def test_current_state_has_no_legacy_finding(monkeypatch, tmp_path):
     monkeypatch.setenv("SYSFORGE_PROFILE_STORE", str(tmp_path))
     bs = _FakeBS({"mesa-sysforge": {"build_mode": "pgo"}})
     assert state_probe._check_legacy_state(bs) == []
+
+
+def test_review_refusal_is_not_reported_as_a_build_failure(monkeypatch):
+    """A refusal recorded by an unattended run (3.5.0-F23) says what happened
+    and how to finish it, not that a build failed."""
+    _setup(monkeypatch, failures={
+        "foo-git": {"failed_at": "2026-10-24T00:00:00Z", "kind": "review",
+                    "error": "refused at review: PKGBUILD changed"},
+    })
+    f = state_probe.collect_state_findings(installed={})[0]
+    assert "refused at review" in f.message
+    assert "build failed" not in f.message
+    assert "sysforge build --failed" in f.remediation

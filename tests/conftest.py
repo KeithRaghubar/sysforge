@@ -1098,7 +1098,7 @@ def update_scenario(fake_run, state_dir, tmp_path, monkeypatch):
                     return {}
 
             class _FakeScheduler:
-                offline = cleansrc = cleansrc_force = force_devel = False
+                offline = cleansrc = cleansrc_force = False
                 cache = _FakeCache()
 
                 def _ensure_rpc(self, bases, members=None):

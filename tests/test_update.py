@@ -1249,6 +1249,23 @@ def test_devel_flag_triggers_vcs_rebuild(update_scenario):
     assert len(builds) == 1
 
 
+def test_devel_rebuilds_when_only_upstream_moved(update_scenario):
+    """A new upstream commit does not touch the AUR PKGBUILD, so source sync
+    short-circuits on the unchanged RPC and fetches nothing (3.5.0-B144). The
+    version check resolves pkgver() against upstream regardless, so the
+    package still rebuilds."""
+    update_scenario.add_pkg(
+        "neovim-git", "pkgname=neovim-git\npkgver=r1234.gabcdef\npkgrel=1\n")
+    update_scenario.fake_sync({"neovim-git": "up_to_date"})
+    update_scenario.fake_vcs_pkgver("neovim-git", "r5678.g9999999-1")
+    builds = update_scenario.run(
+        _make_args(devel=True, offline=False),
+        installed={"neovim-git": "r1234.gabcdef-1"},
+        foreign={"neovim-git": "r1234.gabcdef-1"},
+    )
+    assert len(builds) == 1
+
+
 def test_devel_skips_uptodate_vcs(update_scenario):
     """--devel + resolved pkgver equal to installed → build does NOT run."""
     update_scenario.add_pkg(
@@ -1438,7 +1455,7 @@ def test_sync_sources_skips_vcs_without_devel(tmp_path, monkeypatch):
     seen: list[str] = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
@@ -1478,7 +1495,7 @@ def test_sync_sources_includes_vcs_under_devel(tmp_path, monkeypatch):
     seen: list[str] = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):  # noqa: ARG002
             pass
@@ -1510,7 +1527,7 @@ def test_sync_sources_primes_the_rpc_with_split_members(tmp_path, monkeypatch):
     reqs: list = []
 
     class _FakeScheduler:
-        offline = cleansrc = cleansrc_force = force_devel = False
+        offline = cleansrc = cleansrc_force = False
         cache = MagicMock()
         def _ensure_rpc(self, bases, members=None):
             primed.append((bases, members))

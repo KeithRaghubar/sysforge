@@ -328,8 +328,8 @@ def _print_result_summary(
     if summary.review_refused:
         _section("Refused at review:", [
             f"{pb}: {why}" for pb, why in summary.review_refused.items()])
-        emit("    run `sysforge update` at a terminal to review them "
-             "([build] review in packages.toml)")
+        emit("    run `sysforge build --failed` at a terminal to review and build "
+             "them ([build] review in packages.toml)")
 
     if summary.review_accepted:
         _section("Accepted without review:", list(summary.review_accepted))
@@ -355,6 +355,8 @@ def _print_result_summary(
 
     if summary.failed_pkgs:
         _section("Failed:", [_fmt_pkg(summary, pb) for pb in summary.failed_pkgs])
+        emit("    `sysforge state failed` shows any diagnosed fix; after applying it, "
+             "`sysforge build --failed` retries only these")
 
     if summary.layout_findings:
         _section("Payload layout (installed, but never read by its consumer):",

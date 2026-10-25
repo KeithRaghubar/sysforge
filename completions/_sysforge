@@ -161,6 +161,7 @@ _sysforge_build() {
     $_sysforge_help_spec \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
     '--interactive[run makepkg without --noconfirm, attached to the terminal]' \
+    '--failed[also build every package `state failed` lists]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--toolchain[build with this toolchain as a whole]:toolchain:(gcc llvm)' \
     '(--reset-toolchain)--save-toolchain[also save --toolchain for these packages]' \

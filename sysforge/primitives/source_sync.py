@@ -46,7 +46,7 @@ must already exist.
     get_scheduler(*, state_dir, offline=False, cleansrc=False,
                   min_fetch_interval_ms=None, rate_limit_abort_s=None,
                   fetch_timeout=None, clone_timeout=None,
-                  force_devel=False, repo_track="stable") -> SourceSyncScheduler
+                  repo_track="stable") -> SourceSyncScheduler
 
 ``repo_track`` governs ``source = "repo"`` checkouts: ``"stable"`` (default)
 pins them to pacman's sync-DB release tag after every clone/fetch (detached
@@ -71,6 +71,7 @@ from sysforge.primitives.aur import (
     GitFetchOutcome,
     aur_clone,
     aur_info,
+    aur_origin_pkgbase,
     git_fetch_and_compare,
     git_is_dirty,
     is_aur_checkout,
@@ -85,6 +86,7 @@ from sysforge.primitives.git_ops import (
 from sysforge.primitives.net_policy import (
     KIND_AUR_CLONE,
     KIND_REPO_CHECKOUT,
+    KIND_SOURCE_FETCH,
     NetworkFrozen,
     get_policy,
 )
@@ -181,7 +183,6 @@ class SourceSyncScheduler:
         offline: bool = False,
         cleansrc: bool = False,
         cleansrc_force: bool = False,
-        force_devel: bool = False,
         repo_track: str = "stable",
         min_fetch_interval_ms: int | None = None,
         rate_limit_abort_s: float | None = None,
@@ -195,7 +196,6 @@ class SourceSyncScheduler:
         # dirty-tree refusal bypassed at purge_src.
         self.cleansrc = cleansrc or cleansrc_force
         self.cleansrc_force = cleansrc_force
-        self.force_devel = force_devel
         self.rate_limit_abort_s = float(rate_limit_abort_s or 120.0)
         self.fetch_timeout = fetch_timeout if fetch_timeout is not None else 30
         self.clone_timeout = clone_timeout if clone_timeout is not None else 60
@@ -398,13 +398,29 @@ class SourceSyncScheduler:
         # Repo packages have no AUR-RPC equivalent — they fall through to
         # the generic fetch path, which works because pkgctl-clones are
         # plain git repos with a tracking branch.
+        # --devel is not a reason to fetch here (3.5.0-B144): it asks whether
+        # *upstream* moved, which the version check answers itself (ls-remote,
+        # pkgver()). Whether the AUR packaging repo moved is what the RPC says,
+        # for a VCS package as for any other. The RPC is looked up by name, so
+        # it only vouches for a checkout of that pkgbase's AUR repo
+        # (_rpc_vouches): a fork, another package's repo or a missing origin
+        # always fetches.
         meta = self.cache.get(pkgbase)
         rpc_entry = self._rpc_entry(pkgbase) if req.source != "repo" else None
         local_head = _head_commit(pkgbuild_dir)
-        force = req.force_fetch or self.cleansrc or (
-            self.force_devel and _is_vcs(pkgbase)
-        )
-        if not force and self._can_short_circuit(rpc_entry, meta, local_head):
+        force = req.force_fetch or self.cleansrc
+        if (not force and self._can_short_circuit(rpc_entry, meta, local_head)
+                and _rpc_vouches(pkgbuild_dir, rpc_entry, pkgbase)):
+            if _is_vcs(pkgbase):
+                # A VCS package is synced only under --devel, whose version
+                # check needs upstream; the freeze denies that there, so say
+                # so here, as the fetch this skips used to (3.5.0-B144).
+                try:
+                    get_policy().check(KIND_SOURCE_FETCH, pkgbase)
+                except NetworkFrozen as e:
+                    return SyncResult(pkgbase=pkgbase, status=STATUS_FROZEN,
+                                      head_before=local_head, head_after=local_head,
+                                      error=str(e))
             # Refresh last_fetch_at so the entry doesn't look stale.
             self.cache.update(pkgbase, last_fetch_at=_now_iso())
             return SyncResult(
@@ -430,6 +446,21 @@ class SourceSyncScheduler:
             return SyncResult(pkgbase=pkgbase, status=STATUS_FROZEN,
                               error=f"--cleansrc kept the checkout: {e}")
         return None
+
+    def _record_rpc(self, pkgbase: str, pkgbuild_dir: Path, rpc_entry: dict | None) -> None:
+        """Cache the RPC entry beside the head just synced, only if it vouches
+        for the checkout; otherwise clear any cached one. AUR metadata kept
+        beside a fork's head would let a later switch of origin to the AUR
+        skip its first fetch and keep building the fork (3.5.0-B144)."""
+        if rpc_entry is not None and _rpc_vouches(pkgbuild_dir, rpc_entry, pkgbase):
+            self.cache.update(
+                pkgbase,
+                rpc_version=rpc_entry.get("Version"),
+                rpc_last_modified=rpc_entry.get("LastModified"),
+                rpc_package_base=rpc_entry.get("PackageBase"),
+            )
+        else:
+            self.cache.forget_rpc(pkgbase)
 
     def _can_short_circuit(
         self, rpc_entry: dict | None, meta: dict | None, local_head: str | None,
@@ -480,11 +511,9 @@ class SourceSyncScheduler:
 
         head = _head_commit(pkgbuild_dir)
         rpc_entry = self._rpc_entry(pkgbase) if source != "repo" else None
+        self._record_rpc(pkgbase, pkgbuild_dir, rpc_entry)
         self.cache.update(
             pkgbase,
-            rpc_version=(rpc_entry or {}).get("Version"),
-            rpc_last_modified=(rpc_entry or {}).get("LastModified"),
-            rpc_package_base=(rpc_entry or {}).get("PackageBase"),
             head_commit=head,
             is_vcs=_is_vcs(pkgbase),
             last_fetch_at=_now_iso(),
@@ -629,11 +658,9 @@ class SourceSyncScheduler:
                 )
 
         if outcome.status in ("up_to_date", "fetched"):
+            self._record_rpc(pkgbase, pkgbuild_dir, rpc_entry)
             self.cache.update(
                 pkgbase,
-                rpc_version=(rpc_entry or {}).get("Version"),
-                rpc_last_modified=(rpc_entry or {}).get("LastModified"),
-                rpc_package_base=(rpc_entry or {}).get("PackageBase"),
                 head_commit=outcome.head_after,
                 is_vcs=_is_vcs(pkgbase),
                 last_fetch_at=_now_iso(),
@@ -659,6 +686,19 @@ class SourceSyncScheduler:
             head_after=outcome.head_after,
             error=outcome.error,
         )
+
+
+def _rpc_vouches(pkgbuild_dir: Path, rpc_entry: dict | None, pkgbase: str) -> bool:
+    """Whether the AUR RPC entry describes this checkout (3.5.0-B144).
+
+    The entry is matched by name, so it describes the AUR package of that
+    name. It speaks for the checkout only when ``origin`` is that package's
+    AUR repo: not a fork, not another package's repo (an exact name match can
+    be a member of a different pkgbase), not a checkout with no origin.
+    """
+    if rpc_entry is None:
+        return False
+    return aur_origin_pkgbase(pkgbuild_dir) == rpc_entry.get("PackageBase", pkgbase)
 
 
 def _head_commit(pkgbuild_dir: Path) -> str | None:
@@ -718,7 +758,6 @@ def get_scheduler(
     offline: bool = False,
     cleansrc: bool = False,
     cleansrc_force: bool = False,
-    force_devel: bool = False,
     repo_track: str = "stable",
     min_fetch_interval_ms: int | None = None,
     rate_limit_abort_s: float | None = None,
@@ -728,7 +767,7 @@ def get_scheduler(
     """Return the per-process scheduler, constructing it on first call.
 
     Subsequent calls update mutable runtime flags (``offline`` / ``cleansrc``
-    / ``cleansrc_force`` / ``force_devel`` / ``repo_track``) on the existing
+    / ``cleansrc_force`` / ``repo_track``) on the existing
     instance so
     callers in different commands (e.g. `sysforge fetch` after `sysforge
     update`) can share the metadata cache without re-reading
@@ -744,7 +783,6 @@ def get_scheduler(
             offline=offline,
             cleansrc=cleansrc,
             cleansrc_force=cleansrc_force,
-            force_devel=force_devel,
             repo_track=repo_track,
             min_fetch_interval_ms=min_fetch_interval_ms,
             rate_limit_abort_s=rate_limit_abort_s,
@@ -756,7 +794,6 @@ def get_scheduler(
         _scheduler.offline = offline or _scheduler.offline
         _scheduler.cleansrc = cleansrc or cleansrc_force or _scheduler.cleansrc
         _scheduler.cleansrc_force = cleansrc_force or _scheduler.cleansrc_force
-        _scheduler.force_devel = force_devel or _scheduler.force_devel
         if repo_track != "stable":
             _scheduler.repo_track = repo_track
     return _scheduler

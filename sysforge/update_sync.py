@@ -87,7 +87,6 @@ def _sync_sources(
         offline=offline,
         cleansrc=cleansrc,
         cleansrc_force=cleansrc_force,
-        force_devel=force_devel,
         repo_track=resolve_repo_track(sysforge_toml.get("build", {})),
         min_fetch_interval_ms=aur_cfg.get("min_fetch_interval_ms", 500),
         rate_limit_abort_s=aur_cfg.get("rate_limit_abort_s", 120.0),

@@ -1556,6 +1556,12 @@ def test_review_refused_target_dropped_rest_build(tmp_path, monkeypatch):
     assert outcome.review_refused == {"foo": "unreviewed source change (a → b)"}
     assert not outcome.aborted
     assert calls == [bar.pkgbuild_path]
+    # 3.5.0-F23: the refusal outlives the run, for `sysforge build --failed`.
+    from sysforge.primitives.build_state import BuildState
+    rec = BuildState(tmp_path / "state").all_failures()
+    assert rec["foo"]["kind"] == "review"
+    assert "a → b" in rec["foo"]["error"]
+    assert "bar" not in rec
 
 
 def test_review_trusted_source_passes_trusted_true(tmp_path):

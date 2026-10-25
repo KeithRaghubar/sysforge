@@ -240,6 +240,22 @@ def _record_build_failure(state_dir, target, exc) -> None:
         _log.warn(f"Failed to record build failure for {target.pkgbase!r}: {e}")
 
 
+def _record_review_refusal(state_dir, pkgbase: str, why: str) -> None:
+    """Persist a review-gate refusal as a ``kind = "review"`` failure (3.5.0-F23).
+
+    Without this an unattended run's refusals lived only in its summary, so
+    nothing could retry them afterwards. Same shape and posture as
+    :func:`_record_build_failure`: a fresh BuildState, best-effort, cleared by
+    the next successful build of the pkgbase.
+    """
+    try:
+        bs_fail = BuildState(_state_dir_path(state_dir))
+        bs_fail.record_failure(pkgbase, error=f"refused at review: {why}", kind="review")
+        bs_fail.save()
+    except Exception as e:  # pragma: no cover - defensive
+        _log.warn(f"Failed to record review refusal for {pkgbase!r}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Dependency preparation
 # ---------------------------------------------------------------------------
@@ -1138,6 +1154,7 @@ def build_and_install(
             if decision == DECISION_REFUSED:
                 outcome.review_refused[t.pkgbase] = (
                     change_summary(pkgbuild_dir, reviewed) or "unreviewed source change")
+                _record_review_refusal(state_dir, t.pkgbase, outcome.review_refused[t.pkgbase])
                 continue
             if decision == DECISION_ACCEPT:
                 # Saved now, not after the build (3.5.0-B8): accepting is the
@@ -1232,6 +1249,7 @@ def build_and_install(
             hit = names & dep_refused.keys()
             if hit:
                 outcome.review_refused[t.pkgbase] = dep_refused[sorted(hit)[0]]
+                _record_review_refusal(state_dir, t.pkgbase, outcome.review_refused[t.pkgbase])
             else:
                 still.append(t)
         targets = still

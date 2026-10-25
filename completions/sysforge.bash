@@ -206,7 +206,7 @@ _sysforge_installed_pkg_names() {
 
 _sysforge_build() {
     _sysforge_flag_arg && return
-    local flags="-m --makepkg --interactive --profile-conf \
+    local flags="-m --makepkg --interactive --failed --profile-conf \
         --toolchain --save-toolchain --reset-toolchain --cc --cxx --ld \
         --no-pkg-log --log-dir --persist-log --cache-report --abi-check \
         --no-update --cleansrc --cleansrc-force --no-llvm-preflight \

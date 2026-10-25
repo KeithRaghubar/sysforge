@@ -5,7 +5,8 @@ Covers:
     SourceSyncScheduler
         RPC short-circuit when version+last_modified+head all match
         RPC miss triggers shallow fetch
-        VCS packages always fetch when --devel is on
+        VCS packages short-circuit under --devel like any other (3.5.0-B144)
+        a non-AUR origin never short-circuits
         missing dir → _clone path
         divergence surfaced (not fixed)
         rate-limited status propagates + aborts remainder
@@ -18,6 +19,8 @@ Covers:
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from sysforge.primitives.aur import GitFetchOutcome
 from sysforge.primitives.source_sync import (
@@ -46,6 +49,17 @@ def _make_repo(parent: Path, name: str) -> Path:
     return d
 
 
+def _make_aur_repo(parent: Path, name: str, origin: str | None = "aur") -> Path:
+    """A real git checkout whose origin is the AUR repo of ``name`` (the default),
+    any other URL, or absent (``None``): the short-circuit reads it (3.5.0-B144)."""
+    d = _make_repo(parent, name)
+    subprocess.run(["git", "init", "-q", str(d)], check=True)
+    if origin is not None:
+        url = f"https://aur.archlinux.org/{name}.git" if origin == "aur" else origin
+        subprocess.run(["git", "-C", str(d), "remote", "add", "origin", url], check=True)
+    return d
+
+
 def _scheduler(tmp_path, **kwargs) -> SourceSyncScheduler:
     kwargs.setdefault("fetch_timeout", 30)
     kwargs.setdefault("clone_timeout", 60)
@@ -57,7 +71,7 @@ def _scheduler(tmp_path, **kwargs) -> SourceSyncScheduler:
 # ---------------------------------------------------------------------------
 
 def test_rpc_short_circuit_when_cache_matches(tmp_path):
-    pkg = _make_repo(tmp_path, "htop")
+    pkg = _make_aur_repo(tmp_path, "htop")
     sched = _scheduler(tmp_path)
     sched._rpc_done = True
     sched._rpc_map = {"htop": {"Version": "3.3-1", "LastModified": 1000}}
@@ -105,7 +119,7 @@ def test_split_pkgbase_resolves_its_rpc_entry_through_a_member(tmp_path):
 
 
 def test_split_pkgbase_short_circuits_and_records_its_rpc_version(tmp_path):
-    pkg = _make_repo(tmp_path, "lib32-libdbusmenu")
+    pkg = _make_aur_repo(tmp_path, "lib32-libdbusmenu")
     sched = _scheduler(tmp_path)
     sched.cache.update("lib32-libdbusmenu", rpc_version="16.04.0-6",
                        rpc_last_modified=1700, head_commit="abc")
@@ -129,7 +143,7 @@ def test_plain_pkgbase_is_still_keyed_by_name(tmp_path):
 
 
 def test_rpc_miss_triggers_fetch(tmp_path):
-    pkg = _make_repo(tmp_path, "htop")
+    pkg = _make_aur_repo(tmp_path, "htop")
     sched = _scheduler(tmp_path)
     sched._rpc_done = True
     sched._rpc_map = {"htop": {"Version": "3.4-1", "LastModified": 2000}}
@@ -153,24 +167,153 @@ def test_rpc_miss_triggers_fetch(tmp_path):
     assert entry["head_commit"] == "def"
 
 
-def test_vcs_pkg_force_fetches_under_devel(tmp_path):
-    pkg = _make_repo(tmp_path, "mesa-git")
-    sched = _scheduler(tmp_path, force_devel=True)
+def _cached_vcs(tmp_path, *, rpc=("v1-1", 100), origin="aur", package_base="mesa-git"):
+    """A VCS pkg (synced only under --devel) whose cache matches RPC
+    ``v1-1``/``100`` at head ``abc``, checked out from ``origin``."""
+    pkg = _make_aur_repo(tmp_path, "mesa-git", origin=origin)
+    sched = _scheduler(tmp_path)
     sched._rpc_done = True
-    sched._rpc_map = {"mesa-git": {"Version": "v1-1", "LastModified": 100}}
+    sched._rpc_map = {"mesa-git": {"Version": rpc[0], "LastModified": rpc[1],
+                                   "PackageBase": package_base}}
     sched.cache.update(
         "mesa-git", rpc_version="v1-1", rpc_last_modified=100, head_commit="abc",
     )
+    return pkg, sched
 
+
+def _request_vcs(pkg, sched, *, head="abc"):
+    outcome = GitFetchOutcome(status="up_to_date", head_before=head, head_after=head)
+    with patch("sysforge.primitives.source_sync._head_commit", return_value=head), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome) as fetch:
+        result = sched.request(SyncRequest(pkgbase="mesa-git", pkgbuild_dir=pkg))
+    return result, fetch
+
+
+def test_vcs_pkg_short_circuits_under_devel_when_the_aur_repo_is_unchanged(tmp_path):
+    """--devel checks upstream in the version check (ls-remote / pkgver());
+    re-fetching an unchanged AUR packaging repo bought nothing (3.5.0-B144)."""
+    pkg, sched = _cached_vcs(tmp_path)
+    result, fetch = _request_vcs(pkg, sched)
+    fetch.assert_not_called()
+    assert result.status == STATUS_UP_TO_DATE
+
+
+def test_vcs_pkg_fetches_under_devel_after_an_aur_push(tmp_path):
+    pkg, sched = _cached_vcs(tmp_path, rpc=("v1-1", 200))
+    _, fetch = _request_vcs(pkg, sched)
+    fetch.assert_called_once()
+
+
+def test_vcs_pkg_fetches_under_devel_when_the_local_head_moved(tmp_path):
+    pkg, sched = _cached_vcs(tmp_path)
+    _, fetch = _request_vcs(pkg, sched, head="local-commit")
+    fetch.assert_called_once()
+
+
+def test_scp_form_aur_origin_short_circuits(tmp_path):
+    """The form AUR maintainers clone with is still the AUR."""
+    pkg, sched = _cached_vcs(tmp_path, origin="aur@aur.archlinux.org:mesa-git.git")
+    _, fetch = _request_vcs(pkg, sched)
+    fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("origin", [
+    "https://github.com/someone/mesa-git.git",     # a fork of the same name
+    "https://aur.archlinux.org/other-pkg.git",     # the AUR, but another package
+    None,                                          # no origin to compare at all
+])
+def test_rpc_only_vouches_for_the_aur_repo_of_that_pkgbase(tmp_path, origin):
+    """The RPC entry is matched by name, so it describes the AUR package
+    ``mesa-git``; it cannot vouch for a checkout of anything else (3.5.0-B144)."""
+    pkg, sched = _cached_vcs(tmp_path, origin=origin)
+    _, fetch = _request_vcs(pkg, sched)
+    fetch.assert_called_once()
+
+
+def test_rpc_entry_of_another_pkgbase_does_not_vouch(tmp_path):
+    """An exact name match can be a member of a different AUR pkgbase."""
+    pkg, sched = _cached_vcs(tmp_path, package_base="mesa-all-git")
+    _, fetch = _request_vcs(pkg, sched)
+    fetch.assert_called_once()
+
+
+def test_a_fork_fetch_does_not_cache_the_aur_metadata(tmp_path):
+    """Switching a checkout's origin from a fork back to the AUR must not
+    leave AUR metadata cached beside the fork's head, or the next run would
+    skip the fetch and keep building the fork (3.5.0-B144)."""
+    pkg, sched = _cached_vcs(tmp_path, origin="https://github.com/someone/mesa-git.git")
+    _, fetch = _request_vcs(pkg, sched, head="fork-head")
+    fetch.assert_called_once()
+    assert sched.cache.get("mesa-git").get("rpc_version") is None
+    subprocess.run(["git", "-C", str(pkg), "remote", "set-url", "origin",
+                    "https://aur.archlinux.org/mesa-git.git"], check=True)
+    sched._results.clear()
+    _, fetch = _request_vcs(pkg, sched, head="fork-head")
+    fetch.assert_called_once()
+
+
+def test_vcs_skip_under_the_source_freeze_reports_frozen(tmp_path):
+    """A VCS package that skips the fetch still needs upstream in the version
+    check, which the freeze denies: report it frozen here, as the forced fetch
+    used to, so `update --devel --frozen` still exits 1 (3.5.0-B144)."""
+    from sysforge.primitives import net_policy
+    from sysforge.primitives.source_sync import STATUS_FROZEN
+    pkg, sched = _cached_vcs(tmp_path)
+    net_policy.set_policy(net_policy.NetPolicy(frozen=True, thawed=frozenset()))
+    try:
+        result, fetch = _request_vcs(pkg, sched)
+    finally:
+        net_policy.reset_policy()
+    fetch.assert_not_called()
+    assert result.status == STATUS_FROZEN
+
+
+def test_vcs_skip_under_the_freeze_honours_thaw(tmp_path):
+    from sysforge.primitives import net_policy
+    pkg, sched = _cached_vcs(tmp_path)
+    net_policy.set_policy(net_policy.NetPolicy(frozen=True, thawed=frozenset({"mesa-git"})))
+    try:
+        result, fetch = _request_vcs(pkg, sched)
+    finally:
+        net_policy.reset_policy()
+    fetch.assert_not_called()
+    assert result.status == STATUS_UP_TO_DATE
+
+
+def test_repo_source_never_consults_the_rpc(tmp_path):
+    """pkgctl checkouts have no RPC entry, so they always fetch and the origin
+    is not even looked at."""
+    pkg = _make_aur_repo(tmp_path, "htop", origin="https://gitlab.archlinux.org/archlinux/packaging/packages/htop.git")
+    sched = _scheduler(tmp_path)
+    sched._rpc_done = True
+    sched._rpc_map = {"htop": {"Version": "3.3-1", "LastModified": 1000, "PackageBase": "htop"}}
+    sched.cache.update("htop", rpc_version="3.3-1", rpc_last_modified=1000, head_commit="abc")
+    outcome = GitFetchOutcome(status="up_to_date", head_before="abc", head_after="abc")
+    with patch("sysforge.primitives.source_sync._head_commit", return_value="abc"), \
+         patch("sysforge.primitives.source_sync.aur_origin_pkgbase",
+               side_effect=AssertionError("origin read for a repo source")), \
+         patch.object(sched, "_pin_repo_checkout", return_value=None), \
+         patch("sysforge.primitives.source_sync.git_fetch_and_compare",
+               return_value=outcome) as fetch:
+        sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg, source="repo"))
+    fetch.assert_called_once()
+
+
+def test_non_vcs_pkg_from_a_non_aur_origin_fetches(tmp_path):
+    pkg = _make_aur_repo(tmp_path, "htop", origin="https://github.com/someone/htop.git")
+    sched = _scheduler(tmp_path)
+    sched._rpc_done = True
+    sched._rpc_map = {"htop": {"Version": "3.3-1", "LastModified": 1000}}
+    sched.cache.update(
+        "htop", rpc_version="3.3-1", rpc_last_modified=1000, head_commit="abc",
+    )
     outcome = GitFetchOutcome(status="up_to_date", head_before="abc", head_after="abc")
     with patch("sysforge.primitives.source_sync._head_commit", return_value="abc"), \
          patch("sysforge.primitives.source_sync.git_fetch_and_compare",
                return_value=outcome) as fetch:
-        result = sched.request(SyncRequest(pkgbase="mesa-git", pkgbuild_dir=pkg))
-
-    # --devel bypasses the RPC short-circuit for VCS packages.
+        sched.request(SyncRequest(pkgbase="htop", pkgbuild_dir=pkg, source="git"))
     fetch.assert_called_once()
-    assert result.status == STATUS_UP_TO_DATE
 
 
 def test_force_fetch_bypasses_short_circuit(tmp_path):

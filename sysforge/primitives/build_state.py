@@ -548,13 +548,17 @@ class BuildState:
                        pkgver: str | None = None,
                        signature: str | None = None,
                        fix_cmd: str | None = None,
-                       failed_at: str | None = None) -> None:
+                       failed_at: str | None = None,
+                       kind: str | None = None) -> None:
         """Record a build failure for ``pkgbase`` in the ``[failures]`` table.
 
         ``error`` is the failure message/exception (stored truncated to its
         tail). ``signature`` / ``fix_cmd`` come from postflight diagnosis
         (`build_diag`) when a known pattern matched. Overwrites any prior
         failure for the same pkgbase. ``failed_at`` defaults to now (ISO-8601).
+        ``kind = "review"`` marks a package refused at the review gate rather
+        than one that failed to build (3.5.0-F23); a build failure has no kind.
+        Both are retried by ``sysforge build --failed``.
         """
         entry = {
             "failed_at": failed_at or _now_iso(),
@@ -566,6 +570,8 @@ class BuildState:
             entry["signature"] = signature
         if fix_cmd:
             entry["fix_cmd"] = fix_cmd
+        if kind:
+            entry["kind"] = kind
         self._failures[pkgbase] = entry
 
     def clear_failure(self, pkgbase: str) -> bool:
@@ -745,12 +751,13 @@ class BuildState:
                 lines.append(f'{key} = "{val}"')
             lines.append("")
         if self._failures:
-            lines.append("# Build failures (cleared on the next successful build).")
+            lines.append("# Build failures and review refusals (kind = \"review\"); "
+                         "each clears on the next successful build.")
             lines.append("")
             for pkgbase, entry in sorted(self._failures.items()):
                 escaped = pkgbase.replace("\\", "\\\\").replace('"', '\\"')
                 lines.append(f'[{_FAILURES_KEY}."{escaped}"]')
-                for key in ("failed_at", "pkgver", "signature", "fix_cmd", "error"):
+                for key in ("failed_at", "kind", "pkgver", "signature", "fix_cmd", "error"):
                     if key in entry:
                         val = _toml_escape(entry[key])
                         lines.append(f'{key} = "{val}"')
