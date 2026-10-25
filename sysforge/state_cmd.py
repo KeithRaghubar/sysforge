@@ -775,9 +775,9 @@ def cmd_state_profiles(args) -> int:
         if not getattr(args, "yes", False):
             if not prompt.is_interactive():
                 _log.error(
-                    f"refusing to delete {target} without a TTY: a collected profile "
-                    "needs a workload to regenerate; run it from a terminal, or "
-                    "pass --yes"
+                    f"refusing to delete {target} ({prompt.no_prompt_reason()}): "
+                    "a collected profile needs a workload to regenerate; answer "
+                    "at a terminal, or pass --yes"
                 )
                 return 2
             answer = prompt.prompt_choice(
@@ -867,7 +867,8 @@ class StateProfilesVerb(Verb):
                  "(e.g. pgo/mesa, autofdo/linux-sysforge); asks for confirmation. "
                  "A later rebuild is then unprofiled until you collect again.")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="With --delete: delete without the y/N prompt (needed without a TTY).")
+            help="With --delete: delete without the y/N prompt (needed without a "
+                 "terminal or with --unattended).")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",

@@ -15,6 +15,7 @@ _sysforge() {
     '--py-profile-out[write raw cProfile stats to FILE]:file:_files' \
     '--timings[print phase wall-clock timing report after build/update]' \
     '--color[colorize output]:when:(auto always never)' \
+    '--unattended[never prompt, even at a terminal]' \
     '--no-throttle[ignore the configured build throttle for this run]' \
     '--turbo[raise build priority (stronger than --no-throttle)]' \
     '--frozen[refuse all new source downloads for this run]' \
@@ -159,7 +160,7 @@ _sysforge_build() {
   _arguments \
     $_sysforge_help_spec \
     '(-m --makepkg)'{-m,--makepkg}'[extra makepkg flags, appended after profile flags]:flags' \
-    '--interactive[strip --noconfirm from makepkg_flags]' \
+    '--interactive[run makepkg without --noconfirm, attached to the terminal]' \
     '--profile-conf[alternate profiles.toml]:file:_files' \
     '--toolchain[build with this toolchain as a whole]:toolchain:(gcc llvm)' \
     '(--reset-toolchain)--save-toolchain[also save --toolchain for these packages]' \
@@ -710,7 +711,7 @@ _sysforge_run_kernel() {
     '--no-update[skip the source sync, build as checked out]' \
     '--cleansrc[purge the kernel src dir and re-clone]' \
     '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
-    '--no-interactive[use olddefconfig, no interactive kconfig]' \
+    '--no-review-config[skip the kernel config review (olddefconfig)]' \
     '--toolchain[build the kernel with this toolchain]:toolchain:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
     '--base-config[override kernel.toml base_config]:source:_sysforge_base_config_source' \

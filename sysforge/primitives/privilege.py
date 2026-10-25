@@ -45,9 +45,12 @@ import subprocess
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
-from sysforge.primitives import progress_hooks
+from sysforge import log
+from sysforge.primitives import progress_hooks, prompt
 from sysforge.primitives.run import run_or_raise
 from sysforge.primitives.resource_guard import lift_for_child
+
+_log = log.get_logger("SUDO")
 
 
 def _credentials_cached() -> bool:
@@ -67,9 +70,18 @@ def ensure_credentials() -> bool:
     does not count as build time. Returns ``False`` when that prompt fails
     (wrong password, timeout) — the following command would prompt again and
     fail on its own, so callers may ignore it.
+
+    An unattended run (3.5.0-F21) never asks: sudo reads the terminal itself,
+    so the prompt helpers' no-input path cannot reach it. Without cached
+    credentials or a NOPASSWD rule it returns ``False`` as a run with no
+    terminal does, and says why.
     """
     if os.geteuid() == 0 or _credentials_cached():
         return True
+    if prompt.unattended():
+        _log.warn("unattended run: not asking for the sudo password; sudo needs "
+                  "cached credentials or a NOPASSWD rule")
+        return False
     with progress_hooks.hooks().yield_terminal("prompt"):
         return subprocess.run(["sudo", "-v"], check=False,
                               preexec_fn=lift_for_child).returncode == 0
@@ -98,7 +110,8 @@ def privileged_argv(
 
     When already root (euid 0) the argv is returned unchanged. Otherwise it is
     prefixed with ``sudo``; ``noninteractive=True`` inserts ``-n`` so sudo fails
-    fast instead of prompting (moot when already root). Unless ``mutates`` is
+    fast instead of prompting (moot when already root), as does an unattended
+    run (3.5.0-F21). Unless ``mutates`` is
     False (see the module docstring for when), :func:`on_mutation` listeners
     are told first, even when already root.
     """
@@ -107,7 +120,7 @@ def privileged_argv(
             listener(list(argv))
     if os.geteuid() == 0:
         return list(argv)
-    return ["sudo", *(["-n"] if noninteractive else []), *argv]
+    return ["sudo", *(["-n"] if noninteractive or prompt.unattended() else []), *argv]
 
 
 def run_privileged(

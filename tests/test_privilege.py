@@ -181,3 +181,38 @@ def test_ensure_credentials_pauses_an_open_tracker(monkeypatch):
         tick("a")
         privilege.ensure_credentials()
     assert paused == [1]
+
+
+# ---------------------------------------------------------------------------
+# Unattended runs (3.5.0-F21): sudo reads the terminal itself, so the prompt
+# helpers' EOF path never reaches it. Never ask for a password.
+# ---------------------------------------------------------------------------
+
+def test_ensure_credentials_unattended_never_runs_the_prompting_probe(monkeypatch):
+    from sysforge.primitives import prompt
+    events = _yield_recorder(monkeypatch)
+    monkeypatch.setattr(privilege.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(privilege, "_credentials_cached", lambda: False)
+    monkeypatch.setattr(privilege.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("ran")))
+    prompt.set_unattended(True)
+    assert privilege.ensure_credentials() is False
+    assert events == []
+
+
+def test_ensure_credentials_unattended_uses_cached_credentials(monkeypatch):
+    """NOPASSWD or a warm timestamp still works unattended."""
+    from sysforge.primitives import prompt
+    monkeypatch.setattr(privilege.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(privilege, "_credentials_cached", lambda: True)
+    prompt.set_unattended(True)
+    assert privilege.ensure_credentials() is True
+
+
+def test_privileged_argv_unattended_adds_dash_n(monkeypatch):
+    from sysforge.primitives import prompt
+    monkeypatch.setattr(privilege.os, "geteuid", lambda: 1000)
+    assert privilege.privileged_argv(["pacman", "-U", "x"]) == ["sudo", "pacman", "-U", "x"]
+    prompt.set_unattended(True)
+    assert privilege.privileged_argv(["pacman", "-U", "x"]) == [
+        "sudo", "-n", "pacman", "-U", "x"]

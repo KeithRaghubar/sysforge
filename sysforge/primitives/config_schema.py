@@ -81,7 +81,7 @@ KNOWN_TOP_KEYS: dict[str, set[str]] = {
     # deliberately absent here.
     "kernel.toml":    {"enabled", "compiler", "pkgname", "upstream_pkgname",
                        "srcdir", "boot_entries", "boot_entries_prefix",
-                       "bootloader", "interactive", "pkgbuild_src_dir",
+                       "bootloader", "review_config", "pkgbuild_src_dir",
                        "source", "base_config", "base_config_merge",
                        "require_fallback_kernel", "boot_audit", "min_boot_free_mb",
                        "capture_lsmod_snapshot", "device_kconfig",
@@ -117,6 +117,9 @@ class RetiredKey:
     key: str
     replacement: str | None
     retired_in: str
+    # The loader still honours the old key (with a warning) so a rename cannot
+    # silently flip a setting; the message must not claim it is ignored.
+    still_read: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +136,8 @@ RETIRED_KEYS: tuple[RetiredKey, ...] = (
     RetiredKey("sysforge.toml", "git", "pull_timeout", "fetch_timeout", "2.6.1-F5"),
     RetiredKey("packages.toml", "package", "pkgbuild_patch",
                "enable_build_from_source", "2.6.1-F5"),
+    RetiredKey("kernel.toml", "", "interactive", "review_config", "3.5.0-F22",
+               still_read=True),
 )
 
 RETIRED_VALUES: tuple[RetiredValue, ...] = (
@@ -354,7 +359,9 @@ def inspect_text(name: str, text: str) -> list[Issue]:
         if rk:
             use = f"; use {rk.replacement}" if rk.replacement else ""
             issues.append(Issue(name, e.start + 1, "retired_key", where,
-                                f"retired in {rk.retired_in}, no longer read{use}"))
+                                f"retired in {rk.retired_in}, "
+                                f"{'still read for now' if rk.still_read else 'no longer read'}"
+                                f"{use}"))
             continue
         rv = _retired_value(name, e.table, e.key, _value(e.raw_value))
         if rv:

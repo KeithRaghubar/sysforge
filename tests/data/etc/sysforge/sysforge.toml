@@ -12,6 +12,8 @@ color = "auto"
 # merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
+# unattended = false   # Never prompt, even at a terminal; take the no-terminal
+#                      # answer. --unattended > SYSFORGE_UNATTENDED > this.
 
 [log]
 # Default stderr verbosity when no -v/--quiet flag is passed (0–3). Shipped

@@ -114,7 +114,7 @@ class RevertToStockVerb(Verb):
 
         if not getattr(args, "yes", False):
             if not prompt.is_interactive():
-                _log.error("[revert] refusing without a TTY; pass --yes")
+                _log.error(f"[revert] refusing ({prompt.no_prompt_reason()}); pass --yes")
                 return ExecResult(exit_code=2)
             ans = prompt.prompt_choice(
                 "Proceed with revert? [y/N] ", ["y", "n"],

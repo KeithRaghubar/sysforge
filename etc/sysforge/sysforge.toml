@@ -25,6 +25,15 @@ color = "auto"
 #merge = "vimdiff"    # Diff/merge tool for `sysforge config merge` (.sfnew
 #                      # adoption). Resolution: SYSFORGE_MERGE > this > $DIFFPROG
 #                      # > vimdiff. Accepts args, e.g. "nvim -d" or "meld".
+#
+# Never prompt, even at a terminal. Every question gets the answer it gets
+# with no terminal (a timer, cron, a pipe): a safe default where there is one,
+# such as skipping the kernel config review, refusing an unreviewed PKGBUILD
+# change or importing no PGP key, and otherwise a refusal that names the flag
+# to pass (--yes for a removal). It never answers yes on your behalf.
+# --unattended turns it on for one run; SYSFORGE_UNATTENDED=1 or =0 overrides
+# this key either way.
+#unattended = false
 
 [log]
 # Default stderr verbosity when no -v/--quiet flag is passed (0–3). The shipped

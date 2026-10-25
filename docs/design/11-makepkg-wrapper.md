@@ -68,7 +68,7 @@ makedep_probe_failed  = "warn_and_fallback"
 
 ### Interactive mode
 
-`--interactive` on `sysforge build` does two things: it strips `--noconfirm` from the profile's `makepkg_flags`, and it runs makepkg under `pty_runner.run_with_pty(..., interactive=True)`, a two-way proxy in which the pty is makepkg's stdin, stdout, stderr and controlling terminal and the user's keystrokes are copied into it, inside `yield_terminal("child")`, instead of piping output through the line-classification loop. Before `3.2.0-F19` it inherited the parent's stdio outright; the proxy keeps everything that made that worthwhile. Passing every byte straight through is what keeps unbuffered prompts visible — pacman's conflict prompt (`Remove sysforge? [y/N]`) and similar `\r`/no-newline output reaches the terminal immediately rather than sitting in a pipe buffer until the user blindly presses Enter. The tradeoff is that line-based output classification (`failed_stage`, `missing_deps`, `toolchain_mismatch` auto-retry, stdout-match fallback for `AlreadyBuilt`, `captured_output` for `auto_repair`) is still bypassed in this branch, but every line reaches `invoke_makepkg`: the stream is teed (ANSI-stripped) into the per-package log through `log.write_pkg_log`, and on a failure the anchored tail (`select_failure_tail`) is repeated under `[BUILD]` at DEBUG, which lands in the unified run log and the per-package log (`_log_interactive_failure_tail`); exit-code-based detection (`returncode == 13` → `AlreadyBuilt`, `returncode == 8` → install failure) still fires. Useful during development to review makepkg prompts without editing the profile; not appropriate for `update` batch flows, which depend on the classification path and therefore default `interactive=False`.
+Whether makepkg may prompt is the run's decision, not the profile's (`3.5.0-F20`): `makepkg_invoke._base_flags` puts `--noconfirm` in front of the profile's `makepkg_flags` for every batch build and leaves it off an interactive one, removing a copy a profile written before that still carries (so it is never doubled and never survives into an interactive run). The build sandbox needs no special case, since `makechrootpkg` passes `--noconfirm` itself. `--interactive` on `sysforge build` does two things: it runs makepkg without `--noconfirm`, and it runs makepkg under `pty_runner.run_with_pty(..., interactive=True)`, a two-way proxy in which the pty is makepkg's stdin, stdout, stderr and controlling terminal and the user's keystrokes are copied into it, inside `yield_terminal("child")`, instead of piping output through the line-classification loop. Before `3.2.0-F19` it inherited the parent's stdio outright; the proxy keeps everything that made that worthwhile. Passing every byte straight through is what keeps unbuffered prompts visible — pacman's conflict prompt (`Remove sysforge? [y/N]`) and similar `\r`/no-newline output reaches the terminal immediately rather than sitting in a pipe buffer until the user blindly presses Enter. The tradeoff is that line-based output classification (`failed_stage`, `missing_deps`, `toolchain_mismatch` auto-retry, stdout-match fallback for `AlreadyBuilt`, `captured_output` for `auto_repair`) is still bypassed in this branch, but every line reaches `invoke_makepkg`: the stream is teed (ANSI-stripped) into the per-package log through `log.write_pkg_log`, and on a failure the anchored tail (`select_failure_tail`) is repeated under `[BUILD]` at DEBUG, which lands in the unified run log and the per-package log (`_log_interactive_failure_tail`); exit-code-based detection (`returncode == 13` → `AlreadyBuilt`, `returncode == 8` → install failure) still fires. Useful during development to review makepkg prompts without editing the profile; not appropriate for `update` batch flows, which depend on the classification path and therefore default `interactive=False`.
 
 ### Toolchain-mismatch auto-retry
 
@@ -95,8 +95,9 @@ exit 13 and fails hard instead (3.0.0-B9);
 `"review-gated"` (kernel stage) preserves the B5 semantics — the skipped build
 also skipped the promised in-prepare() kconfig review, so interactive runs get
 an install-as-built / rebuild-with-`-f` / abort prompt while unattended runs
-proceed. The unattended arbitration (caller interactivity ∧ `--no-interactive`
-∧ TTY) lives only in the seam. `makepkg_wrapper`'s own `except AlreadyBuilt`
+proceed. The kernel caller passes its one resolved `config_review`
+(`resolve_config_review`, which already folds in `review_config`,
+`--no-review-config`, `--unattended` and TTY), so the seam re-derives nothing. `makepkg_wrapper`'s own `except AlreadyBuilt`
 (manifest capture for renamed builds) is a side-effect that fires regardless of
 policy, then re-raises.
 
@@ -249,7 +250,7 @@ the full bundle swap (`_reemit_for_swap` → `profile.swap_toolchain`).
 [profiles.batch]
 extends = "standard"
 batch = true
-makepkg_flags = ["--noconfirm", "--noprogressbar", "--log", "--cleanbuild"]
+makepkg_flags = ["--noprogressbar", "--log", "--cleanbuild"]
 clean_builddir = true
 ```
 

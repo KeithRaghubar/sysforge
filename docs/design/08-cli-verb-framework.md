@@ -49,7 +49,7 @@ spelling per meaning, across every verb:
   `state profiles --delete STORE`), with `--yes` to skip its prompt.
   `artifact remove --purge` keeps the package-manager sense of also deleting
   the managed copy.
-- **A negative switch is `--no-<thing>`** (`--no-update`, `--no-interactive`),
+- **A negative switch is `--no-<thing>`** (`--no-update`, `--no-review-config`),
   or a `--<thing>/--no-<thing>` pair (`BooleanOptionalAction`) when config can
   default it either way (`--headers/--no-headers`). Never `--non-…`/`--disable-…`.
 - **No two flags differ only by a plural `s`** (`--no-pkg-log`, not

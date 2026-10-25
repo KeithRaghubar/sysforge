@@ -102,6 +102,16 @@ upgrade, and the protections in force) and asks `Proceed? [Y/n]`. `--yes`, or
 `confirm_plan = false` in `packages.toml`, skips the question. `sysforge setup` asks about
 these choices (confirmation, review, AUR, build sandbox) and saves the ones you change.
 
+To stop sysforge asking anything at all, even at a terminal (an overnight `update` left
+running, an `ssh -t` script), pass `--unattended`, or set `unattended = true` under `[ui]` in
+`sysforge.toml` (`SYSFORGE_UNATTENDED=0` gets the questions back for one run). Every question
+then gets the answer it would get with no terminal: an unreviewed change is refused, no PGP key
+is imported, `update` goes ahead without asking `Proceed?`, and a removal refuses unless you
+pass `--yes`. Apart from the plan question, which only confirms what you asked for, it never
+answers yes for you. It does not ask for your sudo password either, so a run that installs
+anything needs sudo credentials that are already cached or a `NOPASSWD` rule; without them it
+stops before changing anything.
+
 If you have one clear goal, `sysforge setup` first offers a preset that sets several of these at
 once, showing each change before it writes anything: `performance` (the LLVM toolchain and the
 `optimized` profile), `low-friction` (no plan confirmation and no source review) or `secure`

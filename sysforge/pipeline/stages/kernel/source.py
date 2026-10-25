@@ -104,7 +104,7 @@ def check_pkgname_repo_collision(pkgname, options):
     (the safe default); ``--dry-run`` warns without prompting.
     """
     from sysforge.primitives.aur import is_repo_package
-    from sysforge.primitives.prompt import is_interactive, prompt_choice
+    from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_choice
 
     if not is_repo_package(pkgname):
         return
@@ -118,11 +118,10 @@ def check_pkgname_repo_collision(pkgname, options):
         _log.ui(f"{msg} (dry-run: not prompting)")
         return
     _log.warn(msg)
-    unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
-    if unattended:
+    if not is_interactive():
         raise RuntimeError(
-            f"[KERNEL] {msg} Aborting unattended: rename pkgname in kernel.toml, "
-            "or run interactively to confirm the override."
+            f"[KERNEL] {msg} Not asking ({no_prompt_reason()}): rename pkgname in "
+            "kernel.toml, or confirm the override at a terminal."
         )
     choice = prompt_choice(
         "Continue and shadow the repo package? [y/N]: ",
@@ -141,7 +140,7 @@ def check_pkgname_repo_collision(pkgname, options):
         )
 
 
-def resolve_already_built_action(options, interactive):
+def resolve_already_built_action(config_review):
     """Decide what an AlreadyBuilt (makepkg exit 13) kernel build does next (B5).
 
     Policy lives in the one-home seam (2.5.1-F2):
@@ -158,8 +157,7 @@ def resolve_already_built_action(options, interactive):
 
     action = resolve_already_built(
         "review-gated",
-        interactive=interactive,
-        non_interactive=bool(getattr(options, "non_interactive", False)),
+        interactive=config_review,
         tag="KERNEL",
         abort_hint=(
             "the kconfig review did not run. Rebuild with `-f` (choice r), "
@@ -226,14 +224,14 @@ def warn_and_confirm_diverged(pkgbuild_dir, options):
     case where the old silent WARN was too easy to miss, so:
 
       * interactive run  → require an explicit y/N confirmation;
-      * unattended run (``--no-interactive`` or no TTY) → abort (safe default).
+      * sysforge may not ask (``--unattended`` or no TTY) → abort (safe default).
 
     ``classify_head_vs_upstream`` enriches the message with ahead/behind counts
     so the common "upstream has new commits but the local repo is dirty" case is
     spelled out rather than hidden behind a bare "diverged".
     """
     from sysforge.primitives.aur import classify_head_vs_upstream
-    from sysforge.primitives.prompt import is_interactive, prompt_choice
+    from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_choice
 
     state, n_local, n_upstream = classify_head_vs_upstream(pkgbuild_dir)
     detail = ""
@@ -247,12 +245,11 @@ def warn_and_confirm_diverged(pkgbuild_dir, options):
         "edits and rebuild from upstream."
     )
 
-    unattended = bool(getattr(options, "non_interactive", False)) or not is_interactive()
-    if unattended:
+    if not is_interactive():
         raise RuntimeError(
             f"[KERNEL] {pkgbuild_dir.name}: refusing to build a kernel from "
-            "diverged source unattended. Resolve the divergence, rerun with "
-            "--cleansrc to discard local edits, or run interactively to confirm."
+            f"diverged source ({no_prompt_reason()}). Resolve the divergence, rerun "
+            "with --cleansrc to discard local edits, or confirm it at a terminal."
         )
     choice = prompt_choice(
         "Continue building the kernel from local (diverged) source? [y/N]: ",

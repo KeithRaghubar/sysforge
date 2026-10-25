@@ -16,6 +16,7 @@
     "--thaw": null,
     "--timings": null,
     "--turbo": null,
+    "--unattended": null,
     "--verbose": null,
     "--version": null
    },
@@ -354,9 +355,9 @@
     "--log-dir": null,
     "--no-docs": null,
     "--no-headers": null,
-    "--no-interactive": null,
     "--no-keep-hotplug-drivers": null,
     "--no-pkg-log": null,
+    "--no-review-config": null,
     "--no-update": null,
     "--persist-log": null,
     "--profile-conf": null,
@@ -582,7 +583,8 @@
   "SYSFORGE_PROFILE_STORE",
   "SYSFORGE_PROGRESS_TRACE",
   "SYSFORGE_PTY_RAW_DUMP",
-  "SYSFORGE_STATE_DIR"
+  "SYSFORGE_STATE_DIR",
+  "SYSFORGE_UNATTENDED"
  ],
  "journal_fields": [
   "SYSFORGE_EXIT",
@@ -657,7 +659,8 @@
     "ui": [
      "color",
      "editor",
-     "merge"
+     "merge",
+     "unattended"
     ],
     "update": [
      "rebuild_on_drift",
@@ -720,7 +723,6 @@
     "device_kconfig",
     "enabled",
     "hardening",
-    "interactive",
     "kconfig_merge",
     "kconfig_targets",
     "keep_hotplug_drivers",
@@ -728,6 +730,7 @@
     "pkgbuild_src_dir",
     "pkgname",
     "require_fallback_kernel",
+    "review_config",
     "source",
     "srcdir",
     "upstream_pkgname"

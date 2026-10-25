@@ -328,7 +328,7 @@ def resolve_kconfig_targets(kernel_cfg, *, interactive):
 
     Raises ValueError on: an unknown target, more than one UI target, or a
     prompting target (oldconfig/localmodconfig/localyesconfig/mod2yesconfig)
-    requested when interactive=False.
+    requested when interactive=False (the config review is off).
     """
     targets = kernel_cfg.kconfig_targets
     if not targets:
@@ -352,12 +352,13 @@ def resolve_kconfig_targets(kernel_cfg, *, interactive):
         if not interactive and target in KCONFIG_PROMPTING_TARGETS:
             if target in KCONFIG_SILENT_EQUIVALENT:
                 raise ValueError(
-                    f"kconfig_targets: {target!r} requires interactive input; "
-                    f"use {KCONFIG_SILENT_EQUIVALENT[target]} instead"
+                    f"kconfig_targets: {target!r} needs the config review, which "
+                    f"this run skips; use {KCONFIG_SILENT_EQUIVALENT[target]} instead"
                 )
             raise ValueError(
-                f"kconfig_targets: {target!r} requires interactive input; "
-                f"run the stage interactively"
+                f"kconfig_targets: {target!r} needs the config review, which "
+                f"this run skips (kernel.toml review_config, --no-review-config, "
+                f"--unattended or no terminal)"
             )
 
         if target in KCONFIG_UI_TARGETS:

@@ -130,7 +130,7 @@ from sysforge.primitives.pkgbuild_patcher import (
     warn_artifacts_left,
     write_extracted_profile,
 )
-from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.prompt import is_interactive, prompt_choice
 from sysforge.primitives.source_sync import (
     STATUS_DIVERGED,
     STATUS_FAILED,
@@ -1702,7 +1702,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 _build_log.info(f"Reusing profdata for PGO build: {pgo_info}")
             else:
                 reason = pgo_info
-                if sys.stdin.isatty():
+                if is_interactive():
                     choice = prompt_choice(
                         f"{pkgname}: PGO profdata unavailable ({reason})."
                         " [p]lain build or [s]kip? [S]: ",

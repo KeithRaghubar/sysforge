@@ -58,7 +58,7 @@ _sysforge() {
 
     if [[ -z $verb ]]; then
         if [[ $cur == -* ]]; then
-            COMPREPLY=( $(compgen -W "-h --help -v --verbose --quiet --py-profile --py-profile-out --timings --color --no-throttle --turbo --frozen --no-frozen --thaw" -- "$cur") )
+            COMPREPLY=( $(compgen -W "-h --help -v --verbose --quiet --py-profile --py-profile-out --timings --color --unattended --no-throttle --turbo --frozen --no-frozen --thaw" -- "$cur") )
         else
             COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
         fi
@@ -465,7 +465,7 @@ _sysforge_run() {
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --no-interactive --toolchain --bootloader --base-config \
+                --no-review-config --toolchain --bootloader --base-config \
                 --base-config-merge \
                 --allow-no-fallback --allow-boot-audit-failure \
                 --headers --no-headers --docs --no-docs \

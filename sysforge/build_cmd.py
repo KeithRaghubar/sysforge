@@ -233,7 +233,7 @@ class BuildVerb(Verb):
                  "itself (-h, -V).",
         )
         p.add_argument("--interactive", action="store_true",
-            help="Strip --noconfirm from profile makepkg_flags and hand stdout/stderr "
+            help="Run makepkg without --noconfirm and hand stdout/stderr "
                  "to makepkg's terminal so pacman conflict prompts and other "
                  "unbuffered interactive output appear immediately (disables "
                  "line-based output classification while set).")

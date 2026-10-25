@@ -67,7 +67,7 @@ from sysforge.primitives.pkgbuild_review import (
     MODE_PROMPT,
     resolve_review_policy,
 )
-from sysforge.primitives.prompt import prompt_choice
+from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_choice
 from sysforge.primitives.render import arrow
 
 
@@ -247,7 +247,7 @@ _REVIEW_VALUE = {MODE_PROMPT: True, MODE_ACCEPT: "accept", MODE_OFF: False}
 
 
 def _has_terminal() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    return is_interactive() and sys.stdout.isatty()
 
 
 def _read_table(path, section: str | None) -> dict:
@@ -274,7 +274,7 @@ def _setup_preferences() -> None:
     ``config.set_toml_key`` (the one runtime TOML writer).
     """
     if not _has_terminal():
-        print("[SYSFORGE] preferences: skipped (no terminal)")
+        print(f"[SYSFORGE] preferences: skipped ({no_prompt_reason()})")
         return
     from sysforge.primitives.build_sandbox import resolve_sandbox
 
@@ -479,7 +479,7 @@ def _setup_preset(name: str | None) -> None:
     explicit = name is not None
     if not explicit:
         if not _has_terminal():
-            print("[SYSFORGE] preset: skipped (no terminal)")
+            print(f"[SYSFORGE] preset: skipped ({no_prompt_reason()})")
             return
         name = _choose_preset()
     preset = config_presets.PRESETS[name]

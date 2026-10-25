@@ -61,7 +61,7 @@ from sysforge import log
 _log = log.get_logger("REVIEW")
 
 from sysforge.primitives.pager import maybe_pager  # noqa: E402
-from sysforge.primitives.prompt import prompt_key  # noqa: E402
+from sysforge.primitives.prompt import is_interactive, no_prompt_reason, prompt_key  # noqa: E402
 from sysforge.primitives import render, run
 
 # git's well-known empty-tree object id: the diff base for a first review
@@ -153,7 +153,7 @@ def resolve_review_policy(args, build_cfg: dict | None) -> ReviewPolicy:
 
 
 def _no_terminal() -> bool:
-    return not (sys.stdin.isatty() and sys.stdout.isatty())
+    return not (is_interactive() and sys.stdout.isatty())
 
 
 def _git(pkgbuild_dir: Path, *args: str) -> str | None:
@@ -237,7 +237,7 @@ def review_target(
         _log.info(f"{pkgbase}: {what}; accepted without review")
         return DECISION_ACCEPT
     if _no_terminal():
-        _log.warn(f"{pkgbase}: {what}; refused: no terminal to review it")
+        _log.warn(f"{pkgbase}: {what}; refused ({no_prompt_reason()})")
         return DECISION_REFUSED
 
     stat = _git(pkgbuild_dir, "diff", _color_flag(), "--stat", base, head) or ""
@@ -346,8 +346,8 @@ def review_deps(
                   f"without review: {names}")
         return DECISION_ACCEPT
     if _no_terminal():
-        _log.warn(f"{len(changed)} dependency source change(s) refused: "
-                  f"no terminal to review them: {names}")
+        _log.warn(f"{len(changed)} dependency source change(s) refused "
+                  f"({no_prompt_reason()}): {names}")
         return DECISION_REFUSED
 
     print(f"\n{_tag()} {len(changed)} dependency source change(s):")

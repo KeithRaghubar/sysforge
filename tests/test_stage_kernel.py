@@ -327,7 +327,7 @@ def test_resolve_kconfig_targets_prompting_target_rejected_when_non_interactive(
 
 
 def test_resolve_kconfig_targets_local_target_rejected_when_non_interactive():
-    with pytest.raises(ValueError, match="interactively"):
+    with pytest.raises(ValueError, match="needs the config review"):
         resolve_kconfig_targets(
             kcfg({"kconfig_targets": ["localmodconfig"]}), interactive=False
         )
@@ -1621,7 +1621,7 @@ def test_kernel_stage_non_interactive_flag_flips_to_false(tmp_path):
     state = PipelineState(tmp_path / "state")
 
     opts = make_options(state_dir=tmp_path / "state")
-    opts.non_interactive = True
+    opts.no_review_config = True
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
@@ -1631,6 +1631,31 @@ def test_kernel_stage_non_interactive_flag_flips_to_false(tmp_path):
 
     build_opts = mock_build.call_args.kwargs["options"]
     assert build_opts.interactive is False
+
+
+def test_kernel_stage_unattended_skips_review_without_warning(tmp_path, monkeypatch):
+    """An unattended run at a terminal drops the review as asked (3.5.0-F21):
+    narration, not the no-TTY warning meant for a run that wanted the review."""
+    import sysforge.pipeline.stages.kernel as _km
+    from sysforge.pipeline.stages.kernel import config as _kc
+    from sysforge.primitives import prompt
+    builds = tmp_path / "builds"
+    make_pkgbuild(builds, "linux-git")
+    p = make_kernel_toml(tmp_path, builds)
+    state = PipelineState(tmp_path / "state")
+    monkeypatch.setattr(prompt.sys.stdin, "isatty", lambda: True, raising=False)
+    prompt.set_unattended(True)
+
+    with patch.object(_km.config, "KERNEL_PATH", p), \
+         patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
+         patch.object(_kc, "_log") as mock_log, \
+         patch("sysforge.pipeline.stages.kernel.install.subprocess.run") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout="")
+        KernelStage().run({}, state, make_options(state_dir=tmp_path / "state"))
+
+    assert mock_build.call_args.kwargs["options"].interactive is False
+    assert not any("config review" in str(c) for c in mock_log.warn.call_args_list)
+    assert any("unattended run" in str(c) for c in mock_log.info.call_args_list)
 
 
 def test_kernel_stage_kernel_toml_interactive_false(tmp_path):
@@ -1904,7 +1929,7 @@ def test_kernel_stage_sync_diverged_aborts_unattended(tmp_path):
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
          patch(_MAKEPKG_RUN, return_value=None) as mock_build, \
          patch("sysforge.pipeline.stages.kernel.install.subprocess.run"), \
-         pytest.raises(RuntimeError, match="diverged source unattended"):
+         pytest.raises(RuntimeError, match="diverged source \\(no terminal\\)"):
         KernelStage().run({}, state, opts)
     mock_build.assert_not_called()
 
@@ -3051,7 +3076,7 @@ def test_interactive_run_emits_nudge(tmp_path):
     p = make_kernel_toml(tmp_path, builds)  # interactive defaults to True
     logs = _run_kernel_with_state(tmp_path, (state, p))
 
-    assert any("Running interactively" in m for m in _info_messages(logs)), \
+    assert any("Opening the kernel config review" in m for m in _info_messages(logs)), \
         f"expected interactive nudge, got: {_info_messages(logs)}"
 
 
@@ -3061,10 +3086,10 @@ def test_non_interactive_run_omits_nudge(tmp_path):
     state = PipelineState(tmp_path / "state")
     p = make_kernel_toml(tmp_path, builds)
     opts = make_options(state_dir=tmp_path / "state")
-    opts.non_interactive = True
+    opts.no_review_config = True
     logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    assert not any("Running interactively" in m for m in _info_messages(logs))
+    assert not any("Opening the kernel config review" in m for m in _info_messages(logs))
 
 
 def test_dry_run_omits_interactive_nudge(tmp_path):
@@ -3075,7 +3100,7 @@ def test_dry_run_omits_interactive_nudge(tmp_path):
     opts = make_options(state_dir=tmp_path / "state", dry_run=True)
     logs = _run_kernel_with_state(tmp_path, (state, p), opts_override=opts)
 
-    assert not any("Running interactively" in m for m in _info_messages(logs))
+    assert not any("Opening the kernel config review" in m for m in _info_messages(logs))
 
 
 def test_kernel_stage_invokes_pre_build_snapshot(tmp_path):
@@ -3122,7 +3147,7 @@ def test_pkgname_collision_unattended_aborts():
     opts = make_options()
     with patch("sysforge.primitives.aur.is_repo_package", return_value=True), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
-         pytest.raises(RuntimeError, match="Aborting unattended"):
+         pytest.raises(RuntimeError, match="Not asking \\(no terminal\\)"):
         check_pkgname_repo_collision("linux", opts)
 
 
@@ -3601,7 +3626,7 @@ def test_cli_keep_hotplug_flag_parses():
 # ---------------------------------------------------------------------------
 
 def _run_stage_already_built(tmp_path, *, prompt_ret=None, tty=True,
-                             non_interactive=False, rebuild_raises=False):
+                             no_review_config=False, rebuild_raises=False):
     """Drive KernelStage.run() with makepkg raising AlreadyBuilt on the first
     call. Returns (mock_build, mock_prompt, mock_install, logs, excinfo)."""
     import sysforge.pipeline.stages.kernel as _km
@@ -3612,8 +3637,8 @@ def _run_stage_already_built(tmp_path, *, prompt_ret=None, tty=True,
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state")
-    if non_interactive:
-        opts.non_interactive = True
+    if no_review_config:
+        opts.no_review_config = True
 
     calls = []
 
@@ -3688,7 +3713,7 @@ def test_already_built_interactive_install_proceeds(tmp_path):
 def test_already_built_unattended_proceeds_without_prompt(tmp_path):
     """--no-interactive keeps today's behaviour: proceed, never prompt."""
     mock_build, mock_prompt, mock_install, logs, exc = _run_stage_already_built(
-        tmp_path, non_interactive=True)
+        tmp_path, no_review_config=True)
     assert exc is None
     mock_prompt.assert_not_called()
     assert mock_build.call_count == 1
@@ -3716,7 +3741,7 @@ def test_already_built_install_failure_suggests_fresh_build(tmp_path):
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state")
-    opts.non_interactive = True
+    opts.no_review_config = True
 
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch("sysforge.pipeline.stages.kernel.stage.makepkg_run",
@@ -3770,7 +3795,7 @@ def test_kernel_stage_no_tty_warns_review_downgraded(tmp_path):
     """The TTY-forced downgrade of a config-requested review is WARNed."""
     _, logs = _run_stage_tty(tmp_path, tty=False)
     warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
-    assert "no TTY" in warned and "review" in warned
+    assert "no terminal" in warned and "review" in warned
 
 
 def test_kernel_stage_tty_keeps_interactive(tmp_path):
@@ -3787,7 +3812,7 @@ def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state")
-    opts.non_interactive = True
+    opts.no_review_config = True
     with patch.object(_km.config, "KERNEL_PATH", p), \
          patch(_MAKEPKG_RUN, return_value=None), \
          patch("sysforge.primitives.prompt.is_interactive", return_value=False), \
@@ -3796,7 +3821,7 @@ def test_kernel_stage_non_interactive_flag_no_tty_warn(tmp_path):
         mock_sub.return_value = MagicMock(returncode=0, stdout="")
         KernelStage().run({}, state, opts)
     warned = " ".join(str(c.args[1]) for c in logs.warn.call_args_list)
-    assert "no TTY" not in warned
+    assert "no terminal" not in warned
 
 
 # ---------------------------------------------------------------------------
@@ -3983,7 +4008,7 @@ def test_kernel_config_from_toml_none_is_none():
 def test_kernel_config_empty_toml_gets_documented_defaults():
     cfg = KernelConfig.from_toml({})
     assert cfg.enabled is False          # opt-in
-    assert cfg.interactive is True
+    assert cfg.review_config is True
     assert cfg.build_headers is True     # headers are useful; docs are not, by default
     assert cfg.build_docs is False
     assert cfg.base_config == "pkgbuild"
@@ -5348,7 +5373,7 @@ def test_already_built_install_resolves_reused_tree_from_exception(tmp_path):
     p = make_kernel_toml(tmp_path, builds)
     state = PipelineState(tmp_path / "state")
     opts = make_options(state_dir=tmp_path / "state")
-    opts.non_interactive = True
+    opts.no_review_config = True
     tree_root = tmp_path / "profile-builds" / "linux-git"
 
     def fake_makepkg(pkgbuild, *, options):

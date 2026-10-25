@@ -313,7 +313,9 @@ class KernelConfig:
     raw: dict = field(default_factory=dict, repr=False)
 
     enabled: bool = False
-    interactive: bool = True
+    # Run the PKGBUILD's own config UI (nconfig/menuconfig); was `interactive`
+    # before 3.5.0-F22. Resolved per run by resolve_config_review.
+    review_config: bool = True
     # None means 'unset', which is load-bearing: resolve_compiler falls
     # through to the pipeline state's toolchain result only when the user
     # did not name a compiler here.
@@ -365,7 +367,8 @@ class KernelConfig:
         return cls(
             raw=data,
             enabled=bool(data.get("enabled", False)),
-            interactive=bool(data.get("interactive", True)),
+            review_config=(bool(data.get("review_config")) if "review_config" in data
+                           else _legacy_review_config(data)),
             compiler=data.get("compiler") or None,
             pkgname=data.get("pkgname") or None,
             upstream_pkgname=data.get("upstream_pkgname") or None,
@@ -419,3 +422,44 @@ def load() -> "KernelConfig | None":
     ``load_kernel_config`` remains as the raw-dict reader beneath this.
     """
     return KernelConfig.from_toml(load_kernel_config())
+
+
+def _legacy_review_config(data: dict) -> bool:
+    """``review_config`` when kernel.toml does not set it: its pre-3.5.0-F22
+    name ``interactive`` if present, else the default (on).
+
+    Ignoring the old key would turn the review back on for someone who had
+    turned it off, and nconfig would open on their next run. ``config check``
+    reports the old name and ``config clean`` renames it.
+    """
+    if "interactive" in data:
+        _log.warn("kernel.toml: `interactive` is now `review_config`; using its value. "
+                  "Run `sysforge config clean` to rename it.")
+        return bool(data["interactive"])
+    return True
+
+
+def resolve_config_review(kernel_cfg: KernelConfig, options) -> bool:
+    """Whether this run opens the PKGBUILD's config UI (3.5.0-F22).
+
+    The one home for the answer: ``review_config`` in kernel.toml, not
+    ``--no-review-config``, and sysforge may ask (``prompt.is_interactive``:
+    a terminal, and not ``--unattended``). The stage's own questions do not
+    come through here; they ask ``prompt.is_interactive`` directly.
+    """
+    from sysforge.primitives import prompt
+
+    wanted = kernel_cfg.review_config and not getattr(options, "no_review_config", False)
+    if not wanted:
+        return False
+    if prompt.is_interactive():
+        return True
+    if prompt.unattended():
+        # Asked for, so narration rather than a warning (3.5.0-F21).
+        _log.info("unattended run: skipping the kernel config review")
+    else:
+        _log.warn("kernel config review requested (kernel.toml review_config = "
+                  "true) but no terminal is attached: skipping it. Pass "
+                  "--no-review-config to make this explicit.")
+    return False
+

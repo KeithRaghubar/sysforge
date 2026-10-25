@@ -44,8 +44,8 @@ class RunOptions:
     # Profile / build configuration
     profile_conf: str | None = None  # path to alternate profiles.toml for PKGBUILD patching
     # Kernel stage
-    # opt out of interactive kconfig (kernel default is interactive)
-    non_interactive: bool = False
+    # --no-review-config: skip the kernel config review this run (3.5.0-F22)
+    no_review_config: bool = False
     # CLI override for kernel.toml bootloader (systemd-boot|grub|none)
     bootloader: str | None = None
     compiler: str | None = None      # kernel-stage compiler override ("gcc" or "llvm")

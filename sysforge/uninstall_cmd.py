@@ -64,7 +64,8 @@ class UninstallVerb(Verb):
         p.add_argument("packages", nargs="+", metavar="PKG",
             help="Package name(s) to remove (stock or -sysforge name).")
         p.add_argument("--yes", action="store_true", dest="yes",
-            help="Remove without pacman's confirmation prompt (needed without a terminal).")
+            help="Remove without pacman's confirmation prompt (needed without a "
+                 "terminal or with --unattended).")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.set_defaults(verb_cls=cls)
@@ -91,7 +92,7 @@ class UninstallVerb(Verb):
         # pacman asks at a terminal; with none it reads EOF at its [Y/n] and
         # aborts after printing the transaction, so refuse first (3.5.0-B143).
         if not args.yes and not prompt.is_interactive():
-            _log.error("[uninstall] refusing without a terminal; pass --yes")
+            _log.error(f"[uninstall] refusing ({prompt.no_prompt_reason()}); pass --yes")
             return ExecResult(exit_code=2)
 
         names = [it.installed_name for it in items]
