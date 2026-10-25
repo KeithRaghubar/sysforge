@@ -452,7 +452,7 @@ class SourceSyncScheduler:
         for the checkout; otherwise clear any cached one. AUR metadata kept
         beside a fork's head would let a later switch of origin to the AUR
         skip its first fetch and keep building the fork (3.5.0-B144)."""
-        if _rpc_vouches(pkgbuild_dir, rpc_entry, pkgbase):
+        if rpc_entry is not None and _rpc_vouches(pkgbuild_dir, rpc_entry, pkgbase):
             self.cache.update(
                 pkgbase,
                 rpc_version=rpc_entry.get("Version"),
