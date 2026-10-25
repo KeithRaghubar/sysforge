@@ -423,10 +423,11 @@ class RunKernelVerb(_RunVerbBase):
                  "ahead-of-upstream commits, or no upstream.")
         p.add_argument("--cleansrc-force", action="store_true", dest="cleansrc_force",
             help=CLEANSRC_FORCE_HELP)
-        p.add_argument("--no-interactive", action="store_true", dest="non_interactive",
-            help="Disable interactive kconfig (default is interactive: the PKGBUILD's "
-                 "`make nconfig`/`menuconfig`/etc. runs as written). With this flag, "
-                 "interactive targets are patched to `make olddefconfig` for unattended runs.")
+        p.add_argument("--no-review-config", action="store_true", dest="no_review_config",
+            help="Skip the kernel config review for this run: the PKGBUILD's "
+                 "`make nconfig`/`menuconfig`/etc. is patched to `make olddefconfig`. "
+                 "kernel.toml review_config = false does the same for every run. The "
+                 "stage still asks its safety questions; --unattended stops those too.")
         p.add_argument("--toolchain", choices=TOOLCHAIN_CHOICES, dest="compiler",
             help="Build the kernel with this toolchain (gcc or llvm). Independent of "
                  "`run toolchain`, so you can keep gcc system-wide but build the "
@@ -526,7 +527,7 @@ class RunKernelVerb(_RunVerbBase):
             abi_check=args.abi_check,
             state_dir=Path(args.state_dir) if args.state_dir else None,
             profile_conf=getattr(args, "profile_conf", None),
-            non_interactive=getattr(args, "non_interactive", False),
+            no_review_config=getattr(args, "no_review_config", False),
             bootloader=getattr(args, "bootloader", None),
             compiler=getattr(args, "compiler", None),
             base_config=getattr(args, "base_config", None),

@@ -38,7 +38,7 @@ use = "--yes"
 [[retired]]
 name = "--non-interactive"
 id = "3.5.0-F15"
-use = "--no-interactive"
+use = "--no-review-config"
 
 [[retired]]
 name = "--auto-pgo"
@@ -120,3 +120,14 @@ allow = [
 name = "build_mode_for"
 id = "3.5.0-F17"
 use = "mesa_pgo.BUILD_MODE"
+
+# --- 3.5.0-F22: the kernel config review says what it is -------------------
+
+[[retired]]
+name = "--no-interactive"
+id = "3.5.0-F22"
+use = "--no-review-config"
+allow = [
+    "tests/test_kernel_config_review.py",
+]
+

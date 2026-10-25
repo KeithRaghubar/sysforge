@@ -55,7 +55,7 @@ def log_resolution_summary(
     """Emit one labelled block of the resolved kernel-build plan.
 
     Consolidates what the stage decided (compiler + its origin, inherited
-    toolchain variant, bootloader, source, interactive mode, kconfig counts,
+    toolchain variant, bootloader, source, config review, kconfig counts,
     and the boot-safety gate settings) so the operator can eyeball it before a
     long build — and so ``--dry-run`` has a readable summary rather than only
     scattered ``[dry-run] would …`` lines.
@@ -250,39 +250,21 @@ class KernelStage(Stage):
         entries_template = install.preflight_boot_entries(pkgname, manage=manage_entries)
         install.prune_boot_entries(manage=manage_entries, dry_run=options.dry_run)
 
-        # Interactive kconfig is the kernel-stage default — flipped off by
-        # --no-interactive (or `interactive = false` in kernel.toml). When
-        # interactive=True is passed into BuildOptions, makepkg_wrapper skips
-        # the plan's non-interactive rewrite so the user's PKGBUILD kconfig target
-        # (typically `make nconfig`) runs as written, and the makepkg
-        # subprocess inherits the parent's stdout/stderr so ncurses-driven
-        # kconfig UIs render on the controlling TTY.
-        # B8: interactive requires config ∧ ¬--no-interactive ∧ TTY — the
-        # same three-way resolution the stage's sibling prompts (repo-pkgname
-        # collision, diverged-source confirm) already use. Without the TTY leg
-        # the stage promised an nconfig review that a piped/captured run could
-        # never render, then silently EOF'd through it.
-        from sysforge.primitives import prompt as _prompt
-        cfg_interactive = kernel_cfg.interactive
-        flag_non_interactive = bool(getattr(options, "non_interactive", False))
-        interactive = cfg_interactive and not flag_non_interactive and _prompt.is_interactive()
-        if cfg_interactive and not flag_non_interactive and _prompt.unattended():
-            # Asked for (3.5.0-F21), so narration rather than a warning.
-            _log.info("unattended run: skipping the interactive kconfig review")
-        elif cfg_interactive and not flag_non_interactive and not interactive:
-            _log.warn(
-                "interactive kconfig review requested (kernel.toml "
-                "interactive = true) but no TTY is attached: running "
-                "unattended; the config review will NOT run. Pass "
-                "--no-interactive to make this explicit."
-            )
+        # The PKGBUILD's config UI runs unless kernel.toml review_config,
+        # --no-review-config, --unattended or a missing terminal turns it off
+        # (one resolver, 3.5.0-F22). When it runs, makepkg_wrapper skips the
+        # plan's olddefconfig rewrite so the PKGBUILD's target (typically
+        # `make nconfig`) runs as written on the controlling terminal. The
+        # stage's own questions do not depend on it: they ask
+        # prompt.is_interactive() directly.
+        config_review = config.resolve_config_review(kernel_cfg, options)
 
         # F37: configured kconfig_targets sequence — resolved/validated here
         # (config-load time) so a bad list (unknown target, two UI targets, a
         # prompting target requested non-interactively) raises ValueError and
         # aborts before any makepkg invocation, rather than failing mid-build.
         # None when the key is unset — zero behavior change.
-        kconfig_targets = kconfig.resolve_kconfig_targets(kernel_cfg, interactive=interactive)
+        kconfig_targets = kconfig.resolve_kconfig_targets(kernel_cfg, interactive=config_review)
 
         # lsmod snapshot — captured before build for localmodconfig
         # reproducibility. Opt-out via `capture_lsmod_snapshot = false` (Gate 1
@@ -433,19 +415,18 @@ class KernelStage(Stage):
 
         if kconfig_targets:
             kconfig_target = f"{' → '.join(kconfig_targets)} (configured)"
-        elif interactive:
+        elif config_review:
             kconfig_target = "make nconfig (user-supplied)"
         else:
             kconfig_target = "make olddefconfig (patched)"
         _log.info(f"Kernel kconfig target: {kconfig_target}")
 
-        # C3: standalone interactive runs require the operator to drive the
-        # PKGBUILD's kconfig UI. Pipeline / --no-interactive / dry-run paths
-        # don't, so only nudge for a real interactive run.
-        if interactive and not options.dry_run:
+        # C3: a run with the config review open needs the operator to drive
+        # the PKGBUILD's kconfig UI, so say so; nothing to nudge otherwise.
+        if config_review and not options.dry_run:
             _log.info(
-                "Running interactively (the PKGBUILD's `make nconfig`/etc. runs "
-                "as written); pass --no-interactive for unattended builds."
+                "Opening the kernel config review (the PKGBUILD's `make nconfig`/"
+                "etc. runs as written); pass --no-review-config to skip it."
             )
 
         allow_boot_audit_failure = bool(getattr(options, "allow_boot_audit_failure", False))
@@ -606,7 +587,7 @@ class KernelStage(Stage):
                             or sysforge_config.get("profile_conf")
                         ),
                         update=(not options.no_update) and not synced,
-                        interactive=interactive,
+                        interactive=config_review,
                         cc_override=cc,
                         cxx_override=cxx,
                         source=src_kind,
@@ -652,10 +633,10 @@ class KernelStage(Stage):
                         extra_flags=["-f"] if fdo_plan.force_rebuild else None))
                 except AlreadyBuilt as exc:
                     # B5: makepkg exit 13 skipped the build — and with it the
-                    # in-prepare() kconfig review an interactive run promised.
+                    # in-prepare() kconfig review this run promised.
                     # Ask the operator (install as-built / rebuild with -f to
                     # review / abort); unattended runs keep the proceed path.
-                    if source.resolve_already_built_action(options, interactive) == "rebuild":
+                    if source.resolve_already_built_action(config_review) == "rebuild":
                         built_dir = makepkg_run(
                             pkgbuild,
                             options=_kernel_build_options(extra_flags=["-f"]),
@@ -733,7 +714,7 @@ class KernelStage(Stage):
                 else:
                     try:
                         install_built_packages(
-                            pkgbuild.parent, noconfirm=not interactive)
+                            pkgbuild.parent, noconfirm=not config_review)
                     except RuntimeError as e:
                         if already_built:
                             # B7: AlreadyBuilt → install-as-built → install

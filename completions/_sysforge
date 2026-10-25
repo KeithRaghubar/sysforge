@@ -711,7 +711,7 @@ _sysforge_run_kernel() {
     '--no-update[skip the source sync, build as checked out]' \
     '--cleansrc[purge the kernel src dir and re-clone]' \
     '--cleansrc-force[--cleansrc, bypassing the dirty guard]' \
-    '--no-interactive[use olddefconfig, no interactive kconfig]' \
+    '--no-review-config[skip the kernel config review (olddefconfig)]' \
     '--toolchain[build the kernel with this toolchain]:toolchain:(gcc llvm)' \
     '--bootloader[override kernel.toml bootloader]:bootloader:(systemd-boot grub none)' \
     '--base-config[override kernel.toml base_config]:source:_sysforge_base_config_source' \

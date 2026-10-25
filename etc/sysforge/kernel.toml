@@ -77,12 +77,13 @@ pkgname = "linux-sysforge"
 #   default: unset (sysforge-<kernel>.conf)
 #boot_entries_prefix = "97"
 
-# interactive — default: true — the PKGBUILD's `make nconfig` / `menuconfig`
-#   runs as written so the user can review/edit the resolved kconfig. Requires
-#   a real TTY: piped/captured runs downgrade to unattended with a warning.
-#   Set to false (or pass `--no-interactive`) to patch interactive targets to
-#   `make olddefconfig` for unattended runs.
-#interactive = true
+# review_config — default: true — the PKGBUILD's `make nconfig` / `menuconfig`
+#   runs as written so you can review/edit the resolved kconfig. Needs a
+#   terminal: a run without one, or with --unattended, skips it. Set to false
+#   (or pass `--no-review-config` for one run) to patch those targets to
+#   `make olddefconfig`. Called `interactive` before 3.5.0; the old name is
+#   still read, and `sysforge config clean` renames it.
+#review_config = true
 
 # compiler — "gcc" | "llvm" — kernel-stage compiler override. Independent of
 #   the global toolchain stage, so a system that keeps gcc as its default can
@@ -209,10 +210,10 @@ pkgname = "linux-sysforge"
 #   first, so the sequence shapes the merged config. Silent targets
 #   (olddefconfig, defconfig, allmodconfig, alldefconfig, savedefconfig,
 #   listnewconfig) run in listed order. Prompting targets (oldconfig,
-#   localmodconfig, localyesconfig, mod2yesconfig) require an interactive
-#   stage run — non-interactive runs reject them (oldconfig names its silent
-#   equivalent olddefconfig; the local*/mod2yes targets say to run
-#   interactively). At most one UI target (config, nconfig, menuconfig,
+#   localmodconfig, localyesconfig, mod2yesconfig) need the config review
+#   (review_config above) — a run without it rejects them (oldconfig names its
+#   silent equivalent olddefconfig; the local*/mod2yes targets say to turn the
+#   review on). At most one UI target (config, nconfig, menuconfig,
 #   xconfig, gconfig) is allowed and it always runs last. randconfig is never
 #   allowed — a randomized config is a boot-safety hazard.
 #   localmodconfig/localyesconfig over-minimize to modules currently loaded

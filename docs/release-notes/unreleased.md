@@ -306,6 +306,10 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-F20` — sysforge decides whether makepkg may ask questions; profiles no longer carry `--noconfirm`.** Every build sysforge runs on its own now gets `--noconfirm` whether or not the profile lists it, and `sysforge build --interactive` or an interactive kernel configuration runs without it, as before. The shipped profiles no longer list it, so `makepkg_flags` describes only how a package is built. Profiles you wrote yourself keep working unchanged: a `--noconfirm` in them is recognised rather than passed twice. Removing it from a profile no longer makes builds ask questions, since only `--interactive` does that. The `--interactive` help, man page and completion now say what it does without referring to profile flags.
 
+---
+
+- **`3.5.0-F22` — the kernel config review has its own name, separate from whether sysforge may ask.** **Breaking:** `run kernel --non-interactive` is now `--no-review-config` (`--no-interactive`, its spelling earlier in this cycle, is gone too), and `kernel.toml`'s `interactive` is now `review_config`. An existing `interactive = false` keeps working and warns until `sysforge config clean` renames it, so nobody gets the `nconfig` menu back unexpectedly. The stage used to treat two questions as one: whether to open the PKGBUILD's config menu, and whether it may ask you anything. Now `--no-review-config` and `review_config = false` only skip the menu: if the kernel name matches an official package, or the kernel tree has local changes, you are still asked at a terminal instead of the run stopping. To have the stage ask nothing, use the global `--unattended` (`3.5.0-F21`), or run with no terminal. The error for an `oldconfig` or `localmodconfig` step in `kconfig_targets` now says it needs the config review, and lists what turns the review off.
+
 ## Removed
 
 - **`3.5.0-F15` — one spelling per flag across every command.** **Breaking:** these spellings no longer parse; each has a direct replacement.
@@ -316,7 +320,7 @@ https://keepachangelog.com/en/1.1.0/
   | `--no-confirm` | `--yes` | `doctor pkg`, `state orphans` |
   | `--force` | `--yes` | `revert-to-stock` (`--force` elsewhere overrides a guard; skipping a question is `--yes`, as on `update`) |
   | `--quiet`, `-q` | `--findings-only` | `doctor system`, `doctor pkg` |
-  | `--non-interactive` | `--no-interactive` | `run kernel` |
+  | `--non-interactive` | `--no-review-config` (`3.5.0-F22`) | `run kernel` |
   | `--list` | `--dry-run` | `config merge` (they were aliases) |
   | `--auto-pgo` | `--yes` | `run toolchain` |
   | `--force-retry` | `--retry-failed` | `run pipeline`, `run packages` |

@@ -465,7 +465,7 @@ _sysforge_run() {
         kernel)
             [[ $cur == -* ]] && COMPREPLY=( $(compgen -W "\
                 --dry-run --no-update --cleansrc --cleansrc-force \
-                --no-interactive --toolchain --bootloader --base-config \
+                --no-review-config --toolchain --bootloader --base-config \
                 --base-config-merge \
                 --allow-no-fallback --allow-boot-audit-failure \
                 --headers --no-headers --docs --no-docs \

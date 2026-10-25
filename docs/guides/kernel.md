@@ -47,7 +47,7 @@ when a new version is available and leaves the build to the kernel stage.
 
 ## Reviewing the config
 
-By default a kernel run is interactive. After sysforge has merged its config changes into the
+By default a kernel run opens a config review. After sysforge has merged its config changes into the
 kernel's `.config`, the build pauses with a prompt saying the merged config is assembled and
 asking you to press Enter to review it.
 
@@ -58,8 +58,8 @@ continues. Ctrl-C at the pause aborts the build with nothing installed.
 If the PKGBUILD runs its own menu (`make menuconfig`, for example), sysforge uses that one and
 adds no second menu or pause.
 
-The review needs a real terminal. A run with its output piped or captured falls back to an
-unattended run and warns.
+The review needs a real terminal. A run with its output piped or captured skips it and warns
+(an `--unattended` run skips it without the warning, since you asked for that).
 
 An interactive build's output is still logged. The whole of it goes to the kernel's
 per-package log, and if the build fails, its last lines also go to the run log
@@ -68,28 +68,40 @@ scrolled past it.
 
 ---
 
-## Running unattended
+## Skipping the config review, or running unattended
 
-For a timer or a script, turn the review off for one run:
+The stage asks two separate things, and each has its own switch.
+
+**The config review** is the `make nconfig` (or `menuconfig`) step where you look over the
+merged config before the build. To skip it for one run:
 
 ```bash
-sysforge run kernel --no-interactive
+sysforge run kernel --no-review-config
 ```
 
 or for good, in `kernel.toml`:
 
 ```toml
-interactive = false
+review_config = false
 ```
 
-A global `--unattended` (or `[ui] unattended = true` in `sysforge.toml`) has the same effect
-on the kernel stage. The review step is dropped, and any interactive step the PKGBUILD has of its own (`make
+The review step is dropped, and any interactive step the PKGBUILD has of its own (`make
 nconfig`, `menuconfig`, `oldconfig` and the like) is rewritten to `make olddefconfig`, which
-takes the kernel's default for every option the config doesn't set.
+takes the kernel's default for every option the config doesn't set. The stage still asks its
+safety questions below if something needs your answer.
 
-Two other things stop an unattended run rather than guess: a kernel tree with local changes
-(see the next section), and a prompting step named in `kconfig_targets` (see [Choosing the
-config steps](#choosing-the-config-steps)).
+**Unattended** means sysforge asks nothing at all: pass the global `--unattended` (or set
+`[ui] unattended = true` in `sysforge.toml`), or run with no terminal, as a timer does. That
+skips the config review too, and every safety question gets its safe answer, which for the
+kernel stage is to stop rather than guess.
+
+In `kernel.toml` this setting was called `interactive` before 3.5.0. An old `interactive =
+false` still works and warns; `sysforge config clean` renames it.
+
+Two other things stop a run rather than guess: a kernel tree with local changes, when
+sysforge can't ask you about it (see the next section), and a prompting step named in
+`kconfig_targets` on any run that skips the review (see [Choosing the config
+steps](#choosing-the-config-steps)).
 
 ---
 
@@ -133,7 +145,7 @@ Your kernel's `.config` is built up in layers, each applied over the one before:
      ```
 
 3. **The config steps**: the PKGBUILD's own, or your `kconfig_targets` (next section).
-4. **Your review** in `nconfig`, on an interactive run.
+4. **Your review** in `nconfig`, unless the review is skipped.
 
 After the build, sysforge warns about any option it merged that did not survive into the final
 config. Usually you turned it off in the menu, or a step such as `olddefconfig` dropped it
@@ -196,15 +208,15 @@ The targets fall into four groups:
 | Group | Targets | Rule |
 | --- | --- | --- |
 | Silent | `olddefconfig`, `defconfig`, `allmodconfig`, `alldefconfig`, `savedefconfig`, `listnewconfig` | always allowed, run in your order |
-| Prompting | `oldconfig`, `localmodconfig`, `localyesconfig`, `mod2yesconfig` | interactive runs only |
+| Prompting | `oldconfig`, `localmodconfig`, `localyesconfig`, `mod2yesconfig` | only when the review runs |
 | Menu | `config`, `nconfig`, `menuconfig`, `xconfig`, `gconfig` | at most one, always run last |
 | Refused | `randconfig` | never: a random config is a boot hazard |
 
-An unattended run refuses a prompting target instead of hanging on its prompt. For `oldconfig`
-the error names `olddefconfig`, its silent equivalent. The others have none, so run those
-interactively. A menu target listed earlier is moved to the end, so it always shows the
-finished config, with the same pause before it as the default review. On an unattended run it
-becomes `olddefconfig`.
+A run that skips the review refuses a prompting target instead of hanging on its prompt. For
+`oldconfig` the error names `olddefconfig`, its silent equivalent. The others have none, so
+they need the review on. A menu target listed earlier is moved to the end, so it always shows the
+finished config, with the same pause before it as the default review. When the review is
+skipped it becomes `olddefconfig`.
 
 ### Trimming to this machine's hardware
 
@@ -266,9 +278,10 @@ mkinitcpio -P`), the step whose absence would leave the kernel unbootable.
 
 | I want to... | Run or set |
 | --- | --- |
-| build and review interactively | `sysforge run kernel` |
+| build and review the config | `sysforge run kernel` |
 | see the plan without building | `sysforge run kernel --dry-run` |
-| build from a timer or script | `sysforge run kernel --no-interactive` |
+| skip the config review | `sysforge run kernel --no-review-config` |
+| build from a timer or script | `sysforge --unattended run kernel` (or no terminal) |
 | start from my running kernel's config | `base_config = "running"` or `--base-config running` |
 | force a config option | a `[[kconfig]]` entry in `kernel.toml` |
 | add the compile-time hardening set | `hardening = true` |

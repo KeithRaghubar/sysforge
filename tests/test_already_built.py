@@ -22,24 +22,12 @@ def test_unknown_posture_raises_value_error():
         resolve_already_built("wat", interactive=False)
 
 
-@pytest.mark.parametrize(
-    ("interactive", "non_interactive", "tty"),
-    [
-        (False, False, True),   # caller says non-interactive
-        (True, True, True),     # --no-interactive override
-        (True, False, False),   # no TTY
-    ],
-)
-def test_review_gated_unattended_signals_each_force_reuse(
-    interactive, non_interactive, tty
-):
-    with patch("sysforge.primitives.prompt.is_interactive", return_value=tty), \
-         patch("sysforge.primitives.prompt.prompt_choice") as mock_prompt:
-        action = resolve_already_built(
-            "review-gated",
-            interactive=interactive,
-            non_interactive=non_interactive,
-        )
+def test_review_gated_without_a_promised_review_reuses():
+    """The caller's one resolved answer decides (3.5.0-F22): no review was
+    promised (review off, --no-review-config, --unattended or no TTY, all
+    folded in by resolve_config_review), so there is nothing to ask about."""
+    with patch("sysforge.primitives.prompt.prompt_choice") as mock_prompt:
+        action = resolve_already_built("review-gated", interactive=False)
     assert action is AlreadyBuiltAction.REUSE
     mock_prompt.assert_not_called()
 

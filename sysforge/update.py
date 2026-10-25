@@ -280,9 +280,7 @@ def _toolchain_preflight_for_batch(to_build, config, args) -> bool:
 
     report = run_toolchain_preflight(required)
     if report.failed:
-        non_interactive = getattr(args, "non_interactive", False) or \
-            getattr(args, "noconfirm", False)
-        report = auto_remediate_toolchain(report, non_interactive=non_interactive)
+        report = auto_remediate_toolchain(report)
     if report.failed:
         _log.ui(render_toolchain_preflight(report, classify=True))
         return False

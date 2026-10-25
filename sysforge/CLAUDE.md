@@ -285,7 +285,9 @@ Mechanism lives in the cited §DESIGN section.
   (`_ensure_mesa_software_baseline`). Opt-in `[mesa] filter_drivers`; lib32-mesa is filtered.
   §Hardware detection.
 - **Kernel stage**: compiler independent of toolchain (`toolchain/identity.py::compiler_paths`);
-  **interactive by default**; subpackage toggles `kernel/config.py::resolve_subpackages` +
+  **config review on by default**, resolved only by `kernel/config.py::resolve_config_review`;
+  the stage's own questions ask `prompt.is_interactive()` and never re-derive it (`3.5.0-F22`);
+  subpackage toggles `kernel/config.py::resolve_subpackages` +
   `pkgbuild_patcher.patch_kernel_subpackages` (disabling
   headers keeps the Gate-1 DKMS warning); boot-safety in `kernel_safety.py`/`device_probe`. §Kernel.
 

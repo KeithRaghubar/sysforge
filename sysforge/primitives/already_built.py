@@ -8,9 +8,10 @@
 matching ``.pkg.tar`` and makepkg skipped the build. Every catch site routes
 its "what now?" decision through :func:`resolve_already_built` instead of
 interpreting the exception locally — 2.5.1-B3/B4/B5 were all divergences
-between sites that each re-derived the answer (in particular the unattended
-arbitration, which needs *three* signals: the caller's resolved interactive
-flag, the ``--no-interactive`` override, and TTY presence).
+between sites that each re-derived the answer. The review-gated caller now
+passes the kernel stage's one resolved answer (``resolve_config_review``,
+3.5.0-F22), which already folds in kernel.toml, ``--no-review-config``,
+``--unattended`` and TTY presence, so nothing is re-derived here.
 
 Decide-only: callers execute the chosen action (artifact reuse, ``-f``
 retry). The manifest capture in ``makepkg_wrapper``'s except-path is a
@@ -43,20 +44,19 @@ def resolve_already_built(
     posture: str,
     *,
     interactive: bool,
-    non_interactive: bool = False,
     tag: str = "BUILD",
     abort_hint: str = "",
 ) -> AlreadyBuiltAction:
     """Decide what an ``AlreadyBuilt`` build does next.
 
-    ``interactive`` is the caller's resolved interactivity; ``non_interactive``
-    the explicit CLI/config override; TTY presence is probed here. ``tag`` sets
+    ``interactive`` is the caller's resolved answer to "was a review promised?"
+    (for the kernel, ``resolve_config_review``); ``tag`` sets
     the log/prompt prefix; ``abort_hint`` is caller context folded into the
     abort message.
     """
     # Late import: kernel-path tests patch these at the source module, and a
     # module-level from-import would bind before the patch applies.
-    from sysforge.primitives.prompt import is_interactive, prompt_choice
+    from sysforge.primitives.prompt import prompt_choice
 
     if posture == "reuse":
         return AlreadyBuiltAction.REUSE
@@ -64,8 +64,7 @@ def resolve_already_built(
         raise ValueError(f"unknown AlreadyBuilt posture: {posture!r}")
 
     _log = log.get_logger(tag)
-    unattended = not interactive or bool(non_interactive) or not is_interactive()
-    if unattended:
+    if not interactive:
         _log.info("Kernel package already built: proceeding to audit + install")
         return AlreadyBuiltAction.REUSE
     _log.warn(

@@ -5,7 +5,7 @@
 .nh
 .ad l
 .\" Begin generated content:
-.TH "sysforge" "1" "2026\-10\-24"
+.TH "sysforge" "1" "2026\-10\-25"
 .PP
 .PP
 .SH NAME
@@ -1410,9 +1410,9 @@ Skip the source sync (fetch and fast\-forward) of the kernel tree and build it a
 Purge the kernel src dir and re\-clone before building.\& Refuses if the existing clone has uncommitted changes, ahead\-of\-upstream commits, or no upstream.\&
 .PP
 .RE
-\fB\-\-no\-interactive\fR
+\fB\-\-no\-review\-config\fR
 .RS 4
-Disable interactive kconfig (default is interactive: the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& runs as written).\& With this flag, interactive targets are patched to `make olddefconfig` for unattended runs.\&
+Skip the kernel config review for this run: the PKGBUILD'\&s `make nconfig`/`menuconfig`/etc.\& is patched to `make olddefconfig`.\& kernel.\&toml review_config = false does the same for every run.\& The stage still asks its safety questions; \-\-unattended stops those too.\&
 .PP
 .RE
 \fB\-\-toolchain\fR \fIgcc\fR|\fIllvm\fR
