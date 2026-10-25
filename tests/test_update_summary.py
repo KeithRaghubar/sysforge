@@ -347,5 +347,5 @@ def test_refused_and_accepted_sections(monkeypatch):
     assert "1 refused at review" in lines[0]
     assert "Refused at review:" in joined
     assert "foo-git: unreviewed source change (a → b)" in joined
-    assert "run `sysforge update` at a terminal to review them" in joined
+    assert "run `sysforge build --failed` at a terminal to review and build them" in joined
     assert "Accepted without review:" in joined and "bar" in joined

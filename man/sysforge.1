@@ -239,13 +239,18 @@ Used by: \fBconfig clean\fR, \fBconfig reset\fR.\&
 .PP
 .SS build
 .PP
-\fBsysforge build\fR [\fIOPTIONS\fR] \fIPKGBUILD.\&.\&.\&\fR
+\fBsysforge build\fR [\fIOPTIONS\fR] \fI[PKGBUILD.\&.\&.\&]\fR
 .PP
 Build a package from a PKGBUILD.\&
 .PP
 \fBPKGBUILD\fR
 .RS 4
-One or more packages to build (path, directory, or bare package name).\&
+One or more packages to build (path, directory, or bare package name).\& Optional with \-\-failed.\&
+.PP
+.RE
+\fB\-\-failed\fR
+.RS 4
+Also build every package recorded by `sysforge state failed`: those whose last build failed, and those refused at the review gate (for example by an unattended run).\& Each entry clears when its package builds.\& With nothing recorded and no PKGBUILD given, does nothing.\&
 .PP
 .RE
 \fB\-\-makepkg\fR, \fB\-m\fR \fIFLAGS\fR
@@ -878,11 +883,11 @@ Show which systemd\-boot loader entry boots each installed kernel, who owns it (
 .PP
 \fBsysforge state failed\fR [\fIOPTIONS\fR]
 .PP
-List packages whose last build failed (recorded in build_state.\&toml), with any diagnosed fix.\& Entries auto\-clear on the next successful build, or once the package is removed.\&
+List packages whose last build failed or that were refused at the review gate (recorded in build_state.\&toml), with any diagnosed fix.\& `sysforge build \-\-failed` retries them all.\& Entries auto\-clear on the next successful build, or once the package is removed.\&
 .PP
 \fB\-\-names\fR
 .RS 4
-Print only the failed pkgbases, one per line, with no header and no pager (empty when none), for retrying them: sysforge build $(sysforge state failed \-\-names).\&
+Print only the recorded pkgbases, one per line, with no header and no pager (empty when none), for scripts.\& To retry them, use `sysforge build \-\-failed`.\&
 .PP
 .RE
 \fB\-\-clear\fR \fIPKGBASE\fR

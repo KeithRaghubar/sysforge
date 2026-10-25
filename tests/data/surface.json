@@ -88,6 +88,7 @@
     "--cleansrc": null,
     "--cleansrc-force": null,
     "--cxx": null,
+    "--failed": null,
     "--force": null,
     "--interactive": null,
     "--ld": null,

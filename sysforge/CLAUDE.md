@@ -164,7 +164,8 @@ Mechanism lives in the cited §DESIGN section.
   both container channels — the `-I` closure and `local_repo.sync`; the ABI gate keeps the narrower
   `source_built_packages`. A `rust`/`cargo` target swaps `llvm_linked` for the repo LLVM via `-I` only
   (`fetch_repo_packages`), never by dropping LLVM from the local repo (2026-09-11 mesa). §makepkg-wrapper.
-- **Build failures**: reserved `[failures]` namespace in `build_state.toml`; diagnostics in
+- **Build failures**: reserved `[failures]` namespace in `build_state.toml` (review refusals too,
+  `kind = "review"`, via `build_core._record_review_refusal`; `build --failed` retries both, 3.5.0-F23); diagnostics in
   `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §Build failures.
 - **Refused-install revert/restore**: `build_core._revert_uninstalled_state` stashes the undone entry
   in the reserved `[reverted]` namespace (keyed by artifact filename); `install_built` restores it via

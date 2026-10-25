@@ -210,6 +210,26 @@ def _cli_toolchain(args) -> str | None:
     return toolchain_for_compilers(cc, cxx) if cc and cxx else None
 
 
+def _add_recorded_failures(args) -> None:
+    """Append every pkgbase in build_state.toml's ``[failures]`` table to
+    ``args.pkgbuilds`` (3.5.0-F23), after any named ones and without repeats.
+
+    That table holds build failures and, since F23, review refusals, so this is
+    "everything the last runs could not finish". Sorted for a stable order;
+    ``build_and_install`` topo-sorts the batch itself.
+    """
+    from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives.build_state import BuildState
+
+    state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
+    recorded = sorted(BuildState(state_dir).all_failures())
+    named = list(args.pkgbuilds or [])
+    have = {_pkg_to_name(p) for p in named}
+    args.pkgbuilds = named + [pb for pb in recorded if pb not in have]
+    if recorded:
+        _log.info(f"--failed: {len(recorded)} recorded package(s): {', '.join(recorded)}")
+
+
 class BuildVerb(Verb):
     """Build one or more packages using their matched profiles."""
 
@@ -221,9 +241,15 @@ class BuildVerb(Verb):
     def add_parser(cls, sub):
         p = sub.add_parser("build", help="Build a package from a PKGBUILD.")
         p.add_argument(
-            "pkgbuilds", nargs="+", metavar="PKGBUILD",
-            help="One or more packages to build (path, directory, or bare package name).",
+            "pkgbuilds", nargs="*", metavar="PKGBUILD",
+            help="One or more packages to build (path, directory, or bare package name). "
+                 "Optional with --failed.",
         )
+        p.add_argument("--failed", action="store_true", dest="failed",
+            help="Also build every package recorded by `sysforge state failed`: those "
+                 "whose last build failed, and those refused at the review gate (for "
+                 "example by an unattended run). Each entry clears when its package "
+                 "builds. With nothing recorded and no PKGBUILD given, does nothing.")
         p.add_argument("--makepkg", "-m", metavar="FLAGS",
             help="Additional makepkg flags, appended after profile makepkg_flags. "
                  "Usually optional: bare makepkg short flags are forwarded "
@@ -329,6 +355,16 @@ class BuildVerb(Verb):
         return journal.pkg_target(getattr(args, "packages", None) or [])
 
     def pre_check(self, args) -> PreCheckResult:
+        if getattr(args, "failed", False):
+            _add_recorded_failures(args)
+            if not args.pkgbuilds:
+                _log.ui("nothing to retry: no failed or review-refused packages recorded")
+                return PreCheckResult(skip_reason="build --failed: nothing recorded")
+        if not args.pkgbuilds:
+            return PreCheckResult(
+                blocker="build needs at least one PKGBUILD, or --failed to retry the "
+                        "packages `sysforge state failed` lists",
+                exit_code=2)
         if args.no_pkg_log and args.log_dir:
             print(
                 "[SYSFORGE] Warning: --log-dir has no effect when --no-pkg-log is set.",

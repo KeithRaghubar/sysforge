@@ -573,7 +573,9 @@ def cmd_state_failed(args):
             rows.append((
                 pkgbase,
                 rec.get("failed_at", ""),
-                rec.get("signature", ""),
+                # A review refusal (3.5.0-F23) has no diagnosis signature; name
+                # the kind there so it reads apart from a build failure.
+                rec.get("signature", "") or ("review" if rec.get("kind") == "review" else ""),
                 err,
                 rec.get("fix_cmd", ""),
             ))
@@ -600,7 +602,10 @@ def cmd_state_failed(args):
                     f"  {'':<{max_base}}  {'':<{max_when}}  "
                     f"{'':<{max_sig}}  {log.green(f'fix: {fix}')}"
                 )
-        print(f"\n  {len(rows)} failed package(s)")
+        n_review = sum(1 for rec in failures.values() if rec.get("kind") == "review")
+        print(f"\n  {len(rows)} failed package(s)"
+              + (f", {n_review} of them refused at review" if n_review else ""))
+        print("  retry them with `sysforge build --failed`")
         print(
             "  (entries clear on the next successful build or on removal; "
             "or use --clear PKGBASE / --clear-all)"
@@ -994,17 +999,18 @@ class StateFailedVerb(Verb):
     @classmethod
     def add_parser(cls, sub):
         p = sub.add_parser("failed",
-            help="List packages whose last build failed (recorded in build_state.toml), "
-                 "with any diagnosed fix. Entries auto-clear on the next successful build, "
-                 "or once the package is removed.")
+            help="List packages whose last build failed or that were refused at the "
+                 "review gate (recorded in build_state.toml), with any diagnosed fix. "
+                 "`sysforge build --failed` retries them all. Entries auto-clear on the "
+                 "next successful build, or once the package is removed.")
         p.add_argument("--state-dir", metavar="DIR", dest="state_dir",
             help="Override state directory.")
         p.add_argument("--no-pager", action="store_true", dest="no_pager",
             help="Don't pipe output through $PAGER (default: paginate when stdout is a TTY).")
         p.add_argument("--names", action="store_true", dest="names",
-            help="Print only the failed pkgbases, one per line, with no header and no "
-                 "pager (empty when none), for retrying them: "
-                 "sysforge build $(sysforge state failed --names).")
+            help="Print only the recorded pkgbases, one per line, with no header and no "
+                 "pager (empty when none), for scripts. To retry them, use "
+                 "`sysforge build --failed`.")
         p.add_argument("--clear", metavar="PKGBASE", dest="clear",
             help="Clear the recorded failure for PKGBASE and exit.")
         p.add_argument("--clear-all", action="store_true", dest="clear_all",

@@ -97,6 +97,21 @@ from Arch's own packaging repos are accepted without asking. For unattended runs
 `[build] review = "accept"` in `packages.toml` (accepted changes are listed in the summary)
 or pass `--no-review`; the [freeze guide](freeze.md) explains the trade-off.
 
+### Finishing what a run left behind
+
+sysforge remembers every package whose build failed and every package it refused at review,
+until it builds. `sysforge state failed` lists them, with the fix sysforge diagnosed when it
+recognised the failure. Once you have dealt with them (reviewed the change, added an override
+in `profiles.toml` or `packages.toml`, installed a missing key), build exactly those again:
+
+```bash
+sysforge build --failed
+```
+
+At a terminal that also shows you each refused change to review. Nothing else is rebuilt, and
+each entry clears as its package builds. With nothing recorded it does nothing. This is the
+usual follow-up to an unattended `update`.
+
 At a terminal, `update` first prints its plan (what it will rebuild and why, what it will
 upgrade, and the protections in force) and asks `Proceed? [Y/n]`. `--yes`, or
 `confirm_plan = false` in `packages.toml`, skips the question. `sysforge setup` asks about
