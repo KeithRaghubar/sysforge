@@ -414,6 +414,8 @@ def _isolate_boot_entries(monkeypatch, tmp_path_factory):
         cmd = list(argv)
         while prefix and cmd[:len(prefix)] == prefix:
             cmd = cmd[len(prefix):]
+            if cmd[:1] == ["-n"]:  # sudo -n on an unattended run (3.5.0-F21)
+                cmd = cmd[1:]
         done = subprocess.CompletedProcess(argv, 0, "", "")
 
         def inside(dst: str) -> bool:
