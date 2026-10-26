@@ -1,0 +1,28 @@
+# A VCS package for the end-to-end tier (3.5.0-DEV27): its one source is a
+# local git repository the scenario creates, so `update --devel` runs its
+# real path, git ls-remote and pkgver(), with no network. The scenario
+# replaces @UPSTREAM@ with that repository's path: a literal URL, which the
+# --devel short-circuit and the built-commit record both need.
+pkgname=e2e-hello-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="sysforge end-to-end test package (VCS)"
+arch=('x86_64')
+license=('MIT')
+makedepends=('git')
+source=('e2e-hello::git+file://@UPSTREAM@')
+sha256sums=('SKIP')
+
+pkgver() {
+    cd e2e-hello
+    printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+    cd e2e-hello
+    ${CC:-cc} $CPPFLAGS $CFLAGS $LDFLAGS -o e2e-hello-git hello.c
+}
+
+package() {
+    install -Dm755 e2e-hello/e2e-hello-git "$pkgdir/usr/bin/e2e-hello-git"
+}
