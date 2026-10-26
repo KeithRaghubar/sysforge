@@ -339,9 +339,14 @@ def verify_llvm_install(
     return issues
 
 
-def llvm_recovery() -> "stage_sentinel.Recovery":
-    """The canonical pacman reinstall that restores a consistent LLVM set."""
-    return stage_sentinel.Recovery.pacman_sync(_LLVM_VERSION_MATCH_SET)
+def llvm_recovery(extra: "tuple[str, ...]" = ()) -> "stage_sentinel.Recovery":
+    """The canonical pacman reinstall that restores a consistent LLVM set.
+
+    ``extra`` names more members to reinstall from the repos with it, in order
+    after the suite and once each.
+    """
+    return stage_sentinel.Recovery.pacman_sync(
+        dict.fromkeys((*_LLVM_VERSION_MATCH_SET, *extra)))
 
 
 def llvm_recovery_command() -> str:

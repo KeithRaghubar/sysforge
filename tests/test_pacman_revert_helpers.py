@@ -60,3 +60,14 @@ def test_reinstall_repo_pkgs_plain_keeps_safe_conflict_default():
         run.return_value.returncode = 0
         pacman.reinstall_repo_pkgs(["mesa"])
     assert "--ask=4" not in run.call_args[0][0]
+
+
+def test_remove_pkgs_nodeps_skips_dependency_checks():
+    """3.5.0-B146: toolchain rollback drops a member the installed clang still
+    depends on, just before the old clang takes its files back."""
+    with patch("sysforge.primitives.pacman.subprocess.run") as run:
+        run.return_value.returncode = 0
+        pacman.remove_pkgs(["clang-libs"], nodeps=True)
+    argv = run.call_args[0][0]
+    assert argv[:3] == ["sudo", "pacman", "-Rdd"]
+    assert argv[-2:] == ["--", "clang-libs"]

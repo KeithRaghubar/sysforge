@@ -17,6 +17,7 @@ its purpose is the same as the gates' — the suite is installed as a set, and a
 half-installed LLVM is worse than no new LLVM.
 """
 from pathlib import Path
+import subprocess
 
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.stage_sentinel import Recovery, sentinel_scope
@@ -641,13 +642,34 @@ def snapshot_suite(
     return pacman.cached_pkg_files_for(installed)
 
 
-def rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:
+def install_adds(built_map: dict[str, Path], install_set: "set[str]") -> tuple[str, ...]:
+    """The members the install puts on the system that are not installed now.
+
+    The same selection ``profdata.pgo_install`` makes (3.5.0-F2), so a member a
+    selected package depends on counts: the first build after clang 23.1.3-4
+    adds ``clang-libs``, which takes over files the installed clang owns
+    (3.5.0-B146). Sorted; empty when the build left no archives (a dry run).
+    """
+    chosen = profdata.select_install_members(
+        profdata.collect_pgo_packages(built_map), set(install_set))
+    names = {n for p in chosen if (n := pacman.read_pkgname_from_file(p))}
+    return tuple(sorted(n for n in names if pacman.get_installed_version(n) is None))
+
+
+def rollback_to_snapshot(
+    snapshot: dict[str, "Path | None"], *, added: "tuple[str, ...]" = (),
+) -> bool:
     """Reinstall the snapshot's cached packages in one ``pacman -U``.
 
     Returns True when every captured package was reinstalled (live ``/usr`` is
     back to the prior-good set), False when the snapshot is incomplete (a member
     had no cached file) or the ``pacman -U`` itself failed — in which case the
     caller keeps the sentinel set with a recovery command.
+
+    ``added`` (:func:`install_adds`) is removed first, with ``-Rdd`` since the
+    installed clang still depends on it: a member split out of an old package
+    owns files the old package's archive also carries, so ``pacman -U`` alone
+    stops on file conflicts (3.5.0-B146). A failed removal installs nothing.
     """
     files = [p for p in snapshot.values() if p is not None]
     missing = [n for n, p in snapshot.items() if p is None]
@@ -668,26 +690,45 @@ def rollback_to_snapshot(snapshot: dict[str, "Path | None"]) -> bool:
             "prior version to reinstall."
         )
         return False
+    present = [n for n in added if pacman.get_installed_version(n) is not None]
+    if present:
+        _log.warn(f"Removing {', '.join(present)}, which this run added and the "
+                  "prior toolchain does not have")
+        try:
+            pacman.remove_pkgs(present, nodeps=True)
+        except subprocess.CalledProcessError as e:
+            _log.error(f"Could not remove {', '.join(present)} ({e}); "
+                       "not reinstalling the prior toolchain over it.")
+            return False
     _log.warn(f"Rolling back to {len(files)} cached package(s) via pacman -U")
     return pacman.batch_install_pkgs(files)
 
 
-def snapshot_recovery(snapshot: dict[str, "Path | None"]) -> "Recovery":
+def snapshot_recovery(
+    snapshot: dict[str, "Path | None"], *, added: "tuple[str, ...]" = (),
+) -> "Recovery":
     """Recovery stored in the sentinel when rollback can't run cleanly.
 
     Prefers an offline ``pacman -U <cached files>`` when every member is cached;
     otherwise falls back to the online ``pacman -S <suite>``. Stored in the
     sentinel so the next-run recovery prompt has a restore to offer.
+
+    When the install adds members (``added``), one stored command cannot remove
+    them before the downgrade, so it is the online reinstall, naming them too:
+    at the repo's version string a dependency resolve would keep the sysforge
+    copy beside the stock clang (3.5.0-B146).
     """
     files = [p for p in snapshot.values() if p is not None]
-    if files and all(p is not None for p in snapshot.values()):
+    if not added and files and all(p is not None for p in snapshot.values()):
         return Recovery.pacman_upgrade(files)
-    return verify.llvm_recovery()
+    return verify.llvm_recovery(extra=added)
 
 
-def snapshot_recovery_cmd(snapshot: dict[str, "Path | None"]) -> str:
+def snapshot_recovery_cmd(
+    snapshot: dict[str, "Path | None"], *, added: "tuple[str, ...]" = (),
+) -> str:
     """:func:`snapshot_recovery` as a shell line, for messages."""
-    return snapshot_recovery(snapshot).display()
+    return snapshot_recovery(snapshot, added=added).display()
 
 
 def log_toolchain_resolution_summary(

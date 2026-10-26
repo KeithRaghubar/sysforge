@@ -451,6 +451,11 @@ class ToolchainStage(Stage):
                 built_map, all_names, options, tcfg, dry_run=options.dry_run,
             )
 
+            # Members this install adds (clang-libs, the first run after clang
+            # 23.1.3-4): rollback removes them first, and the stored recovery
+            # cannot, so it reinstalls from the repos (3.5.0-B146).
+            added = () if options.dry_run else gates.install_adds(built_map, install_set)
+
             # sudo must be usable before the sentinel goes down: an unanswered
             # prompt means nothing ran, and a sentinel left for it would offer
             # a recovery that replaces the live toolchain (3.5.0-B30).
@@ -477,7 +482,7 @@ class ToolchainStage(Stage):
                 else sentinel_scope(
                     options.state_dir,
                     "toolchain",
-                    recovery=gates.snapshot_recovery(snapshot),
+                    recovery=gates.snapshot_recovery(snapshot, added=added),
                     retry_cmd=retry,
                     compiler=compiler,
                     pgo=pgo_enabled,
@@ -568,7 +573,7 @@ class ToolchainStage(Stage):
                             _log.warn(f"Diagnostic evidence written to: {evidence_path}")
                         _log.warn("Attempting automatic rollback to the prior-good toolchain…")
                         progress.phase("rolling back to the prior toolchain")
-                        if gates.rollback_to_snapshot(snapshot):
+                        if gates.rollback_to_snapshot(snapshot, added=added):
                             # Live /usr restored — the system is whole, so clear
                             # the sentinel and raise (nothing to recover at next run).
                             if sentinel is not None:  # None only under --dry-run
@@ -584,7 +589,7 @@ class ToolchainStage(Stage):
                             "[TOOLCHAIN] Built toolchain failed Gate-3 verification AND "
                             "automatic rollback could not complete. The live toolchain may "
                             "be inconsistent. Stage sentinel left in place; restore with: "
-                            f"{gates.snapshot_recovery_cmd(snapshot)}"
+                            f"{gates.snapshot_recovery_cmd(snapshot, added=added)}"
                         )
                     # Verify passed — safe to wipe the stage2/stage3 prefixes
                     # (PGO only). stage3 held the optimized libLLVM that the

@@ -296,8 +296,11 @@ def _probe_meson() -> ToolchainCheck:
 # (_LLVM_VERSION_MATCH_SET) imports it too. ``spirv-llvm-translator`` (its own
 # version scheme) and ``lib32-*`` (separate multilib lineage, may carry an
 # epoch) are deliberately excluded: they are not pkgver-locked to this set.
+# ``clang-libs`` (libclang-cpp and the builtin headers) was split out of clang in
+# 23.1.3-4, which depends on it at its exact version (3.5.0-B146); on a system
+# from before the split it is simply not installed, which every reader allows.
 LLVM_LOCKSTEP_SUITE: tuple[str, ...] = (
-    "llvm", "llvm-libs", "clang", "lld", "compiler-rt", "polly", "openmp",
+    "llvm", "llvm-libs", "clang", "clang-libs", "lld", "compiler-rt", "polly", "openmp",
 )
 
 

@@ -281,7 +281,8 @@ def test_skew_check_carries_structured_version_rows(monkeypatch):
     """_probe_cc populates `versions` so the renderer, not the probe, formats.
 
     clang/lld lag behind llvm/llvm-libs; every lagging group targets the newest
-    installed pkgver.
+    installed pkgver. clang-libs is pinned to clang's exact version, so it lags
+    with clang (3.5.0-B147).
     """
     monkeypatch.setattr("shutil.which", lambda c: f"/usr/bin/{c}")
 
@@ -289,14 +290,14 @@ def test_skew_check_carries_structured_version_rows(monkeypatch):
         if cmd[:2] == ["clang", "--version"]:
             return _FakeResult(0, "clang version 22.1.5\n", "")
         if cmd[:2] == ["pacman", "-Q"]:
-            ver = "22.1.5-1" if cmd[2] in ("clang", "lld") else "22.1.6-1"
+            ver = "22.1.5-1" if cmd[2] in ("clang", "clang-libs", "lld") else "22.1.6-1"
             return _FakeResult(0, f"{cmd[2]} {ver}\n", "")
         return _FakeResult(0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     c = run_preflight(frozenset({"cc:clang"})).failed[0]
     rows = dict((label, (old, new)) for label, old, new in c.versions)
-    assert rows["clang/lld"] == ("22.1.5", "22.1.6")
+    assert rows["clang/clang-libs/lld"] == ("22.1.5", "22.1.6")
     # The newest group is its own target.
     assert rows["compiler-rt/llvm/llvm-libs/openmp/polly"] == ("22.1.6", "22.1.6")
 

@@ -56,3 +56,22 @@ jobs:
 
       - name: End-to-end scenarios
         run: make e2e E2E_HERE=1
+
+  # Tests against the live Arch mirrors (3.5.0-B146): a canary for a repo
+  # change the suite's stubs cannot see, such as clang 23.1.3-4 splitting out
+  # clang-libs. In CI_JOBS, like e2e. llvm-libs brings the stock compiler's
+  # runtime libraries, and is the host copy the test checks it does not load.
+  live:
+    runs-on: ubuntu-latest
+    container: docker.io/library/archlinux:base-devel
+    steps:
+      - name: Install git, make and llvm-libs
+        run: pacman -Syu --noconfirm --needed git make llvm-libs
+
+      - uses: actions/checkout@v4
+
+      - name: Dev dependencies
+        run: make dev-deps-core PACMAN_FLAGS=--noconfirm
+
+      - name: Live mirror tests
+        run: make test-live

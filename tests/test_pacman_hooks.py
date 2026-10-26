@@ -161,3 +161,16 @@ def test_helper_refuses_path_kind(tmp_path):
     d = tmp_path / "sentinels"
     assert _run_helper(d, kind="../escape").returncode == 0
     assert not (tmp_path / "escape").exists()
+
+
+def test_toolchain_hook_targets_every_lockstep_suite_member():
+    """3.5.0-B147: a hand-kept Target list missed clang-libs when clang 23.1.3-4
+    split it out. The hook watches every member of the suite that moves
+    together, so a new member joins it from the one list."""
+    from sysforge.primitives.toolchain_preflight import LLVM_LOCKSTEP_SUITE
+    hook = next(a for a in pacman_hooks.shipped_sources()
+                if a.name == "sysforge-toolchain.hook")
+    text = hook.content.decode() if isinstance(hook.content, bytes) else hook.content
+    targets = {line.split("=", 1)[1].strip() for line in text.splitlines()
+               if line.startswith("Target")}
+    assert set(LLVM_LOCKSTEP_SUITE) <= targets, set(LLVM_LOCKSTEP_SUITE) - targets

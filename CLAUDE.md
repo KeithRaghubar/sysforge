@@ -102,6 +102,10 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   `verbs/registry.py` `COMMANDS`, directly or via its namespace's `VerbGroup`. §CLI Verb Framework.
 - **Dual-toolchain test parity**: logic branching on resolved compiler (gcc vs llvm) ships both a
   gcc-path and an llvm-path test in the same change.
+- **A fix whose defect crossed a boundary the unit suite stubs also ships a test in that boundary's
+  tier**: root/user, cross-command state or a real terminal → `make e2e`; what the live repos hold
+  (a package split, rename, file move) → `make test-live`. The PR names the tier, or says why unit
+  tests suffice. Rubric: §Release Process "Which tier a test belongs in".
 - **Log levels follow the rubric in `docs/design/12-logging.md`** (§Logging; standards row 25): `ui()`
   is the answer the user asked for, `warn()`/`info()`/`debug()` are narration gated behind `-v`/`-vv`/`-vvv`
   — `ui()` is not a "always show this" escape hatch. A new pipeline stage requests the

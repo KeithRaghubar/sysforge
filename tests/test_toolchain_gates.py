@@ -236,3 +236,104 @@ def test_empty_snapshot_rollback_says_why(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "snapshot is empty" in err
     assert "none of the toolchain packages was installed before this run" in err
+
+
+# --- a member the install adds (clang-libs, 3.5.0-B146) ---------------------
+
+
+def _added_setup(tmp_path, monkeypatch, installed):
+    """llvm's build produced clang, clang-libs and llvm-libs; clang depends on
+    clang-libs. ``installed`` is what pacman reports now."""
+    from sysforge.pipeline.stages.toolchain import gates, profdata
+    from sysforge.primitives import pacman
+    files = {n: tmp_path / f"{n}-23.1.3-4-x86_64.pkg.tar.zst"
+             for n in ("clang", "clang-libs", "llvm-libs", "wasi-libc++")}
+    monkeypatch.setattr(profdata, "collect_pgo_packages", lambda m: list(files.values()))
+    monkeypatch.setattr(pacman, "read_pkgname_from_file",
+                        lambda p: next(n for n, f in files.items() if f == p))
+    deps = {"clang": {"clang-libs", "llvm-libs"}}
+    monkeypatch.setattr(pacman, "read_pkginfo_relations", lambda p: {
+        "depend": deps.get(pacman.read_pkgname_from_file(p), set()), "provides": set()})
+    monkeypatch.setattr(pacman, "get_installed_version", installed.get)
+    return gates
+
+
+def test_install_adds_names_the_members_not_installed_yet(tmp_path, monkeypatch):
+    gates = _added_setup(tmp_path, monkeypatch,
+                         {"clang": "23.1.3-3", "llvm-libs": "23.1.3-3"})
+    built = {"clang": tmp_path / "llvm" / "PKGBUILD"}
+    assert gates.install_adds(built, {"clang", "llvm-libs"}) == ("clang-libs",)
+
+
+def test_install_adds_nothing_once_the_member_is_installed(tmp_path, monkeypatch):
+    gates = _added_setup(tmp_path, monkeypatch, {
+        "clang": "23.1.3-4", "clang-libs": "23.1.3-4", "llvm-libs": "23.1.3-4"})
+    built = {"clang": tmp_path / "llvm" / "PKGBUILD"}
+    assert gates.install_adds(built, {"clang", "clang-libs", "llvm-libs"}) == ()
+
+
+def test_rollback_removes_an_added_member_before_reinstalling(tmp_path, monkeypatch):
+    """The cached clang 23.1.3-3 owns libclang-cpp and the builtin headers,
+    which the installed clang-libs now owns: pacman -U alone hits file
+    conflicts, so the member the install added goes first."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import pacman
+    calls = []
+    monkeypatch.setattr(pacman, "get_installed_version", {"clang-libs": "23.1.3-4"}.get)
+    monkeypatch.setattr(pacman, "remove_pkgs",
+                        lambda names, nodeps=False: calls.append(("remove", names, nodeps)))
+    monkeypatch.setattr(pacman, "batch_install_pkgs",
+                        lambda files: calls.append(("install", files)) or True)
+    snap = {"clang": tmp_path / "clang-23.1.3-3.pkg.tar.zst"}
+    assert gates.rollback_to_snapshot(snap, added=("clang-libs",)) is True
+    assert calls == [("remove", ["clang-libs"], True),
+                     ("install", [tmp_path / "clang-23.1.3-3.pkg.tar.zst"])]
+
+
+def test_rollback_skips_an_added_member_that_is_not_installed(tmp_path, monkeypatch):
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import pacman
+    removed = []
+    monkeypatch.setattr(pacman, "get_installed_version", {}.get)
+    monkeypatch.setattr(pacman, "remove_pkgs",
+                        lambda names, nodeps=False: removed.append(names))
+    monkeypatch.setattr(pacman, "batch_install_pkgs", lambda files: True)
+    assert gates.rollback_to_snapshot({"clang": tmp_path / "c.pkg.tar.zst"},
+                                      added=("clang-libs",)) is True
+    assert removed == []
+
+
+def test_rollback_stops_when_the_added_member_cannot_be_removed(tmp_path, monkeypatch):
+    import subprocess
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import pacman
+    installs = []
+
+    def remove(names, nodeps=False):
+        raise subprocess.CalledProcessError(1, ["pacman", "-Rdd"])
+
+    monkeypatch.setattr(pacman, "get_installed_version", {"clang-libs": "23.1.3-4"}.get)
+    monkeypatch.setattr(pacman, "remove_pkgs", remove)
+    monkeypatch.setattr(pacman, "batch_install_pkgs", lambda files: installs.append(files))
+    assert gates.rollback_to_snapshot({"clang": tmp_path / "c.pkg.tar.zst"},
+                                      added=("clang-libs",)) is False
+    assert installs == []
+
+
+def test_recovery_goes_online_when_the_install_adds_a_member(tmp_path):
+    """One stored command cannot remove clang-libs and downgrade clang, so the
+    recovery reinstalls the repo suite, clang-libs named explicitly: at the
+    same version string a dependency resolve would keep the sysforge copy."""
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import stage_sentinel
+    snap = {"clang": tmp_path / "clang-23.1.3-3.pkg.tar.zst"}
+    rec = gates.snapshot_recovery(snap, added=("clang-libs",))
+    assert rec.kind == stage_sentinel.RECOVERY_PACMAN_SYNC
+    assert {"clang", "clang-libs", "llvm-libs"} <= set(rec.args)
+
+
+def test_recovery_stays_offline_when_nothing_is_added(tmp_path):
+    from sysforge.pipeline.stages.toolchain import gates
+    from sysforge.primitives import stage_sentinel
+    snap = {"clang": tmp_path / "clang-23.1.3-3.pkg.tar.zst"}
+    assert gates.snapshot_recovery(snap).kind == stage_sentinel.RECOVERY_PACMAN_UPGRADE
