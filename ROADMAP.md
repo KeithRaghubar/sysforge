@@ -119,12 +119,40 @@ canonical ordering.
 | `3.5.0-DEV29` | the build sandbox end to end, in the VM tier | med | large | patch |
 | `3.5.0-DEV33` | an end-to-end scenario for unattended runs | low | small | patch |
 | `3.5.0-DEV34` | an end-to-end scenario for the --frozen and --thaw flags | low | small | patch |
-| `3.5.0-Q1` | should sysforge measure a kernel built with its toolchain against one built with stock clang? | low | small | patch |
 | `3.5.0-DEV26` | a release-time run of the real toolchain → kernel chain on real hardware | low | medium | patch |
 | `3.5.0-DEV32` | an end-to-end scenario for package PGO (build --pgo) | low | medium | patch |
+| `3.5.0-F24` | bench package <pkg>: time an installed package's build with the stock and the sysforge clang | low | medium | minor |
 <!-- END roadmap-table -->
 
 ### Features
+
+- **`3.5.0-F24` — `bench package <pkg>`: time an installed package's build with the stock and the
+  sysforge clang.** `bench toolchain` times the compiler on a fixed workload; a user who builds the
+  toolchain to get faster package builds has no answer for the package they care about (the
+  kernel, mesa). A new `bench` target builds one installed package's `build()` with its **resolved
+  profile**, twice per round, changing only the compiler: the stock `clang` + `llvm-libs`
+  (+ `clang-libs`) from `bench_core._fetch_stock`, against the installed sysforge build, interleaved
+  ABBA through `run_interleaved`, recorded in `bench.toml` keyed by package. Same preconditions as
+  `bench toolchain` (a sysforge-built clang whose `pkgver-pkgrel` matches the stock one, so every
+  profile flag, `-fprofile-use` included, means the same to both); a package whose profile resolves
+  to gcc exits 2, since there is no clang to compare. Design points the spec has to settle: the
+  source is extracted and `prepare()`d once into a pristine copy that each timed run starts from
+  (untimed copy), since a second `build()` in a built tree is incremental; only `build()` is timed
+  (`--noarchive --nocheck`, no download or compression); ccache and `RUSTC_WRAPPER` are off for both
+  sides; the stock compiler gets its `LD_LIBRARY_PATH` through a per-compiler wrapper, not the build
+  env, so cmake, meson and rustc keep loading the host's libraries; under `sandbox_builds` the stock
+  prefix is bind-mounted read-only into the chroot (or the target refuses, in a first cut); the
+  default `--runs` is lower than `bench toolchain`'s, since each run is a full build. Unlike
+  `bench toolchain` it runs the PKGBUILD's `build()`, so it carries `sysforge build`'s trust, though
+  it installs nothing. Kernel-mode packages (`build_mode = "kernel"`) are in scope and build with
+  the kernel stage's flags. A package where clang is not the hot path (Rust, Go) reports its ~1.00x
+  as measured. Out of scope: whether the built package *runs* faster, which needs a reboot or a
+  workload of the user's choosing (as `kernel-bench.sh` is today). No pass/fail threshold, since a
+  cutoff tuned on one machine means nothing on another. Promoted from `3.5.0-Q1`.
+  *Priority: low · Effort: medium · Bump: minor* — a new verb that reuses the stock fetch, harness
+  and record; the pristine-tree reset and wrapper are the new work.
+
+---
 
 ### Bugs
 
@@ -244,18 +272,3 @@ canonical ordering.
 ---
 
 ### Open questions
-
-- **`3.5.0-Q1` — should sysforge measure a kernel built with its toolchain against one built with
-  stock clang?** `bench toolchain` times the compiler itself; a user who builds the toolchain to get
-  a faster kernel has no sysforge answer to whether the kernel got faster, or whether its build did.
-  The two readings are different features. Build time (the kernel compiled by each clang, interleaved
-  as the toolchain bench does) fits `bench`'s model: read-only, the stock clang unpacked to a temp
-  dir. Runtime (the kernel *running* faster) needs a reboot into each kernel and a workload, which is
-  outside anything sysforge does unattended. Either way it is a measurement with no pass/fail
-  threshold (a cutoff tuned on one machine means nothing on another), so it is not a test; the
-  provenance checks belong to `DEV26`. Resolve by choosing build time, runtime, or neither
-  (a measurement left to the user, as `kernel-bench.sh` is today).
-  *Priority: low · Effort: small · Bump: patch* — a decision, not an implementation; the effort is the
-  spike that informs it.
-
----
