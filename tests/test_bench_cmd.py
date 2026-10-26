@@ -35,9 +35,9 @@ def happy(tmp_path, monkeypatch):
              "built_at": "2026-10-10T08:00:00Z"}
             if env["build_mode"] else None))
     monkeypatch.setattr(bench_core, "load_tcfg", lambda: None)
-    monkeypatch.setattr(sp, "resolve", lambda names, dbpath=None: [
+    monkeypatch.setattr(sp, "resolve", lambda names, optional=(), dbpath=None: [
         sp.StockPkg(n, env["stock"], "extra", f"{n}.pkg.tar.zst", "https://m", "x")
-        for n in names])
+        for n in [*names, *optional]])
     monkeypatch.setattr(sp, "obtain",
                         lambda pkg, workdir, offline: Path(workdir) / pkg.filename)
     monkeypatch.setattr(sp, "extract", lambda archives, prefix, **kw: None)
@@ -179,6 +179,7 @@ def test_phase_line_names_each_step_then_clears_for_the_report(tmp_path, happy, 
     assert seen == [
         "bench toolchain: fetching stock clang 23.1.1-1",
         "bench toolchain: fetching stock llvm-libs 23.1.1-1",
+        "bench toolchain: fetching stock clang-libs 23.1.1-1",
         "bench toolchain: unpacking stock clang",
         "bench toolchain: warm-up",
         "bench toolchain: round 1/2",
@@ -210,10 +211,10 @@ def _stale_db(monkeypatch, env, *, sync_ok=True):
     sync names 23.1.3-3. Returns the list of private_sync calls."""
     synced = []
 
-    def resolve(names, dbpath=None):
+    def resolve(names, optional=(), dbpath=None):
         ver = "23.1.3-3" if dbpath else "23.1.3-2"
         return [sp.StockPkg(n, ver, "extra", f"{n}-{ver}.pkg.tar.zst", "https://m", "x")
-                for n in names]
+                for n in [*names, *optional]]
 
     def obtain(pkg, workdir, offline):
         if pkg.version == "23.1.3-2":
@@ -277,10 +278,10 @@ def test_stale_attempt_drops_its_downloads_before_refreshing(tmp_path, happy, mo
     on the tmpfs next to the fresh one."""
     left = []
 
-    def resolve(names, dbpath=None):
+    def resolve(names, optional=(), dbpath=None):
         ver = "23.1.3-3" if dbpath else "23.1.3-2"
         return [sp.StockPkg(n, ver, "extra", f"{n}-{ver}.pkg.tar.zst", "https://m", "x")
-                for n in names]
+                for n in [*names, *optional]]
 
     def obtain(pkg, workdir, offline):
         if pkg.name == "llvm-libs" and pkg.version == "23.1.3-2":
@@ -298,3 +299,36 @@ def test_stale_attempt_drops_its_downloads_before_refreshing(tmp_path, happy, mo
     monkeypatch.setattr(sp, "private_sync", private_sync)
     assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
     assert left == []
+
+
+# --- clang 23.1.3-4 split out clang-libs (3.5.0-B146) ------------------------
+
+
+def test_stock_fetch_asks_for_clang_libs_on_both_sync_paths(tmp_path, happy, monkeypatch):
+    """clang-libs carries the resource dir and libclang-cpp from 23.1.3-4; it is
+    optional so a sync DB from before the split still benches."""
+    synced = _stale_db(monkeypatch, happy)
+    asked = []
+    stale_resolve = sp.resolve
+
+    def resolve(names, optional=(), dbpath=None):
+        asked.append((tuple(names), tuple(optional), dbpath is not None))
+        return stale_resolve(names, optional=optional, dbpath=dbpath)
+
+    monkeypatch.setattr(sp, "resolve", resolve)
+    assert bench_cmd.cmd_bench_toolchain(_args(tmp_path)) == 0
+    assert synced
+    assert asked == [(("clang", "llvm-libs"), ("clang-libs",), False),
+                     (("clang", "llvm-libs"), ("clang-libs",), True)]
+
+
+def test_probe_stock_refuses_an_incomplete_prefix_before_running_it(tmp_path, monkeypatch):
+    """Missing libclang-cpp would load the host's (sysforge) copy and time the
+    sysforge frontend as "stock": refuse before the binary ever runs."""
+    ran = []
+    monkeypatch.setattr(bench_core.run, "probe", lambda argv, **kw: ran.append(argv))
+    (tmp_path / "usr/bin").mkdir(parents=True)
+    (tmp_path / "usr/bin/clang").write_bytes(b"")
+    with pytest.raises(sp.StockUnavailable, match="libclang-cpp"):
+        bench_core._probe_stock(tmp_path)
+    assert ran == []

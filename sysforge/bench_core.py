@@ -35,6 +35,9 @@ _log = log.get_logger("BENCH")
 
 TARGET = "toolchain"
 _STOCK_PKGS = ("clang", "llvm-libs")
+# Split out of clang in 23.1.3-4 (resource dir, libclang-cpp); a sync DB from
+# before the split has no such package (3.5.0-B146).
+_STOCK_OPTIONAL = ("clang-libs",)
 _INSTALLED_CC = "/usr/bin/clang"
 _INSTALLED_CXX = "/usr/bin/clang++"
 DEFAULT_RUNS = 5
@@ -121,6 +124,7 @@ def _stock_env(prefix: Path) -> dict[str, str]:
 
 
 def _probe_stock(prefix: Path) -> None:
+    stock_pkg.check_complete(prefix)
     res = run.probe([str(prefix / "usr/bin/clang"), "--version"], env=_stock_env(prefix))
     if res.returncode != 0:
         raise stock_pkg.StockUnavailable(
@@ -202,7 +206,7 @@ def _fetch_stock(tmp: Path, offline: bool):
     repo: retry once against a private fresh copy. ``--offline`` never gets
     here, because an offline miss is not a download failure.
     """
-    pkgs = stock_pkg.resolve(list(_STOCK_PKGS))
+    pkgs = stock_pkg.resolve(list(_STOCK_PKGS), optional=list(_STOCK_OPTIONAL))
     try:
         return pkgs, _obtain_all(pkgs, tmp, offline)
     except stock_pkg.StockDownloadFailed as exc:
@@ -214,7 +218,8 @@ def _fetch_stock(tmp: Path, offline: bool):
             raise stock_pkg.StockUnavailable(
                 f"{exc}; {sync_exc}. The sync database is probably stale: "
                 "run `pacman -Syu`, then bench again") from exc
-        pkgs = stock_pkg.resolve(list(_STOCK_PKGS), dbpath=dbpath)
+        pkgs = stock_pkg.resolve(list(_STOCK_PKGS), optional=list(_STOCK_OPTIONAL),
+                                 dbpath=dbpath)
         return pkgs, _obtain_all(pkgs, tmp, offline)
 
 

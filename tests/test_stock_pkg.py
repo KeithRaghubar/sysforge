@@ -350,3 +350,72 @@ def test_local_db_follows_pacman_conf_dbpath(monkeypatch):
 def test_local_db_defaults_when_pacman_conf_fails(monkeypatch):
     monkeypatch.setattr(sp.run, "probe", _probe("", rc=1))
     assert sp._local_db() == Path("/var/lib/pacman/local")
+
+
+# --- clang 23.1.3-4 split out clang-libs (3.5.0-B146) ------------------------
+
+
+def _sync(rows):
+    """pacman -Sp over a sync DB holding *rows* ({name: repo}): one unknown
+    target fails the whole call and prints nothing, as pacman does."""
+    def probe(argv, **kw):
+        names = [a for a in argv[argv.index(sp._FORMAT) + 1:] if not a.startswith("-")]
+        unknown = [n for n in names if n not in rows]
+        if unknown:
+            return SimpleNamespace(returncode=1, stdout="",
+                                   stderr=f"error: target not found: {unknown[0]}")
+        out = "".join(f"{n}|23.1.3-4|{rows[n]}|{n}.pkg.tar.zst|https://m/{n}|aa\n"
+                      for n in names)
+        return SimpleNamespace(returncode=0, stdout=out, stderr="")
+    return probe
+
+
+def test_resolve_includes_an_optional_package_the_repo_carries(monkeypatch):
+    monkeypatch.setattr(sp.run, "probe", _sync(
+        {"clang": "extra", "llvm-libs": "extra", "clang-libs": "extra"}))
+    pkgs = sp.resolve(["clang", "llvm-libs"], optional=["clang-libs"])
+    assert [p.name for p in pkgs] == ["clang", "llvm-libs", "clang-libs"]
+
+
+def test_resolve_drops_an_optional_package_the_repo_lacks(monkeypatch):
+    """A sync DB from before the split has no clang-libs: the required
+    packages must still resolve, not fail with the optional one."""
+    monkeypatch.setattr(sp.run, "probe", _sync({"clang": "extra", "llvm-libs": "extra"}))
+    pkgs = sp.resolve(["clang", "llvm-libs"], optional=["clang-libs"])
+    assert [p.name for p in pkgs] == ["clang", "llvm-libs"]
+
+
+def test_resolve_refuses_an_optional_package_from_the_local_repo(monkeypatch):
+    monkeypatch.setattr(sp.run, "probe", _sync(
+        {"clang": "extra", "llvm-libs": "extra", "clang-libs": "sysforge-local"}))
+    with pytest.raises(sp.StockUnavailable, match="clang-libs resolves to sysforge-local"):
+        sp.resolve(["clang", "llvm-libs"], optional=["clang-libs"])
+
+
+def _prefix(tmp_path, *files):
+    for f in files:
+        p = tmp_path / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+    return tmp_path
+
+
+_COMPLETE = ("usr/bin/clang", "usr/lib/libclang-cpp.so.23.1", "usr/lib/libLLVM.so.23.1",
+             "usr/lib/clang/23/include/stddef.h")
+
+
+def test_check_complete_accepts_a_full_prefix(tmp_path):
+    sp.check_complete(_prefix(tmp_path, *_COMPLETE))
+
+
+@pytest.mark.parametrize("missing, named", [
+    ("usr/lib/libclang-cpp.so.23.1", "libclang-cpp"),
+    ("usr/lib/libLLVM.so.23.1", "libLLVM"),
+    ("usr/lib/clang/23/include/stddef.h", "builtin headers"),
+])
+def test_check_complete_names_what_is_missing(tmp_path, missing, named):
+    """A part missing from the prefix would be loaded from the host (the
+    sysforge build) or not found at all: fail before timing anything."""
+    prefix = _prefix(tmp_path, *(f for f in _COMPLETE if f != missing))
+    with pytest.raises(sp.StockUnavailable, match=named):
+        sp.check_complete(prefix)

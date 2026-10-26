@@ -49,7 +49,8 @@ _FORMAT = "%n|%v|%r|%f|%l|%h"
 _TIMEOUT_S = 60
 _DEFAULT_DBPATH = Path("/var/lib/pacman")
 # What a stock clang needs to compile -O2 -c: the driver and its symlinks, the
-# two shared libraries it loads, and the resource dir (builtin headers).
+# two shared libraries it loads, and the resource dir (builtin headers). Globs,
+# so a file moving between packages is still found (``check_complete``).
 EXTRACT_MEMBERS = ("usr/bin/clang", "usr/bin/clang++", "usr/bin/clang-[0-9]*",
                    "usr/lib/libclang-cpp.so*",
                    "usr/lib/libLLVM*.so*", "usr/lib/clang")
@@ -73,13 +74,10 @@ class StockPkg:
     sha256: str
 
 
-def resolve(names: Sequence[str], *, dbpath: Path | None = None) -> list[StockPkg]:
-    """The sync-DB build of each of *names*, in order. Raises ``StockUnavailable``.
+def _lookup(names: Sequence[str], dbpath: Path | None) -> tuple[dict[str, StockPkg], str]:
+    """``pacman -Sp -dd`` rows for *names*, and pacman's stderr.
 
-    ``-dd`` skips dependency resolution: the bench needs the named archives
-    only, and resolving against the installed system lets an unrelated conflict
-    or versioned dependency fail the lookup. Only the requested names are kept.
-    *dbpath* reads a ``private_sync`` copy instead of the system sync DB.
+    One unknown target fails the whole call with no rows at all.
     """
     argv = ["pacman", "-Sp", "-dd", "--print-format", _FORMAT]
     if dbpath is not None:
@@ -90,15 +88,38 @@ def resolve(names: Sequence[str], *, dbpath: Path | None = None) -> list[StockPk
         parts = line.strip().split("|")
         if len(parts) == 6:
             rows[parts[0]] = StockPkg(*parts)
+    return rows, (res.stderr or "").strip()
+
+
+def resolve(names: Sequence[str], *, optional: Sequence[str] = (),
+            dbpath: Path | None = None) -> list[StockPkg]:
+    """The sync-DB build of each of *names*, then of each *optional* name the
+    repo carries, in order. Raises ``StockUnavailable``.
+
+    ``-dd`` skips dependency resolution: the bench needs the named archives
+    only, and resolving against the installed system lets an unrelated conflict
+    or versioned dependency fail the lookup. Only the requested names are kept.
+    *optional* names a package a repo split may or may not have produced yet
+    (3.5.0-B146); each is looked up on its own, since an unknown target would
+    fail the required lookup too. *dbpath* reads a ``private_sync`` copy
+    instead of the system sync DB.
+    """
+    rows, stderr = _lookup(names, dbpath)
     missing = [n for n in names if n not in rows]
     if missing:
-        detail = (res.stderr or "").strip() or "not in any sync database"
+        detail = stderr or "not in any sync database"
         raise StockUnavailable(f"no stock repo carries {', '.join(missing)} ({detail})")
-    local = [n for n in names if rows[n].repo == REPO_NAME]
+    found = list(names)
+    for name in optional:
+        extra, _ = _lookup([name], dbpath)
+        if name in extra:
+            rows[name] = extra[name]
+            found.append(name)
+    local = [n for n in found if rows[n].repo == REPO_NAME]
     if local:
         raise StockUnavailable(
             f"{', '.join(local)} resolves to {REPO_NAME}, not a stock repo")
-    return [rows[n] for n in names]
+    return [rows[n] for n in found]
 
 
 def _sha256(path: Path) -> str:
@@ -223,7 +244,8 @@ def _members(archive: Path) -> list[str]:
     """The :data:`EXTRACT_MEMBERS` patterns present in *archive*.
 
     bsdtar fails on a pattern an archive lacks, and each package carries only
-    part of the set (``libLLVM`` is in ``llvm-libs``, the rest in ``clang``).
+    part of the set (``libLLVM`` is in ``llvm-libs``; from clang 23.1.3-4 the
+    resource dir and ``libclang-cpp`` are in ``clang-libs``, the driver in ``clang``).
     """
     res = run.probe(["bsdtar", "-tf", str(archive)])
     if res.returncode != 0:
@@ -250,3 +272,25 @@ def extract(archives: Sequence[Path], prefix: Path, *,
                     f"could not extract {archive}: {(res.stderr or '').strip()}")
         if downloaded_in is not None and Path(archive).parent == Path(downloaded_in):
             Path(archive).unlink(missing_ok=True)
+
+
+# What the extracted prefix must hold, as (glob under the prefix, what it is).
+# A library missing here is not an error to the loader: it falls back to the
+# host's copy, which is the sysforge build (3.5.0-B146).
+_REQUIRED_PARTS = (("usr/lib/libclang-cpp.so*", "libclang-cpp"),
+                   ("usr/lib/libLLVM*.so*", "libLLVM"),
+                   ("usr/lib/clang/*/include/stddef.h", "builtin headers"))
+
+
+def check_complete(prefix: Path) -> None:
+    """Raise ``StockUnavailable`` naming each part missing from *prefix*.
+
+    The stock packages can move files between them on a repo split (clang
+    23.1.3-4 moved the resource dir and ``libclang-cpp`` to ``clang-libs``).
+    """
+    missing = [what for pattern, what in _REQUIRED_PARTS
+               if not any(Path(prefix).glob(pattern))]
+    if missing:
+        raise StockUnavailable(
+            f"the stock packages lack {', '.join(missing)}: the repo may have "
+            "split them into a package the bench does not fetch")
