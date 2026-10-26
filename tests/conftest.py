@@ -40,7 +40,24 @@ os.environ.setdefault("SYSFORGE_PACMAN_NO_PYALPM", "1")
 
 # Show all log messages in tests so assertions against log output work.
 import sysforge.log as _sf_log
+
 _sf_log.set_verbosity(2)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip ``network`` tests unless ``SYSFORGE_LIVE_TESTS=1`` (3.5.0-B146).
+
+    They read the live Arch mirrors, so ``make test`` and the CI gates stay
+    offline; ``make test-live`` (its own CI job) sets the variable. An
+    environment switch rather than ``-m`` in ``addopts``: tools/ci.sh runs the
+    suite with ``-o addopts=``, which would drop a marker filter.
+    """
+    if os.environ.get("SYSFORGE_LIVE_TESTS") == "1":
+        return
+    skip = pytest.mark.skip(reason="live mirror test: run with `make test-live`")
+    for item in items:
+        if item.get_closest_marker("network"):
+            item.add_marker(skip)
 
 
 REPO_ROOT = TESTS_DIR.parent

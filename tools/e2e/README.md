@@ -59,6 +59,10 @@ clone).
 `pkgs/tree` is a stand-in named after a repo package, which puts `build` on its repo opt-in path
 without fetching Arch's packaging repo.
 
+A scenario can't catch a change in what the live repos contain, because `pkgs/` stands in for
+them. That is the live-mirror tier's job (`make test-live`, `tests/test_live_stock_toolchain.py`).
+DESIGN.md §Release Process has the rubric for which tier a test belongs in.
+
 ## Coverage
 
 Every command in `tests/data/surface.json` is either run by a scenario or listed in

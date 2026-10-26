@@ -411,3 +411,24 @@ def test_verify_llvm_install_compiles_and_links_with_lld():
         issues = verify_llvm_install()
     assert any("-fuse-ld=lld" in c for c in seen)
     assert any("clang compile and lld link" in i for i in issues)
+
+
+def test_verify_llvm_install_flags_a_lagging_clang_libs():
+    """3.5.0-B146: clang depends on clang-libs at its exact version, and
+    clang-libs holds libclang-cpp: a clang-libs left behind is suite skew."""
+    from sysforge.pipeline.stages.toolchain import verify_llvm_install
+
+    versions = {"llvm": "23.1.4-1", "llvm-libs": "23.1.4-1", "clang": "23.1.4-1",
+                "clang-libs": "23.1.3-4", "lld": "23.1.4-1", "compiler-rt": "23.1.4-1"}
+    pacman_output = "\n".join(f"{n} {v}" for n, v in versions.items())
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "pacman":
+            return MagicMock(returncode=0, stdout=pacman_output, stderr="")
+        if cmd[0] == "llvm-config":
+            return MagicMock(returncode=0, stdout="X86 AMDGPU NVPTX\n", stderr="")
+        return MagicMock(returncode=0, stdout="ok", stderr="")
+
+    with patch("sysforge.primitives.run.capture", side_effect=fake_run):
+        issues = verify_llvm_install(expected_targets=["X86"])
+    assert any("clang-libs" in i for i in issues), issues

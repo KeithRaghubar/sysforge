@@ -47,6 +47,7 @@ pythonpath = ["."]
 addopts = "-v"
 markers = [
     "host_pacman: may run the real pacman (tests of the query functions); exempts the 3.5.0-DEV4 fence",
+    "network: reads the live Arch mirrors; skipped unless SYSFORGE_LIVE_TESTS=1 (`make test-live`)",
 ]
 
 [tool.pyright]

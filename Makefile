@@ -1,4 +1,4 @@
-.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif readme-preview \
+.PHONY: all help surface check-surface install-hooks dev venv build install dev-install dev-uninstall clean distclean test test-x test-live lint typecheck coverage coverage-ratchet coverage-ratchet-update man demo-gif readme-preview \
         dev-deps dev-deps-core dev-deps-pkg dev-deps-container dev-deps-release dev-deps-docs dev-deps-list \
         lint-py lint-sh \
         bench-completions check-shipped check-personal check-standards check-bump check-standards-at next-id next-bump design check-design pre-release print-gates audit \
@@ -178,6 +178,12 @@ test: ## Run the full suite (ARGS= extra pytest args)
 
 test-x: ## Run the suite, stop on first failure
 	uv run --no-sync --with pytest --with tomlkit pytest -x $(ARGS)
+
+# Tests that read the live Arch mirrors (3.5.0-B146), marked `network` and
+# skipped by `make test`: a canary for repo changes the suite's stubs cannot
+# see, such as a package split. CI runs it as a job of its own (CI_JOBS).
+test-live: ## Run the live-mirror tests (downloads the stock toolchain packages)
+	SYSFORGE_LIVE_TESTS=1 uv run --no-sync --with pytest --with tomlkit pytest -m network $(ARGS)
 
 # Both linters. Shell is not a second-class language here: 12 of the repo's
 # scripts are the test/release tooling, where a quoting bug fails a release or
@@ -378,7 +384,7 @@ sync-config: ## Merge new shipped defaults into the live config dir
 # runs each in a job of its own (`make <job>` in .github/workflows/ci.yml), not
 # as a gate of tools/ci.sh (3.5.0-DEV21).
 GATES := lint typecheck test check-shipped check-personal check-design check-roadmap-table check-standards check-surface
-CI_JOBS := e2e
+CI_JOBS := e2e test-live
 
 pre-release: $(GATES) $(CI_JOBS) ## Composite gate: lint, types, tests, all checks, end-to-end tier
 

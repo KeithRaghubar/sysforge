@@ -16,6 +16,7 @@ make design roadmap-table       # 2. regenerate, then commit anything that moved
 make ci-local                   # 3. every static gate + full suite, clean container
 make coverage-ratchet audit     # 3. the two checks no gate runs
 make e2e                                                                     # 4a
+make test-live                                                               # 4a
 make vm-pkg-stable && make container-smoke && make container-smoke-cachyos   # 4a
 make vm-snapshot && make vm-test && make vm-stop                             # 4b (+ git flavor)
 # 5. /release-notes skill
@@ -72,6 +73,7 @@ In more detail:
 | `typecheck` (pyright) | yes | yes | no | yes |
 | full test suite | yes (`test`) | yes (`test`) | yes (`coverage`) | no |
 | end-to-end tier (`e2e`) | yes | no (its own CI job) | no | no |
+| live-mirror tier (`test-live`) | yes | no (its own CI job) | no | no |
 | `check-shipped` (includes version markers, completions) | yes | yes | subset | yes |
 | `check-personal`, `check-design`, `check-roadmap-table`, `check-standards` | yes | yes | no | yes |
 | clean environment (not your workstation) | no | yes | no | no |
@@ -156,6 +158,16 @@ make e2e                        # tools/e2e/README.md
 ```
 
 - [ ] `make e2e` exits 0
+
+Then the live-mirror tier: the stock toolchain the bench compares against, fetched from the repos
+as they are today, so a repo-side change such as a package split shows up before users hit it.
+CI runs it in a `live` job; run it here for the release commit.
+
+```bash
+make test-live                  # tests/test_live_stock_toolchain.py
+```
+
+- [ ] `make test-live` exits 0
 
 The smokes then check the packaging itself.
 

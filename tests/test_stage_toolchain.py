@@ -1543,3 +1543,49 @@ def test_healable_drift_line_names_the_manual_rebuild_when_nothing_is_queued():
     assert "queued consumer rebuild" in healable_drift_line("m", queued=True)
     off = healable_drift_line("m", queued=False)
     assert "no consumer rebuild is queued" in off and "sysforge build" in off
+
+
+def _gate3_fails_with_added_member(tmp_path, monkeypatch, *, restore_ok):
+    """Gate 3 fails after an install that added clang-libs (3.5.0-B146)."""
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    cached = tmp_path / "cache" / "clang-23.1.3-3-x86_64.pkg.tar.zst"
+    cached.parent.mkdir(parents=True)
+    cached.touch()
+    monkeypatch.setattr("sysforge.primitives.pacman.cached_pkg_files_for",
+                        lambda names: {n: cached for n in names})
+    monkeypatch.setattr("sysforge.primitives.pacman.get_installed_version",
+                        lambda name: "1")
+    monkeypatch.setattr("sysforge.pipeline.stages.toolchain.gates.install_adds",
+                        lambda built_map, install_set: ("clang-libs",))
+    calls = []
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.passes.makepkg_run"), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch("sysforge.pipeline.stages.toolchain.profdata.pgo_install"), \
+         patch("sysforge.pipeline.stages.toolchain.verify.verify_llvm_install",
+               return_value=["clang --version: exit 127"]), \
+         patch("sysforge.primitives.pacman.remove_pkgs",
+               side_effect=lambda names, nodeps=False: calls.append(("remove", names, nodeps))), \
+         patch("sysforge.primitives.pacman.batch_install_pkgs",
+               side_effect=lambda files: calls.append(("install",)) or restore_ok), \
+         patch("sys.stdin.isatty", return_value=False):
+        with pytest.raises(RuntimeError) as exc:
+            ToolchainStage().run(config, state, options)
+    return calls, str(exc.value)
+
+
+def test_gate3_rollback_removes_a_member_the_install_added(tmp_path, monkeypatch):
+    calls, msg = _gate3_fails_with_added_member(tmp_path, monkeypatch, restore_ok=True)
+    assert "prior toolchain was restored" in msg
+    assert calls == [("remove", ["clang-libs"], True), ("install",)]
+    assert not _sentinel_exists(tmp_path / "state")
+
+
+def test_failed_rollback_with_an_added_member_stores_the_online_recovery(
+        tmp_path, monkeypatch):
+    from sysforge.primitives.stage_sentinel import StageSentinel
+    _, msg = _gate3_fails_with_added_member(tmp_path, monkeypatch, restore_ok=False)
+    record = StageSentinel(tmp_path / "state").get_active()
+    assert record["recovery_kind"] == "pacman_sync"
+    assert "clang-libs" in record["recovery_args"]
+    assert "pacman -S" in msg and "clang-libs" in msg

@@ -52,6 +52,36 @@ listed, with its reason, in `tools/e2e/uncovered.toml` (`3.5.0-DEV23`); `tools/e
 does the comparison, `tests/test_e2e_coverage.py` fails the suite on a command in neither set or
 a listing a scenario has made redundant, and `make e2e-coverage` prints both.
 
+The **live-mirror tier** (`make test-live`, `tests/test_live_stock_toolchain.py`, `3.5.0-DEV24`)
+is the part of the suite that reads the Arch repos as they are today. Its tests carry the `network`
+marker and are skipped unless `SYSFORGE_LIVE_TESTS=1`, which only `test-live` sets: an environment
+switch, because `tools/ci.sh` runs the suite with `-o addopts=` and would drop a marker filter. It
+is a canary for an upstream change the stubs cannot see. Arch's clang 23.1.3-4 moved
+`libclang-cpp` and the builtin headers into a new `clang-libs` package, and every unit test still
+passed (`3.5.0-B146`): the stubs held the old layout. The bench's stock toolchain is the first
+subject. Its tests run the real fetch, unpack and probe, check that `libLLVM` and `libclang-cpp`
+resolve inside the stock prefix rather than from the host, and compile against the builtin headers.
+It is in `CI_JOBS` as a `live` job of its own (with `llvm-libs` installed for the stock compiler's
+runtime libraries, the host copy the library check must not resolve to), so `pre-release` runs it;
+the release preflight does not (`_RELEASE_GATE_EXEMPT`).
+
+**Which tier a test belongs in.** Every fix and feature ships unit tests. A fix also ships a
+test in a higher tier when the defect crossed a boundary the unit suite stubs, since a stub encodes
+the same assumption the bug broke:
+
+| The defect crossed | Tier |
+|--------------------|------|
+| root versus the user, group membership, sudo | `make e2e` scenario |
+| state one command leaves for the next (sentinels, `build_state.toml`, the local repo) | `make e2e` scenario |
+| a real terminal (prompts, progress, line discipline) | `make e2e` (prompts answered by `tools/e2e/answer.py`) or the terminal-replay tests (`3.5.0-DEV22`) |
+| what the live repos or mirrors hold (a package split, rename or file move; a stale sync DB) | `make test-live` |
+| nothing: logic inside a seam the unit tests exercise for real | unit tests only |
+
+When a boundary applies but a higher-tier test is impractical (a precondition that costs an
+hours-long build, as `bench toolchain` itself has), test the boundary at the narrowest point that
+still crosses it, as the live tier tests the bench's stock fetch without the bench. The pull
+request names the tier, or says why only unit tests apply.
+
 **CI** (`.github/workflows/ci.yml`, `3.4.0-DEV1`) runs every `pre-release` gate on each pull request (a newer push to
 it cancels the superseded run) and on each push to `main`, in a fresh `archlinux:base-devel` container, as an unprivileged user, with only the
 core dev tier (`make dev-deps-core`) installed. Its job is

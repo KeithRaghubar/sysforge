@@ -889,17 +889,20 @@ def install_repo_pkgs(names: list) -> None:
         raise RuntimeError(f"repo install failed (exit {result.returncode})")
 
 
-def remove_pkgs(names: list) -> None:
+def remove_pkgs(names: list, *, nodeps: bool = False) -> None:
     """Remove packages via ``sudo pacman -R --noconfirm``.
 
     Used by ``revert-to-stock`` to drop a renamed optimized build
     (e.g. ``mesa-sysforge``) before reinstalling the stock package. No-op
-    on an empty list so callers need not guard.
+    on an empty list so callers need not guard. ``nodeps`` (``-Rdd``) removes a
+    package something installed still depends on, for a caller that reinstalls
+    the dependent's replacement right after (toolchain rollback, 3.5.0-B146).
     """
     if not names:
         return
+    flag = "-Rdd" if nodeps else "-R"
     subprocess.run(  # noqa: TID251 — privileged; CalledProcessError is this helper's contract
-        privileged_argv(["pacman", "-R", "--noconfirm", "--", *names]),
+        privileged_argv(["pacman", flag, "--noconfirm", "--", *names]),
         check=True,
         preexec_fn=lift_for_child,
     )
