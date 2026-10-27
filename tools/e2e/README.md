@@ -41,6 +41,7 @@ sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-t
 | `10-quickstart` | the README Quick start in one login: setup, an AUR build through the review gate, `update` |
 | `20-repo-optin` | a repo package refused without a terminal, the opt-in prompt, the saved answer |
 | `30-flag-drift` | a default-profile change reported by `update --dry-run` and rebuilt by `--rebuild-on-flag-drift` |
+| `35-update-devel` | `update --devel` on a `-git` package: nothing rebuilt with no new commit, the new `pkgver()` built after one, the built commit recorded |
 | `40-pre-install-failure` | a build failing before any install leaves no sentinel |
 | `50-maintain` | `state list`, `resolve`, `log`, `packages add`/`list`/`remove`/`add-group`, `state forget` and `uninstall` on a source-built package |
 | `60-revert-to-stock` | a source-built repo package replaced by the stock one, its record dropped |
@@ -57,7 +58,8 @@ pacman for build dependencies), `60-revert-to-stock` and `99-self-uninstall` (th
 from the mirrors) and `90-source-policy` (the AUR lookup a frozen build makes before refusing the
 clone).
 `pkgs/tree` is a stand-in named after a repo package, which puts `build` on its repo opt-in path
-without fetching Arch's packaging repo.
+without fetching Arch's packaging repo. `pkgs/e2e-hello-git` is a VCS package whose source is a git
+repository its scenario creates, so `update --devel` runs `git ls-remote` and `pkgver()` offline.
 
 A scenario can't catch a change in what the live repos contain, because `pkgs/` stands in for
 them. That is the live-mirror tier's job (`make test-live`, `tests/test_live_stock_toolchain.py`).
