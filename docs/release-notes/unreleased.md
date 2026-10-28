@@ -1,26 +1,8 @@
 # sysforge (unreleased)
 
-<!--
-Running accumulator for the next release. Every landing commit that COMPLETES a
-ROADMAP item appends its entry here (in the same commit that drops the item from
-ROADMAP.md), under the matching Keep a Changelog section — one of Added, Changed,
-Deprecated, Removed, Fixed, Security, in that order. An entry leads with its
-roadmap ID, in the same shape ROADMAP.md entries use:
+`update` stops building code nobody looked at, and the command line settles: at a terminal it now shows its plan and asks before it changes anything, a changed AUR or git source it cannot show you is refused instead of built unattended, and every flag has one spelling across every command (the old spellings no longer parse; the table is under Removed). The LLVM toolchain is rebuilt around the repos' single `llvm` package, with clang's own code PGO-optimized for the first time, a BOLT step that can actually run, and `run toolchain --bolt-only` and `--install-only` to finish a run without another hour-long build. Also: `--unattended` and `build --failed` for timer-driven runs, `config check`, `clean` and `reset` for retired and misspelt settings, `self-uninstall`, `--json` from `state list`, `doctor` and `update --dry-run`, `setup` presets, opt-in DKMS-safe kernel hardening, flag drift that covers build inputs outside the profile, timestamped run logs, much faster tab completion, a short README backed by new guides, concept pages and a glossary, and a sweep of fixes to the shared state directory's security, first-session permissions and the progress bar.
 
-    - **`1.2.0-F35` — <title sentence>.** <body>
-
-    ---
-
-    - **`1.2.0-F36` — …
-
-Entries are separated by a `---` rule and kept in ascending ID order within each
-section. Flag breaking changes with a **Breaking:** prefix opening the body, plus
-the migration path. At release time tools/release.sh (Phase 1) renames this file
-to vX.Y.Z.md, stamps the `# ` title with the version and date, and reseeds a fresh
-accumulator. Run the release-notes skill first to reconcile/lint the entries and
-finalize the one-line summary below (drop this comment). Keep a Changelog:
-https://keepachangelog.com/en/1.1.0/
--->
+---
 
 ## Added
 
@@ -230,7 +212,6 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`3.5.0-DEV22` — the progress bar is tested on a model terminal.** `3.5.0-B132` and `B133` drew output over earlier lines in xterm and VS Code's terminal, which the progress bar's tests could not see: they check the escape sequences it writes, not what those do to a screen. A small terminal model under `tests/` now replays the bar's real output, and `update`'s end-of-run reset, and checks the screen: the command line survives, output follows it in order, the bar leaves nothing behind and the next prompt lands after the last line. Every check runs under both rules terminals follow for a saved cursor when the screen scrolls, xterm's and xterm.js's. Replayed through it, the sequences each fix replaced show their bug. The model refuses a sequence it has not been taught, so a new one cannot be misread silently.
 
-
 ---
 
 - **`3.5.0-DEV23` — the end-to-end tier runs 35 of the 42 commands, and a new one cannot be missed.** Six scenarios join the four under `tools/e2e/`: maintaining a package and letting it go (`state list`, `resolve`, `log`, the `packages` commands, `state forget`, `uninstall`), `revert-to-stock`, keeping the config healthy (`config check`, `clean` and `reset`, and a `setup --preset` undone by `config reset`), the read-only reports changing nothing (`state`, `doctor`, `env`, `fetch`), a user script through the `artifact` commands, and `[aur] enabled = false` and `freeze_sources` refusing before any checkout, with `search` still answering from the repos. A seventh previews `run toolchain` and `run kernel` with non-default `toolchain.toml` and `kernel.toml`; it is marked to fail until their dry run shows something, a bug it found. `make e2e-coverage` lists which scenario runs each command, and `tests/test_e2e_coverage.py` fails the suite on a command that no scenario runs and `tools/e2e/uncovered.toml` does not excuse with a reason; seven are excused, such as `run pipeline`, which installs Arch from the live ISO. The `artifact` scenario also found that those commands crash in a user's first session when nothing has prepared the state directory yet; both bugs are on the roadmap.
@@ -242,6 +223,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`3.5.0-DEV27` — the end-to-end tier runs `update --devel` on a `-git` package.** `update --devel` is the most-run path in daily use and no scenario passed it, while about ten of this release's fixes were VCS-package bugs. A new scenario, `35-update-devel`, builds a `-git` stand-in (`tools/e2e/pkgs/e2e-hello-git`) whose one source is a git repository the scenario creates, so it needs no network: with no new commit, `update --devel` plans `UP_TO_DATE` and rebuilds nothing; after a commit it plans the new `pkgver()` and installs it; and `build_state.toml` records the commit each build used, which the next run's `git ls-remote` short-circuit reads. The AUR half of `3.5.0-B144` (the packaging repo fetched only when the AUR says it changed) needs a real AUR package and is not covered.
+
 ---
 
 - **`3.5.0-DOC1` — the package description says what sysforge optimizes.** The `pkgdesc` shown by `pacman -Si` and on the AUR now names what people search for in one short line: "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO", instead of a generic "build and maintenance suite" line. The README's opening paragraph says the same.
@@ -320,7 +302,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-F22` — the kernel config review has its own name, separate from whether sysforge may ask.** **Breaking:** `run kernel --non-interactive` is now `--no-review-config` (`--no-interactive`, its spelling earlier in this cycle, is gone too), and `kernel.toml`'s `interactive` is now `review_config`. An existing `interactive = false` keeps working and warns until `sysforge config clean` renames it, so nobody gets the `nconfig` menu back unexpectedly. The stage used to treat two questions as one: whether to open the PKGBUILD's config menu, and whether it may ask you anything. Now `--no-review-config` and `review_config = false` only skip the menu: if the kernel name matches an official package, or the kernel tree has local changes, you are still asked at a terminal instead of the run stopping. To have the stage ask nothing, use the global `--unattended` (`3.5.0-F21`), or run with no terminal. The error for an `oldconfig` or `localmodconfig` step in `kconfig_targets` now says it needs the config review, and lists what turns the review off.
+- **`3.5.0-F22` — the kernel config review has its own name, separate from whether sysforge may ask.** **Breaking:** `run kernel --non-interactive` is now `--no-review-config`, and `kernel.toml`'s `interactive` is now `review_config`. An existing `interactive = false` keeps working and warns until `sysforge config clean` renames it, so nobody gets the `nconfig` menu back unexpectedly. The stage used to treat two questions as one: whether to open the PKGBUILD's config menu, and whether it may ask you anything. Now `--no-review-config` and `review_config = false` only skip the menu: if the kernel name matches an official package, or the kernel tree has local changes, you are still asked at a terminal instead of the run stopping. To have the stage ask nothing, use the global `--unattended` (`3.5.0-F21`), or run with no terminal. The error for an `oldconfig` or `localmodconfig` step in `kconfig_targets` now says it needs the config review, and lists what turns the review off.
 
 ## Removed
 
@@ -439,11 +421,11 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B13` — `run toolchain` finds clang, lld and the rest in the `llvm` PKGBUILD again.** The repos now build clang, lld, polly, compiler-rt and openmp as part of the `llvm` package instead of as packages of their own. sysforge kept using the separate `clang`, `lld`, … checkouts already in your source directory, which stopped receiving updates at 23.1.1, so `run toolchain` failed with `pkgctl repo switch '23.1.3-2' failed: pathspec did not match` for five packages. sysforge now asks the repos which package builds each name and uses that checkout, and with `-v` it names each old checkout it skipped so you can delete it. This only fixes where the sources come from: building the LLVM toolchain with PGO also needs the build itself reworked for the merged package, which is still to come.
+- **`3.5.0-B13` — `run toolchain` finds clang, lld and the rest in the `llvm` PKGBUILD again.** The repos now build clang, lld, polly, compiler-rt and openmp as part of the `llvm` package instead of as packages of their own. sysforge kept using the separate `clang`, `lld`, … checkouts already in your source directory, which stopped receiving updates at 23.1.1, so `run toolchain` failed with `pkgctl repo switch '23.1.3-2' failed: pathspec did not match` for five packages. sysforge now asks the repos which package builds each name and uses that checkout, and with `-v` it names each old checkout it skipped so you can delete it. This fixes where the sources come from; the build itself is reworked for the merged package in `3.5.0-F2`.
 
 ---
 
-- **`3.5.0-B14` — building LLVM with fewer targets no longer breaks lldb, bpftool, OpenCL and other programs.** `toolchain.toml [llvm] targets` (or the list detected from your hardware) builds the system libLLVM with only some of LLVM's backends. Some programs need all of them: lldb, bpftool (`bpf`), OpenCL (`opencl-mesa`) and faust all failed to start with `symbol lookup error ... undefined symbol: LLVMInitialize...` after such a build, and sysforge's safety checks only looked at the graphics drivers. sysforge now checks every installed program that uses libLLVM: the target list keeps every backend an installed program needs (with `-v` it names them), the toolchain build refuses to install, or rolls back, a libLLVM that would leave one unable to load, and `sysforge doctor --toolchain` reports programs that are already broken. Programs like lldb need every backend, so with one of them installed the filter now builds all targets. The same gap meant sysforge could not see most programs that use libLLVM at all, so the rebuilds it offers after a libLLVM version change found nothing to rebuild; they now find them. If your system is already affected, rebuild the toolchain, or set `[llvm] targets = []` before the next rebuild.
+- **`3.5.0-B14` — building LLVM with fewer targets no longer breaks lldb, bpftool, OpenCL and other programs.** `toolchain.toml [llvm] targets` (or the list detected from your hardware) builds the system libLLVM with only some of LLVM's backends. Some programs need all of them: lldb, bpftool (`bpf`), OpenCL (`opencl-mesa`) and faust all failed to start with `symbol lookup error ... undefined symbol: LLVMInitialize...` after such a build, and sysforge's safety checks only looked at the graphics drivers. sysforge now checks every installed program that uses libLLVM: the target list keeps every backend an installed program needs (with `-v` it names them), the toolchain build refuses to install, or rolls back, a libLLVM that would leave one unable to load, and `sysforge doctor system --toolchain` reports programs that are already broken. Programs like lldb need every backend, so with one of them installed the filter now builds all targets. The same gap meant sysforge could not see most programs that use libLLVM at all, so the rebuilds it offers after a libLLVM version change found nothing to rebuild; they now find them. If your system is already affected, rebuild the toolchain, or set `[llvm] targets = []` before the next rebuild.
 
 ---
 
@@ -463,7 +445,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B19` — Failed rebuilds after `run toolchain` are recorded.** When a package that `run toolchain` rebuilds after installing the new libLLVM failed, sysforge logged "Failed to record build failure … not 'NoneType'" instead of saving the failure, so `sysforge state failed` never listed it. Failures are now saved to the usual state directory.
+- **`3.5.0-B19` — failed rebuilds after `run toolchain` are recorded.** When a package that `run toolchain` rebuilds after installing the new libLLVM failed, sysforge logged "Failed to record build failure … not 'NoneType'" instead of saving the failure, so `sysforge state failed` never listed it. Failures are now saved to the usual state directory.
 
 ---
 
@@ -829,7 +811,7 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B121` — Narrowing the window during a sandboxed Rust build no longer leaves cargo progress lines behind.** In the build sandbox cargo draws its progress line at the width your terminal had when the build started, because it cannot measure the terminal from inside. When the window got narrower, for example when a tiled window opened beside it, each frame wrapped onto two rows. Cargo redraws only the row it is on, so the first half of every frame stayed on screen with the next `Compiling` line written over it. sysforge now cuts each frame to the window's current width as it passes it on. Builds outside the sandbox were not affected, since cargo measures the terminal there itself.
+- **`3.5.0-B121` — narrowing the window during a sandboxed Rust build no longer leaves cargo progress lines behind.** In the build sandbox cargo draws its progress line at the width your terminal had when the build started, because it cannot measure the terminal from inside. When the window got narrower, for example when a tiled window opened beside it, each frame wrapped onto two rows. Cargo redraws only the row it is on, so the first half of every frame stayed on screen with the next `Compiling` line written over it. sysforge now cuts each frame to the window's current width as it passes it on. Builds outside the sandbox were not affected, since cargo measures the terminal there itself.
 
 ---
 
@@ -841,15 +823,15 @@ https://keepachangelog.com/en/1.1.0/
 
 ---
 
-- **`3.5.0-B124` — Tab completion is several times faster.** Every Tab press started a full `sysforge` that loaded every command before printing a single name, and completing a package name also ran `pacman -Ssq` and piped about 140,000 names through `grep`, about half a second per press. Completion lookups now skip the rest of the CLI, the merged repo and AUR name list is cached and rebuilt only after a sync database, the AUR name list or your PKGBUILD directory changes, and sysforge filters the list to what you have typed before printing it. A package-name lookup now takes about 0.1 s and the others well under that. Completing a package from the build state also no longer tries to create the state directory, which could ask for your password. For contributors, `make bench-completions` prints the time of each lookup.
+- **`3.5.0-B124` — tab completion is several times faster.** Every Tab press started a full `sysforge` that loaded every command before printing a single name, and completing a package name also ran `pacman -Ssq` and piped about 140,000 names through `grep`, about half a second per press. Completion lookups now skip the rest of the CLI, the merged repo and AUR name list is cached and rebuilt only after a sync database, the AUR name list or your PKGBUILD directory changes, and sysforge filters the list to what you have typed before printing it. A package-name lookup now takes about 0.1 s and the others well under that. Completing a package from the build state also no longer tries to create the state directory, which could ask for your password. For contributors, `make bench-completions` prints the time of each lookup.
 
 ---
 
-- **`3.5.0-B125` — A package built with the other compiler was recorded as built by the active one.** Every source build recorded the toolchain stage's compiler, so a package kept on gcc on an LLVM system (through a `[package_compiler_overrides]` row, a profile, the recovery menu or the new `build --toolchain`) was recorded as `pgo_llvm`. The record now names the compiler that built it. `update` does not report it as toolchain drift while your config still picks that compiler for it, so it is not rebuilt with clang. A one-off `build --toolchain` build is still reported, since the next normal build undoes it. The [drift guide](../guides/drift.md) has a new section on building one package with the other toolchain.
+- **`3.5.0-B125` — a package built with the other compiler is recorded as such.** Every source build recorded the toolchain stage's compiler, so a package kept on gcc on an LLVM system (through a `[package_compiler_overrides]` row, a profile, the recovery menu or the new `build --toolchain`) was recorded as `pgo_llvm`. The record now names the compiler that built it. `update` does not report it as toolchain drift while your config still picks that compiler for it, so it is not rebuilt with clang. A one-off `build --toolchain` build is still reported, since the next normal build undoes it. The [drift guide](../guides/drift.md) has a new section on building one package with the other toolchain.
 
 ---
 
-- **`3.5.0-B126` — A kernel built with the other compiler is recorded as such, and stops warning about it.** `run kernel` recorded the system toolchain's variant whatever compiler built the kernel, so a kernel kept on gcc (`compiler = "gcc"` in `kernel.toml`, or `--toolchain gcc`) on an LLVM system was recorded as `pgo_llvm`. The record now names the compiler that built it, as `3.5.0-B125` does for other packages. The kernel stage's "Rebuilding will switch toolchains" warning now compares the record with the compiler this run will use rather than the system one, so it appears only when the kernel's compiler actually changes, and it names that compiler.
+- **`3.5.0-B126` — a kernel built with the other compiler is recorded as such, and stops warning about it.** `run kernel` recorded the system toolchain's variant whatever compiler built the kernel, so a kernel kept on gcc (`compiler = "gcc"` in `kernel.toml`, or `--toolchain gcc`) on an LLVM system was recorded as `pgo_llvm`. The record now names the compiler that built it, as `3.5.0-B125` does for other packages. The kernel stage's "Rebuilding will switch toolchains" warning now compares the record with the compiler this run will use rather than the system one, so it appears only when the kernel's compiler actually changes, and it names that compiler.
 
 ---
 
