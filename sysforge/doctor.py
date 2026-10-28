@@ -1184,7 +1184,7 @@ _AXIS_FLAGS: dict[str, str] = {
     "gfxperf": "gfxperf",
     "pacman": "pacman",
     "state": "state",
-    "config": "config",
+    "config_axis": "config",
     "boot": "boot",
     "restart": "restart",
     "storage": "storage",
@@ -1708,7 +1708,8 @@ def _add_system_axis_flags(p):
         help="Check sysforge's own state integrity: recorded build failures, an "
              "interrupted stage sentinel from a prior run, and build_state drift "
              "vs the live pacman database. Read-only (does not recover).")
-    p.add_argument("--config", action="store_true",
+    # dest: args.config holds the loaded config (4.0.0-B2).
+    p.add_argument("--config", action="store_true", dest="config_axis",
         help="Check the live config files for settings sysforge retired or does "
              "not know (the same report as `sysforge config check`).")
     p.add_argument("--boot", action="store_true",
@@ -1791,7 +1792,7 @@ class DoctorSystemVerb(Verb):
 
     def pre_check(self, args) -> PreCheckResult:
         # cmd_doctor_system reads args.config; the cli.py wrapper used to set it.
-        if not hasattr(args, "config") or args.config is None:
+        if getattr(args, "config", None) is None:
             args.config = _load_config() or {}
         return PreCheckResult()
 
@@ -1890,7 +1891,7 @@ class DoctorPkgVerb(Verb):
             return PreCheckResult(blocker=(
                 "--json is a read-only report; it cannot be combined with "
                 "--apply, which rebuilds packages"), exit_code=2)
-        if not hasattr(args, "config") or args.config is None:
+        if getattr(args, "config", None) is None:
             args.config = _load_config() or {}
         # Split targets by provenance so the rust axis can collapse
         # broad-selector targets into one survey finding (2.6.1-F1).
