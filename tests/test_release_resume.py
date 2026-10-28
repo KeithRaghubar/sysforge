@@ -5,7 +5,8 @@ A failure *after* the release tag exists (e.g. chroot validation) needs fix
 commits on top of the release commit; the exact-HEAD auto-resume then never
 fires and a re-run computes a fresh bump from the already-bumped version.
 `--resume` re-enters Phase 3 for the current version when the v$CUR tag is an
-ancestor of a clean HEAD.
+ancestor of a clean HEAD on the release/v$CUR branch (4.0.0-DEV1: the main
+ruleset requires a PR, so a release is cut and finished on its own branch).
 
 The script is exercised for real in a scaffold git repo (it cd's to its own
 tools/.. root, so it is copied in); every run answers "n" at the approval
@@ -73,6 +74,7 @@ def _run(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 def test_resume_accepts_tag_ancestor_of_clean_head(scaffold):
     _git(scaffold, "tag", "v0.1.0")
+    _git(scaffold, "switch", "-q", "-c", "release/v0.1.0")
     (scaffold / "fix.txt").write_text("post-tag fix\n")
     _git(scaffold, "add", "fix.txt")
     _git(scaffold, "commit", "-q", "-m", "fix: post-tag chroot failure")
@@ -83,6 +85,7 @@ def test_resume_accepts_tag_ancestor_of_clean_head(scaffold):
 
 def test_resume_still_works_with_tag_exactly_at_head(scaffold):
     _git(scaffold, "tag", "v0.1.0")
+    _git(scaffold, "switch", "-q", "-c", "release/v0.1.0")
     res = _run(scaffold, "--resume")
     assert res.returncode == 0, res.stderr
     assert "resuming v0.1.0" in res.stdout
@@ -102,6 +105,7 @@ def test_resume_errors_when_tag_not_ancestor(scaffold):
     _git(scaffold, "commit", "-q", "-m", "side")
     _git(scaffold, "tag", "v0.1.0")
     _git(scaffold, "checkout", "-q", "main")
+    _git(scaffold, "switch", "-q", "-c", "release/v0.1.0")
     (scaffold / "other.txt").write_text("other\n")
     _git(scaffold, "add", "other.txt")
     _git(scaffold, "commit", "-q", "-m", "other")
@@ -127,3 +131,27 @@ def test_fresh_release_does_not_auto_resume_from_old_tag(scaffold):
     assert res.returncode == 0, res.stderr
     assert "0.1.0 -> 0.1.1" in res.stdout
     assert "resuming" not in res.stdout
+
+
+def test_resume_refuses_off_the_release_branch(scaffold):
+    # The sha256 commit Phase 3 makes must land on the release branch, which
+    # reaches main through the release PR; main itself only accepts PRs.
+    _git(scaffold, "tag", "v0.1.0")
+    res = _run(scaffold, "--resume")
+    assert res.returncode != 0
+    assert "not on release/v0.1.0" in res.stderr
+
+
+def test_fresh_release_cuts_a_release_branch_and_never_pushes_main(scaffold):
+    res = _run(scaffold, "--bump=patch")
+    assert res.returncode == 0, res.stderr
+    assert "git switch -c release/v0.1.1" in res.stdout
+    assert "git push -u origin release/v0.1.1 && git push origin v0.1.1" in res.stdout
+    assert "push origin main" not in res.stdout
+
+
+def test_fresh_release_refuses_an_existing_release_branch(scaffold):
+    _git(scaffold, "branch", "release/v0.1.1")
+    res = _run(scaffold, "--bump=patch")
+    assert res.returncode != 0
+    assert "release/v0.1.1 already exists" in res.stderr
