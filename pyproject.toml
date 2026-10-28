@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sysforge"
-version = "3.5.0"
+version = "4.0.0"
 description = "AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO"
 license = "MIT"
 license-files = ["LICENSE"]

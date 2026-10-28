@@ -1,7 +1,7 @@
 # Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge-git
-pkgver=3.5.0.r0.g0000000  # updated dynamically by pkgver()
+pkgver=4.0.0.r0.g0000000  # updated dynamically by pkgver()
 pkgrel=1
 pkgdesc="AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO (git)"
 arch=('any')

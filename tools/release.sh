@@ -7,11 +7,17 @@
 #
 # Driven by `make release-major | release-minor | release-patch`.
 #
-# Phase 1: bump versions across files, regen uv.lock + man, single commit, tag.
-# Phase 2: pause for `git push origin main && git push origin vNEW`.
+# Phase 1: switch to release/vNEW, bump versions across files, regen uv.lock +
+#          man, single commit, tag.
+# Phase 2: pause for `git push -u origin release/vNEW && git push origin vNEW`.
 # Phase 3: fetch sha256, update PKGBUILD, chroot validate, regen .SRCINFOs,
 #          second commit (PKGBUILD only — .SRCINFOs are gitignored).
-# Phase 4: point at the post-release manual steps (docs/RELEASE-CHECKLIST.md Stage 7).
+# Phase 4: point at the post-release manual steps (docs/RELEASE-CHECKLIST.md Stage 7):
+#          push the branch, open the release PR, merge it with a merge commit.
+#
+# The release never pushes to main: the main ruleset requires a PR. The PR must
+# be merged with a merge commit, not squashed, so the signed tagged commit stays
+# in main's history (`git describe` in PKGBUILD-git and --resume both rely on it).
 #
 # If interrupted between phases, re-run the same command. Resume is detected
 # automatically when the local tag for the current pyproject.toml version
@@ -50,7 +56,7 @@ Required (exactly one):
                  version: no bump, re-enter at Phase 3 (sha256/chroot/.SRCINFO).
                  For when a post-tag failure needed fix commits on top of the
                  release commit; requires tag v<current> to be an ancestor of
-                 a clean HEAD.
+                 a clean HEAD on branch release/v<current>.
 
 Options:
   --skip-chroot  Skip clean-chroot validation (only for iterating on this script).
@@ -112,6 +118,13 @@ print(d['project']['version'])
 regex_escape() {
     # Escape dots and slashes for use in a sed regex.
     printf '%s' "$1" | sed 's/[.\/]/\\&/g'
+}
+
+# PKGBUILD with its sha256sums array (one or more lines) removed. Phase 3
+# rewrites only that array, so comparing two PKGBUILDs through this tells a
+# half-finished Phase 3 apart from any other edit.
+pkgbuild_sans_sha256sums() {
+    awk '/^sha256sums=/ { s = 1 } s { if ($0 ~ /\)[[:space:]]*$/) s = 0; next } { print }'
 }
 
 chroot_build() {
@@ -176,6 +189,10 @@ else
     fi
 fi
 
+# Every release is cut on its own branch: the main ruleset requires a PR, so
+# main is never pushed directly. Phase 1 creates it; a resume must be on it.
+RELEASE_BRANCH="release/$TAG"
+
 # ---------------------------------------------------------------------------
 # In-flight failure advisory
 # ---------------------------------------------------------------------------
@@ -218,13 +235,23 @@ trap on_error ERR
 # ---------------------------------------------------------------------------
 
 preflight_common() {
-    local branch
+    local want="$1" allow_sha256="${2:-0}" branch
     branch="$(git rev-parse --abbrev-ref HEAD)"
-    if [[ "$branch" != "main" ]]; then
-        echo "ERROR: not on main (currently on '$branch')" >&2
+    if [[ "$branch" != "$want" ]]; then
+        echo "ERROR: not on $want (currently on '$branch')" >&2
         exit 1
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if [[ "$allow_sha256" -eq 1 ]]; then
+        # A resume after a Phase 3 failure finds PKGBUILD's sha256sums already
+        # rewritten; Phase 3 rewrites them again, so that edit (and only that
+        # edit) is not a dirty tree.
+        if ! git diff --quiet -- . ':(exclude)PKGBUILD' || ! git diff --cached --quiet \
+            || [[ "$(git show HEAD:PKGBUILD | pkgbuild_sans_sha256sums)" \
+                  != "$(pkgbuild_sans_sha256sums < PKGBUILD)" ]]; then
+            echo "ERROR: working tree not clean (beyond PKGBUILD sha256sums). Commit or stash first." >&2
+            exit 1
+        fi
+    elif ! git diff --quiet || ! git diff --cached --quiet; then
         echo "ERROR: working tree not clean. Commit or stash first." >&2
         exit 1
     fi
@@ -265,9 +292,13 @@ preflight_common() {
 }
 
 preflight_fresh() {
-    preflight_common
+    preflight_common main
     if git rev-parse --quiet --verify "$TAG" >/dev/null 2>&1; then
         echo "ERROR: tag $TAG already exists locally" >&2
+        exit 1
+    fi
+    if git rev-parse --quiet --verify "refs/heads/$RELEASE_BRANCH" >/dev/null 2>&1; then
+        echo "ERROR: branch $RELEASE_BRANCH already exists locally" >&2
         exit 1
     fi
     # Fetch latest tags from origin so the duplicate-on-remote check is honest.
@@ -379,7 +410,7 @@ preflight_fresh() {
 }
 
 preflight_resume() {
-    preflight_common
+    preflight_common "$RELEASE_BRANCH" 1
 }
 
 if [[ "$RESUME" -eq 1 ]]; then
@@ -401,7 +432,7 @@ if [[ "$RESUME" -eq 1 ]]; then
     cat <<EOF
 ==> sysforge release: resuming v$NEW (Phase 1 already complete)
 
-Tag $TAG is present at HEAD; pyproject.toml + PKGBUILD + docs already bumped.
+Tag $TAG is present on $RELEASE_BRANCH; pyproject.toml + PKGBUILD + docs already bumped.
 This run will:
 
   Phase 2: verify $TAG is on origin (otherwise pause for manual push)
@@ -411,13 +442,15 @@ This run will:
     - clean-chroot validate PKGBUILD and PKGBUILD-git ($CHROOT_ROOT)$CHROOT_NOTE
     - regenerate .SRCINFO and .SRCINFO-git (gitignored — local artifacts for AUR push)
     - git add PKGBUILD; git commit -m "release: $TAG sha256"
-  Phase 4: point at the post-release manual steps (RELEASE-CHECKLIST Stage 7)
+  Phase 4: point at the post-release manual steps (RELEASE-CHECKLIST Stage 7:
+           push $RELEASE_BRANCH, open the release PR, merge it with a merge commit)
 EOF
 else
     cat <<EOF
 ==> sysforge release: $CUR -> $NEW ($BUMP bump, tag $TAG)
 
 Phase 1 — bump, commit, tag:
+  - git switch -c $RELEASE_BRANCH
   - rewrite pyproject.toml         version $CUR -> $NEW
   - rewrite PKGBUILD               pkgver $CUR -> $NEW
   - rewrite PKGBUILD-git           pkgver $CUR.r0.g0000000 -> $NEW.r0.g0000000
@@ -431,7 +464,7 @@ Phase 1 — bump, commit, tag:
   - git tag $TAG
 
 Phase 2 — manual push pause:
-  - prompts you to run: git push origin main && git push origin $TAG
+  - prompts you to run: git push -u origin $RELEASE_BRANCH && git push origin $TAG
   - resumes once $TAG is visible on origin
 
 Phase 3 — post-tag artifacts:
@@ -442,7 +475,8 @@ Phase 3 — post-tag artifacts:
   - git add PKGBUILD; git commit -m "release: $TAG sha256"
 
 Phase 4 — pointer to the post-release manual steps:
-  - print: see docs/RELEASE-CHECKLIST.md "Stage 7" (sha256 push + both AUR pushes)
+  - print: see docs/RELEASE-CHECKLIST.md "Stage 7" (release PR, merged with a
+    merge commit, then both AUR pushes)
 
 EOF
 fi
@@ -464,6 +498,12 @@ esac
 if [[ "$RESUME" -eq 0 ]]; then
     echo
     echo "==> Phase 1: bump, commit, tag"
+
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+        git switch -c "$RELEASE_BRANCH"
+    else
+        echo "    [dry-run] git switch -c $RELEASE_BRANCH"
+    fi
 
     CUR_RE="$(regex_escape "$CUR")"
 
@@ -593,11 +633,11 @@ if [[ "$TAG_ON_REMOTE" -eq 0 ]]; then
     echo
     echo "==> Phase 2: manual push required"
     if [[ "$DRY_RUN" -eq 1 ]]; then
-        echo "    [dry-run] would prompt for: git push origin main && git push origin $TAG"
+        echo "    [dry-run] would prompt for: git push -u origin $RELEASE_BRANCH && git push origin $TAG"
     else
         echo "    Run in another shell:"
         echo
-        echo "        git push origin main && git push origin $TAG"
+        echo "        git push -u origin $RELEASE_BRANCH && git push origin $TAG"
         echo
         read -r -p "    Press ENTER once pushed (or Ctrl-C to abort): " _
         # Verify (one retry).
@@ -610,7 +650,7 @@ if [[ "$TAG_ON_REMOTE" -eq 0 ]]; then
         done
         if [[ "$TAG_ON_REMOTE" -eq 0 ]]; then
             echo "ERROR: $TAG not visible on origin." >&2
-            echo "       Push it (git push origin main && git push origin $TAG) and re-run this script." >&2
+            echo "       Push it (git push -u origin $RELEASE_BRANCH && git push origin $TAG) and re-run this script." >&2
             exit 1
         fi
         echo "    $TAG visible on origin."
@@ -680,9 +720,26 @@ fi
 # detached-signature source points at this release's download URL; makepkg (run by
 # makechrootpkg below) must be able to fetch sysforge-$NEW.tar.gz.asc to verify it.
 echo "    Publishing GitHub release $TAG with signed artifacts"
+# GitHub caps a release body at 125000 characters. A longer notes file is
+# published as its summary (everything above the first `## `) plus a link to
+# the full file at the tag. Bytes >= characters, so measuring bytes is safe.
+NOTES_FILE="docs/release-notes/$TAG.md"
+NOTES_BODY="$RELEASE_STAGE/notes.md"
+if [[ "$(wc -c < "$NOTES_FILE")" -le 125000 ]]; then
+    cp "$NOTES_FILE" "$NOTES_BODY"
+else
+    {
+        awk '/^## / { exit } { l[++n] = $0 }
+             END { while (n > 0 && (l[n] ~ /^[[:space:]]*$/ || l[n] == "---")) n--
+                   for (i = 1; i <= n; i++) print l[i] }' "$NOTES_FILE"
+        echo
+        echo "The full notes are too long for a GitHub release: [$NOTES_FILE](https://github.com/KeithRaghubar/sysforge/blob/$TAG/$NOTES_FILE)."
+    } > "$NOTES_BODY"
+    echo "    $NOTES_FILE exceeds GitHub's 125000-character limit: publishing its summary + a link"
+fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "    [dry-run] gh release create $TAG --title \"sysforge $TAG\" \\"
-    echo "    [dry-run]   --notes-file docs/release-notes/$TAG.md \\"
+    echo "    [dry-run]   --notes-file <release body> \\"
     echo "    [dry-run]   $ASSET_SIG SHA256SUMS SHA256SUMS.asc"
 elif ! command -v gh >/dev/null 2>&1; then
     echo "ERROR: gh CLI not found — needed to publish the release + upload the signature." >&2
@@ -696,7 +753,7 @@ else
             "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
     else
         gh release create "$TAG" --title "sysforge $TAG" \
-            --notes-file "docs/release-notes/$TAG.md" \
+            --notes-file "$NOTES_BODY" \
             "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
     fi
     echo "    release published: $TARBALL_URL → asset sysforge-$NEW.tar.gz.asc"
@@ -757,8 +814,10 @@ cat <<EOF
 ==> Phase 4: done. The signed GitHub release $TAG is already published
     (tag, commits, and release tarball are GPG-signed).
 
-    Three manual steps remain: push the sha256 commit, then push both AUR
-    repos. The commands live in docs/RELEASE-CHECKLIST.md "Stage 7:
+    Manual steps remain: push $RELEASE_BRANCH (it carries the sha256
+    commit), open the release PR and merge it with a MERGE COMMIT (never
+    squash: the signed tagged commit must stay in main's history), then push
+    both AUR repos. The commands live in docs/RELEASE-CHECKLIST.md "Stage 7:
     Post-release manual steps" (version to substitute: $NEW):
 
     sed -n '/^## Stage 7/,/^---$/p' docs/RELEASE-CHECKLIST.md

@@ -21,7 +21,7 @@ make vm-pkg-stable && make container-smoke && make container-smoke-cachyos   # 4
 make vm-snapshot && make vm-test && make vm-stop                             # 4b (+ git flavor)
 # 5. /release-notes skill
 make release-minor              # 6. or release-major / release-patch
-# 7. push the sha256 commit + both AUR repos (commands below)
+# 7. release PR (merge commit, never squash) + both AUR repos (commands below)
 ```
 
 `make preflight` is not in that list on purpose. It is an optional status report you can run at any
@@ -250,18 +250,19 @@ make check-bump BUMP=minor      # confirm the intended level is not weaker
 make release-minor              # or release-major / release-patch
 ```
 
-The script first runs its release gates (see "Which command does what"), then bumps versions,
+Start on an up-to-date `main`. The script first runs its release gates (see "Which command does
+what"), then switches to a new `release/vX.Y.Z` branch, bumps versions,
 regenerates `uv.lock` and the man page, renames the accumulator to `vX.Y.Z.md`, signs the commit and
 tag, pauses for the manual push, publishes the signed GitHub release, and validates both PKGBUILDs
 in a clean chroot.
 
-- [ ] Push when prompted: `git push origin main && git push origin vX.Y.Z`
+- [ ] Push when prompted: `git push -u origin release/vX.Y.Z && git push origin vX.Y.Z`
 - [ ] Signed GitHub release published with `.asc` + `SHA256SUMS` assets
 - [ ] Both PKGBUILDs validated in the clean chroot
 - [ ] Stage 7 below completed
 
 **If it fails after the tag exists**, do not re-run a `release-*` bump target: it would compute a
-fresh bump from the already-bumped version. Fix forward, commit, then:
+fresh bump from the already-bumped version. Fix forward on `release/vX.Y.Z`, commit, then:
 
 ```bash
 make release-resume
@@ -269,13 +270,30 @@ make release-resume
 
 ## Stage 7: Post-release manual steps
 
-The script stops here: the signed GitHub release exists, but the sha256 commit is unpushed and
-neither AUR repo knows about the new version. Substitute the released version for `X.Y.Z`.
+The script stops here: the signed GitHub release exists, but the sha256 commit is unpushed, `main`
+does not have the release yet, and neither AUR repo knows about the new version. Substitute the
+released version for `X.Y.Z`.
 
-Push the sha256 commit the chroot validation produced:
+Push the release branch (it now carries the sha256 commit) and open the release PR:
 
 ```bash
-git push origin main
+git push origin release/vX.Y.Z
+gh pr create --base main --head release/vX.Y.Z --title "release: vX.Y.Z" \
+    --body "Release vX.Y.Z. Notes: docs/release-notes/vX.Y.Z.md"
+```
+
+The body links the notes rather than inlining them: a PR description is capped at 65,536
+characters, and a major release's notes can be several times that.
+
+Once `gates` is green, merge it with a **merge commit**. Never squash or rebase a release PR: either
+one rewrites the signed `release:` commit, so the `vX.Y.Z` tag would sit outside `main`'s history
+(`git describe` in `sysforge-git` would keep reporting the previous version). If the PR reports the
+branch out of date, `git merge origin/main` into it; never rebase it.
+
+```bash
+gh pr merge release/vX.Y.Z --merge --delete-branch
+git switch main && git pull --ff-only
+git merge-base --is-ancestor vX.Y.Z main && echo "tag on main"
 ```
 
 Push to AUR (`sysforge`, stable):
@@ -296,7 +314,7 @@ cp sysforge.install /tmp/aur-sysforge-git/
 cd /tmp/aur-sysforge-git && git add -A && git commit -m "Update to X.Y.Z" && git push
 ```
 
-- [ ] sha256 commit pushed to `origin/main`
+- [ ] Release PR merged into `main` with a merge commit; `vX.Y.Z` is an ancestor of `main`
 - [ ] `sysforge` AUR repo updated
 - [ ] `sysforge-git` AUR repo updated
 

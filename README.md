@@ -4,7 +4,7 @@ SysForge is an AUR helper that builds and tracks packages tuned to your CPU. Eve
 
 ![On a fresh install, sysforge build cbonsai -si reviews the AUR package's PKGBUILD, builds it with -march=native and installs it; sysforge update then finds nothing to rebuild](docs/assets/quickstart.gif)
 
-<sub><!--version-->v3.5.0<!--/version--></sub>
+<sub><!--version-->v4.0.0<!--/version--></sub>
 
 ---
 
