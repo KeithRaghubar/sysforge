@@ -1,7 +1,7 @@
 # Maintainer: Keith Raghubar <aur.archlinux.org.buckskin000@passmail.net>
 
 pkgname=sysforge
-pkgver=3.5.0
+pkgver=4.0.0
 pkgrel=1
 pkgdesc="AUR helper that builds and tracks packages tuned to your CPU with PGO, BOLT and LTO"
 arch=('any')
