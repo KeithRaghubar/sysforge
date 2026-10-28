@@ -240,3 +240,61 @@ def test_doctor_does_not_report_a_removed_package_s_failure(tmp_path, local_db):
     ids = {f.check_id for f in findings if f.check_id.startswith("build_failure:")}
     assert ids == {"build_failure:bar"}
     assert set(BuildState(tmp_path).all_failures()) == {"foo", "bar"}
+
+
+# --- a tracked entry no longer installed (4.0.0-B1) ---------------------------
+# The window is an event and can be lost before a reader sees it; the tracked
+# entry of a package that is gone is state, still there until update's sync
+# prunes it, so it clears the failure without any window.
+
+def test_tracked_removal_with_no_window_clears_the_failure(tmp_path, local_db):
+    bs = _state(tmp_path, {"ethtool-git": _src("ethtool-git")}, failures=["ethtool-git"])
+
+    result = ir.consume_external_installs(bs)  # no hook record at all
+
+    assert result.cleared_failures == ["ethtool-git"]
+    assert bs.all_failures() == {}
+
+
+def test_tracked_removal_keeps_the_failure_while_a_sibling_is_in_the_local_db(
+        tmp_path, local_db):
+    local_db("libfoo", base="foo")
+    bs = _state(tmp_path, {"foo": _src("foo"), "libfoo": {"build_mode": "pacman"}},
+                failures=["foo"])
+
+    assert ir.consume_external_installs(bs).cleared_failures == []
+
+
+def test_build_failed_skips_a_removed_package_without_saving(tmp_path, local_db):
+    import sysforge.build_cmd as build_cmd
+
+    _state(tmp_path, {"ethtool-git": _src("ethtool-git")},
+           failures=["ethtool-git", "newpkg"])
+    args = cli_args("build", "--failed", "--state-dir", str(tmp_path))
+
+    build_cmd._add_recorded_failures(args)
+
+    assert args.pkgbuilds == ["newpkg"]
+    assert set(BuildState(tmp_path).all_failures()) == {"ethtool-git", "newpkg"}
+
+
+def test_build_failed_skips_a_window_removal(tmp_path, local_db):
+    import sysforge.build_cmd as build_cmd
+
+    _state(tmp_path, failures=["foo", "bar"])
+    _window("foo")
+    args = cli_args("build", "--failed", "--state-dir", str(tmp_path))
+
+    build_cmd._add_recorded_failures(args)
+
+    assert args.pkgbuilds == ["bar"]
+    assert (ir.SENTINEL_DIR / "buildstate").exists()
+
+
+def test_state_failed_omits_a_tracked_removal(tmp_path, local_db, capsys):
+    _state(tmp_path, {"foo": _src("foo")}, failures=["foo", "bar"])
+
+    state_cmd.cmd_state_failed(cli_args("state", "failed", "--names", "--no-pager",
+                                        state_dir=str(tmp_path)))
+
+    assert capsys.readouterr().out.split() == ["bar"]

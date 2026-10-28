@@ -148,9 +148,9 @@ def collect_state_result(state_dir: Path | str | None = None,
     # --- recorded build failures -------------------------------------------
     roster.ran.append("build_failures")
     # In memory only (never saved here): a package removed since the last
-    # reconcile is not reported as failing (3.5.0-B120).
+    # reconcile is not reported as failing (3.5.0-B120, 4.0.0-B1).
     from sysforge.primitives import install_reconcile
-    install_reconcile.clear_removed_failures(bs, install_reconcile.window_targets())
+    install_reconcile.clear_stale_failures(bs)
     for pkgbase, rec in sorted(bs.all_failures().items()):
         msg = _short_error(rec.get("error", ""))
         when = rec.get("failed_at", "?")

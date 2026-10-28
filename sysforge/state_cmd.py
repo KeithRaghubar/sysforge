@@ -550,7 +550,7 @@ def cmd_state_failed(args):
             print(f"No recorded failure for {clear_one!r}.")
         return
 
-    install_reconcile.clear_removed_failures(bs, install_reconcile.window_targets())
+    install_reconcile.clear_stale_failures(bs)
     failures = bs.all_failures()
     if getattr(args, "names", False):
         # Machine-readable, verb-local (3.1.0-F2): pkgbases only, one per line,
