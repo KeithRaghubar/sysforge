@@ -279,8 +279,11 @@ Push the release branch (it now carries the sha256 commit) and open the release 
 ```bash
 git push origin release/vX.Y.Z
 gh pr create --base main --head release/vX.Y.Z --title "release: vX.Y.Z" \
-    --body-file docs/release-notes/vX.Y.Z.md
+    --body "Release vX.Y.Z. Notes: docs/release-notes/vX.Y.Z.md"
 ```
+
+The body links the notes rather than inlining them: a PR description is capped at 65,536
+characters, and a major release's notes can be several times that.
 
 Once `gates` is green, merge it with a **merge commit**. Never squash or rebase a release PR: either
 one rewrites the signed `release:` commit, so the `vX.Y.Z` tag would sit outside `main`'s history
