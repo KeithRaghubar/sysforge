@@ -120,6 +120,13 @@ regex_escape() {
     printf '%s' "$1" | sed 's/[.\/]/\\&/g'
 }
 
+# PKGBUILD with its sha256sums array (one or more lines) removed. Phase 3
+# rewrites only that array, so comparing two PKGBUILDs through this tells a
+# half-finished Phase 3 apart from any other edit.
+pkgbuild_sans_sha256sums() {
+    awk '/^sha256sums=/ { s = 1 } s { if ($0 ~ /\)[[:space:]]*$/) s = 0; next } { print }'
+}
+
 chroot_build() {
     local pkgbuild_src="$1" label="$2"
     local scratch
@@ -228,13 +235,23 @@ trap on_error ERR
 # ---------------------------------------------------------------------------
 
 preflight_common() {
-    local want="$1" branch
+    local want="$1" allow_sha256="${2:-0}" branch
     branch="$(git rev-parse --abbrev-ref HEAD)"
     if [[ "$branch" != "$want" ]]; then
         echo "ERROR: not on $want (currently on '$branch')" >&2
         exit 1
     fi
-    if ! git diff --quiet || ! git diff --cached --quiet; then
+    if [[ "$allow_sha256" -eq 1 ]]; then
+        # A resume after a Phase 3 failure finds PKGBUILD's sha256sums already
+        # rewritten; Phase 3 rewrites them again, so that edit (and only that
+        # edit) is not a dirty tree.
+        if ! git diff --quiet -- . ':(exclude)PKGBUILD' || ! git diff --cached --quiet \
+            || [[ "$(git show HEAD:PKGBUILD | pkgbuild_sans_sha256sums)" \
+                  != "$(pkgbuild_sans_sha256sums < PKGBUILD)" ]]; then
+            echo "ERROR: working tree not clean (beyond PKGBUILD sha256sums). Commit or stash first." >&2
+            exit 1
+        fi
+    elif ! git diff --quiet || ! git diff --cached --quiet; then
         echo "ERROR: working tree not clean. Commit or stash first." >&2
         exit 1
     fi
@@ -393,7 +410,7 @@ preflight_fresh() {
 }
 
 preflight_resume() {
-    preflight_common "$RELEASE_BRANCH"
+    preflight_common "$RELEASE_BRANCH" 1
 }
 
 if [[ "$RESUME" -eq 1 ]]; then
@@ -703,9 +720,26 @@ fi
 # detached-signature source points at this release's download URL; makepkg (run by
 # makechrootpkg below) must be able to fetch sysforge-$NEW.tar.gz.asc to verify it.
 echo "    Publishing GitHub release $TAG with signed artifacts"
+# GitHub caps a release body at 125000 characters. A longer notes file is
+# published as its summary (everything above the first `## `) plus a link to
+# the full file at the tag. Bytes >= characters, so measuring bytes is safe.
+NOTES_FILE="docs/release-notes/$TAG.md"
+NOTES_BODY="$RELEASE_STAGE/notes.md"
+if [[ "$(wc -c < "$NOTES_FILE")" -le 125000 ]]; then
+    cp "$NOTES_FILE" "$NOTES_BODY"
+else
+    {
+        awk '/^## / { exit } { l[++n] = $0 }
+             END { while (n > 0 && (l[n] ~ /^[[:space:]]*$/ || l[n] == "---")) n--
+                   for (i = 1; i <= n; i++) print l[i] }' "$NOTES_FILE"
+        echo
+        echo "The full notes are too long for a GitHub release: [$NOTES_FILE](https://github.com/KeithRaghubar/sysforge/blob/$TAG/$NOTES_FILE)."
+    } > "$NOTES_BODY"
+    echo "    $NOTES_FILE exceeds GitHub's 125000-character limit: publishing its summary + a link"
+fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "    [dry-run] gh release create $TAG --title \"sysforge $TAG\" \\"
-    echo "    [dry-run]   --notes-file docs/release-notes/$TAG.md \\"
+    echo "    [dry-run]   --notes-file <release body> \\"
     echo "    [dry-run]   $ASSET_SIG SHA256SUMS SHA256SUMS.asc"
 elif ! command -v gh >/dev/null 2>&1; then
     echo "ERROR: gh CLI not found — needed to publish the release + upload the signature." >&2
@@ -719,7 +753,7 @@ else
             "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
     else
         gh release create "$TAG" --title "sysforge $TAG" \
-            --notes-file "docs/release-notes/$TAG.md" \
+            --notes-file "$NOTES_BODY" \
             "$ASSET_SIG" "$RELEASE_STAGE/SHA256SUMS" "$RELEASE_STAGE/SHA256SUMS.asc"
     fi
     echo "    release published: $TARBALL_URL → asset sysforge-$NEW.tar.gz.asc"
