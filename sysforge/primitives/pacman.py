@@ -495,11 +495,18 @@ def pkg_supersedes_installed(path, installed: set) -> set:
     collision, not a substitution, and must still stop the transaction for
     review. Empty set on any read failure — unreadable metadata never widens
     what gets auto-confirmed.
+
+    A package never supersedes itself: some AUR packages declare the pair on
+    their own name (cbonsai's ``provides=(cbonsai) conflicts=(cbonsai)``), and
+    reinstalling one is no drop-in. Counting it would put ``--ask=4`` on the
+    whole batch, which pacman applies to every conflict question in the
+    transaction (4.0.0-B4).
     """
-    fields = _read_pkginfo_names(path, ("replaces", "conflict", "provides"))
-    return supersedes_names(
+    fields = _read_pkginfo_names(
+        path, ("pkgname", "replaces", "conflict", "provides"))
+    return (supersedes_names(
         fields["replaces"], fields["conflict"], fields["provides"],
-    ) & installed
+    ) - fields["pkgname"]) & installed
 
 
 def filter_pkgs_to_installed(

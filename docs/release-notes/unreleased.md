@@ -57,3 +57,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`4.0.0-B3` — `config merge` can remove and overwrite files in `/etc/sysforge`.** Choosing `[r]emove` or `[o]verwrite` for a `.sfnew` or `.pacnew` crashed with `PermissionError`, because sysforge wrote the root-owned directory as your user. Removing a companion now escalates through `sudo`, and overwriting a live file goes through the same atomic replace as `config clean` and `config reset`, which keeps the live file's mode and owner.
+
+---
+
+- **`4.0.0-B4` — a non-interactive install no longer removes a package it conflicts with because another package in the batch names itself.** Some AUR packages declare `provides` and `conflicts` on their own name (`cbonsai` does). sysforge read that as a drop-in replacing the installed copy and passed `--ask=4`, which pacman applies to every conflict question in the transaction. An `update` that rebuilt `cbonsai` alongside an unrelated conflicting package then removed the installed side without asking, instead of stopping. A package no longer counts as replacing itself, so only a real drop-in (`replaces`, or `conflicts` plus `provides` naming another installed package) gets the auto-confirm. Found by `45-interactive` in CI.
