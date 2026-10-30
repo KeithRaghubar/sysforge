@@ -763,6 +763,28 @@ def test_detect_stage_owned_repo_unknown_to_sync_db_is_silent(monkeypatch):
     assert out == []
 
 
+def test_detect_stage_owned_repo_renamed_kernel_queries_origin(monkeypatch):
+    """4.0.0-B6: a repo-sourced kernel renamed locally (`linux` → `linux-sysforge`)
+    is unknown to the sync DB under its renamed name, so the advisory went
+    silent and `update --versions` hid a pending 7.2.9 → 7.2.11. Fall back to
+    ``origin_pkgbase``, the name the repo pin itself queries (2.1.0-B12)."""
+    import sysforge.update as up
+    import sysforge.primitives.pacman as pac
+    sync_db = {"linux": "7.2.11.arch1-1"}
+    monkeypatch.setattr(pac, "get_pacman_sync_version", sync_db.get)
+
+    entry = {"owner_stage": "kernel", "source": "repo",
+             "pkgbase": "linux-sysforge", "origin_pkgbase": "linux"}
+    out = up._detect_stage_owned_updates(
+        {"linux-sysforge": dict(entry), "linux-sysforge-headers": dict(entry)},
+        all_installed={"linux-sysforge": "7.2.9.arch1-1",
+                       "linux-sysforge-headers": "7.2.9.arch1-1"},
+        sync_failures={}, rpc_version_by_base={}, pacman_updates_map=None,
+        skip_sync_check=False, offline=False,
+    )
+    assert out == [("linux-sysforge", "7.2.9.arch1-1", "7.2.11.arch1-1", "kernel")]
+
+
 def test_detect_stage_owned_aur_still_uses_rpc_path(monkeypatch):
     """3.0.0-B1 fixes the repo origin only: AUR-sourced stage-owned packages
     get their upstream version from RPC without a sync, so they keep running

@@ -604,7 +604,9 @@ def _detect_stage_owned_updates(
             # The walk's exclusion and the pin's lifecycle stay untouched —
             # syncing stage-owned sources from `update` is exactly the
             # double-processing the owner_stage skip exists to prevent.
-            hit = _stage_owned_repo_advisory(pkgbase, pkgnames, all_installed, owner)
+            hit = _stage_owned_repo_advisory(
+                pkgbase, pkgnames, all_installed, owner,
+                origin=entry.get("origin_pkgbase"))
             if hit is not None:
                 installed_ver, candidate_ver = hit
                 advisories.append((pkgbase, installed_ver, candidate_ver, owner))
@@ -624,7 +626,7 @@ def _detect_stage_owned_updates(
 
 def _stage_owned_repo_advisory(
     pkgbase: str, pkgnames: list[str], all_installed: dict[str, str],
-    owner: str = "",
+    owner: str = "", origin: str | None = None,
 ) -> tuple[str, str] | None:
     """Sync-DB candidate for a stage-owned ``source = "repo"`` pkgbase.
 
@@ -633,6 +635,11 @@ def _stage_owned_repo_advisory(
     unresolvable name, a package the sync DB does not know, or a vercmp
     failure omits the advisory rather than raising — this path is advisory
     only and must never fail an update run (3.0.0-B1).
+
+    ``origin`` is the stock upstream base of a locally renamed build (the
+    kernel's ``linux`` → ``linux-sysforge``): the sync DB knows only that
+    name, so a miss on the renamed one retries it, as the repo pin does
+    (2.1.0-B12). Without it a renamed kernel never advised (4.0.0-B6).
     """
     from sysforge.primitives.pacman import get_pacman_sync_version
     from sysforge.primitives.version import vercmp
@@ -645,6 +652,8 @@ def _stage_owned_repo_advisory(
             continue
         try:
             candidate_ver = get_pacman_sync_version(name)
+            if not candidate_ver and origin and origin != name:
+                candidate_ver = get_pacman_sync_version(origin)
         except Exception:  # noqa: S112 — advisory only, skip on probe failure
             continue
         if not candidate_ver:
