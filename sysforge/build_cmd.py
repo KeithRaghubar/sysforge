@@ -216,13 +216,18 @@ def _add_recorded_failures(args) -> None:
 
     That table holds build failures and, since F23, review refusals, so this is
     "everything the last runs could not finish". Sorted for a stable order;
-    ``build_and_install`` topo-sorts the batch itself.
+    ``build_and_install`` topo-sorts the batch itself. A package removed since
+    its failure is left out, in memory only, as ``state failed`` lists it
+    (4.0.0-B1): a replaced ``-git`` package must not come back.
     """
     from sysforge.pipeline.state import resolve_state_dir
+    from sysforge.primitives import install_reconcile
     from sysforge.primitives.build_state import BuildState
 
     state_dir, _ = resolve_state_dir(getattr(args, "state_dir", None))
-    recorded = sorted(BuildState(state_dir).all_failures())
+    bs = BuildState(state_dir)
+    install_reconcile.clear_stale_failures(bs)
+    recorded = sorted(bs.all_failures())
     named = list(args.pkgbuilds or [])
     have = {_pkg_to_name(p) for p in named}
     args.pkgbuilds = named + [pb for pb in recorded if pb not in have]

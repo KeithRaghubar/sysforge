@@ -29,3 +29,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`4.0.0-DEV2` — the release script publishes long release notes and resumes after a failed publish.** GitHub rejects a release body over 125,000 characters, and the 4.0.0 notes are longer, so `gh release create` failed. A notes file over the limit is now published as its summary plus a link to the full file at the tag. That failure also showed the resume was not idempotent: Phase 3 had already rewritten `PKGBUILD`'s `sha256sums`, and `make release-resume` then refused the dirty tree. A resume now accepts a `PKGBUILD` whose only change is that array, and still refuses any other edit.
+
+## Fixed
+
+- **`4.0.0-B1` — `build --failed` no longer rebuilds a package you removed.** Replacing a failed `ethtool-git` with `pacman -S ethtool` left its failure recorded, so `build --failed` queued `ethtool-git` again. A removal cleared the failure only when sysforge read the pacman hook's record of that transaction, and that record can be gone by then. A failed package that sysforge tracks but that is no longer installed now counts as removed too, in `update`, `state failed`, `doctor --state` and `build --failed`; `update` checks it before pruning the entry. A package whose first build failed was never installed and is still retried. A failure left over from before this fix is cleared with `sysforge state failed --clear PKGBASE`.

@@ -32,8 +32,11 @@ which also clears the window.
 The same window is the removal signal (3.5.0-B120): a ``buildstate`` target
 no longer installed was removed, by sysforge or a plain ``pacman -R``, and
 :func:`clear_removed_failures` drops its pkgbase's recorded build failure once
-no member is left. Only the event counts: a package whose first build failed
-was never installed either, and keeps its failure.
+no member is left. The event can be lost before a reader sees it, so a
+tracked build_state entry whose package is no longer installed counts too
+(:func:`clear_stale_failures`, 4.0.0-B1): update reconciles before its sync
+prunes that entry. A package whose first build failed has neither, and keeps
+its failure.
 
 Event format (shared with ``tools/pacman-hook-helper.sh``): each transaction is
 a timestamp line followed by zero or more pkgname lines, then a blank line.
@@ -241,6 +244,23 @@ def clear_removed_failures(bs, removed, *, fields=None) -> list[str]:
     return cleared
 
 
+def clear_stale_failures(bs, sentinel_dir=None) -> list[str]:
+    """:func:`clear_removed_failures` for the window's targets and *bs*'s tracked
+    entries no longer installed (4.0.0-B1).
+
+    The window alone misses a removal whose record was consumed or lost before
+    this read; the tracked entry stays until ``update``'s sync prunes it, so
+    every reader that runs before then still clears the failure. Returns the
+    cleared pkgbases; the caller saves.
+    """
+    if not bs.all_failures():
+        return []
+    from sysforge.primitives.pacman import get_all_package_fields
+    fields = get_all_package_fields("%BASE%")
+    removed = window_targets(sentinel_dir) | set(bs.all_packages())
+    return clear_removed_failures(bs, removed, fields=fields)
+
+
 class Reconciled(NamedTuple):
     """What :func:`consume_external_installs` changed in build state."""
 
@@ -265,8 +285,9 @@ def consume_external_installs(bs, sentinel_dir=None, *, read_only: bool = False)
     mass-demote every ``-git`` package. ``get_pacman_sync_version`` reads the
     local sync DBs (offline-safe), returning None for anything not in a repo.
 
-    The window's removals also clear their stale build failures
-    (:func:`clear_removed_failures`, 3.5.0-B120).
+    The window's removals, and tracked entries no longer installed, also clear
+    their stale build failures (:func:`clear_stale_failures`, 3.5.0-B120,
+    4.0.0-B1).
 
     Returns what changed; the caller saves *bs* when it did. ``read_only``
     (``--dry-run`` and the reports) changes it in memory and leaves the
@@ -274,7 +295,7 @@ def consume_external_installs(bs, sentinel_dir=None, *, read_only: bool = False)
     when the reconcile raises.
     """
     try:
-        cleared = clear_removed_failures(bs, window_targets(sentinel_dir))
+        cleared = clear_stale_failures(bs, sentinel_dir)
         external = external_install_targets(sentinel_dir)
         if not external:
             return Reconciled([], cleared)
