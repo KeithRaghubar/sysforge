@@ -18,12 +18,18 @@ step "two packages that do not conflict yet"
 sed -i 's/^conflicts=.*/conflicts=()/' "$alt/PKGBUILD"
 # e2e-hello by makepkg alone: no record, so the profile change below rebuilds
 # only e2e-hello-alt. pacman asks "Remove e2e-hello?" only when e2e-hello is
-# installed and not itself in the transaction.
+# installed and not itself in the transaction. Under --here 30-flag-drift
+# left a record for it, which the makepkg install below does not clear, so
+# forget it first or the drift rebuilds both sides and pacman never asks.
+if [[ -n $(state_get e2e-hello build_mode) ]]; then
+    sysforge state forget e2e-hello </dev/null
+fi
 (cd "$hello" && makepkg -si --noconfirm)
 sysforge build "$alt" -si </dev/null
 assert_installed e2e-hello
 assert_installed e2e-hello-alt
 assert_recorded e2e-hello-alt
+[[ -z $(state_get e2e-hello build_mode) ]] || fail "e2e-hello still has a record, so it would drift too"
 
 step "the next e2e-hello-alt conflicts with e2e-hello, and a profile change makes it drift"
 cp "$E2E_DIR/pkgs/e2e-hello-alt/PKGBUILD" "$alt/PKGBUILD"
