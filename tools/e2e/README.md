@@ -43,23 +43,29 @@ sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-t
 | `30-flag-drift` | a default-profile change reported by `update --dry-run` and rebuilt by `--rebuild-on-flag-drift` |
 | `35-update-devel` | `update --devel` on a `-git` package: nothing rebuilt with no new commit, the new `pkgver()` built after one, the built commit recorded |
 | `40-pre-install-failure` | a build failing before any install leaves no sentinel |
+| `45-interactive` | `update --interactive` and `build --interactive` put pacman's conflict question to the user; without the flag the install stops and nothing changes |
 | `50-maintain` | `state list`, `resolve`, `log`, `packages add`/`list`/`remove`/`add-group`, `state forget` and `uninstall` on a source-built package |
 | `60-revert-to-stock` | a source-built repo package replaced by the stock one, its record dropped |
 | `70-config` | `config check`, `clean` and `reset`, and `setup --preset` undone by `config reset` |
+| `65-external-install` | a source-built package reinstalled with `pacman -S` is demoted by `update`, not rebuilt; a toolchain package changed outside sysforge leaves one reminder |
+| `75-config-merge` | a `.sfnew` beside an edited config merged by the `[ui] merge` tool, the user's edit kept, the `.sfnew` removed |
 | `80-inspect` | the read-only commands (`state` reports, `doctor`, `env`, `fetch`) change nothing |
 | `85-artifacts` | a user script discovered, adopted, reviewed, edited, deployed and removed |
 | `90-source-policy` | `[aur] enabled = false` and `freeze_sources` refuse before any checkout; `search` with the AUR off |
 | `95-stage-dry-run` | `run toolchain`/`run kernel --dry-run` with non-default configs change nothing, and the kernel's shows its plan |
+| `96-toolchain-kernel-handoff` | the compiler `run toolchain` registers (`skip_build`, llvm then gcc) is the one `run kernel --dry-run` plans with |
 | `99-self-uninstall` | a repo package reverted, a local one kept, then the package, its data, group and `IgnoreGroup` entry gone; last, since nothing runs after it |
 
 Packages come from `pkgs/`, local PKGBUILDs with no network sources, so an outage can't flake the
-tier. Four scenarios need the network, because it is the point: `10-quickstart` (the AUR, and
-pacman for build dependencies), `60-revert-to-stock` and `99-self-uninstall` (the stock package
-from the mirrors) and `90-source-policy` (the AUR lookup a frozen build makes before refusing the
+tier. Five scenarios need the network, because it is the point: `10-quickstart` (the AUR, and
+pacman for build dependencies), `60-revert-to-stock`, `65-external-install` and `99-self-uninstall`
+(the stock packages from the mirrors) and `90-source-policy` (the AUR lookup a frozen build makes before refusing the
 clone).
 `pkgs/tree` is a stand-in named after a repo package, which puts `build` on its repo opt-in path
 without fetching Arch's packaging repo. `pkgs/e2e-hello-git` is a VCS package whose source is a git
 repository its scenario creates, so `update --devel` runs `git ls-remote` and `pkgver()` offline.
+`pkgs/e2e-hello-alt` conflicts with `e2e-hello` without providing it, so installing either over
+the other raises pacman's conflict question.
 
 A scenario can't catch a change in what the live repos contain, because `pkgs/` stands in for
 them. That is the live-mirror tier's job (`make test-live`, `tests/test_live_stock_toolchain.py`).

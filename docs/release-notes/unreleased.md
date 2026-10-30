@@ -24,6 +24,22 @@ https://keepachangelog.com/en/1.1.0/
 
 ## Changed
 
+- **`3.5.0-DEV25` — an end-to-end scenario for the toolchain → kernel handoff.** `96-toolchain-kernel-handoff` runs a real `run toolchain` with `skip_build = true`, which registers a compiler without building it, and checks the result saved in `pipeline_state.toml`: `cc=/usr/bin/clang`, variant `stock_llvm` for `compiler = "llvm"`, and gcc after switching back. It then checks that `run kernel --dry-run`, with no compiler in `kernel.toml`, plans with the same compiler and variant. Before this, `95-stage-dry-run` previewed the two stages separately, so nothing checked what one leaves for the other.
+
+---
+
+- **`3.5.0-DEV28` — an end-to-end scenario for a stock package installed over a sysforge build.** `65-external-install` builds `tree` from source, reinstalls it with `sudo pacman -S tree`, and checks that the next `update` demotes its record to `pacman` without rebuilding it and consumes the hook's sentinel. It then installs `lld` and checks that `update -v` shows the toolchain reminder once and not again. The pacman hooks ran in every scenario before, but nothing checked what they did. Needs the mirrors.
+
+---
+
+- **`3.5.0-DEV30` — an end-to-end scenario for `config merge`.** `75-config-merge` leaves a `.sfnew` beside an edited `sysforge.toml`, sets `[ui] merge` to a script that takes the new file's added key, and runs `config merge` at a terminal: `[m]erge`, then `[r]emove`. It checks that the key arrived, the user's edit survived and the `.sfnew` is gone. `config merge` is no longer listed as uncovered. The scenario found `4.0.0-B3`.
+
+---
+
+- **`3.5.0-DEV31` — an end-to-end scenario for `build --interactive` and `update --interactive`.** `45-interactive` uses a new stand-in, `e2e-hello-alt`, which conflicts with `e2e-hello` without providing it. Without the flag, `update` and then `build` stop at pacman's conflict question and install nothing. With `--interactive`, the question shows on the terminal and a yes swaps the packages.
+
+---
+
 - **`4.0.0-DEV1` — releases go through a release PR instead of a push to `main`.** The `main` ruleset requires a pull request, so the push the release script asked for was rejected. `tools/release.sh` now cuts each release on a `release/vX.Y.Z` branch and asks for `git push -u origin release/vX.Y.Z && git push origin vX.Y.Z`. Resuming requires that branch, and the script refuses to start if it already exists. The release checklist's last stage opens the release PR and merges it with a merge commit, never a squash: a squash rewrites the signed `release:` commit, leaving the `vX.Y.Z` tag outside `main`'s history, so `git describe` in the `-git` package keeps reporting the previous version.
 
 ---
@@ -37,3 +53,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`4.0.0-B2` — bare `sysforge doctor` runs the full sweep again, and `doctor system` reads your config.** The `--config` axis flag and the loaded config shared one attribute. Bare `sysforge doctor` took the loaded config for the flag and checked only the live config settings, so it printed one section and stopped. `sysforge doctor system` took the flag's unset value for a loaded config and ran every axis against an empty one, so the toolchain, cache, graphics and storage checks ignored your settings. The flag now has its own attribute; its spelling is unchanged.
+
+---
+
+- **`4.0.0-B3` — `config merge` can remove and overwrite files in `/etc/sysforge`.** Choosing `[r]emove` or `[o]verwrite` for a `.sfnew` or `.pacnew` crashed with `PermissionError`, because sysforge wrote the root-owned directory as your user. Removing a companion now escalates through `sudo`, and overwriting a live file goes through the same atomic replace as `config clean` and `config reset`, which keeps the live file's mode and owner.
