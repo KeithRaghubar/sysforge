@@ -2215,3 +2215,38 @@ def test_toolchain_axis_reports_non_graphics_consumer_symbols(monkeypatch):
     assert not any("gallium" in m for m in messages)
     assert "libllvm_consumers" in res.roster.ran
 
+
+
+# ---------------------------------------------------------------------------
+# The --config axis flag vs the loaded config (4.0.0-B2)
+# ---------------------------------------------------------------------------
+# Both lived on ``args.config``: bare `doctor` read the loaded dict as the flag
+# and ran only the config axis, and `doctor system` read the flag's False as
+# "already loaded" and ran every axis against an empty config.
+
+_LIVE_CONFIG = {"defaults": {"toolchain": "llvm"}}
+
+
+def _pre_checked(monkeypatch, *argv):
+    from cli_args import cli_args
+    monkeypatch.setattr(doctor, "_load_config", lambda: dict(_LIVE_CONFIG))
+    args = cli_args(*argv)
+    args.verb_cls().pre_check(args)
+    return args
+
+
+@pytest.mark.parametrize("argv", [("doctor",), ("doctor", "system")])
+def test_full_sweep_runs_every_default_axis_with_the_loaded_config(monkeypatch, argv):
+    args = _pre_checked(monkeypatch, *argv)
+
+    assert doctor._resolve_axis_names(args) == [
+        n for n in doctor._SYSTEM_AXIS_ORDER
+        if n not in doctor._OPT_IN_AXES and n != "abi"]
+    assert args.config == _LIVE_CONFIG
+
+
+def test_config_flag_selects_only_the_config_axis(monkeypatch):
+    args = _pre_checked(monkeypatch, "doctor", "system", "--config")
+
+    assert doctor._resolve_axis_names(args) == ["config"]
+    assert args.config == _LIVE_CONFIG

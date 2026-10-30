@@ -33,3 +33,7 @@ https://keepachangelog.com/en/1.1.0/
 ## Fixed
 
 - **`4.0.0-B1` — `build --failed` no longer rebuilds a package you removed.** Replacing a failed `ethtool-git` with `pacman -S ethtool` left its failure recorded, so `build --failed` queued `ethtool-git` again. A removal cleared the failure only when sysforge read the pacman hook's record of that transaction, and that record can be gone by then. A failed package that sysforge tracks but that is no longer installed now counts as removed too, in `update`, `state failed`, `doctor --state` and `build --failed`; `update` checks it before pruning the entry. A package whose first build failed was never installed and is still retried. A failure left over from before this fix is cleared with `sysforge state failed --clear PKGBASE`.
+
+---
+
+- **`4.0.0-B2` — bare `sysforge doctor` runs the full sweep again, and `doctor system` reads your config.** The `--config` axis flag and the loaded config shared one attribute. Bare `sysforge doctor` took the loaded config for the flag and checked only the live config settings, so it printed one section and stopped. `sysforge doctor system` took the flag's unset value for a loaded config and ran every axis against an empty one, so the toolchain, cache, graphics and storage checks ignored your settings. The flag now has its own attribute; its spelling is unchanged.
