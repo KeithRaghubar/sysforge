@@ -1,0 +1,20 @@
+# A local package that conflicts with e2e-hello without providing it: an
+# unexpected collision, not a drop-in, so pacman's "Remove e2e-hello?" question
+# is answered N under --noconfirm and reaches the user only with --interactive.
+pkgname=e2e-hello-alt
+pkgver=1.0
+pkgrel=1
+pkgdesc="sysforge end-to-end test package that conflicts with e2e-hello"
+arch=('x86_64')
+license=('MIT')
+conflicts=('e2e-hello')
+source=('hello.c')
+sha256sums=('SKIP')
+
+build() {
+    ${CC:-cc} $CPPFLAGS $CFLAGS $LDFLAGS -o e2e-hello-alt hello.c
+}
+
+package() {
+    install -Dm755 e2e-hello-alt "$pkgdir/usr/bin/e2e-hello-alt"
+}

@@ -494,6 +494,14 @@ class TestPkgSupersedesInstalled:
         with self._pkginfo(info):
             assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"mesa"}) == set()
 
+    def test_a_package_never_supersedes_itself(self):
+        """AUR cbonsai declares `provides=(cbonsai) conflicts=(cbonsai)`.
+        Reinstalling it is no drop-in, and counting it would put ``--ask=4`` on
+        the whole batch, confirming any other conflict in it (4.0.0-B4)."""
+        info = "pkgname = cbonsai\nconflict = cbonsai\nprovides = cbonsai\n"
+        with self._pkginfo(info):
+            assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"cbonsai"}) == set()
+
     @patch("sysforge.primitives.pacman.subprocess.run", side_effect=FileNotFoundError)
     def test_unreadable_is_empty(self, _mock_run):
         assert pkg_supersedes_installed("/tmp/p.pkg.tar", {"wayland"}) == set()

@@ -141,6 +141,66 @@ def test_overwrite_replaces_live_after_confirm(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "# doc comment\nkey = \"shipped\"\n"
 
 
+@pytest.fixture
+def _root_owned_dir(monkeypatch):
+    """A config dir the user cannot write, as /etc/sysforge is root's, and a
+    stand-in sudo: each escalated argv runs with the dir writable for it."""
+    import os
+    import subprocess
+
+    from sysforge.primitives import atomic_write
+
+    if os.geteuid() == 0:
+        pytest.skip("root writes a read-only dir anyway")
+    escalated: list[list[str]] = []
+
+    def setup(config_dir: Path) -> list[list[str]]:
+        def fake_run_privileged(argv, *, tag, mutates=True, **kw):  # noqa: ARG001
+            escalated.append(argv)
+            config_dir.chmod(0o755)
+            try:
+                return subprocess.run(argv, check=True)
+            finally:
+                config_dir.chmod(0o555)
+
+        monkeypatch.setattr(config_cmd, "run_privileged", fake_run_privileged)
+        monkeypatch.setattr(atomic_write, "run_privileged", fake_run_privileged)
+        config_dir.chmod(0o555)
+        return escalated
+
+    yield setup
+    for p in escalated:  # let tmp_path cleanup in
+        Path(p[-1]).parent.chmod(0o755)
+
+
+def test_remove_escalates_in_a_root_owned_dir(tmp_path, monkeypatch, _root_owned_dir):
+    # 4.0.0-B3: [r]emove unlinked as the user and crashed on /etc/sysforge.
+    config_dir = tmp_path / "cfg"
+    target, companion = _make_pair(config_dir)
+    escalated = _root_owned_dir(config_dir)
+    monkeypatch.setattr(config_cmd, "prompt_key", _scripted(["r"]))
+    monkeypatch.setattr(config_cmd, "prompt_choice", lambda *a, **k: "y")
+
+    assert config_cmd.cmd_config_merge(_args(config_dir)) == 0
+    assert not companion.exists()
+    assert escalated == [["rm", "-f", str(companion)]]
+    assert target.read_text(encoding="utf-8") == 'key = "live"\n'
+
+
+def test_overwrite_escalates_in_a_root_owned_dir(tmp_path, monkeypatch, _root_owned_dir):
+    # 4.0.0-B3: [o]verwrite copied over the live file as the user and crashed.
+    config_dir = tmp_path / "cfg"
+    target, companion = _make_pair(config_dir)
+    escalated = _root_owned_dir(config_dir)
+    monkeypatch.setattr(config_cmd, "prompt_key", _scripted(["o"]))
+    monkeypatch.setattr(config_cmd, "prompt_choice", lambda *a, **k: "y")
+
+    assert config_cmd.cmd_config_merge(_args(config_dir)) == 0
+    assert not companion.exists()
+    assert target.read_text(encoding="utf-8") == "# doc comment\nkey = \"shipped\"\n"
+    assert escalated[-1] == ["rm", "-f", str(companion)]
+
+
 def test_abort_stops_the_run(tmp_path, monkeypatch):
     config_dir = tmp_path / "cfg"
     _make_pair(config_dir, ".sfnew")

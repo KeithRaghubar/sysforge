@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import difflib
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -45,6 +44,7 @@ from sysforge import log
 from sysforge.primitives import atomic_write, config_schema, json_out, paths, prompt
 from sysforge.primitives.editor import resolve_merge_tool, run_tty_argv
 from sysforge.primitives.pager import maybe_pager
+from sysforge.primitives.privilege import run_privileged
 from sysforge.primitives.prompt import prompt_choice, prompt_key
 from sysforge.verbs import ExecResult, PreCheckResult, Verb, VerbGroup
 
@@ -131,6 +131,16 @@ def _confirm(msg: str) -> bool:
                          retry_on_invalid=False) in {"y", "yes"}
 
 
+def _remove_companion(path: Path) -> None:
+    """Delete a companion, escalating when its dir is root's, as /etc/sysforge
+    is (4.0.0-B3)."""
+    try:
+        path.unlink()
+    except PermissionError:
+        # mutates=False: one unlink, nothing for an interruption to leave half done.
+        run_privileged(["rm", "-f", str(path)], tag="CONFIG", mutates=False)
+
+
 def _merge_one(target: Path, new_path: Path, use_pager: bool) -> str:
     """Drive the pacdiff-style loop for one companion file.
 
@@ -170,14 +180,15 @@ def _merge_one(target: Path, new_path: Path, use_pager: bool) -> str:
             return "skipped"
         elif ans == "r":
             if _confirm(f"  Remove {label}? (live file is already complete) [y/N] "):
-                new_path.unlink()
+                _remove_companion(new_path)
                 _log.ui(f"  Removed {label}")
                 return "removed"
         elif ans == "o":
             if _confirm(f"  Overwrite {target.name} with {label} verbatim? "
                         "This discards your local values. [y/N] "):
-                shutil.copy2(new_path, target)
-                new_path.unlink()
+                atomic_write.replace_file(
+                    target, new_path.read_text(encoding="utf-8"), tag="CONFIG")
+                _remove_companion(new_path)
                 _log.ui(f"  Installed {label} over {target.name}")
                 return "installed"
         elif ans == "b":
