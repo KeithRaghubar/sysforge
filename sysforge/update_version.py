@@ -216,8 +216,8 @@ def _check_one_pkgbase(
         # For a coexist-renamed package the entry's ``pkgbase`` carries the
         # renamed value (e.g. ``llvm-sysforge``), but the RPC cache is keyed by
         # the stock upstream base — so fall back to ``origin_pkgbase`` when the
-        # renamed base misses. This is the sole read of origin_pkgbase in the
-        # update path; the rest of the correlation flows through pkgbuild_dir.
+        # renamed base misses. This is the per-pkgbase check's only read of
+        # origin_pkgbase; the rest of the correlation flows through pkgbuild_dir.
         rpc_ver = rpc_version_by_base.get(pkgbase)
         if not rpc_ver:
             origin = entry.get("origin_pkgbase")
