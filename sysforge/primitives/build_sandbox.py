@@ -75,6 +75,8 @@ Public API:
     check_install_set(policy, install_pkgs, sync_dbs) -> None  (raises SandboxUnavailable)
     toolchain_packages(exports, conf_path) -> set
     installed_artifact(name, search_dir) -> Path | None
+    cached_repo_artifact(name) -> Path | None     (foreign, never-built names only)
+    unbuildable_foreign_hint(names) -> str
     host_only_packages(state_dir) -> set
     llvm_linked(names, graph) -> set
     needs_repo_rust(pkgbuild_path) -> bool
@@ -85,6 +87,7 @@ Public API:
     copy_compiler(policy, cc_name) -> Path
     recorded_toolchain(prov, host_variant, host_fingerprint) -> (variant, fingerprint)
     resolve_dep_artifacts(pkgbuild, search_dir, state_dir) -> list[Path]
+                                                  (raises SandboxUnavailable)
 """
 from __future__ import annotations
 
@@ -1194,13 +1197,24 @@ def _host_only_packages(state_dir) -> set:
     (``pop-icon-theme-git``, 2026-10-10). ``pacman -Qm`` is the authority on
     "in no sync repo"; unreadable, it degrades to the source-built set alone.
     """
+    source_built, foreign = _host_only_split(state_dir)
+    return source_built | foreign
+
+
+def _host_only_split(state_dir) -> tuple[set, set]:
+    """``(source_built, foreign)``: the two halves of :func:`_host_only_packages`.
+
+    Kept apart where the difference matters: a foreign package is in *no* sync
+    repo, so a missing artifact cannot fall back to one (4.0.0-B7), and only a
+    foreign package sysforge never built may come out of pacman's cache.
+    """
     from sysforge.primitives import pacman
 
     try:
         foreign = set(pacman.get_foreign_packages())
     except Exception:
         foreign = set()
-    return _source_built_packages(state_dir) | foreign
+    return _source_built_packages(state_dir), foreign
 
 
 def host_only_packages(state_dir=None) -> set:
@@ -1363,14 +1377,57 @@ def installed_artifact(name: str, search_dir):
     artifact — *search_dir* is a long-lived archive of every build (3.1.0-B1).
     """
     from sysforge.primitives import pacman
-    from sysforge.primitives.makepkg_artifacts import find_artifacts
 
     version = pacman.get_installed_version(name)
     if not version:
         return None
-    match = [p for p in find_artifacts(search_dir, [name], exact_ver=version)
-             if not str(p).endswith(".sig")]
-    return Path(match[0]) if match else None
+    return _exact_artifact(name, version, [search_dir])
+
+
+def _exact_artifact(name: str, version: str, dirs) -> Path | None:
+    """The first ``<name>-<version>-*.pkg.tar*`` across *dirs*, or None."""
+    from sysforge.primitives.makepkg_artifacts import find_artifacts
+
+    for d in dirs:
+        if not d or not Path(d).is_dir():
+            continue
+        match = [p for p in find_artifacts(d, [name], exact_ver=version)
+                 if not str(p).endswith(".sig")]
+        if match:
+            return Path(match[0])
+    return None
+
+
+def cached_repo_artifact(name: str) -> Path | None:
+    """The host's installed build of *name* from pacman's ``CacheDir``, or None.
+
+    For a package a repo shipped and later dropped (``lib32-tdb`` leaving
+    [multilib], 4.0.0-B7): the host still runs the last signed repo build, and
+    the cache is the one place that exact file survives. Signed archives only
+    (:func:`pacman.cached_repo_pkg_file`). **Callers pass only foreign names
+    sysforge never built**: the signature proves a repo build, not the host's,
+    and the cache can hold the repo build at the version sysforge rebuilt from
+    source, the same-pkgver skew of 2026-09-11 that ``-I`` and the local repo
+    exist to prevent.
+    """
+    from sysforge.primitives import pacman
+
+    version = pacman.get_installed_version(name)
+    if not version:
+        return None
+    return pacman.cached_repo_pkg_file(name, version)
+
+
+def unbuildable_foreign_hint(names) -> str:
+    """Why a foreign dep with no build anywhere stops the build, and the fix.
+
+    One wording for the resolver's refusal and the local repo's warning.
+    """
+    names = sorted(names)
+    return (f"no stock repo carries {', '.join(names)}, and no build of "
+            f"{'it' if len(names) == 1 else 'them'} is in PKGDEST, the local "
+            f"repo or the pacman cache; build {'it' if len(names) == 1 else 'them'} "
+            f"first: sysforge build {' '.join(names)}")
 
 
 def _session_relations() -> tuple[dict, dict]:
@@ -1477,10 +1534,17 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     * **An unreadable dependency closure refuses** (3.2.0-B19): a missing
       PKGBUILD or a failed deps/local-DB read raises ``SandboxUnavailable``
       rather than returning ``[]``, which would read as "no source-built deps".
-    * **A pruned artifact warns and continues.** The container falls back to
-      the repo version, which is a build-fidelity mismatch, not a breach of
-      the isolation boundary — so unlike the sandbox's own refuse-rather-than-
-      downgrade rule, a missing file in an archive is not worth a hard stop.
+    * **A pruned artifact warns and continues — if a repo carries it.** The
+      container falls back to the repo version, which is a build-fidelity
+      mismatch, not a breach of the isolation boundary — so unlike the
+      sandbox's own refuse-rather-than-downgrade rule, a missing file in an
+      archive is not worth a hard stop.
+    * **A foreign dep with no build anywhere refuses** (4.0.0-B7). It is in no
+      sync repo, so there is nothing to fall back to and the container would
+      only fail later on ``target not found``. Before refusing, the exact
+      installed version is sought in PKGDEST, then the local repo (which keeps
+      a build pruned from PKGDEST), then, for a foreign package sysforge never
+      built, pacman's cache (:func:`cached_repo_artifact`).
 
     Skew against packages outside the injection set is the local repo's job
     (``primitives/local_repo.py``, 3.1.0-F10).
@@ -1490,7 +1554,8 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     if not pkgbuild_path or not search_dir:
         return []
 
-    host_only = _host_only_packages(state_dir)
+    source_built, foreign = _host_only_split(state_dir)
+    host_only = source_built | foreign
     if not host_only:
         return []
 
@@ -1503,6 +1568,7 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
     # closure is not that case.
     closure = _dep_closure(pkgbuild_path)
     found: list[Path] = []
+    unbuildable: list[str] = []
     for name in closure:
         if name not in host_only:
             continue
@@ -1510,15 +1576,44 @@ def resolve_dep_artifacts(pkgbuild_path, *, search_dir, state_dir=None) -> list[
         if not version:
             continue
         art = installed_artifact(name, search_dir)
+        if art is None and name in foreign:
+            art = _exact_artifact(name, version, [_local_repo_dir(state_dir)])
+            if art is None and name not in source_built:
+                art = cached_repo_artifact(name)
         if art is not None:
             found.append(art)
+            continue
+        if name in foreign:
+            unbuildable.append(name)
             continue
         _log.warn(
             f"sandbox: no built artifact for {name} {version} in {search_dir}; "
             f"the container will use the repo version instead, which may "
             f"not match what this host runs"
         )
+    if unbuildable:
+        versions = ", ".join(f"{n} {pacman.get_installed_version(n)}"
+                             for n in sorted(unbuildable))
+        raise SandboxUnavailable(
+            f"refusing to sandbox: this build needs {versions}, but "
+            f"{unbuildable_foreign_hint(unbuildable)}")
     return found
+
+
+def _local_repo_dir(state_dir) -> Path | None:
+    """The local repo's directory, or None when the state dir is unknown.
+
+    Imported at call time: ``local_repo`` imports this module, and it is the
+    one home for the repo's location.
+    """
+    from sysforge.primitives import local_repo
+
+    if state_dir is None:
+        try:
+            state_dir = paths.resolve_state_dir(None, provision=False)[0]
+        except Exception:
+            return None
+    return local_repo.repo_dir(state_dir)
 
 
 def toolchain_packages(exports: dict | None, conf_path=None) -> set:

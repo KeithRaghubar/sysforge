@@ -30,6 +30,14 @@ def _reset():
     lr.reset_session()
 
 
+@pytest.fixture(autouse=True)
+def _no_host_foreign():
+    """Keep sync's missing-artifact wording off this machine's real
+    ``pacman -Qm``; tests that need a foreign package patch it explicitly."""
+    with patch("sysforge.primitives.pacman.get_foreign_packages", return_value={}):
+        yield
+
+
 class FakeRepoTools:
     """Stands in for repo-add/repo-remove: keeps the db as a real tar of
     <name>-<ver>/desc entries, so sync's db reader is exercised for real."""
@@ -68,9 +76,14 @@ def _pkg(pkgdest: Path, name: str, ver: str) -> Path:
     return p
 
 
-def _sync(tmp_path, installed: dict, tools=None):
+def _sync(tmp_path, installed: dict, tools=None, *, source_built=(),
+          cache_dir=None):
     tools = tools or FakeRepoTools()
+    cache_dir = cache_dir or tmp_path / "pacman-cache"
     with patch.object(bs, "host_only_packages", return_value=set(installed)), \
+            patch.object(bs, "_source_built_packages", return_value=set(source_built)), \
+            patch("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                  return_value=[cache_dir]), \
             patch("sysforge.primitives.local_repo.pacman.get_installed_version",
                   side_effect=lambda n: installed.get(n)), \
             patch("sysforge.primitives.local_repo.run.run_or_raise", side_effect=tools):
@@ -349,6 +362,38 @@ def test_publishes_foreign_packages_sysforge_did_not_build(tmp_path):
                   side_effect=FakeRepoTools()):
         res = lr.sync(tmp_path / "state", tmp_path / "pkgdest")
     assert res.added == ["pop-icon-theme-git"]
+
+
+def test_publishes_a_dropped_repo_package_from_the_pacman_cache(tmp_path):
+    """4.0.0-B7: lib32-tdb left [multilib]; the host runs the last repo build,
+    which survives only in pacman's cache. That exact file is published."""
+    cached = _pkg(tmp_path / "pacman-cache", "lib32-tdb", "1.4.15-1")
+    Path(str(cached) + ".sig").write_bytes(b"sig")
+    res, _ = _sync(tmp_path, {"lib32-tdb": "1.4.15-1"})
+    assert res.added == ["lib32-tdb"] and res.missing == []
+    published = lr.repo_dir(tmp_path / "state") / cached.name
+    assert published.read_bytes() == cached.read_bytes()
+
+
+def test_never_publishes_a_source_built_package_from_the_pacman_cache(tmp_path):
+    """The cache may hold the repo build at the version sysforge rebuilt —
+    the 2026-09-11 skew this repo exists to prevent."""
+    stock = _pkg(tmp_path / "pacman-cache", "llvm-libs", "22.1.8-2")
+    Path(str(stock) + ".sig").write_bytes(b"sig")
+    res, _ = _sync(tmp_path, {"llvm-libs": "22.1.8-2"}, source_built={"llvm-libs"})
+    assert res.added == [] and res.missing == ["llvm-libs"]
+
+
+def test_missing_foreign_package_does_not_promise_a_repo_version(tmp_path, capsys):
+    """No stock repo carries a foreign package, so the old "the container will
+    use the repo version" was false; say what will actually happen."""
+    with patch("sysforge.primitives.local_repo.pacman.get_foreign_packages",
+               return_value={"lib32-tdb": "1.4.15-1"}):
+        res, _ = _sync(tmp_path, {"lib32-tdb": "1.4.15-1"})
+    assert res.missing == ["lib32-tdb"]
+    err = capsys.readouterr().err
+    assert "no stock repo" in err and "sysforge build lib32-tdb" in err
+    assert "will use the repo version" not in err
 
 
 _MULTILIB_ON = _STOCK_CONF + "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n"

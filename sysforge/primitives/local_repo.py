@@ -134,9 +134,11 @@ def sync(state_dir, pkgdest) -> SyncResult:
     Host-only is source-built ∪ foreign (``build_sandbox.host_only_packages``):
     an AUR package sysforge never built is in no stock repo either.
 
-    Once per run. A pruned installed artifact warns and continues (the 3.1.0-F9
-    rule: one dep, named); a tooling or filesystem failure refuses, because the
-    alternative is building against stock — the failure this exists to stop.
+    Once per run. A foreign package sysforge never built is published from
+    pacman's cache when its signed repo file survives there (4.0.0-B7). A
+    pruned installed artifact warns and continues (the 3.1.0-F9 rule: one dep,
+    named); a tooling or filesystem failure refuses, because the alternative is
+    building against stock — the failure this exists to stop.
     """
     global _synced
     if _synced is not None:
@@ -154,9 +156,24 @@ def sync(state_dir, pkgdest) -> SyncResult:
 
     desired: dict[str, Path] = {}
     kept: set[str] = set()
-    for name in sorted(_sandbox.host_only_packages(state_dir)):
+    host_only = _sandbox.host_only_packages(state_dir)
+    # Read only when something is missing: the cache fallback and the
+    # missing-artifact wording are the only consumers.
+    source_built: set | None = None
+    foreign: set | None = None
+    for name in sorted(host_only):
         art = _sandbox.installed_artifact(name, pkgdest) if pkgdest else None
         if art is None:
+            if source_built is None:
+                source_built = _sandbox.source_built_packages(state_dir)
+            if name not in source_built:
+                # host-only minus source-built is foreign by definition: a
+                # dropped repo package, whose cached file is the host's build
+                # (4.0.0-B7). Never for a source-built one (2026-09-11).
+                art = _sandbox.cached_repo_artifact(name)
+                if art is not None:
+                    desired[name] = art
+                    continue
             version = pacman.get_installed_version(name)
             if not version:
                 continue
@@ -167,8 +184,17 @@ def sync(state_dir, pkgdest) -> SyncResult:
                 kept.add(name)
                 continue
             result.missing.append(name)
-            _log.warn(f"local repo: no built artifact for installed {name} in "
-                      f"{pkgdest}; the container will use the repo version")
+            if foreign is None:
+                try:
+                    foreign = set(pacman.get_foreign_packages())
+                except Exception:
+                    foreign = set()
+            if name in foreign or name not in source_built:
+                _log.warn(f"local repo: installed {name} {version}: "
+                          f"{_sandbox.unbuildable_foreign_hint([name])}")
+            else:
+                _log.warn(f"local repo: no built artifact for installed {name} in "
+                          f"{pkgdest}; the container will use the repo version")
             continue
         desired[name] = art
 
