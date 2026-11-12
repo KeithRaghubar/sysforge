@@ -45,6 +45,13 @@ the stock repos rather than from what you have installed. sysforge closes that g
   directory in place while the block is there; turning the setting off removes the block on the
   next sandboxed build.
 
+AUR packages installed some other way are in no stock repo either, so they reach the container
+the same way, from their built package files. A package a repo has since dropped (for example
+one that moved from `[multilib]` to the AUR) is taken from pacman's cache when the signed file
+of the version you run is still there. If a build needs such a package and no copy of it exists
+anywhere, sysforge stops before starting the container and names the package to build first,
+for example `sysforge build lib32-tdb`.
+
 ---
 
 ## What differs from a host build
