@@ -32,7 +32,10 @@ first `ready` scenario runs the setup itself when the Quick start did not.
 
 The scenarios assert on exit codes, `pacman -Qi`, `build_state.toml`, `packages.toml` and leftover
 sentinels (`lib.sh`), not on rendered output. Prompts are answered on a pseudo-terminal
-(`answer.py`), so `build` takes the same interactive paths it takes at a real terminal.
+(`answer.py`), so `build` takes the same interactive paths it takes at a real terminal. That
+terminal has no size, so sysforge draws for 80x24; `answer.py` copies its text but drops cursor
+placement, scroll regions and progress-bar paints, which would otherwise draw over the terminal
+running `make e2e`.
 
 ## Scenarios
 

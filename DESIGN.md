@@ -4110,7 +4110,8 @@ a new user meets them: the Quick start in one login session, a repo package's op
 after a profile change, a failed build's cleanup. Each runs as an unprivileged user in a fresh
 container built from the demo image (`tools/demo/`, shared with `make demo-gif`), asserting on exit
 codes, `pacman -Qi`, the state files and leftover sentinels, with prompts answered on a
-pseudo-terminal. It covers what the unit suite stubs: root versus the user, group membership that
+pseudo-terminal whose screen control `answer.py` drops on the way out, since it was drawn for
+a size the outer terminal does not have (`4.0.0-DEV3`). It covers what the unit suite stubs: root versus the user, group membership that
 applies only at the next login, the state one command leaves for the next. It builds sysforge from
 the checkout itself, so it needs no `vm-pkg-stable`. `pre-release` runs it; the release preflight
 does not (`_RELEASE_GATE_EXEMPT`: minutes long, podman, and four networked scenarios, so not
