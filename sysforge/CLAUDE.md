@@ -163,7 +163,10 @@ Mechanism lives in the cited §DESIGN section.
 - **Sandbox host-only set**: `build_sandbox.host_only_packages` (source-built ∪ `pacman -Qm`) feeds
   both container channels — the `-I` closure and `local_repo.sync`; the ABI gate keeps the narrower
   `source_built_packages`. A `rust`/`cargo` target swaps `llvm_linked` for the repo LLVM via `-I` only
-  (`fetch_repo_packages`), never by dropping LLVM from the local repo (2026-09-11 mesa). §makepkg-wrapper.
+  (`fetch_repo_packages`), never by dropping LLVM from the local repo (2026-09-11 mesa). A dropped
+  repo package comes from pacman's cache via `build_sandbox.cached_repo_artifact`, **never for a
+  source-built name** (the cache can hold the same-pkgver repo build); a foreign dep with no build
+  anywhere refuses in `resolve_dep_artifacts` (`4.0.0-B7`). §makepkg-wrapper.
 - **Build failures**: reserved `[failures]` namespace in `build_state.toml` (review refusals too,
   `kind = "review"`, via `build_core._record_review_refusal`; `build --failed` retries both, 3.5.0-F23); diagnostics in
   `build_diag.py` (`_MATCHERS`, on `strip_ansi`-cleaned lines). §Build failures.

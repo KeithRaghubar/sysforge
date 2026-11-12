@@ -62,8 +62,10 @@ def _clean_policy():
 def _no_host_foreign_or_provides():
     """Keep the resolver off this machine's real ``pacman -Qm``, local-DB
     provides and artifact .PKGINFO reads; tests that need any of them patch
-    them explicitly."""
+    them explicitly. The pacman cache too: a test that wants a cached build
+    patches ``get_pacman_cache_dirs`` to its own directory."""
     with patch("sysforge.primitives.pacman.get_foreign_packages", return_value={}), \
+            patch("sysforge.primitives.pacman.get_pacman_cache_dirs", return_value=[]), \
             patch("sysforge.primitives.pacman.get_provider_map", return_value={}), \
             patch("sysforge.primitives.pacman.read_pkginfo_relations",
                   return_value={"depend": set(), "provides": set()}):
@@ -2208,6 +2210,104 @@ def test_resolver_injects_a_foreign_dep_sysforge_did_not_build(tmp_path):
                        {"pop-icon-theme-git": "1:3.5.1-2"}, set(),
                        ["pop-icon-theme-git"])
     assert [p.name for p in got] == ["pop-icon-theme-git-1:3.5.1-2-any.pkg.tar.zst"]
+
+
+# 4.0.0-B7: lib32-tdb left [multilib] for the AUR. The host still ran the last
+# repo build, so it was foreign, but sysforge never built it: nothing in
+# PKGDEST, a warning promising "the repo version", and lib32-libcanberra died
+# 25s later in the container on `target not found: lib32-tdb`.
+
+def _resolve_foreign(tmp_path, *, foreign, source_built=(),
+                     cache=(), local_repo=(), pkgdest=()):
+    """Resolve a target depending on every package in *foreign* (pkgname →
+    installed version), with artifacts placed in PKGDEST, the local repo dir
+    and the pacman cache as given (filenames)."""
+    pb, dest, *_ = _dep_fixture(tmp_path, pkgbuild_deps=list(foreign),
+                                installed={}, source_built=set(),
+                                artifacts=list(pkgdest))
+    state = tmp_path / "state"
+    cache_dir = tmp_path / "pacman-cache"
+    for d, names in ((state / "local-repo", local_repo), (cache_dir, cache)):
+        d.mkdir(parents=True, exist_ok=True)
+        for n in names:
+            (d / n).write_text("")
+    with patch("sysforge.primitives.pacman.collect_builddeps",
+               return_value=list(foreign)), \
+            patch("sysforge.primitives.pacman.get_all_package_depends",
+                  return_value={n: [] for n in foreign}), \
+            patch("sysforge.primitives.pacman.get_installed_version",
+                  side_effect=foreign.get), \
+            patch("sysforge.primitives.pacman.get_foreign_packages",
+                  return_value=dict(foreign)), \
+            patch("sysforge.primitives.build_sandbox._source_built_packages",
+                  return_value=set(source_built)), \
+            patch("sysforge.primitives.pacman.get_pacman_cache_dirs",
+                  return_value=[cache_dir]):
+        return bs.resolve_dep_artifacts(pb, search_dir=dest, state_dir=state)
+
+
+def test_resolver_injects_a_dropped_repo_package_from_the_pacman_cache(tmp_path):
+    """The host's lib32-tdb came from [multilib], so pacman's cache still
+    holds the exact signed file it runs; that is the build to inject."""
+    got = _resolve_foreign(
+        tmp_path, foreign={"lib32-tdb": "1.4.15-1"},
+        cache=["lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst",
+               "lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst.sig",
+               "lib32-tdb-1.4.13-1-x86_64.pkg.tar.zst"])
+    assert [p.name for p in got] == ["lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst"]
+    assert got[0].parent == tmp_path / "pacman-cache"
+
+
+def test_resolver_never_takes_a_source_built_dep_from_the_pacman_cache(tmp_path):
+    """The cache can hold the *repo* build at the version sysforge rebuilt
+    from source (2026-09-11: same-pkgver repo llvm-libs, black screen). Only
+    a package sysforge never built is safe to take from there."""
+    with pytest.raises(bs.SandboxUnavailable):
+        _resolve_foreign(
+            tmp_path, foreign={"lib32-tdb": "1.4.15-1"},
+            source_built={"lib32-tdb"},
+            cache=["lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst",
+                   "lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst.sig"])
+
+
+def test_resolver_never_takes_an_unsigned_cached_file(tmp_path):
+    """Only a repo download carries a detached .sig; an unsigned file in the
+    cache is a local build of unknown provenance, not the host's repo build."""
+    with pytest.raises(bs.SandboxUnavailable):
+        _resolve_foreign(tmp_path, foreign={"lib32-tdb": "1.4.15-1"},
+                         cache=["lib32-tdb-1.4.15-1-x86_64.pkg.tar.zst"])
+
+
+def test_resolver_refuses_a_foreign_dep_it_has_no_build_of(tmp_path):
+    """No stock repo carries it, so "the container will use the repo
+    version" was false: refuse up front, naming the package and the fix."""
+    with pytest.raises(bs.SandboxUnavailable) as exc:
+        _resolve_foreign(tmp_path, foreign={"lib32-tdb": "1.4.15-1"})
+    msg = str(exc.value)
+    assert "lib32-tdb 1.4.15-1" in msg
+    assert "no stock repo" in msg
+    assert "sysforge build lib32-tdb" in msg
+
+
+def test_resolver_takes_a_pruned_foreign_dep_from_the_local_repo(tmp_path):
+    """local_repo.sync keeps the published copy of a build pruned from
+    PKGDEST; the container can still get it, so this is no refusal."""
+    got = _resolve_foreign(
+        tmp_path, foreign={"pop-icon-theme-git": "1:3.5.1-2"},
+        source_built={"pop-icon-theme-git"},
+        local_repo=["pop-icon-theme-git-1:3.5.1-2-any.pkg.tar.zst"])
+    assert [p.name for p in got] == ["pop-icon-theme-git-1:3.5.1-2-any.pkg.tar.zst"]
+
+
+def test_resolver_still_warns_for_a_pruned_dep_a_repo_carries(tmp_path, capsys):
+    """Unchanged: a source-built dep that is *not* foreign has a repo version
+    to fall back to, so a pruned artifact warns and the build goes on."""
+    pb, dest, *_ = _dep_fixture(tmp_path, pkgbuild_deps=["libfoo"], installed={},
+                                source_built=set(), artifacts=[])
+    got = _resolve(pb, dest, {"libfoo": []}, {"libfoo": "1.0.0-1"},
+                   {"libfoo"}, ["libfoo"])
+    assert got == []
+    assert "libfoo" in capsys.readouterr().err
 
 
 def test_resolver_follows_provides_to_the_installed_provider(tmp_path):
