@@ -82,7 +82,7 @@ else
     trap cleanup EXIT
     cd "$repo"
     echo "==> Building $base"
-    podman build -q -t "$base" -f tools/demo/Containerfile tools/demo >/dev/null
+    podman build -q --pull=newer --build-arg SYNC_STAMP="$(date -u +%F)" -t "$base" -f tools/demo/Containerfile tools/demo >/dev/null
     echo "==> Installing sysforge ($commit)"
     cleanup
     podman run -d --name "$prep" -v "$repo:/src/sysforge:ro" "$base" >/dev/null

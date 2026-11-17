@@ -37,7 +37,7 @@ if [[ -n $(git status --porcelain) ]]; then
 fi
 
 echo "==> Building $base"
-podman build -q -t "$base" -f tools/demo/Containerfile tools/demo >/dev/null
+podman build -q --pull=newer --build-arg SYNC_STAMP="$(date -u +%F)" -t "$base" -f tools/demo/Containerfile tools/demo >/dev/null
 
 echo "==> Installing sysforge ($branch) and running the one-time setup"
 podman rm -f -t 0 sysforge-demo-prep >/dev/null 2>&1 || true
