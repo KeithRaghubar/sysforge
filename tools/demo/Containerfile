@@ -7,6 +7,10 @@
 FROM docker.io/library/archlinux:base-devel
 
 COPY provision.sh /usr/local/sbin/sysforge-provision
-RUN /usr/local/sbin/sysforge-provision
+# The builders pass today's date: reading it in the RUN rebuilds this layer
+# daily, so its `pacman -Syu` sync db never lags the mirrors, which keep only
+# each package's current file (a stale db's `pacman -S` 404s).
+ARG SYNC_STAMP=unset
+RUN : "$SYNC_STAMP"; /usr/local/sbin/sysforge-provision
 
 CMD ["sleep", "infinity"]
