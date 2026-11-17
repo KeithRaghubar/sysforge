@@ -2,26 +2,13 @@
 
 ### ccache and sccache
 
-Configured via a `[cache]` table in `profiles.toml`:
+sysforge does not switch the compiler caches on. ccache runs when makepkg's own `BUILDENV` has `ccache` (in `makepkg.conf`) or a ccache directory is first on `PATH`; sccache runs when the environment sets `RUSTC_WRAPPER=sccache`. There is no sysforge setting for either, so a cache configured for plain makepkg works the same under sysforge.
 
-```toml
-[cache]
-ccache  = "auto"   # auto | enabled | disabled
-sccache = "auto"
-```
+What sysforge adds is the opt-out and the containment:
 
-`auto` — use if installed, skip silently if not.
-
-Compiler invocation uses explicit absolute paths rather than ccache's symlink shim (incompatible with makepkg prepending `$srcdir` to `PATH`):
-
-```
-CC="ccache /usr/bin/clang"
-CXX="ccache /usr/bin/clang++"
-```
-
-sccache wraps Rust via `RUSTC_WRAPPER=sccache` (env pass). `CARGO_INCREMENTAL=0` set globally for all Rust builds — incremental fingerprinting is unreliable with managed flags.
-
-`cache = false` in `packages.toml` disables both caches for a specific package. Required for all PGO stages.
+- **Per package:** `cache = false` in a `packages.toml` entry builds that package with `CCACHE_DISABLE=1` and an empty `RUSTC_WRAPPER` (`makepkg_wrapper._with_cache_opt_out`, `3.5.0-B139`). `CCACHE_DISABLE` reaches ccache however it was invoked, and the empty wrapper wins over one the shell or the profile exports.
+- **PGO training:** the toolchain stage's Pass 3 sets `CCACHE_DISABLE=1` and `SCCACHE_DISABLE=1` itself, so a cache cannot answer for the instrumented compiler and leave the profile empty (§Toolchain stage).
+- **Build sandbox:** the clean chroot carries no cache, so the sandbox disables the `ccache`/`distcc` `BUILDENV` options in its `makepkg.conf` and does not export `RUSTC_WRAPPER`, `CCACHE_DIR` or `SCCACHE_DIR` into it (`build_sandbox._HOST_ONLY_BUILDENV`, `_ENV_EXPORT_DENY`, `3.2.0-B2`). A missing accelerator is a hard makepkg error, and `makechrootpkg -c` resets the chroot each build, so a cache in there would never hit.
 
 ### Cache reporting
 

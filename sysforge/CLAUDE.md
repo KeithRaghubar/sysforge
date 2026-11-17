@@ -273,7 +273,7 @@ Mechanism lives in the cited §DESIGN section.
   stage1 clang so profraw merges into the one `clang.profdata` — never installed, never
   `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort, but
   `BuildAborted` (user abort) re-raises. PGO path only.
-- **libLLVM soname-bump → consumer rebuild**: `assess_libllvm_soname_impact` / `_gate_soname_consumers`
+- **libLLVM soname-bump → consumer rebuild**: `assess_libllvm_soname_impact` / `gates.gate_soname_consumers`
   (after Gate 3, outside sentinel). No parallel reverse-dep scanner.
 - **libLLVM `std::` export parity** (`3.5.0-F4`): the table is `primitives/llvm_std_exports.py`
   (`STD_EXPORTS`; add a row, never a second injector), pasted by

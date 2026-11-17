@@ -2,6 +2,7 @@
 
 ### Profile structure
 
+<!-- shipped-example: etc/sysforge/profiles.toml -->
 ```toml
 [defaults]
 profile = "standard"

@@ -23,7 +23,7 @@ gpu_vendors. --all verifies every installed package (foreign and
 non-foreign); --repo narrows to non-foreign packages only.
 
 Public API:
-    cmd_doctor(args)
+    cmd_doctor_system(args), cmd_doctor_pkg(args)
 """
 from __future__ import annotations
 
@@ -538,7 +538,7 @@ class AbiWalk:
 
     ``benign`` accumulates the optional-symbol cases demoted by
     ``check_so_files`` (reduced-target libLLVM target-init absences) across
-    the whole walk, mirroring ``cmd_doctor``'s ``abi_benign`` list, so a later
+    the whole walk, mirroring ``cmd_doctor_pkg``'s ``abi_benign`` list, so a later
     task can render the same one-line summary.
     """
 

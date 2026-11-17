@@ -57,6 +57,7 @@ Each scenario has a configurable behaviour in `sysforge.toml [failure_handling]`
 
 `failure.handle_failure` serves the scenarios a build can go on past:
 
+<!-- shipped-example: etc/sysforge/sysforge.toml -->
 ```toml
 [failure_handling]
 pkgbuild_unparseable  = "warn_and_fallback"   # abort | error | warn_and_fallback | fallback
@@ -115,7 +116,9 @@ To make the pattern scan work for every build mode, `invoke_makepkg` uses a `Pop
 
 Auto-repair has four keys of its own in the same table:
 
+<!-- shipped-example: etc/sysforge/sysforge.toml -->
 ```toml
+[failure_handling]
 vendored_deps_missing = "auto_repair"               # auto_repair | auto_repair_with_warning | abort
 pgp_key_missing       = "auto_repair"
 srcinfo_drift         = "auto_repair_with_warning"  # … | warn_and_fallback (preflight only)
@@ -246,6 +249,7 @@ the full bundle swap (`_reemit_for_swap` → `profile.swap_toolchain`).
 
 `clean_builddir = true` adds makepkg's `--cleanbuild` to the invocation (unless `-C`/`--cleanbuild` is already there; `makepkg_flags.CLEANBUILD_FLAGS`), so makepkg removes `$srcdir` wherever it resolves it: under `$BUILDDIR/<pkgbase>` after the `-sysforge` rename, or inside the sandbox container. sysforge deletes nothing itself. It used to remove every entry of the PKGBUILD's directory except the PKGBUILD, taking the checkout's `.git`, `.SRCINFO` and the local files `source=()` names (`3.5.0-B118`). `build`/`update` already pass `-C` through `build_core` unless `--no-cleanbuild`; the key matters for the stages, which call `run()` directly.
 
+<!-- shipped-example: etc/sysforge/profiles.toml -->
 ```toml
 [profiles.batch]
 extends = "standard"

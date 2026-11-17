@@ -8,7 +8,7 @@ Covers:
     preservation of an explicit -fuse-ld=), unknown-value no-op.
   - config._rewrite_toml_key([defaults] toolchain) / set_default_toolchain: replace,
     uncomment, insert-under-header, append-section, comment preservation.
-  - toolchain stage._propagate_default_toolchain: gcc/llvm parity, dry-run no-op.
+  - identity.propagate_default_toolchain: gcc/llvm parity, dry-run no-op.
 """
 import os
 import sys

@@ -98,12 +98,13 @@ sysforge run pipeline --resume
 
 **`bootstrap.toml`** (`/etc/sysforge/bootstrap.toml`) configures stages 1–3. The package does not install this file directly — it ships a starter template at `/usr/share/sysforge/bootstrap.toml.example`. `iso-install.sh` writes the live file from interactive prompts; for hand-edit setups, copy the example to `/etc/sysforge/` first.
 
+<!-- shipped-example: etc/sysforge/bootstrap.toml -->
 ```toml
 target = "/mnt"          # mount point for the new system
 
 [partition]
 device       = "/dev/sda"   # required — block device to wipe and partition
-esp_size_mib = 512          # EFI System Partition size in MiB (default: 512)
+esp_size_mib = 1024         # EFI System Partition size in MiB (default: 1024)
 root_fs      = "ext4"       # "ext4" | "btrfs" (default: "ext4")
 
 [system]
@@ -112,9 +113,9 @@ locale             = "en_US.UTF-8" # required
 timezone           = "UTC"          # required
 keymap             = "us"           # optional (default: "us")
 parallel_downloads = 5              # pacman ParallelDownloads (default: 5)
-root_password      = "secret"       # optional — set via chpasswd; warn if absent
+root_password      = "secret"       # example: optional — set via chpasswd; warn if absent
 username           = "builder"      # optional — primary user (default: "builder")
-user_password      = "secret"       # optional — user password; warn if absent
+user_password      = "secret"       # example: optional — user password; warn if absent
 
 [mirror]
 countries = ["Canada"]  # full country NAMES, not ISO codes (optional)
@@ -187,7 +188,7 @@ separate size block is needed.
 *Kconfig vs previous build* diffs the resolved `.config` against the one the last build produced.
 `primitives/kconfig_history.py` owns that history — nothing else in sysforge keeps a resolved
 `.config` after the build tree is cleaned — archiving each successful build's config (located by
-the existing `resolve_built_config`, tagged with `_built_kernel_release`) gzipped to
+the existing `resolve_built_config`, tagged with `built_kernel_release`) gzipped to
 `<state_dir>/kconfig-history/<pkgname>-<release>.config.gz`, newest `KEEP` (5) per pkgname, pruned
 on write and bounded at a few hundred KiB. The comparison runs through the new
 `kernel_safety.diff_kconfig(old, new)`, a symmetric sibling to `diff_requested_kconfig` (which is
@@ -287,6 +288,7 @@ Builds a custom kernel from a PKGBUILD. The stage is a clean no-op if `/etc/sysf
 
 **`kernel.toml` structure:**
 
+<!-- shipped-example: etc/sysforge/kernel.toml -->
 ```toml
 pkgname          = "linux-sysforge"  # LOCAL name to build/install as (defaults to upstream_pkgname)
 upstream_pkgname = "linux-zen"   # optional: upstream package to pull/track (clone dir + sync target)
@@ -295,8 +297,8 @@ srcdir           = "linux"       # source dir override (default: upstream_pkgnam
 bootloader       = "systemd-boot"    # systemd-boot | grub | none  (default: systemd-boot)
 boot_entries     = "manage"          # "manage" | "off" — systemd-boot only (default: manage)
 #boot_entries_prefix = "97"       # optional filename prefix for managed entries (ignored when your entries use sort-key)
-interactive      = true              # default: true — interactive kconfig (make nconfig)
-compiler         = "llvm"            # "gcc" | "llvm" — kernel-stage compiler (optional)
+review_config    = true              # default: true — run the PKGBUILD's nconfig for review (`interactive` before 3.5.0-F22)
+compiler         = "llvm"            # example: "gcc" | "llvm" — kernel-stage compiler (optional)
 base_config      = "pkgbuild"        # "pkgbuild" (default) | "running" | <path> — base .config source
 build_headers    = true              # default: true — build the -headers subpackage (DKMS needs it)
 build_docs       = false             # default: false — drop the -docs subpackage from the build
@@ -318,7 +320,7 @@ hardening               = false      # merge the curated compile-time hardening 
 [fdo]                            # tables last: a live header captures every key below it
 mode = "off"                     # "off" | "autofdo" | "propeller" — what a plain `run kernel` applies (see Sample-based kernel FDO)
 
-[[kconfig]]                      # manual kconfig overrides (optional, repeatable)
+[[kconfig]]                      # example: manual kconfig overrides (optional, repeatable)
 option = "CONFIG_HZ_1000"        # must match CONFIG_[A-Z0-9_]+
 value  = "y"                     # y | m | n | non-empty string
 ```
@@ -351,7 +353,7 @@ The name always reflects what was *applied*: a Propeller → AutoFDO fallback in
 
 **Variant-inheritance nudge.** When `compiler` is unset (neither CLI nor `kernel.toml`) and the toolchain-stage variant is `pgo_llvm`, the stage emits a WARN naming the inherited variant and recommending that the operator persist `compiler = "llvm"` in `kernel.toml` so the choice survives a future toolchain-stage disable (which clears `[stages.toolchain.result]`). `stock_llvm` gets the same nudge at INFO level. `gcc` and `system` variants are silent — gcc is the safe default and `system` means there's no opinion to project.
 
-**Configured-vs-installed toolchain mismatch.** The variant nudge above reflects what the toolchain *stage* registered in pipeline state; this check reflects on-disk reality. When `toolchain.toml` requests a custom LLVM toolchain (`enabled = true`, `compiler = "llvm"`) but stock repo LLVM is installed or its PGO profdata is version-skewed, the stage emits a WARN before the build. Detecting "stock vs custom" is subtle: the toolchain stage replaces LLVM **in place with stock pkgnames** (`llvm`, `clang`, … — it is the system compiler, no `-sysforge` suffix), so a custom/PGO build's packages keep names that exist in the `extra` sync DB and pacman therefore classifies them as repo (`install_origin == "repo"`), *indistinguishable from a genuine stock install by pacman alone*. The authoritative "sysforge built this toolchain" signal is the sticky `owner_stage == "toolchain"` marker the install-bearing pass stamps into `build_state.toml` (never auto-demoted — `BuildState.reconcile_external_installs` exempts owner-stage entries), so any `install_origin == "repo"` package that build_state records as toolchain-owned is subtracted from the stock set (`_toolchain_built_packages`). When build_state is empty (the stage was never run) nothing is subtracted and a genuine stock install still fires. The check is also fully suppressed in two intentional-stock cases: `skip_build = true` (which registers the installed compiler as-is — stock-vs-custom is then a deliberate choice, mirroring the `compiler = "gcc"` register-only short-circuit), and `pgo = false` + packages.toml `repo_mode = "pacman"` (the stage installs the stock LLVM suite from the repos on purpose via `install_repo_pkgs`, so a stock install is the chosen path — `_packages_repo_mode_is_pacman`; PGO always builds from source regardless of `repo_mode`, so this branch is pgo-off only). It uses `llvm_state.detect_toolchain_config_mismatch`, which is built strictly on `collect_llvm_state` (the sanctioned LLVM-inspection entry point) — this is **provenance reporting**, deliberately *not* a third toolchain *health* probe (those remain `_verify_llvm_install` and `toolchain_preflight._probe_cc`). The same detector backs `sysforge doctor --toolchain`. There is intentionally no persisted "toolchain is correct" flag: the live install state plus the sticky build_state record are the source of truth, computed on read.
+**Configured-vs-installed toolchain mismatch.** The variant nudge above reflects what the toolchain *stage* registered in pipeline state; this check reflects on-disk reality. When `toolchain.toml` requests a custom LLVM toolchain (`enabled = true`, `compiler = "llvm"`) but stock repo LLVM is installed or its PGO profdata is version-skewed, the stage emits a WARN before the build. Detecting "stock vs custom" is subtle: the toolchain stage replaces LLVM **in place with stock pkgnames** (`llvm`, `clang`, … — it is the system compiler, no `-sysforge` suffix), so a custom/PGO build's packages keep names that exist in the `extra` sync DB and pacman therefore classifies them as repo (`install_origin == "repo"`), *indistinguishable from a genuine stock install by pacman alone*. The authoritative "sysforge built this toolchain" signal is the sticky `owner_stage == "toolchain"` marker the install-bearing pass stamps into `build_state.toml` (never auto-demoted — `BuildState.reconcile_external_installs` exempts owner-stage entries), so any `install_origin == "repo"` package that build_state records as toolchain-owned is subtracted from the stock set (`_toolchain_built_packages`). When build_state is empty (the stage was never run) nothing is subtracted and a genuine stock install still fires. The check is also fully suppressed in two intentional-stock cases: `skip_build = true` (which registers the installed compiler as-is — stock-vs-custom is then a deliberate choice, mirroring the `compiler = "gcc"` register-only short-circuit), and `pgo = false` + packages.toml `repo_mode = "pacman"` (the stage installs the stock LLVM suite from the repos on purpose via `install_repo_pkgs`, so a stock install is the chosen path — `_packages_repo_mode_is_pacman`; PGO always builds from source regardless of `repo_mode`, so this branch is pgo-off only). It uses `llvm_state.detect_toolchain_config_mismatch`, which is built strictly on `collect_llvm_state` (the sanctioned LLVM-inspection entry point) — this is **provenance reporting**, deliberately *not* a third toolchain *health* probe (those remain `verify.verify_llvm_install` and `toolchain_preflight._probe_cc`). The same detector backs `sysforge doctor --toolchain`. There is intentionally no persisted "toolchain is correct" flag: the live install state plus the sticky build_state record are the source of truth, computed on read.
 
 **Per-kernel toolchain-drift check.** Stage entry compares the installed kernel's recorded `toolchain_variant` (from `build_state.toml`) against the variant this run builds with: the active one, or the other family's when `kernel.toml compiler`/`--toolchain` picks the other compiler (`pipeline_state.variant_built_with` on `config.resolve_compiler`'s `cc`, the same decision the record site makes, `3.5.0-B126`). A kernel kept on gcc under an LLVM toolchain records `gcc` and stays quiet; changing its compiler warns. On mismatch (e.g. installed kernel was built under `stock_llvm`, active is `pgo_llvm`), the stage emits a WARN before the build runs. This mirrors `sysforge update`'s drift sweep but covers the kernel package, which `update` excludes via the stage-ownership skip. Back-compat: no recorded variant → silent (older builds preceded the field).
 
@@ -519,8 +521,9 @@ Dependencies run one way (`constants` ← `config` ← … ← `stage`), and `st
 
 **`toolchain.toml` structure:**
 
+<!-- shipped-example: etc/sysforge/toolchain.toml complete -->
 ```toml
-enabled     = true   # must be true to activate the stage
+enabled     = true   # example: must be true to activate the stage (ships false)
 compiler    = "gcc"  # "gcc" (default when key absent) or "llvm"; LLVM is opt-in
 pgo         = true   # only meaningful when compiler = "llvm"; ignored for gcc
 skip_build  = false  # skip build; just register compiler paths in pipeline state
@@ -553,7 +556,7 @@ require_multilib  = true  # require [multilib] enabled when any lib32-* is in sc
 # resolution, so in practice only spirv-llvm-translator stays non_pgo.
 pgo     = ["llvm", "llvm-libs"]
 non_pgo = ["clang", "lld", "polly", "compiler-rt", "openmp", "spirv-llvm-translator"]
-training_corpus = ["llvm"]   # add "mesa" to enrich the Pass-3 profile
+training_corpus = ["llvm"]   # example: the default; add "mesa" to enrich the Pass-3 profile
 # lib32 defaults to EMPTY — lib32 LLVM packages are not built by the toolchain
 # stage (see *lib32 is not toolchain-managed* below). Opt back in by listing them
 # here; the target-filter and PGO exemptions keep that path correct.
@@ -568,7 +571,7 @@ libllvm = false         # also BOLT libLLVM.so (libclang-cpp is always the targe
 training_workload = ""  # empty = a sample of the tree's own compile commands
 
 [bench]                 # sysforge bench toolchain; never reaches a build
-corpus = []             # empty = the bench's built-in TUs
+corpus = []             # example: the default; empty = the bench's built-in TUs
 after_build = false     # run the bench after a verified from-source install
 ```
 
@@ -688,7 +691,7 @@ The packages and kernel stages read these values and inject them into the build 
 
     **Liveness guard.** Presence of the sentinel cannot distinguish "a previous run died mid-mutation" from "a run is alive right now" — and the recovery prompts above are unanswerable, and destructive, against a live run: clearing a live owner's sentinel lets the second run's `mark_started` overwrite the record wholesale, after which whichever run finishes first `clear()`s the other's (silently — `clear()` suppresses `FileNotFoundError`), leaving two concurrent install-bearing runs with no interruption record for either. So `sentinel_scope` also holds an exclusive `flock` on `<state_dir>/stage_in_progress.lock` for the stage's lifetime, via the shared `primitives/build_lock.py` primitive (its `noun` parameter carries the "install stage" wording; the build stages pass `noun="build"` and keep their existing messages). Liveness becomes "is the lock takeable?", which the kernel answers correctly even after `SIGKILL` or power loss — a PID recorded in the sentinel could not, since PID recycling would report a dead owner as alive forever, unrecoverable given the no-override decision below. Two layers use it: `check_and_recover_stale_sentinel` probes the lock at CLI entry and returns False **without prompting** when an owner is alive (naming the holder PID and the recorded stage), making the clear prompt unreachable; and `sentinel_scope` acquires it for real — before `mark_started`, so a live owner's record is never overwritten — catching the probe/acquire race plus any mutating verb reached outside `cli._gate_sentinel_check`'s allowlist. **A stale record is never overwritten** (`3.5.0-B46`): `uninstall`, `revert-to-stock`, the `state` verbs and the artifact verbs set `requires_sentinel = True` but are outside that allowlist, so their scope's `mark_started` replaced an interrupted toolchain install's record and the success path cleared it, and the next `update` ran with no recovery prompt. `sentinel_scope` now calls `check_and_recover_stale_sentinel` itself, before taking the lock, whenever a record exists, and raises `RuntimeError` with the record kept when recovery is declined or fails. Contention there raises `RuntimeError`, which `verbs/runner.py` already converts to exit 1. **No override:** a live owner is unambiguous, so a prompt would only invite the mistake the guard prevents; escaping requires killing the owning process. The posture splits by error type — contention is strict (hard refusal), while `OSError`/`PermissionError` stay lenient (warn + proceed, matching the sentinel write itself) so a read-only state dir cannot lock the user out of every mutating verb. Per-state-dir scoping is automatic since the lock lives in the state dir, so an isolated `SYSFORGE_STATE_DIR` (test fixtures, VM) never contends with a live run. Scopes are sequential, never nested — the `run` verbs set `requires_sentinel = False` precisely so a verb-level scope cannot wrap a stage's own.
 
-2. **Post-install verification (Gate 3)** — after the `pacman -U` of the LLVM run, `_verify_llvm_install()` checks: (a) `pacman -Q` versions across `_LLVM_VERSION_MATCH_SET` (which *is* `LLVM_LOCKSTEP_SUITE` from `toolchain_preflight` — `llvm`/`llvm-libs`/`clang`/`lld`/`compiler-rt`/`polly`/`openmp`) agree, via `toolchain_safety.detect_suite_skew` (the canonical interrupted-install symptom — a mismatched `llvm-libs` is the exact failure mode that produces a broken GUI). The suite spans several independent pkgbases, so lockstep is on **pkgver** (the upstream release keying the `LLVM_<ver>` ABI namespace); a pkgrel-only divergence across pkgbases (e.g. an `llvm` -2 rebuild beside `clang` -1) is a legitimate state and is *not* a skew — only the shared-pkgbase pair `llvm`/`llvm-libs` is held to full `pkgver-pkgrel` lockstep. (b) `clang --version` and `ld.lld --version` invoke cleanly without missing-symbol errors (probing `ld.lld`, the GNU-compatible flavor `-fuse-ld=lld` resolves to — bare `lld` is the generic multiplexer driver and always exits 1 without a flavor), and clang compiles and links a trivial program with `-fuse-ld=lld`, since `--version` returns before libclang-cpp's symbols are bound (`3.5.0-B58`, as Gate 1's smoke test), (c) `ldd` of installed clang/lld resolves libLLVM under `/usr/lib` (`check_llvm_link_resolution`), (d) when `[llvm] targets` is configured, `llvm-config --targets-built` is a superset. On failure the stage **auto-rolls-back** to the pre-install snapshot rather than prompting (the kernel-parity overhaul replaced the old interactive `_prompt_llvm_recovery`): a successful restore clears the sentinel and raises "prior toolchain was restored"; a failed/incomplete restore keeps the sentinel with the snapshot recovery command. This verification is comprehensive and fatal, but only runs inside `run toolchain`; if a toolchain run is interrupted before it (or a later partial pacman transaction reintroduces a skew), the broken state can still reach an everyday `sysforge update`. That gap is closed by the `cc:<name>` compiler-health probe in `toolchain_preflight` (see §`toolchain_preflight.py`), which re-detects the suite-wide pkgver skew / non-runnable clang before any package builds — deliberately a lightweight independent check sharing the `LLVM_LOCKSTEP_SUITE` constant rather than importing this pipeline-layer verifier into the primitives layer.
+2. **Post-install verification (Gate 3)** — after the `pacman -U` of the LLVM run, `verify.verify_llvm_install()` checks: (a) `pacman -Q` versions across `_LLVM_VERSION_MATCH_SET` (which *is* `LLVM_LOCKSTEP_SUITE` from `toolchain_preflight` — `llvm`/`llvm-libs`/`clang`/`lld`/`compiler-rt`/`polly`/`openmp`) agree, via `toolchain_safety.detect_suite_skew` (the canonical interrupted-install symptom — a mismatched `llvm-libs` is the exact failure mode that produces a broken GUI). The suite spans several independent pkgbases, so lockstep is on **pkgver** (the upstream release keying the `LLVM_<ver>` ABI namespace); a pkgrel-only divergence across pkgbases (e.g. an `llvm` -2 rebuild beside `clang` -1) is a legitimate state and is *not* a skew — only the shared-pkgbase pair `llvm`/`llvm-libs` is held to full `pkgver-pkgrel` lockstep. (b) `clang --version` and `ld.lld --version` invoke cleanly without missing-symbol errors (probing `ld.lld`, the GNU-compatible flavor `-fuse-ld=lld` resolves to — bare `lld` is the generic multiplexer driver and always exits 1 without a flavor), and clang compiles and links a trivial program with `-fuse-ld=lld`, since `--version` returns before libclang-cpp's symbols are bound (`3.5.0-B58`, as Gate 1's smoke test), (c) `ldd` of installed clang/lld resolves libLLVM under `/usr/lib` (`check_llvm_link_resolution`), (d) when `[llvm] targets` is configured, `llvm-config --targets-built` is a superset. On failure the stage **auto-rolls-back** to the pre-install snapshot rather than prompting (the kernel-parity overhaul replaced the old interactive `_prompt_llvm_recovery`): a successful restore clears the sentinel and raises "prior toolchain was restored"; a failed/incomplete restore keeps the sentinel with the snapshot recovery command. This verification is comprehensive and fatal, but only runs inside `run toolchain`; if a toolchain run is interrupted before it (or a later partial pacman transaction reintroduces a skew), the broken state can still reach an everyday `sysforge update`. That gap is closed by the `cc:<name>` compiler-health probe in `toolchain_preflight` (see §`toolchain_preflight.py`), which re-detects the suite-wide pkgver skew / non-runnable clang before any package builds — deliberately a lightweight independent check sharing the `LLVM_LOCKSTEP_SUITE` constant rather than importing this pipeline-layer verifier into the primitives layer.
 
 3. **Clean-exit SIGINT scope** (`primitives/interrupt.py`) — every `sentinel_scope` body runs inside an `InterruptScope`. The first Ctrl-C flips a flag without raising and prints a one-line notice (a raw `os.write` to stderr, since a signal handler must not take the logging locks); children in the terminal's foreground process group, such as makepkg and pacman, still get it themselves. Code inside the scope stops at a safe boundary by calling the module-level `interrupt.checkpoint()`, which raises `CleanExitRequested` (translated by `sentinel_scope` into a `RuntimeError` with the retry and recovery hints, sentinel intact). The checkpoints sit only where stopping leaves the system consistent: before each package in `build_core.build_and_install`'s loop (the `build`/`update` verb scopes) and in the packages stage loop. The toolchain and kernel install windows (install, then Gate 3 or `mkinitcpio` and the bootloader) have no safe midpoint, so they have no checkpoint: the body finishes, the sentinel is cleared, and `InterruptScope.redeliver` sends the SIGINT again under the previous handler, so the run stops as a Ctrl-C outside any scope would. Before `3.5.0-B44` nothing called `check()`, so the first Ctrl-C was swallowed and never acted on. A second Ctrl-C falls through to default `SIGINT` handling (immediate termination) — the operator explicitly chose the unsafe path. `CleanExitRequested` subclasses `BaseException` so it propagates through `except Exception:` blocks without being silently swallowed.
 

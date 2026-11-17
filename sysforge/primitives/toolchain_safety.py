@@ -11,7 +11,7 @@ shared facts both health-check entry points draw from. Everything here is
 read-only and pure enough to unit-test against fixture trees; the toolchain
 stage owns the *policy* (what aborts vs warns), this module owns the *facts*.
 
-It is **not** a third health-check entry point — ``_verify_llvm_install``
+It is **not** a third health-check entry point — ``verify.verify_llvm_install``
 (pipeline post-install) and ``toolchain_preflight._probe_cc`` (primitives,
 update path) remain the only two, and both call into these functions. This
 module imports :data:`LLVM_LOCKSTEP_SUITE` from ``toolchain_preflight`` (both
@@ -381,7 +381,7 @@ def _diff_consumers_against_libllvm(
 
     Scope: only consumers that actually ``NEED`` this libLLVM's *exact* soname
     are checked (a soname *bump* is owned by ``assess_libllvm_soname_impact`` /
-    ``_gate_soname_consumers`` — those consumers are rebuilt, not symbol-diffed).
+    ``gates.gate_soname_consumers`` — those consumers are rebuilt, not symbol-diffed).
     Only the consumer's ``LLVM_*`` version-node imports are considered; its libc
     / libstdc++ imports are irrelevant to a libLLVM swap, and so is an
     ``LLVM_*`` import another of its NEEDED libs exports: libclang, libclang-cpp

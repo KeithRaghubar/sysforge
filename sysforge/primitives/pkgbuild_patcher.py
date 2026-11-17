@@ -602,7 +602,7 @@ def patch_kernel_config_install(patched_path, *, pkgname):
 
     The injected block is CWD-/layout-independent: it locates the kernel build
     tree via ``include/config/kernel.release`` (the same release source the
-    stage's ``_built_kernel_release`` reads) anywhere under ``$srcdir``, then
+    stage's ``built_kernel_release`` reads) anywhere under ``$srcdir``, then
     installs the sibling ``.config``. ``package()`` runs inside ``$srcdir`` with
     ``$pkgdir`` available (PKGBUILD(5)).
 

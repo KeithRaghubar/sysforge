@@ -93,6 +93,13 @@ Groups:
                     cited paths, `path/module.symbol`s, .py files and `make`
                     targets exist (a missing target only when it is a near
                     miss of one of ours; the kernel's are quoted on purpose).
+                    A bare code name counts only where code uses it, not in a
+                    comment, docstring or tests/ string (4.0.0-DEV5).
+    design_examples A ```toml block in docs/design/ preceded by
+                    `<!-- shipped-example: etc/sysforge/<f>.toml [complete] -->`
+                    shows only keys the shipped file has, at its defaults (a
+                    `# example` line is exempt); `complete` also requires every
+                    shipped key (4.0.0-DEV6).
 
 Drift detection cases (verify these still fire after editing this script):
     - Add `Path.home() / ".cache/sysforge"` to a module other than paths.py.
@@ -115,6 +122,8 @@ Drift detection cases (verify these still fire after editing this script):
     - Rename the symbol a shim record's anchor cites.
     - Cite `§Toolchain-variant drift detection` (no such heading) in docs/design/.
     - Write a name from tools/retired_names.toml in a comment under sysforge/.
+    - Leave a renamed helper's old name in a docstring; cite it in docs/design/.
+    - Change a default in etc/sysforge/toolchain.toml but not in 07's example.
     - Cite `make vm-install` (the targets are vm-install-stable/-git) in docs/design/.
     - Replace the _REGISTRY literal with a comprehension (parse finds 0 records).
     - Run with --target-version=3.0.0 while a 3.0.0 removal is still present.
@@ -127,6 +136,7 @@ from __future__ import annotations
 import argparse
 import ast
 import inspect
+import os
 import re
 import shutil
 import subprocess
@@ -490,43 +500,153 @@ _PATHLIKE_RE = re.compile(r"^[\w./-]+$")
 _DOTTED_RE = re.compile(r"^[A-Za-z_][\w.]*$")
 
 
+_FILES_BY_NAME: dict[str, dict[str, list[Path]]] = {}
+
+
+def _files_named(repo: Path, name: str) -> list[Path]:
+    """Every file called ``name`` in the tree, outside the skipped dirs.
+
+    One walk per repo, cached, pruning ``.venv`` and the like instead of
+    descending into them: a ``rglob`` per citation walked the whole tree about
+    900 times a run and was most of the citation check's time.
+    """
+    key = str(repo)
+    if key not in _FILES_BY_NAME:
+        index: dict[str, list[Path]] = {}
+        for root, dirs, files in os.walk(repo):
+            dirs[:] = sorted(d for d in dirs if d not in _CLAUDE_MD_SKIP_DIRS)
+            for f in files:
+                index.setdefault(f, []).append(Path(root) / f)
+        _FILES_BY_NAME[key] = index
+    return _FILES_BY_NAME[key].get(name, [])
+
+
 def _resolve_module_file(repo: Path, name: str) -> Path | None:
     """Locate `<name>.py` in the tree; None if absent or ambiguous."""
-    hits = [p for p in repo.rglob(f"{name}.py")
-            if not _CLAUDE_MD_SKIP_DIRS & set(p.parts)]
+    hits = _files_named(repo, f"{name}.py")
     return hits[0] if len(hits) == 1 else None
 
 
 # Things cited on purpose after their removal, in a passage about that history.
 _CITATION_HISTORY = {"doctor.flat_flags", "_DOCTOR_MIGRATION", "_prompt_llvm_recovery",
-                     "from_fix_suggestion", "from_toolchain_check"}
+                     "from_fix_suggestion", "from_toolchain_check",
+                     # Named as what a change replaced ("the old …", "was …").
+                     "_check_pkgver_consistency", "suspend_for_prompt",
+                     "patch_hotplug_fragment_merge", "_print_report", "base_install"}
 # Names from other software the docs quote: pacman, LLVM, systemd-boot, sysctl,
 # makechrootpkg, and PKGBUILD example variables.
 _CITATION_EXTERNAL = {"IgnorePkg", "InitializeAllTargets", "LoaderEntryDefault",
                       "kptr_restrict", "unprivileged_bpf_disabled", "install_packages",
-                      "depends_x86_64", "sha256sums_x86_64", "package_bar", "_pkgver"}
+                      "depends_x86_64", "sha256sums_x86_64", "package_bar", "_pkgver",
+                      # Listed since 4.0.0-DEV5: they had passed only because a
+                      # code comment quoted them too.
+                      "DownloadUser", "DatabaseOptional", "LocalFileSigLevel",  # pacman.conf
+                      "secure_path", "passwd_timeout", "timestamp_timeout",  # sudoers
+                      "package_mesa", "package_foo", "source_x86_64", "_pydeps",  # PKGBUILDs
+                      "_pick", "check_root",  # mesa's PKGBUILD helper; devtools
+                      "alpm_pkg_vercmp", "sd_journal_send",  # libalpm; libsystemd
+                      "wp_linux_drm_syncobj_v1",  # Wayland protocol
+                      "llvm_check_source_file_list", "llvm_setup_rpath"}  # LLVM CMake
 # A bare code name: `_private`, `snake_case_name`, `CamelCase` (3.5.0-DEV15).
 _CODE_NAME_RE = re.compile(
     r"^(?:_[A-Za-z0-9_]+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+)$")
-_CODE_WORDS: dict[str, set[str]] = {}
+_CODE_WORDS: dict[str, "_WordIndex"] = {}
 
 
-def _code_words(repo: Path) -> set[str]:
-    """Every identifier-shaped word in the repo's tracked non-doc files."""
-    key = str(repo)
-    if key not in _CODE_WORDS:
-        words: set[str] = set()
+_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _py_words(text: str, *, strings: bool) -> set[str]:
+    """Identifiers a Python file really uses, minus comments and docstrings.
+
+    A renamed helper's old name survives in prose, a comment or a docstring
+    that was not updated with it, and that prose kept stale design citations
+    passing (4.0.0-DEV5). String literals count when ``strings`` (a config key
+    lives in the code only as ``"reuse_unchanged"``), but not in ``tests/``,
+    whose strings are as often fixture code as real names.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set(_WORD_RE.findall(text))
+    docs = {id(n.value) for n in ast.walk(tree)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)}
+    words: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name):
+            words.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            words.add(n.attr)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            words.add(n.name)
+        elif isinstance(n, (ast.arg, ast.keyword)) and n.arg:
+            words.add(n.arg)
+        elif isinstance(n, ast.alias):
+            words |= set(_WORD_RE.findall(f"{n.name} {n.asname or ''}"))
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            words |= set(_WORD_RE.findall(n.module))
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            words |= set(n.names)
+        elif (strings and isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and id(n) not in docs):
+            words |= set(_WORD_RE.findall(n.value))
+    return words
+
+
+class _WordIndex:
+    """Per-file word sets for the bare-name check, with Python files verified lazily.
+
+    Every file's raw words are collected up front (cheap); a ``.py`` file is
+    parsed by :func:`_py_words` only when it is a candidate for a name being
+    looked up, and the result is cached. Parsing all of them up front cost
+    about 6s a run; most names resolve in the first file that holds them.
+    """
+
+    def __init__(self, repo: Path) -> None:
+        self.files: list[tuple[str, str, set[str]]] = []
+        self._parsed: dict[str, set[str]] = {}
         for path in _tracked_text_files(repo):
             rel = path.relative_to(repo).as_posix()
             if rel.startswith(("docs/", ".claude/")) or rel.endswith(".md"):
                 continue
             try:
-                words |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*",
-                                        path.read_text(encoding="utf-8")))
+                text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-        _CODE_WORDS[key] = words
-    return _CODE_WORDS[key]
+            self.files.append((rel, text, set(_WORD_RE.findall(text))))
+        # Cheapest proof first: a non-Python file needs no parse, and a name
+        # the code defines is found in sysforge/ before a test that uses it.
+        self.files.sort(key=lambda f: (f[0].endswith(".py"), f[0].startswith("tests/")))
+
+    def has(self, name: str) -> bool:
+        """True when code uses ``name``: any non-Python file holding it, or a
+        Python file where :func:`_py_words` keeps it."""
+        for rel, text, words in self.files:
+            if name not in words:
+                continue
+            if not rel.endswith(".py"):
+                return True
+            if rel not in self._parsed:
+                self._parsed[rel] = _py_words(text, strings=not rel.startswith("tests/"))
+            if name in self._parsed[rel]:
+                return True
+        return False
+
+
+def _code_has(repo: Path, name: str) -> bool:
+    """Whether the repo's tracked non-doc files use ``name`` (see _WordIndex).
+
+    Python files count only what :func:`_py_words` keeps; other files (TOML,
+    shell, completions, the Makefile) every word, since a shipped config key
+    is often only there, commented out as its default.
+    """
+    key = str(repo)
+    if key not in _CODE_WORDS:
+        _CODE_WORDS[key] = _WordIndex(repo)
+    return _CODE_WORDS[key].has(name)
+
+
 # The repo's own top-level and package directories: a path into one of these is
 # a citation even if that whole directory is gone.
 _REPO_TOP_DIRS = {"tools", "tests", "docs", "sysforge", "etc", "completions", "man",
@@ -578,7 +698,7 @@ def _check_citation(repo: Path, token: str) -> str | None:
     # exist somewhere in the code (`_confirm_or_abort` had been gone for years).
     bare = token.split("(", 1)[0]
     if _CODE_NAME_RE.match(bare) and bare not in _CITATION_EXTERNAL:
-        if bare not in _code_words(repo):
+        if not _code_has(repo, bare):
             return f"cites `{bare}`, which nothing in the code defines or uses"
         return None
     # `file.py::symbol` — resolve the file, then grep for the symbol.
@@ -639,8 +759,7 @@ def _check_citation(repo: Path, token: str) -> str | None:
     if token.endswith(".sh"):
         return None  # a bare script name is as often the kernel's or the user's
     if token.endswith(".py"):
-        if (repo / token).exists() or any(
-                not _CLAUDE_MD_SKIP_DIRS & set(p.parts) for p in repo.rglob(token)):
+        if (repo / token).exists() or _files_named(repo, token):
             return None
         return f"cites `{token}` — no such file in the tree"
 
@@ -674,8 +793,7 @@ def _check_citation(repo: Path, token: str) -> str | None:
         if sym_segs and sym_segs[0] not in mod.read_text(encoding="utf-8"):
             # Several modules share a name (the kernel stage's config.py beside
             # primitives/config.py): any of them defining it will do.
-            same = [p for p in repo.rglob(f"{segs[0]}.py")
-                    if not _CLAUDE_MD_SKIP_DIRS & set(p.parts)]
+            same = _files_named(repo, f"{segs[0]}.py")
             if any(sym_segs[0] in p.read_text(encoding="utf-8") for p in same):
                 return None
             return (f"cites `{token}` but {mod.relative_to(repo)} "
@@ -741,6 +859,117 @@ def check_citations(repo: Path) -> list[Finding]:
         except (OSError, subprocess.CalledProcessError):
             files += sorted(claude.rglob("*.md"))
     return _citation_findings(repo, [f for f in files if f.is_file()], "citations")
+
+# ===========================================================================
+# Group: design_examples  (marked TOML examples mirror the shipped config)
+# ===========================================================================
+
+# `<!-- shipped-example: etc/sysforge/<file>.toml [complete] -->` on the line
+# before a ```toml fence opts the block in (4.0.0-DEV6).
+_EXAMPLE_MARKER_RE = re.compile(
+    r"<!--\s*shipped-example:\s*(\S+)(\s+complete)?\s*-->\s*\n```toml\n(.*?)\n```",
+    re.DOTALL)
+# A shipped default is a key line commented out with no space after `#`
+# (`#reuse_unchanged = false`); prose comments read `# key — what it does`.
+_SHIPPED_DEFAULT_RE = re.compile(r"^#([A-Za-z_\[].*)$")
+_EXAMPLE_LINE_RE = re.compile(r"^\s*([A-Za-z_][\w-]*)\s*=.*#\s*example\b")
+
+
+def _flatten(table: dict, prefix: str = "") -> dict[str, object]:
+    out: dict[str, object] = {}
+    for k, v in table.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out |= _flatten(v, key + ".")
+        else:
+            out[key] = v
+    return out
+
+
+def _shipped_defaults(path: Path) -> dict[str, object]:
+    """The shipped file's keys, its commented-out defaults uncommented."""
+    import tomllib
+    lines = [m.group(1) if (m := _SHIPPED_DEFAULT_RE.match(ln)) else ln
+             for ln in path.read_text(encoding="utf-8").splitlines()]
+    return _flatten(tomllib.loads("\n".join(lines)))
+
+
+def _example_skips(block: str) -> set[str]:
+    """Dotted keys whose line says `# example`: the value is illustrative."""
+    skips, table = set(), ""
+    for ln in block.splitlines():
+        if m := re.match(r"^\s*\[\[([^\]]+)\]\](.*)$", ln):
+            table = m.group(1).strip() + "."
+            if re.search(r"#\s*example\b", m.group(2)):
+                skips.add(m.group(1).strip())  # an array of tables flattens to one key
+        elif m := re.match(r"^\s*\[([^\]]+)\]", ln):
+            table = m.group(1).strip() + "."
+        elif m := _EXAMPLE_LINE_RE.match(ln):
+            skips.add(table + m.group(1))
+    return skips
+
+
+def check_design_examples(repo: Path) -> list[Finding]:
+    """A marked TOML example in docs/design/ mirrors the shipped file.
+
+    Every key it shows exists in the shipped file with the same default
+    (unless its line says `# example`), and a `complete` marker also requires
+    every shipped key. The design's toolchain.toml example kept defaults and a
+    key set the shipped file had moved past (4.0.0-DEV6); the citation scan
+    drops fenced blocks, and check_shipped compares only etc/ with tests/data/.
+    """
+    import tomllib
+    findings: list[Finding] = []
+    for md in sorted((repo / "docs/design").rglob("*.md")):
+        rel = md.relative_to(repo).as_posix()
+        text = md.read_text(encoding="utf-8")
+        for m in _EXAMPLE_MARKER_RE.finditer(text):
+            target, complete, block = m.group(1), bool(m.group(2)), m.group(3)
+            where = f"{rel}:{text.count(chr(10), 0, m.start()) + 1}"
+            shipped_path = repo / target
+            try:
+                shipped = _shipped_defaults(shipped_path)
+            except OSError:
+                findings.append(Finding("design_examples", "error", where,
+                                        f"marks an example of `{target}`, which does not exist"))
+                continue
+            except tomllib.TOMLDecodeError as e:
+                findings.append(Finding("design_examples", "error", where,
+                                        f"`{target}`'s defaults do not parse ({e})"))
+                continue
+            try:
+                example = _flatten(tomllib.loads(block))
+            except tomllib.TOMLDecodeError as e:
+                findings.append(Finding("design_examples", "error", where,
+                                        f"example does not parse as TOML ({e})"))
+                continue
+            skips = _example_skips(block)
+            for key, value in example.items():
+                if key not in shipped:
+                    findings.append(Finding(
+                        "design_examples", "error", where,
+                        f"example key `{key}` is not in `{target}`"))
+                elif key not in skips and shipped[key] != value:
+                    findings.append(Finding(
+                        "design_examples", "error", where,
+                        f"example `{key} = {_toml_repr(value)}` but `{target}` ships "
+                        f"{_toml_repr(shipped[key])} (mark the line `# example` "
+                        "if the value is illustrative)"))
+            if complete:
+                for key in sorted(set(shipped) - set(example)):
+                    findings.append(Finding(
+                        "design_examples", "error", where,
+                        f"`{target}` ships `{key}`, which the complete example omits"))
+    return findings
+
+
+def _toml_repr(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return f'"{value}"'
+    return repr(value)
+
 
 # ===========================================================================
 # Group: roadmap_ids  (ROADMAP.md <-> release-notes ID collision detection)
@@ -2143,6 +2372,7 @@ GROUPS = {
     "design_refs":    check_design_refs,
     "retired_names":  check_retired_names,
     "citations":      check_citations,
+    "design_examples": check_design_examples,
 }
 
 
