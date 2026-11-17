@@ -550,7 +550,9 @@ rewrites them from that profile, checks the result still compiles, and packages 
 step fails, you get a warning and the toolchain installs without BOLT. It rewrites
 `libclang-cpp`; add `libllvm = true` to rewrite `libLLVM` too, which every program that
 uses LLVM loads, so it is off by default. It needs the LLVM packages as the repos build
-them now (one `llvm` package), and it does not need `perf`.
+them now (one `llvm` package), and it does not need `perf`. The build plan printed before
+the build starts (and by `--dry-run`) has a `bolt:` row showing which libraries it will
+rewrite, or why it won't run.
 
 To try BOLT again without rebuilding LLVM (after changing `training_workload`, say, or
 when a run skipped it), run:

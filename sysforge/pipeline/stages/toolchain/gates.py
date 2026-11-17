@@ -774,5 +774,49 @@ def log_toolchain_resolution_summary(
         _log.ui(f"  staging2:   {staging}")
         _log.ui(f"  staging3:   {staging3}")
         _log.ui(f"  pgo_store:  {pgo_store}")
+    if compiler == "llvm":
+        _log.ui(f"  bolt:       {_bolt_plan(tcfg, pgo=pgo, pgo_pkgs=pgo_pkgs, mode=mode)}")
+    if pgo and not mode:
+        extras = list(tcfg.training_corpus)
+        _log.ui("  corpus:     " + " + ".join(["llvm", *extras])
+                + " (Pass-3 profile training; extras are never installed)")
+    if compiler == "llvm" and not mode:
+        if getattr(options, "reuse_built", False):
+            reuse = "on (--reuse-built)"
+        elif tcfg.reuse_unchanged:
+            reuse = "on (reuse_unchanged)"
+        else:
+            reuse = "off (every package rebuilds)"
+        _log.ui(f"  reuse:      {reuse}")
+    soname = (getattr(options, "rebuild_soname_consumers", None)
+              or tcfg.rebuild_soname_consumers)
+    _log.ui(f"  after:      soname-consumers={soname} "
+            f"bench={'on' if tcfg.bench_after_build else 'off'}")
     _log.ui(f"  gates:      {gates}")
     _log.ui(f"  snapshot:   {cached}/{len(snapshot)} suite package(s) cached for offline rollback")
+
+
+def _bolt_plan(tcfg: "config.ToolchainConfig", *, pgo: bool, pgo_pkgs, mode) -> str:
+    """The plan's ``bolt:`` value: whether BOLT runs, on what, and where.
+
+    Mirrors the gates :func:`bolt.optimize_in_build` applies so the plan never
+    promises a BOLT the build will skip: it acts only in the PGO passes (Pass 4a
+    links with ``--emit-relocs`` only then), needs clang built by the PGO
+    PKGBUILD, and ``--bolt-only`` forces it on regardless of ``[bolt] enabled``.
+    """
+    bcfg = tcfg.bolt
+    libs = "libclang-cpp" + (" + libLLVM" if bcfg.libllvm else "")
+    training = bcfg.training_workload or "tree compile sample"
+    if mode == "--bolt-only":
+        return f"{libs} in the last Pass-4a build tree, then repackage (training={training})"
+    if mode == "--install-only":
+        return "off (nothing is built)"
+    if not bcfg.enabled:
+        return "off ([bolt] enabled = false)"
+    if not pgo:
+        return "not applied ([bolt] enabled, but BOLT runs only in the pgo build)"
+    if "clang" not in pgo_pkgs:
+        return ("skipped (clang is not built by the pgo PKGBUILD, so libclang-cpp "
+                "is not in its build tree)")
+    return (f"{libs} after Pass-4a, in the build tree before install "
+            f"(training={training})")
