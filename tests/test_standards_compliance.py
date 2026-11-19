@@ -1356,8 +1356,28 @@ def test_design_example_complete_marker_requires_every_shipped_key(tmp_path):
     assert "pgo" in msgs and "bolt.libllvm" in msgs and "bolt.enabled" in msgs
 
 
-def test_design_example_unmarked_block_is_not_checked(tmp_path):
+def test_design_example_unmarked_block_is_an_error(tmp_path):
+    """4.0.0-DEV9: an unmarked block was never checked, which is how design
+    10's [conflict_groups] outlived the rename to [append_conflict_groups]."""
     repo = _example_repo(tmp_path, 'anything = "goes"\n', marker=None)
+    [f] = _example_findings(repo)
+    assert "no marker" in f.message and f.location == "docs/design/07-x.md:3"
+
+
+def test_design_example_illustrative_block_is_not_checked(tmp_path):
+    repo = _example_repo(tmp_path, 'anything = "goes"\n', marker=None)
+    md = repo / "docs/design/07-x.md"
+    md.write_text(md.read_text().replace("```toml", "<!-- illustrative -->\n```toml"))
+    assert _example_findings(repo) == []
+
+
+def test_design_example_multiline_commented_default_parses(tmp_path):
+    """4.0.0-DEV9: `#packages = [` then `#    "a",` lines left the array open
+    once only its first line was uncommented, so packages.toml never parsed."""
+    repo = _example_repo(tmp_path, 'compiler = "gcc"\n')
+    (repo / "etc/sysforge/toolchain.toml").write_text(
+        _SHIPPED_TC + '[group.x]\n#packages = [\n#    "a",  # [not a bracket]\n#    "b",\n#]\n'
+        '#[[package]]\n#name = "c"\n')
     assert _example_findings(repo) == []
 
 
@@ -1372,3 +1392,141 @@ def test_design_example_array_of_tables_header_can_be_marked_example(tmp_path):
     (repo / "etc/sysforge/toolchain.toml").write_text(
         _SHIPPED_TC + '#[[kconfig]]\n#option = "Y"\n')
     assert _example_findings(repo) == []
+
+
+def test_citation_line_number_is_an_error(tmp_path):
+    """4.0.0-DEV9: `config.py:91` and `build_core.py:268` had both moved; only
+    the path was ever resolved."""
+    cs = _load_check_standards()
+    assert "::<symbol>" in cs._check_citation(tmp_path, "primitives/config.py:91")
+    assert cs._check_citation(tmp_path, "build_core.py:268-270")
+    assert cs._check_citation(tmp_path, "localhost:8080") is None
+
+
+# ---------------------------------------------------------------------------
+# design_tree (4.0.0-DEV7): design 04's Installed layout names every installed
+# path and every file the code keeps in the state dir.
+# ---------------------------------------------------------------------------
+
+_TREE_04 = """## Directory Structure
+
+### Installed
+
+```
+/usr/bin/sysforge
+/etc/sysforge/
+    sysforge.toml
+/var/lib/sysforge/
+    bench.toml
+```
+
+#### makepkg-owned paths
+"""
+
+_TREE_PKGBUILD = """package() {
+    install -Dm755 x "$pkgdir/usr/bin/sysforge"
+    install -Dm644 a "$_conf/sysforge.toml"
+    printf 'd /var/lib/sysforge 2775 root sysforge -\\n'
+}
+"""
+
+_TREE_MODULE = """FILENAME = "bench.toml"
+def path(state_dir):
+    return Path(state_dir) / FILENAME
+"""
+
+
+def _tree_repo(tmp_path, design=_TREE_04, pkgbuild=_TREE_PKGBUILD, module=_TREE_MODULE):
+    (tmp_path / "docs/design").mkdir(parents=True)
+    (tmp_path / "docs/design/04-directory-structure.md").write_text(design)
+    (tmp_path / "PKGBUILD").write_text(pkgbuild)
+    (tmp_path / "sysforge/primitives").mkdir(parents=True)
+    (tmp_path / "sysforge/primitives/bench_state.py").write_text(module)
+    return tmp_path
+
+
+def _tree_findings(repo):
+    return _load_check_standards().check_design_tree(repo)
+
+
+def test_design_tree_group_is_clean_on_the_real_repo():
+    findings = _tree_findings(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def test_design_tree_complete_layout_passes(tmp_path):
+    assert _tree_findings(_tree_repo(tmp_path)) == []
+
+
+def test_design_tree_flags_an_installed_path_it_omits(tmp_path):
+    repo = _tree_repo(tmp_path, pkgbuild=_TREE_PKGBUILD.replace(
+        "}", '    install -Dm644 k "$_conf/kernel.toml"\n}'))
+    [f] = _tree_findings(repo)
+    assert "/etc/sysforge/kernel.toml" in f.message
+
+
+def test_design_tree_flags_a_state_file_it_omits(tmp_path):
+    repo = _tree_repo(tmp_path, module=_TREE_MODULE + (
+        'def other(state_dir):\n    return state_dir / "stage_timings.toml"\n'))
+    [f] = _tree_findings(repo)
+    assert "stage_timings.toml" in f.message and "bench_state.py" in f.message
+
+
+def test_design_tree_ignores_a_join_not_onto_the_state_dir(tmp_path):
+    repo = _tree_repo(tmp_path, module=_TREE_MODULE + (
+        'def other(cache):\n    return cache / "unrelated.toml"\n'))
+    assert _tree_findings(repo) == []
+
+
+# ---------------------------------------------------------------------------
+# design_flags (4.0.0-DEV8): a flag the design names is real, retired, passed
+# to another tool by the code, or a listed external flag.
+# ---------------------------------------------------------------------------
+
+def _flags_repo(tmp_path, prose, code='ARGV = ["pacman", "--needed"]\n'):
+    (tmp_path / "docs/design").mkdir(parents=True)
+    (tmp_path / "docs/design/09-x.md").write_text(prose)
+    (tmp_path / "tests/data").mkdir(parents=True)
+    (tmp_path / "tests/data/surface.json").write_text(
+        '{"commands": {"build": {"flags": {"--dry-run": null}, "positionals": {}}}}')
+    (tmp_path / "sysforge").mkdir()
+    (tmp_path / "sysforge/m.py").write_text(code)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools/retired_names.toml").write_text(
+        '[[retired]]\nname = "--old"\nid = "1.0.0-F1"\nuse = "--new"\n')
+    return tmp_path
+
+
+def _flag_findings(repo):
+    return _load_check_standards().check_design_flags(repo)
+
+
+def test_design_flags_group_is_clean_on_the_real_repo():
+    findings = _flag_findings(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def test_design_flags_accepts_real_retired_passed_and_external(tmp_path):
+    repo = _flags_repo(tmp_path, "Use `--dry-run`, not `--old`; pacman gets `--needed`; "
+                                 "systemd-run takes `--slice`. `sysforge build --dry-run`.\n")
+    assert _flag_findings(repo) == []
+
+
+def test_design_flags_flags_a_phantom_flag(tmp_path):
+    """The --track-deps shape: written as sysforge's, never a flag anywhere."""
+    repo = _flags_repo(tmp_path, "`sysforge build --track-deps` builds deps first.\n")
+    [f] = _flag_findings(repo)
+    assert "--track-deps" in f.message
+
+
+def test_design_flags_a_docstring_does_not_make_a_flag_real(tmp_path):
+    """The --check-drift shape: the code's docstrings repeated the phantom."""
+    repo = _flags_repo(tmp_path, "The read-only `--check-drift` route.\n",
+                       code='"""Read-only ``--check-drift`` returns early."""\n')
+    [f] = _flag_findings(repo)
+    assert "--check-drift" in f.message
+
+
+def test_design_flags_skips_other_commands_and_fences(tmp_path):
+    repo = _flags_repo(tmp_path, "`git merge-base --is-ancestor a b`\n\n```\nfoo --bar\n```\n")
+    assert _flag_findings(repo) == []

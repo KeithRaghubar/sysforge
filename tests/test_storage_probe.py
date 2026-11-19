@@ -34,6 +34,16 @@ def test_disk_space_warns_under_threshold(monkeypatch):
     assert len(out) == 1 and out[0].check_id == "disk_low"
 
 
+def test_disk_space_remediation_names_the_resolved_build_dir(monkeypatch):
+    """4.0.0-B9: the hint told the user to run `sysforge clean`, a command that
+    never existed, and assumed ~/builds; it names the dir it measured."""
+    monkeypatch.setattr(storage_probe, "probe_free_space", lambda p: (3.0, 100.0))
+    monkeypatch.setattr(storage_probe, "_resolve_build_dir", lambda c: "/srv/mybuilds")
+    [finding] = storage_probe._check_disk_space({}, {"disk_low_gb": 10.0})
+    assert "`rm -rf /srv/mybuilds/*`" in finding.remediation
+    assert "sysforge clean" not in finding.remediation and "~/builds" not in finding.remediation
+
+
 def test_disk_space_clean_over_threshold(monkeypatch):
     monkeypatch.setattr(storage_probe, "probe_free_space", lambda p: (50.0, 100.0))
     monkeypatch.setattr(storage_probe, "_resolve_build_dir", lambda c: "/home/x/src")

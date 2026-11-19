@@ -1583,7 +1583,8 @@ def _gate_editor_for_pipeline(options) -> None:
     surfaces much later as ``No usable $EDITOR`` in the PKGBUILD retry menu,
     with a half-built package and no way to fix the recipe.
 
-    Skipped when ``--standalone`` (nothing runs after reconfigure) or when
+    Skipped on a standalone ``sysforge run reconfigure`` (``options.standalone``:
+    nothing runs after reconfigure) or when
     there's no TTY (the picker can't prompt; warn instead of hard-failing a
     non-interactive run).
     """

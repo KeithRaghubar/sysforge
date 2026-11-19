@@ -83,8 +83,8 @@ The lifecycle primitive (`log.open_unified_log` / `close_unified_log`) is the si
 
 - Path: `<pkgbuild_src_dir>/<pkgname>/sysforge_<pkgname>.log`
 - Same lifecycle as the unified log: appends across builds, cleared on success unless `--persist-log`.
-- Written by both `sysforge pipeline` (via the packages stage) and `sysforge build`.
-- `--no-pkg-log` disables per-package logs for `sysforge pipeline`.
+- Written by both `sysforge run pipeline` (via the packages stage) and `sysforge build`.
+- `--no-pkg-log` disables per-package logs for `sysforge run pipeline`.
 
 **CLI flag summary:**
 

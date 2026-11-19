@@ -50,7 +50,9 @@ Shipped-file edits must pass `make check-shipped`; doc/design edits `make check-
   design passage it makes untrue (search the section for the old default, name or flow), not just a
   new paragraph about the change: `3.5.0-F2` added its own paragraph and left the pass descriptions
   above it describing the old layout. A TOML example that mirrors a shipped file carries a
-  `<!-- shipped-example: … -->` marker so `make check-standards` (`design_examples`) keeps it honest.
+  `<!-- shipped-example: … -->` marker so `make check-standards` (`design_examples`) keeps it honest;
+  any other TOML block is marked `<!-- illustrative -->` (an unmarked block fails). The `sysforge/` tree in
+  design 04 is generated from module docstrings: describe a module there, not in the design.
 - **DESIGN = implemented only; `/ROADMAP.md` = planned; `docs/ROADMAP-ABANDONED.md` = abandoned**
   (one ID namespace across both — a retired ID is never reissued). Roadmap IDs
   (`<version>-<TYPE><n>`, e.g. `1.2.0-F1`; counters reset on major/minor bump, not patch) live in

@@ -12,6 +12,8 @@ docs/design/_manifest, under a generated banner. This mirrors the `make man`
 generate-and-check pattern -- edit the sources, run `make design`, and
 `make check-design` guards against the committed DESIGN.md drifting from the
 sources (wired into the release preflight alongside the manpage drift check).
+Two markers are expanded at build time: `<!--TOC-->` (the section index) and
+`<!--MODULE-TREE-->` (the sysforge/ package tree, from module docstrings).
 
 Usage:
     python tools/build_design.py            # regenerate DESIGN.md in place
@@ -29,6 +31,16 @@ from pathlib import Path
 # Table of Contents, derived from the `##` section headings in the assembled
 # document. Keeps the TOC in sync automatically as sections move/rename.
 _TOC_MARKER = "<!--TOC-->"
+
+# Placeholder line (in docs/design/04-directory-structure.md) replaced by the
+# sysforge/ package tree, one line per module, each described by the first
+# paragraph of its docstring (4.0.0-DEV7). The hand-kept tree it replaces had
+# fallen 80 modules behind; generated, a new or re-described module makes
+# `make check-design` fail until `make design` picks it up.
+_TREE_MARKER = "<!--MODULE-TREE-->"
+# `name.py — `, `stages/base.py -- `, `sysforge.ui — `, `stages/kernel/ — `: the
+# docstring repeating its own name (a `.` or `/` keeps a plain first word).
+_SELF_NAME_RE = re.compile(r"^[\w]+[./][\w/.]*\s+(?:—|--|-)\s+")
 
 _BANNER = (
     "<!-- GENERATED FILE -- do not edit directly.\n"
@@ -88,9 +100,64 @@ def _generate_toc(body: str) -> str:
     )
 
 
+def _module_summary(path: Path) -> str | None:
+    """The first paragraph of a module's docstring, on one line, without the
+    file name it often opens with; None when it has no docstring."""
+    import ast
+    doc = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
+    if not doc:
+        return None
+    para = " ".join(doc.strip().split("\n\n")[0].split())
+    return _SELF_NAME_RE.sub("", para).replace("``", "`").rstrip(".")
+
+
+def _tree_lines(pkg: Path, prefix: str, missing: list[str], repo: Path) -> list[str]:
+    entries = sorted(
+        (p for p in pkg.iterdir()
+         if p.name != "__pycache__" and not p.name.startswith("_data")
+         # primitives/ is a namespace package: a directory counts by its modules.
+         and (p.suffix == ".py" or (p.is_dir() and any(p.glob("*.py"))))
+         and p.name != "__init__.py"),
+        key=lambda p: (p.is_dir(), p.name))
+    lines: list[str] = []
+    for i, p in enumerate(entries):
+        last = i == len(entries) - 1
+        branch, pad = ("└── ", "    ") if last else ("├── ", "│   ")
+        if p.is_dir():
+            init = p / "__init__.py"
+            summary = _module_summary(init) if init.is_file() else None
+            lines.append(f"{prefix}{branch}{p.name}/" + (f"  # {summary}" if summary else ""))
+            lines += _tree_lines(p, prefix + pad, missing, repo)
+        else:
+            summary = _module_summary(p)
+            if summary is None:
+                missing.append(p.relative_to(repo).as_posix())
+            lines.append(f"{prefix}{branch}{p.name}  # {summary or '(no docstring)'}")
+    return lines
+
+
+def generate_module_tree(repo: Path) -> str:
+    """The sysforge/ package as a fenced tree. Raises SystemExit naming any
+    module without a docstring: the tree is only as good as its descriptions."""
+    pkg = repo / "sysforge"
+    if not (pkg / "__init__.py").is_file():
+        return "```\nsysforge/  (package not present in this tree)\n```"
+    missing: list[str] = []
+    lines = ["sysforge/"] + _tree_lines(pkg, "", missing, repo)
+    if missing:
+        raise SystemExit("[FAIL] modules without a docstring (the DESIGN.md module tree "
+                         "describes each by its first paragraph):\n  " + "\n  ".join(missing))
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
 def render(repo: Path) -> str:
-    """Return the full generated DESIGN.md text (banner + sources + injected TOC)."""
+    """Return the full generated DESIGN.md text (banner + sources + injected
+    TOC and module tree)."""
     body = _BANNER + "".join(p.read_text(encoding="utf-8") for p in _manifest_files(repo))
+    # Only a marker alone on its line: prose that names it (design 17) stays prose.
+    tree_line = re.compile(rf"^{re.escape(_TREE_MARKER)}$", re.MULTILINE)
+    if tree_line.search(body):
+        body = tree_line.sub(lambda _: generate_module_tree(repo), body)
     return body.replace(_TOC_MARKER, _generate_toc(body))
 
 

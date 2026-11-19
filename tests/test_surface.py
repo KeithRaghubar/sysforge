@@ -84,3 +84,10 @@ def test_a_flag_still_on_another_command_is_not_retired():
     notes = "`state failed` no longer takes `--json`"
     assert s.judge(base, head, notes, set()) == []
 
+
+
+def test_every_long_spelling_is_recorded():
+    """4.0.0-DEV10: only the longest spelling was kept, so `run kernel --headers`
+    sat behind `--no-headers` and dropping it changed nothing in the snapshot."""
+    flags = _surface().collect()["commands"]["run kernel"]["flags"]
+    assert {"--headers", "--no-headers", "--docs", "--no-docs"} <= set(flags)

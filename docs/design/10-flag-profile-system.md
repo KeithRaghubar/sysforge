@@ -140,8 +140,9 @@ result: "-march=native -O3 -pipe -fno-stack-protector --icf=all"
 
 Defined in the `[append_conflict_groups]` table of `/etc/sysforge/profiles.toml`:
 
+<!-- shipped-example: etc/sysforge/profiles.toml -->
 ```toml
-[conflict_groups]
+[append_conflict_groups]
 pic   = ["-fPIC", "-fPIE", "-fpic", "-fpie", "-fno-pic", "-fno-pie"]
 lto   = ["-flto", "-flto=thin", "-flto=full", "-fno-lto"]
 stack = ["-fstack-protector", "-fstack-protector-strong", "-fno-stack-protector"]
@@ -158,14 +159,15 @@ rewrites `CFLAGS` around `-march`/`-O` would otherwise drop the rest of `/etc/ma
 that set (`-z,relro,-z,now`) was already carried by the shipped profiles; the compiler half was not.
 
 `[preserved_system_tokens]` in `/etc/sysforge/profiles.toml` declares, per conf key, which tokens of
-the *system* value survive an override:
+the *system* value survive an override (`CXXFLAGS` carries the same list plus
+`-Wp,-D_GLIBCXX_ASSERTIONS`):
 
+<!-- shipped-example: etc/sysforge/profiles.toml -->
 ```toml
 [preserved_system_tokens]
 CFLAGS   = ["-fexceptions", "-Wp,-D_FORTIFY_SOURCE=3", "-Wformat",
             "-Werror=format-security", "-fstack-protector-strong",
             "-fstack-clash-protection", "-fcf-protection"]
-CXXFLAGS = [...]
 ```
 
 `emit_makepkg_conf` applies the set right after the system conf is parsed — before the linker, LTO,
@@ -247,6 +249,7 @@ Declares which conf types a build requires (`makepkg`, `rust`, `cmake`, `meson`,
 - **Default:** auto-inferred from `makedepends` via the `[consumes_inference]` table in `profiles.toml`
 - **Override:** explicit `consumes` on a profile replaces the inferred value
 
+<!-- shipped-example: etc/sysforge/profiles.toml -->
 ```toml
 # /etc/sysforge/profiles.toml
 [consumes_inference]
@@ -295,6 +298,7 @@ recovered from an interactive build-failure (see pipeline-layer → Makepkg
 Wrapper → Interactive recovery menu), or chosen up front with `build --toolchain
 … --save-toolchain` (`3.5.0-F14`). Each row is an inline table:
 
+<!-- illustrative -->
 ```toml
 [package_compiler_overrides]
 "some-pkgbase"  = { toolchain = "gcc" }                       # the bundle form (3.5.0-F12)

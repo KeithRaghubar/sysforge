@@ -2,182 +2,98 @@
 
 ### Development (local repo)
 
-```
-sysforge/
-├── sysforge/
-│   ├── __init__.py
-│   ├── cli.py                         # CLI entry: argv preprocessing + verb dispatch (each verb's flags live on its class; verbs/registry.py assembles the parser)
-│   ├── log.py                         # structured logging (stderr + optional file output)
-│   ├── ui/
-│   │   ├── __init__.py
-│   │   ├── headers.py                 # shared visual primitives (welcome banner, stage banners, stage list, closing rule)
-│   │   └── progress.py                # bottom-anchored batch progress indicator (TTY scroll region + plain fallback)
-│   ├── resolve.py                     # sysforge resolve subcommand
-│   ├── update.py                      # sysforge update subcommand
-│   ├── build_core.py                  # shared build engine behind `build` + `update` (dep prep, build loop, install)
-│   ├── build_cmd.py                   # sysforge build subcommand (BuildVerb; routes through build_core)
-│   ├── run_cmd.py                     # sysforge run namespace verbs (pipeline/hardware/reconfigure/toolchain/packages/kernel)
-│   ├── env_cmd.py                     # sysforge env subcommand (read-only env-chain inspector)
-│   ├── help_cmd.py                    # sysforge help subcommand (read-only alias for --help)
-│   ├── completions_cmd.py             # sysforge completions verb (parser entry only)
-│   ├── completions_data.py            # completion candidates + packages cache; cli.main fast path
-│   ├── doctor.py                      # sysforge doctor subcommand (ABI/linkage health check)
-│   ├── fetch.py                       # sysforge fetch subcommand (download PKGBUILDs, no build)
-│   ├── packages_cmd.py                # sysforge packages namespace (list/add/remove)
-│   ├── state_cmd.py                   # sysforge state namespace (list/repair) — build_state.toml
-│   ├── bench_cmd.py                   # sysforge bench namespace (toolchain): argparse surface over bench_core
-│   ├── bench_core.py                  # shared bench engine behind bench toolchain, state profiles GAIN and [bench] after_build
-│   ├── setup_cmd.py                   # sysforge setup subcommand (pacman IgnoreGroup = sf-build guard)
-│   ├── verbs/
-│   │   ├── base.py                    # Verb ABC (incl. add_parser) + VerbGroup + PreCheckResult/ExecResult
-│   │   ├── registry.py                # ordered COMMANDS + global flags + help tiers → build_parser()
-│   │   ├── runner.py                  # run_verb dispatch + sentinel wrapping
-│   │   └── helpers.py                 # shared verb helpers (load_config_with_overrides, PACKAGES_FILE_HELP)
-│   ├── build/                         # orchestration layer above primitives (3.2.0-F4)
-│   │   ├── makepkg_wrapper.py         # per-package build lifecycle: prepare, invoke, record, install
-│   │   └── aur_deps.py                # build + install resolved AUR deps (resolution stays in aur_resolve)
-│   └── primitives/
-│       ├── archinstall_config.py      # BootstrapConfig dataclass + pure → archinstall JSON (schema pin, _BASE_PACKAGES home)
-│       ├── archinstall_invoke.py      # sole archinstall shell-out (which() gate, 0600 tmp config, --silent)
-│       ├── paths.py                   # config path constants + resolve_packages_path() + resolve_state_dir()
-│       ├── progress_hooks.py           # ProgressHooks protocol + no-op default (ui/progress registers itself)
-│       ├── hardware_probe.py           # host arch/GPU detection + LLVM-target / mesa-driver derivation
-│       ├── stage_ownership.py         # stage→package ownership registry (update skip bootstrap)
-│       ├── config.py                  # TOML config loading, path constants, system conf parsing
-│       ├── pacman.py                  # pacman queries, batch install, makedep helpers
-│       ├── profile.py                 # profile resolution, rule matching, consumes
-│       ├── pkgbuild_meta.py           # static PKGBUILD parser (read-only)
-│       ├── pkgbuild_patcher.py        # PKGBUILD mutation + flag extraction
-│       ├── prompt.py                  # shared interactive-prompt helpers (every stage uses these)
-│       ├── makepkg_flags.py           # makepkg flag-string transforms (owns [FLAG] tag)
-│       ├── makepkg_artifacts.py       # built .pkg.tar* discovery + filename→version parse (pure, no tag)
-│       ├── makepkg_pgo.py             # PGO profdata state resolution (pure, no logger)
-│       ├── bench_workload.py          # bench-owned compile TUs + [bench] corpus resolution + fingerprint
-│       ├── bench_harness.py           # interleaved compile timing, median/spread, version relation, ratio
-│       ├── bench_state.py             # <state_dir>/bench.toml: last bench result per target (sole reader/writer)
-│       ├── stage_timings.py           # <state_dir>/stage_timings.toml: step-duration rings per stage (sole reader/writer)
-│       ├── stock_pkg.py               # unprivileged stock repo build: pacman -Sp, cache/download, sync-DB checksum, bsdtar
-│       ├── makepkg_env.py             # subprocess env resolution + effective build dir (owns [ENV] tag)
-│       ├── makepkg_conf.py            # temp makepkg.conf emission ctx-mgr (owns [CONF])
-│       ├── makepkg_invoke.py          # makepkg subprocess invocation + sudo-timeout retry (owns [MAKEPKG])
-│       ├── pty_runner.py              # spawn subprocess on a pty (preserves cargo's live progress bar)
-│       ├── aur_resolve.py             # recursive AUR dependency resolution + topo sort
-│       ├── dep_analysis.py            # pre-build soname dependency checks
-│       ├── abi_check.py               # post-build versioned-symbol ABI check (.so cross-ref)
-│       ├── provides_lookup.py         # reverse-lookup soname → package (pacman -Fq)
-│       ├── diagnostics.py             # unified Finding framework (severity, adapters, axis runner, renderer)
-│       ├── graphics_probe.py          # system-state graphics checks (NVIDIA, Wayland, Steam)
-│       ├── device_probe.py            # full PCI/USB inventory + driver-coverage (modalias→module→CONFIG)
-│       ├── kernel_safety.py           # kernel boot-safety: .config audit, fallback/boot-artifact/DKMS checks
-│       ├── system_probe.py            # doctor pacman axis: -Dk, db.lck, .pacnew, orphans (read-only)
-│       ├── state_probe.py             # doctor state axis: build failures, stale sentinel, state drift
-│       ├── runtime_probe.py           # doctor services axis: failed units, missing firmware
-│       ├── audio_probe.py             # doctor audio axis: failed pipewire user units, vanished sink
-│       ├── network_probe.py           # doctor network axis: no default route, manager/DNS conflicts
-│       ├── failure.py                 # failure scenario handling (shared)
-│       ├── resource_guard.py          # controller RLIMIT_AS cap + lift_for_child() for subprocesses
-│       ├── cache_probe.py             # passive ccache/sccache monitoring ([CACHE] tag)
-│       ├── aur.py                     # AUR RPC v5, git clone, pkgctl checkout, GPG key import
-│       ├── rate_limit.py              # shared RPC + git fetch rate limiter (RateLimiter, RateLimited)
-│       ├── source_meta.py             # per-package AUR RPC + git HEAD cache (source_meta.toml)
-│       ├── source_sync.py             # process-wide SourceSyncScheduler (RPC-first, sequential)
-│       ├── env_persist.py             # write EDITOR/VISUAL to /etc/environment or ~/.zshenv
-│       ├── build_state.py             # per-package build metadata persistence (build_state.toml)
-│       └── version.py                 # vercmp wrapper + version string formatting
-│   └── pipeline/
-│       ├── __init__.py
-│       ├── runner.py                  # stage sequencing, checkpoint/resume
-│       ├── state.py                   # pipeline_state.toml read/write
-│       └── stages/
-│           ├── __init__.py            # STAGES ordered list
-│           ├── base.py                # Stage base class, RunOptions dataclass
-│           ├── _bootstrap.py          # shared bootstrap config loader (load_bootstrap; re-exports BootstrapConfig)
-│           ├── _partition_plan.py     # shared destructive-op confirmation (plan table, glyph downgrade, _confirm)
-│           ├── install.py             # stage 1: disk + base install + identity via archinstall
-│           ├── hardware.py            # stage 2: CPU/GPU/NVMe detection + PCI/USB inventory → hardware_profile.toml
-│           ├── configure.py           # stage 3: sysforge-specific tuning (makepkg.conf, mirrors, desktop, self-install) (arch-chroot)
-│           ├── reconfigure.py         # stage 4: pre-build checkpoint
-│           ├── toolchain.py           # stage 5: LLVM/GCC toolchain build (optional 4-pass PGO)
-│           ├── packages.py            # stage 6: package builds
-│           └── kernel.py              # stage 7: kernel build
-├── tests/
-│   ├── conftest.py
-│   ├── data/
-│   │   ├── PKGBUILDs/                 # htop, llvm, lib32-llvm, cosmic, vulkan-headers-git
-│   │   │   ├── complex.PKGBUILD  →  vulkan-headers-git.PKGBUILD  (symlink alias)
-│   │   │   ├── complex2.PKGBUILD →  lib32-llvm.PKGBUILD           (symlink alias)
-│   │   │   └── simple.PKGBUILD   →  htop.PKGBUILD                 (symlink alias)
-│   │   ├── test_profiles.toml
-│   │   ├── etc/sysforge/
-│   │   │   ├── profiles.toml
-│   │   │   ├── packages.toml
-│   │   │   ├── toolchain.toml
-│   │   │   └── kernel.toml
-│   │   └── user/.config/sysforge/
-│   │       └── profiles.toml
-│   ├── test_append_merge.py
-│   ├── test_consumes.py
-│   ├── test_dep_analysis.py
-│   ├── test_env_pass.py
-│   ├── test_aur.py
-│   ├── test_cache_probe.py
-│   ├── test_cli.py
-│   ├── test_failure.py
-│   ├── test_log.py
-│   ├── test_parser.py
-│   ├── test_patcher.py
-│   ├── test_pipeline.py
-│   ├── test_pipeline_runner.py
-│   ├── test_pipeline_state.py
-│   ├── test_reconfigure.py
-│   ├── test_resolve.py
-│   ├── test_stage_bootstrap.py
-│   ├── test_stage_kernel.py
-│   ├── test_stage_packages.py
-│   ├── test_system_conf.py
-│   ├── test_update.py
-│   ├── test_build_state.py
-│   ├── test_version.py
-│   └── test_wrapper.py
-├── completions/
-│   └── _sysforge                      # zsh completion script
-├── tools/
-│   ├── iso-install.sh                 # bootstrap helper: installs sysforge on live ISO, writes bootstrap.toml
-│   └── vm/
-│       ├── boot.sh                    # launch QEMU VM (--iso, --snapshot modes)
-│       └── bootstrap.toml             # VM-specific bootstrap.toml for testing
-├── PKGBUILD
-├── pyproject.toml
-├── Makefile                           # dev interface; `make help` lists every target
-└── DESIGN.md
-```
+The `sysforge/` package, one line per module. **Generated** by `make design` from each module's
+docstring (its first paragraph), so it cannot fall behind the code: a new, removed or re-described
+module makes `make check-design` fail until `make design` runs, and a module without a docstring
+fails the build (`4.0.0-DEV7`). Describe a module in its docstring, not here.
+
+<!--MODULE-TREE-->
+
+Everything else in the repo, by role (paths here are checked by the `citations` group):
+
+- `tests/` — the pytest suite (`make test`); `tests/conftest.py` forces `SYSFORGE_CONFIG_DIR` to the
+  git-tracked fixtures in `tests/data/etc/sysforge/`, kept in parity with `etc/sysforge/` by
+  `make check-shipped`. `tests/data/` also holds the surface snapshot (`tests/data/surface.json`),
+  the `--json` schemas (`tests/data/json-schema/`) and the PKGBUILD fixtures (`tests/data/PKGBUILDs/`).
+  `tests/cli_args.py` builds real parsed command lines for tests (§Process: no `SimpleNamespace`).
+- `tools/` — contributor tooling: the guards (`tools/check_standards.py`, `tools/check_shipped.py`,
+  `tools/surface.py`), the generators (`tools/build_design.py`, `tools/gen_roadmap_table.py`), the
+  release script (`tools/release.sh`), the end-to-end and VM/container tiers (`tools/e2e/`,
+  `tools/vm/`, `tools/container/`), and the live-ISO bootstrap helper (`tools/iso-install.sh`).
+- `etc/sysforge/` — the shipped config defaults; `etc/pacman.d/hooks/` — the shipped libalpm hooks.
+- `completions/` — zsh (`completions/_sysforge`) and bash (`completions/sysforge.bash`), kept in
+  lockstep with the CLI.
+- `man/` — the man page source.
+- `docs/` — `docs/design/` (this document's sources), `docs/guides/` and `docs/concepts/` (user
+  docs), `docs/release-notes/`, `docs/ROADMAP-ABANDONED.md`, `docs/RELEASE-CHECKLIST.md`.
+- `PKGBUILD` (stable, GPG-verified) and `PKGBUILD-git`; `sysforge.install` (scriptlets).
+- `Makefile` — the dev interface; `make help` lists every target.
+- `DESIGN.md` (generated), `ROADMAP.md`, `README.md`, `pyproject.toml`.
 
 ### Installed
 
+What the package installs, and what sysforge creates at runtime. `check_standards` (group
+`design_tree`) fails when the PKGBUILD installs a path, tmpfiles creates a directory, or the code
+joins a file onto the state dir that this section does not name.
+
 ```
-/etc/sysforge/
-    profiles.toml                    # flag profiles, [[rules]], conflict groups, consumes inference
-    packages.toml                    # default build-rule overrides
+/usr/bin/sysforge
+/etc/sysforge/                       # system config, root-owned; backup=() keeps edits across upgrades
+    sysforge.toml                    # runtime behaviour: failure handling, safety, sandbox, aur, ...
+    profiles.toml                    # flag profiles, [[rules]], append_conflict_groups, consumes_inference
+    packages.toml                    # the package manifest: build-rule overrides, [group.*]
+    kernel.toml                      # kernel stage
+    toolchain.toml                   # toolchain stage, profile stores, bench
     bootstrap.toml                   # written by iso-install.sh (or hand-copied from the example)
 /usr/share/sysforge/
     bootstrap.toml.example           # starter template for manual hand-edit setups
 /usr/share/licenses/sysforge/
     LICENSE                          # MIT text (not an Arch common license, so shipped per package)
-/usr/bin/sysforge
+/usr/share/man/man1/sysforge.1
+/usr/share/bash-completion/completions/sysforge
+/usr/share/zsh/site-functions/_sysforge
+/usr/share/libalpm/hooks/
+    sysforge-kernel.hook             # kernel/toolchain reminders
+    sysforge-toolchain.hook
+    sysforge-buildstate.hook         # build-state staleness signal for `sysforge update`
+    sysforge-artifacts.hook          # transaction record for the artifact-drift check
+/usr/lib/sysforge/pacman-hook-helper.sh
+/usr/lib/sysusers.d/sysforge.conf    # the sysforge group
+/usr/lib/tmpfiles.d/sysforge.conf    # the dirs below, root:sysforge 2775 (setgid)
 ~/.config/sysforge/                  # $XDG_CONFIG_HOME/sysforge
     profiles.toml                    # user overrides (optional; merges with system via extends_system)
 ~/.cache/sysforge/                   # $XDG_CACHE_HOME/sysforge
     aur-packages.txt                 # AUR name cache (regenerable, refreshed every 24h)
     completion-packages.txt          # merged local+repo+AUR names for Tab (regenerable, keyed on inputs)
-~/.local/state/sysforge/             # $XDG_STATE_HOME/sysforge
-    (state files)                    # fallback runtime state when /var/lib/sysforge is not writable
-/var/cache/sysforge/                 # regenerable build cache (override via SYSFORGE_PGO_STORE); provisioned 0777 by tmpfiles.d, sudo-created at runtime if absent
-    llvm-pgo/                        # LLVM PGO profraw/profdata store (written by unprivileged makepkg)
-/var/lib/sysforge/
-    pipeline_state.toml              # pipeline checkpoint state (created at runtime)
-    build_state.toml                 # per-package build metadata (created at runtime, by sysforge build/update)
-    source_meta.toml                 # per-package AUR RPC + git HEAD snapshot used by the source_sync scheduler
-    sysforge.log                     # unified log (created at runtime, cleared on success)
+~/.local/share/sysforge/             # $XDG_DATA_HOME/sysforge
+    artifacts/                       # managed-artifact content (authoritative, irreplaceable)
+~/.local/state/sysforge/             # $XDG_STATE_HOME/sysforge: the state dir when /var/lib/sysforge is not writable
+/var/cache/sysforge/                 # regenerable profile stores ([profile_store] / SYSFORGE_PROFILE_STORE)
+    llvm-pgo/                        # LLVM instrumentation-PGO profraw/profdata (pgo_store / SYSFORGE_PGO_STORE)
+    pgo/ autofdo/ propeller/ bolt/   # per-method stores, <method>/<target>
+/var/lib/sysforge/                   # the state dir (--state-dir / SYSFORGE_STATE_DIR override it)
+    pipeline_state.toml              # pipeline checkpoint state
+    build_state.toml                 # per-package build metadata (sysforge build/update)
+    source_meta.toml                 # per-package AUR RPC + git HEAD snapshot (source_sync scheduler)
+    hardware_profile.toml            # hardware stage output
+    artifacts.toml                   # managed-artifact registry
+    artifacts-ignored.toml           # artifacts the user declined to manage
+    opted-out.toml                   # packages the user stopped sysforge tracking (revert / state forget)
+    bench.toml                       # last bench result per target
+    stage_timings.toml               # step-duration rings per stage
+    stage_in_progress.toml           # install sentinel record (+ stage_in_progress.lock, its liveness lock)
+    stage_in_progress.lock
+    kernel-build.lock                # one kernel build at a time
+    kernel_rust_minimums.json        # kernel stage Rust toolchain minimums
+    kbuild_module_map.json           # module -> CONFIG_ map for driver coverage
+    lsmod.snapshot                   # union-merged loaded-module list for localmodconfig
+    kconfig-history/                 # past kernel .configs, <pkgname>-<release>.config.gz
+    local-repo/                      # the build sandbox's local package repo
+    sentinels/                       # libalpm-hook signals consumed by `sysforge update`
+    .sysforge-init-notice            # first-install notice marker (PKGBUILD post_install)
+    llvm_abi_hazard.log              # toolchain Gate-3 symbol-version evidence
+    sysforge.log                     # unified pipeline log (cleared on success unless --persist-log)
+    sysforge-<verb>.log              # per-verb unified run logs
 ```
 
 #### makepkg-owned paths (not sysforge dirs)

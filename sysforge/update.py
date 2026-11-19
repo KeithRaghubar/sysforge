@@ -761,7 +761,7 @@ def _raise_if_frozen(frozen_sync_pkgs: dict) -> None:
     and each one re-deriving "did the freeze refuse anything?" is how a fourth
     return added later silently exits 0 — the exact silent-success shape this
     feature exists to close. Every post-sync exit calls this instead. (The
-    read-only ``--check-drift`` / ``--dry-run`` returns sit *before* the sync
+    read-only ``--explain-drift`` / ``--dry-run`` returns sit *before* the sync
     phase and correctly exit 0.)
 
     ``RuntimeError`` is the runner's established "exit 1" seam
@@ -802,7 +802,7 @@ def _failure_exit_code(
     not do what was asked either: exit 1, no recovery prompt, since nothing
     was built for it.
 
-    Read-only routes (``--check-drift``, ``--dry-run``) return before any of
+    Read-only routes (``--explain-drift``, ``--dry-run``) return before any of
     these tallies exist and keep exiting 0.
     """
     if failed_pkgs or install_failed or pacman_upgrade_failed or review_refused:

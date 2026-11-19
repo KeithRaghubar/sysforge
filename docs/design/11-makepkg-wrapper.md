@@ -6,7 +6,7 @@ SysForge treats the calling shell environment as untrusted for build tool vars. 
 
 SysForge bootstrap vars (`SYSFORGE_STATE_DIR`, `SYSFORGE_CONFIG_DIR`) are explicitly exempt from this rule — they are SysForge's own interface, not build tool vars.
 
-Any build tool override needed at invocation time should use the corresponding SysForge flag (`--cc`, `--cxx`, `--ld`), not a shell export. This applies to both `sysforge build` and `sysforge pipeline`.
+The stripping applies to every makepkg sysforge runs (`sysforge build`, `update` and the `run` stages). A one-off compiler override is `sysforge build --cc/--cxx/--ld`, not a shell export; the stages take theirs from the toolchain stage's result or a `[package_compiler_overrides]` row (§Flag/Profile System).
 
 ### Build sandbox
 
