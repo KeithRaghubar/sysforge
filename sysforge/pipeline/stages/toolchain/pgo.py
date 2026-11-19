@@ -304,15 +304,18 @@ def build_llvm_pgo_inner(
     caller's install step — a build-pass failure therefore leaves no sentinel.
 
     Pass 1: live system clang (pinned — the resolved profile ships CC=gcc) +
-             -fprofile-generate; builds ONLY the pgo list
-             (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs are
-             extracted to pgo_staging1 (stage1) — the live /usr is never
-             touched.  Both packages stage, including the cmake-config /
-             static-lib `llvm` package, so Pass 2's find_package(LLVM)
-             resolves stage1's headers + configs.
-    Pass 2: non-instrumented build of non_pgo packages (clang, lld,
-             compiler-rt, polly, openmp, spirv-llvm-translator) against
-             stage1.  CMAKE_PREFIX_PATH=<staging1>/usr; LD_LIBRARY_PATH is
+             -fprofile-generate; builds ONLY the pgo list (with the merged
+             llvm pkgbase, 3.5.0-F2, the whole llvm tree, clang included;
+             with the old per-package layout llvm, llvm-libs).  makepkg
+             runs WITHOUT --install; outputs are extracted to pgo_staging1
+             (stage1) — the live /usr is never touched.  Every package
+             stages, including the cmake-config / static-lib `llvm`
+             package, so Pass 2's find_package(LLVM) resolves stage1's
+             headers + configs.
+    Pass 2: non-instrumented build of non_pgo packages against stage1
+             (spirv-llvm-translator since the merged pkgbase; clang, lld,
+             compiler-rt, polly, openmp too with the old layout).
+             CMAKE_PREFIX_PATH=<staging1>/usr; LD_LIBRARY_PATH is
              deliberately NOT set (forcing system clang to load stage1's
              libLLVM would recreate the version-skew failure mode this
              refactor exists to prevent).  Links with lld

@@ -1451,6 +1451,86 @@ def test_install_only_plan_names_the_mode_and_skips_the_space_gate(
                           {}, opts, toolchain_cfg(), snapshot={})
 
 
+def _plan_text(tmp_path, capsys, *, tcfg, pgo=True, pgo_pkgs=("llvm", "clang"),
+               compiler="llvm", **opt):
+    from sysforge.pipeline.stages.toolchain import gates
+    opts = make_options(dry_run=False)
+    for k, v in opt.items():
+        setattr(opts, k, v)
+    gates.log_toolchain_resolution_summary(
+        compiler=compiler, pgo=pgo, variant="pgo_llvm" if pgo else "stock_llvm",
+        pgo_pkgs=list(pgo_pkgs), non_pgo_pkgs=[], lib32_pkgs=[],
+        staging1=tmp_path / "s1", staging=tmp_path / "s2", staging3=tmp_path / "s3",
+        pgo_store=tmp_path / "store", tcfg=tcfg, options=opts, snapshot={})
+    out, err = capsys.readouterr()
+    return out + err
+
+
+def test_plan_names_bolt_targets_and_where_it_runs(tmp_path, capsys):
+    """The plan says whether BOLT runs, on which libraries, and at which step,
+    so a multi-hour build is not started on a guess."""
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, tcfg=toolchain_cfg(
+        compiler="llvm", bolt={"enabled": True, "libllvm": True}))
+    line = next(ln for ln in text.splitlines() if "bolt:" in ln)
+    assert "libclang-cpp" in line and "libLLVM" in line and "Pass-4a" in line
+    assert "training=" in line and "tree compile sample" in line
+
+
+def test_plan_bolt_off_names_the_key(tmp_path, capsys):
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, tcfg=toolchain_cfg(compiler="llvm"))
+    line = next(ln for ln in text.splitlines() if "bolt:" in ln)
+    assert "off" in line and "[bolt] enabled" in line
+
+
+def test_plan_bolt_enabled_without_pgo_says_it_will_not_apply(tmp_path, capsys):
+    """[bolt] only acts in the PGO passes: enabling it on a non-PGO run must
+    not read as if the build will be BOLTed."""
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, pgo=False, tcfg=toolchain_cfg(
+        compiler="llvm", pgo=False, bolt={"enabled": True}))
+    line = next(ln for ln in text.splitlines() if "bolt:" in ln)
+    assert "not applied" in line and "pgo" in line
+
+
+def test_plan_bolt_enabled_without_clang_in_pgo_build_warns_skip(tmp_path, capsys):
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, pgo_pkgs=("llvm", "llvm-libs"),
+                      tcfg=toolchain_cfg(compiler="llvm", bolt={"enabled": True}))
+    line = next(ln for ln in text.splitlines() if "bolt:" in ln)
+    assert "skipped" in line and "clang" in line
+
+
+def test_bolt_only_plan_names_the_bolt_targets(tmp_path, capsys):
+    """--bolt-only forces BOLT on even with [bolt] enabled = false."""
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, bolt_only=True,
+                      tcfg=toolchain_cfg(compiler="llvm"))
+    line = next(ln for ln in text.splitlines() if "bolt:" in ln)
+    assert "libclang-cpp" in line and "libLLVM" not in line
+
+
+def test_plan_names_training_corpus_reuse_and_post_install(tmp_path, capsys):
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, reuse_built=True, tcfg=toolchain_cfg(
+        compiler="llvm", packages={"training_corpus": ["llvm", "mesa"]},
+        rebuild_soname_consumers="auto",
+        bench={"after_build": True}))
+    assert "corpus:" in text and "mesa" in text
+    assert "reuse:" in text and "--reuse-built" in text
+    post = next(ln for ln in text.splitlines() if "after:" in ln)
+    assert "soname-consumers=auto" in post and "bench=on" in post
+
+
+def test_gcc_plan_omits_llvm_only_rows(tmp_path, capsys):
+    """The gcc path builds nothing, so BOLT/corpus/reuse rows are noise there."""
+    from tests.toolchain_helpers import toolchain_cfg
+    text = _plan_text(tmp_path, capsys, compiler="gcc", pgo=False, pgo_pkgs=(),
+                      tcfg=toolchain_cfg(compiler="gcc"))
+    assert "bolt:" not in text and "corpus:" not in text and "reuse:" not in text
+
+
 def test_failed_pgo_install_points_at_install_only(tmp_path):
     """3.5.0-F8: a pacman -U failure after a PGO build names the recovery that
     skips the rebuild; the sentinel stays (pacman may have half-applied)."""

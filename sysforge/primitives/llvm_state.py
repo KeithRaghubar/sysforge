@@ -579,7 +579,7 @@ def detect_toolchain_config_mismatch(
 
     This is **provenance reporting**, built strictly on :func:`collect_llvm_state`
     (the sanctioned LLVM-inspection entry point) — it is *not* a toolchain
-    *health* probe (those live in ``pipeline/stages/toolchain.py::_verify_llvm_install``
+    *health* probe (those live in ``pipeline/stages/toolchain/verify.py::verify_llvm_install``
     and ``toolchain_preflight.py::_probe_cc``; don't add a third). Two classes,
     both gated on ``enabled = true`` + ``compiler = "llvm"`` in toolchain.toml:
 

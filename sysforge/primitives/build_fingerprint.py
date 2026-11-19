@@ -277,7 +277,7 @@ def save_cache(path, cache) -> None:
 def _newest_artifact(search_dirs, pkgname) -> Path | None:
     """Newest ``{pkgname}-<ver>-*.pkg.tar*`` across ``search_dirs``, else None.
 
-    Version-anchored glob (``-[0-9]``) — mirrors ``_extract_pass2_to_staging`` /
+    Version-anchored glob (``-[0-9]``) — mirrors ``profdata.extract_built_to_staging`` /
     ``pacman.cached_pkg_files_for`` so a shorter pkgname (``llvm``) never
     swallows a longer sibling (``llvm-libs``). Signatures excluded.
     """

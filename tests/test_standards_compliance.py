@@ -1252,8 +1252,123 @@ def test_citations_flag_a_bare_name_nothing_defines(tmp_path):
     assert "_confirm_or_abort" in f.message
 
 
+@pytest.mark.parametrize("where, body", [
+    ("sysforge/primitives/frames.py", "def renamed():\n    # was _make_frame\n    pass\n"),
+    ("sysforge/primitives/frames.py",
+     'def renamed():\n    """Formerly _make_frame."""\n    pass\n'),
+    ("tests/test_frames.py", 'FIXTURE = "def _make_frame(): pass"\n'),
+])
+def test_citations_flag_a_bare_name_only_prose_still_mentions(tmp_path, where, body):
+    """4.0.0-DEV5: a renamed helper's old name lived on in comments, docstrings
+    and a test fixture string, which kept stale design citations passing
+    (`_verify_llvm_install` outlived its rename by two months)."""
+    repo = _cite_repo(tmp_path, "see `_make_frame` here\n")
+    (repo / where).parent.mkdir(parents=True, exist_ok=True)
+    (repo / where).write_text(body)
+    _load_check_standards()._CODE_WORDS.clear()
+    [f] = _load_check_standards().check_citations(repo)
+    assert "_make_frame" in f.message
+
+
+@pytest.mark.parametrize("where, body", [
+    ("sysforge/primitives/cfg.py", 'KEYS = {"reuse_unchanged": False}\n'),
+    ("tests/conftest.py", "def reuse_unchanged():\n    pass\n"),
+    ("etc/sysforge/toolchain.toml", "#reuse_unchanged = false\n"),
+])
+def test_citations_accept_a_name_code_or_config_carries(tmp_path, where, body):
+    """A config key is a string literal in the code, a fixture an identifier
+    in tests/, and a shipped key a TOML line: all real, none a definition."""
+    repo = _cite_repo(tmp_path, "see `reuse_unchanged` here\n")
+    (repo / where).parent.mkdir(parents=True, exist_ok=True)
+    (repo / where).write_text(body)
+    _load_check_standards()._CODE_WORDS.clear()
+    assert _load_check_standards().check_citations(repo) == []
+
+
 def test_citations_accept_a_bare_name_the_code_uses(tmp_path):
     repo = _cite_repo(tmp_path, "see `_make_frame` here\n")
     (repo / "sysforge/primitives/frames.py").write_text("def _make_frame(): pass\n")
     _load_check_standards()._CODE_WORDS.clear()
     assert _load_check_standards().check_citations(repo) == []
+
+
+# ---------------------------------------------------------------------------
+# design_examples (4.0.0-DEV6): a marked TOML example in docs/design/ mirrors
+# the shipped config it documents.
+# ---------------------------------------------------------------------------
+
+_SHIPPED_TC = """\
+# header prose — compiler: which toolchain
+#compiler = "gcc"
+#pgo = true
+[bolt]
+enabled = false
+#libllvm = false
+"""
+
+
+def _example_repo(tmp_path, block, marker="toolchain.toml"):
+    (tmp_path / "etc/sysforge").mkdir(parents=True)
+    (tmp_path / "etc/sysforge/toolchain.toml").write_text(_SHIPPED_TC)
+    (tmp_path / "docs/design").mkdir(parents=True)
+    head = f"<!-- shipped-example: etc/sysforge/{marker} -->\n" if marker else ""
+    (tmp_path / "docs/design/07-x.md").write_text(f"Intro.\n\n{head}```toml\n{block}```\n")
+    return tmp_path
+
+
+def _example_findings(repo):
+    return _load_check_standards().check_design_examples(repo)
+
+
+def test_design_example_group_is_clean_on_the_real_repo():
+    findings = _example_findings(_REPO)
+    assert findings == [], "\n".join(f"{f.location}: {f.message}" for f in findings)
+
+
+def test_design_example_matching_shipped_passes(tmp_path):
+    repo = _example_repo(tmp_path, 'compiler = "gcc"\n[bolt]\nlibllvm = false\n')
+    assert _example_findings(repo) == []
+
+
+def test_design_example_flags_a_key_the_shipped_file_lacks(tmp_path):
+    repo = _example_repo(tmp_path, 'compiler = "gcc"\nreuse = true\n')
+    [f] = _example_findings(repo)
+    assert "reuse" in f.message and "07-x.md" in f.location
+
+
+def test_design_example_flags_a_default_that_drifted(tmp_path):
+    """The 3.5.0-F2 drift: the example kept a [packages] default the shipped
+    file had changed."""
+    repo = _example_repo(tmp_path, 'compiler = "llvm"\n')
+    [f] = _example_findings(repo)
+    assert "compiler" in f.message and '"gcc"' in f.message
+
+
+def test_design_example_line_marked_example_skips_the_value(tmp_path):
+    repo = _example_repo(tmp_path, '[bolt]\nenabled = true  # example: turn it on\n')
+    assert _example_findings(repo) == []
+
+
+def test_design_example_complete_marker_requires_every_shipped_key(tmp_path):
+    repo = _example_repo(tmp_path, 'compiler = "gcc"\n',
+                         marker="toolchain.toml complete")
+    msgs = " ".join(f.message for f in _example_findings(repo))
+    assert "pgo" in msgs and "bolt.libllvm" in msgs and "bolt.enabled" in msgs
+
+
+def test_design_example_unmarked_block_is_not_checked(tmp_path):
+    repo = _example_repo(tmp_path, 'anything = "goes"\n', marker=None)
+    assert _example_findings(repo) == []
+
+
+def test_design_example_missing_shipped_file_is_an_error(tmp_path):
+    repo = _example_repo(tmp_path, 'compiler = "gcc"\n', marker="nope.toml")
+    [f] = _example_findings(repo)
+    assert "nope.toml" in f.message
+
+
+def test_design_example_array_of_tables_header_can_be_marked_example(tmp_path):
+    repo = _example_repo(tmp_path, '[[kconfig]]  # example: overrides\noption = "X"\n')
+    (repo / "etc/sysforge/toolchain.toml").write_text(
+        _SHIPPED_TC + '#[[kconfig]]\n#option = "Y"\n')
+    assert _example_findings(repo) == []
