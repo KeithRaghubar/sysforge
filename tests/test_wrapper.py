@@ -870,3 +870,21 @@ def test_run_build_without_llvm_pgo_leaves_pkgbuild_alone(tmp_path):
 def test_build_options_llvm_pgo_defaults_to_none():
     from sysforge.build.makepkg_wrapper import BuildOptions
     assert BuildOptions().llvm_pgo is None
+
+
+def test_run_build_llvm_pgo_use_with_missing_profdata_refuses(tmp_path):
+    """LLVM's cmake only warns when LLVM_PROFDATA_FILE is missing, where the old
+    -fprofile-use=<missing> was a hard clang error: without this check Pass 4a
+    would ship an unoptimized clang recorded as pgo_llvm."""
+    missing = tmp_path / "gone" / "clang.profdata"
+    with pytest.raises(RuntimeError, match="profdata"):
+        _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD, llvm_pgo=("use", str(missing)))
+
+
+def test_run_build_llvm_pgo_use_with_profdata_builds(tmp_path):
+    profdata = tmp_path / "clang.profdata"
+    profdata.write_bytes(b"x")
+    pb, reached = _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD,
+                                   llvm_pgo=("use", str(profdata)))
+    assert f'-DLLVM_PROFDATA_FILE="{profdata}"' in pb.read_text()
+    assert reached

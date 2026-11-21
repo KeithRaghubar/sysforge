@@ -638,6 +638,11 @@ def _apply_llvm_pgo(pkgbuild_path, llvm_pgo: tuple[str, str] | None) -> bool:
     if not llvm_pgo:
         return False
     mode, path = llvm_pgo
+    # LLVM's cmake only warns on a missing LLVM_PROFDATA_FILE and builds without
+    # the profile, where -fprofile-use=<missing> was a hard clang error.
+    if mode == "use" and not Path(path).is_file():
+        raise _build_failed_error(RuntimeError(
+            f"LLVM PGO profdata not found: {path}: refusing to build without the profile"))
     if patch_llvm_pgo(pkgbuild_path, mode, path):
         return True
     # False also means "already carries exactly these args" (a resumed build).
@@ -1717,7 +1722,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # pgo_llvm_toolchain: inject -fprofile-use if saved profdata is compatible,
         # otherwise prompt to plain-build or skip (default: skip).
         # Skip this block when pgo_managed=True — the toolchain stage controls PGO
-        # flags directly via compiler_flags_extra; we must not override or prompt.
+        # itself (llvm_pgo cmake options for the LLVM PKGBUILD, compiler_flags_extra
+        # for the others, 4.0.0-B12); we must not override or prompt.
         effective_flags_extra = options.compiler_flags_extra
         if build_mode == "pgo_llvm_toolchain" and not options.pgo_managed:
             pkgname = pkgbuild_path.parent.name
