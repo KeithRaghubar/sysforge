@@ -18,6 +18,7 @@ import contextlib
 
 from sysforge.pipeline.stages.base import Stage
 from sysforge.primitives import build_fingerprint
+from sysforge.primitives import build_sandbox
 from sysforge.primitives import sudo_session
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.makepkg_pgo import resolve_pgo_store
@@ -399,47 +400,54 @@ class ToolchainStage(Stage):
             # Build WITHOUT installing (both paths). The build mutates nothing,
             # so it runs OUTSIDE the sentinel; a build-pass failure leaves no
             # sentinel behind (matches kernel).
-            if pgo_enabled:
-                # Opt-in input-fingerprint reuse (Pass 4): CLI --reuse-built >
-                # toolchain.toml reuse_unchanged > off. config_digest folds the
-                # flag-relevant config (profiles/rules) + the toolchain settings
-                # (e.g. [llvm] targets, which drive the LLVM_TARGETS_TO_BUILD
-                # cmake patch the upstream-PKGBUILD hash can't see) so a config
-                # edit between runs invalidates the cache.
-                reuse_built = bool(getattr(options, "reuse_built", False)) or bool(
-                    tcfg.reuse_unchanged
-                )
-                config_digest = build_fingerprint.hash_obj({
-                    "profiles": sysforge_config.get("profiles"),
-                    "rules": sysforge_config.get("rules"),
-                    "toolchain": tcfg.reuse_digest_raw,
-                })
-                if bolt_only:
-                    # 3.5.0-F7: BOLT the last Pass-4a tree, repackage llvm,
-                    # build nothing; Gate 2 / install / Gate 3 below as usual.
-                    built_map, cc, cxx, ld, variant = pgo.bolt_only(
-                        pgo_map, non_pgo_map, lib32_map, pgo_store, options, tcfg=tcfg,
+            # Stage exemption from the build sandbox, held across every pass
+            # (4.0.0-B10). Passes 1-3 carry no owner_stage (it marks only the
+            # install-bearing builds in build_state), so the wrapper's per-build
+            # check missed them and pass 1 was refused as a profile-generate
+            # build. Scoped to the build alone: the soname-consumer rebuild
+            # after Gate 3 builds ordinary packages and keeps sandbox_builds.
+            with build_sandbox.suppressed():
+                if pgo_enabled:
+                    # Opt-in input-fingerprint reuse (Pass 4): CLI --reuse-built >
+                    # toolchain.toml reuse_unchanged > off. config_digest folds the
+                    # flag-relevant config (profiles/rules) + the toolchain settings
+                    # (e.g. [llvm] targets, which drive the LLVM_TARGETS_TO_BUILD
+                    # cmake patch the upstream-PKGBUILD hash can't see) so a config
+                    # edit between runs invalidates the cache.
+                    reuse_built = bool(getattr(options, "reuse_built", False)) or bool(
+                        tcfg.reuse_unchanged
                     )
-                elif no_build == "--install-only":
-                    # 3.5.0-F8: install the last run's packages as built.
-                    built_map, cc, cxx, ld, variant = pgo.install_only(
-                        pgo_map, non_pgo_map, lib32_map, options,
-                    )
+                    config_digest = build_fingerprint.hash_obj({
+                        "profiles": sysforge_config.get("profiles"),
+                        "rules": sysforge_config.get("rules"),
+                        "toolchain": tcfg.reuse_digest_raw,
+                    })
+                    if bolt_only:
+                        # 3.5.0-F7: BOLT the last Pass-4a tree, repackage llvm,
+                        # build nothing; Gate 2 / install / Gate 3 below as usual.
+                        built_map, cc, cxx, ld, variant = pgo.bolt_only(
+                            pgo_map, non_pgo_map, lib32_map, pgo_store, options, tcfg=tcfg,
+                        )
+                    elif no_build == "--install-only":
+                        # 3.5.0-F8: install the last run's packages as built.
+                        built_map, cc, cxx, ld, variant = pgo.install_only(
+                            pgo_map, non_pgo_map, lib32_map, options,
+                        )
+                    else:
+                        built_map, cc, cxx, ld, variant = pgo.build_llvm_pgo_inner(
+                            pgo_map, non_pgo_map, lib32_map,
+                            staging1, staging, staging3, pgo_store, options,
+                            config_digest=config_digest,
+                            reuse_built=reuse_built,
+                            corpus_map=corpus_map,
+                            # [bolt] (opt-in) links 4a/4b with -Wl,--emit-relocs and
+                            # BOLTs the 4a build tree before install (3.5.0-F3).
+                            tcfg=tcfg,
+                        )
                 else:
-                    built_map, cc, cxx, ld, variant = pgo.build_llvm_pgo_inner(
-                        pgo_map, non_pgo_map, lib32_map,
-                        staging1, staging, staging3, pgo_store, options,
-                        config_digest=config_digest,
-                        reuse_built=reuse_built,
-                        corpus_map=corpus_map,
-                        # [bolt] (opt-in) links 4a/4b with -Wl,--emit-relocs and
-                        # BOLTs the 4a build tree before install (3.5.0-F3).
-                        tcfg=tcfg,
+                    built_map, cc, cxx, ld, variant = pgo.build_llvm_single(
+                        pgo_map, non_pgo_map, lib32_map, options
                     )
-            else:
-                built_map, cc, cxx, ld, variant = pgo.build_llvm_single(
-                    pgo_map, non_pgo_map, lib32_map, options
-                )
 
             # Gate 2 — pre-install ABI-hazard audit (both paths), OUTSIDE the
             # sentinel: an unhealable brick aborts here leaving nothing installed
