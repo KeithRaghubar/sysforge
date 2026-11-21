@@ -1884,8 +1884,10 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # kernel stages build *against*, and install *into*, the host they are
         # upgrading: a staged LLVM built in a container links against that
         # container's libraries, and a kernel built there cannot see the host's
-        # DKMS modules or run its boot audit. One seam for both, keyed on the
-        # same owner_stage the rest of the stage-ownership policy reads.
+        # DKMS modules or run its boot audit. The toolchain stage also holds
+        # the exemption across its whole build sequence (4.0.0-B10), because
+        # owner_stage marks only its install-bearing passes; this check covers
+        # the kernel and any other owner_stage-carrying build.
         _stage_owned = kernel_build or options.owner_stage in ("kernel", "toolchain")
         _staleness_armed = bool(
             _staleness_profdata is not None

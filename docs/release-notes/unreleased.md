@@ -109,3 +109,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`4.0.0-B9` — the low-disk warning no longer suggests a command that does not exist.** `doctor system --storage` told you to free space with `sysforge clean`, which sysforge has never had, and assumed the build dir was `~/builds`. It now names the build dir it measured (`rm -rf <dir>/*`) beside `paccache -r`. Two docstrings that described flags sysforge does not have (`update --check-drift`, `run reconfigure --standalone`) are corrected with it.
+
+---
+
+- **`4.0.0-B10` — `run toolchain` builds every PGO pass on the host when the build sandbox is on.** The toolchain and kernel stages are meant to be exempt from `[security] sandbox_builds`, since they build against and install into the host they upgrade. The toolchain's exemption was keyed on a per-build marker that only the install-bearing builds carry, so the instrument, bootstrap and train passes ran in the container. A full 4-pass rebuild then failed at Pass 1 with `refusing to sandbox a profile-generate build`, after the stage had already emptied the PGO store. A run that reused existing profdata skips those passes and was unaffected. The exemption now covers the stage's whole build sequence: every pass, `--bolt-only` and the single-pass build. The soname-consumer rebuild after install builds ordinary packages and still follows `sandbox_builds`. Unit tests suffice: the defect was which policy the stage handed its own builds, and the tests run the real stage with the sandbox policy on.

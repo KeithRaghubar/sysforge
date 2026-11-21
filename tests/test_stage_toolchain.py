@@ -1669,3 +1669,60 @@ def test_failed_rollback_with_an_added_member_stores_the_online_recovery(
     assert record["recovery_kind"] == "pacman_sync"
     assert "clang-libs" in record["recovery_args"]
     assert "pacman -S" in msg and "clang-libs" in msg
+
+
+# ---------------------------------------------------------------------------
+# 4.0.0-B10: the whole build sequence runs with the sandbox suppressed
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _sandbox_on(tmp_path):
+    """Sandbox policy on for the run, the way [security] sandbox_builds = true
+    leaves it; reset afterwards so no other test inherits it."""
+    from sysforge.primitives import build_sandbox
+    build_sandbox.set_policy(build_sandbox.SandboxPolicy(
+        enabled=True, chroot_dir=tmp_path / "chroot"))
+    yield build_sandbox
+    build_sandbox.reset_policy()
+
+
+@pytest.mark.parametrize("target, bolt_only", [
+    ("build_llvm_pgo_inner", False),
+    ("bolt_only", True),
+])
+def test_pgo_build_sequence_runs_with_sandbox_suppressed(tmp_path, _sandbox_on,
+                                                          target, bolt_only):
+    """Every pass builds against and installs into the host, including passes
+    1-3, which carry no owner_stage (4.0.0-B10): the exemption is the stage's,
+    not the per-build owner_stage the wrapper keys on."""
+    toml_path, _pb, _s, _p, state, config, options = _pgo_setup(
+        tmp_path, ["llvm", "llvm-libs"], ["spirv-llvm-translator"])
+    options.bolt_only = bolt_only
+    seen = {}
+
+    def fake(*a, **k):
+        seen["enabled"] = _sandbox_on.get_policy().enabled
+        raise RuntimeError("stop after build")
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pkgbuilds.sync_pkgbuild_dirs"), \
+         patch(f"sysforge.pipeline.stages.toolchain.pgo.{target}", side_effect=fake), \
+         pytest.raises(RuntimeError, match="stop after build"):
+        ToolchainStage().run(config, state, options)
+    assert seen["enabled"] is False
+    assert _sandbox_on.get_policy().enabled is True
+
+
+def test_single_pass_build_runs_with_sandbox_suppressed(tmp_path, _sandbox_on):
+    toml_path, state, config, options = _single_pass_setup(tmp_path)
+    seen = {}
+
+    def fake(*a, **k):
+        seen["enabled"] = _sandbox_on.get_policy().enabled
+        raise RuntimeError("stop after build")
+
+    with patch("sysforge.pipeline.stages.toolchain.config.TOOLCHAIN_PATH", toml_path), \
+         patch("sysforge.pipeline.stages.toolchain.pgo.build_llvm_single", side_effect=fake), \
+         pytest.raises(RuntimeError, match="stop after build"):
+        ToolchainStage().run(config, state, options)
+    assert seen["enabled"] is False
