@@ -267,6 +267,7 @@ def _pgo_fake_run_factory(pgo_store, call_log):
             "pkgbuild": str(pkgbuild_path),
             "cfe":     options.compiler_flags_extra if options else None,
             "lfe":     options.linker_flags_extra if options else None,
+            "llvm_pgo": options.llvm_pgo if options else None,
             "variant": options.toolchain_variant if options else None,
             "record_variant": options.record_toolchain_variant if options else None,
             "env":     env,
@@ -326,7 +327,9 @@ def _run_pgo(tmp_path, pgo_pkgs, non_pgo_pkgs=None, lib32_pkgs=None,
     return call_log
 
 def _instrument_calls(call_log):
-    return [c for c in call_log if "-fprofile-generate" in (c["cfe"] or "")]
+    """Pass 1: the LLVM PKGBUILD instrumented via LLVM_BUILD_INSTRUMENTED
+    (4.0.0-B12), never a CFLAGS -fprofile-generate."""
+    return [c for c in call_log if (c["llvm_pgo"] or ("",))[0] == "generate"]
 
 def _bootstrap_calls(call_log):
     """Pass 2: non-instrumented build against stage1 — identified by the
@@ -334,7 +337,7 @@ def _bootstrap_calls(call_log):
     return [
         c for c in call_log
         if "staging1" in Path(c["env"].get("CMAKE_PREFIX_PATH", "").split(":")[0]).parts
-        and "-fprofile-generate" not in (c["cfe"] or "")
+        and c["llvm_pgo"] is None
         and "-fprofile-use" not in (c["cfe"] or "")
         and c["env"].get("CCACHE_DISABLE") != "1"
     ]

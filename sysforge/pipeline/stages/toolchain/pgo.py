@@ -9,7 +9,7 @@ The narrative half of the PGO build: what runs, in what order, against which
 staging prefix, and what happens when a pass fails. Pass 1 builds instrumented
 llvm/llvm-libs into stage1; Pass 2 builds the non-PGO suite against stage1 so
 the two are ABI-coherent; Pass 3 is the training run whose side effect is
-profraw; Pass 4 rebuilds everything with -fprofile-use. The module docstring of
+profraw; Pass 4 rebuilds everything with the merged profile. The module docstring of
 ``sysforge.pipeline.stages.toolchain`` has the full account. Since upstream
 builds clang & co. from the llvm PKGBUILD (3.5.0-F2), the stage moves those
 names into the pgo map before calling in (``pkgbuilds.partition_by_pkgbuild``),
@@ -159,7 +159,7 @@ def pgo_lock_path(staging1: Path) -> Path:
 
 def _repackage_llvm(
     pgo_map: dict[str, Path], options, *, cc: str, cxx: str,
-    profile_use: str | None, linker_flags: str | None, pgo_env: dict,
+    llvm_pgo: tuple[str, str] | None, linker_flags: str | None, pgo_env: dict,
 ) -> None:
     """Rerun only ``package()`` for the llvm PKGBUILD, with Pass 4a's settings.
 
@@ -173,7 +173,7 @@ def _repackage_llvm(
         "llvm", pgo_map["clang"], repack_options,
         cc=cc, cxx=cxx,
         extra_flags=["--repackage", "--force"],
-        compiler_flags_extra=profile_use,
+        llvm_pgo=llvm_pgo,
         linker_flags_extra=linker_flags,
         pgo_build=True,
         pgo_env=pgo_env,
@@ -214,7 +214,7 @@ def bolt_only(
     root = bolt.check_bolt_only_tree(pgo_map, entry, libllvm=forced.bolt.libllvm)
 
     profdata_path = pgo_store / "clang.profdata"
-    profile_use = f"-fprofile-use={profdata_path}" if profdata_path.is_file() else None
+    llvm_pgo = ("use", str(profdata_path)) if profdata_path.is_file() else None
     progress.step("bolt")
     _log.ui("─── bolt · llvm (last Pass-4a build tree, nothing rebuilt) "
             "──────────────────────────────────────────")
@@ -222,7 +222,7 @@ def bolt_only(
     def _repackage() -> None:
         _repackage_llvm(
             pgo_map, options, cc="/usr/bin/clang", cxx="/usr/bin/clang++",
-            profile_use=profile_use, linker_flags=_bolt.emit_relocs_ldflag(),
+            llvm_pgo=llvm_pgo, linker_flags=_bolt.emit_relocs_ldflag(),
             pgo_env={"LLVM_PROFILE_FILE": ""},
         )
 
@@ -303,7 +303,8 @@ def build_llvm_pgo_inner(
     caller's install step — a build-pass failure therefore leaves no sentinel.
 
     Pass 1: live system clang (pinned — the resolved profile ships CC=gcc) +
-             -fprofile-generate; builds ONLY the pgo list (with the merged
+             LLVM_BUILD_INSTRUMENTED=IR as a cmake option (4.0.0-B12); builds
+             ONLY the pgo list (with the merged
              llvm pkgbase, 3.5.0-F2, the whole llvm tree, clang included;
              with the old per-package layout llvm, llvm-libs).  makepkg
              runs WITHOUT --install; outputs are extracted to pgo_staging1
@@ -333,7 +334,8 @@ def build_llvm_pgo_inner(
              Pgo-package binaries extracted to pgo_staging (stage2); no
              system install.
     Pass 4:  CC=staged clang from stage2 if available, else system clang.
-             CFLAGS/LDFLAGS += -fprofile-use; LTO disabled via LTOFLAGS=""
+             LLVM_PROFDATA_FILE for the pgo PKGBUILD, CFLAGS/LDFLAGS +=
+             -fprofile-use for non-pgo/lib32; LTO disabled via LTOFLAGS=""
              (ThinLTO + IR PGO causes non-PIC vtable relocations in lld's
              ThinLTO codegen for libLLVM.so).  Built in coherent sub-passes
              so the non-pgo suite links against the libLLVM that ships (not
@@ -490,9 +492,9 @@ def build_llvm_pgo_inner(
 
         if not skip_profgen:
             # Pass 1 — build pgo packages with the live system clang +
-            # -fprofile-generate. cc MUST be pinned to clang explicitly: the
+            # LLVM's IR instrumentation. cc MUST be pinned to clang explicitly: the
             # resolved profile is `[profiles.standard]`, shipped as CC=gcc, and
-            # cc=None would let that gcc win. clang's -fprofile-generate emits
+            # cc=None would let that gcc win. clang's IR instrumentation emits
             # LLVM-format .profraw and __llvm_profile_* refs in the staged .a
             # archives (resolved by Pass 2's profdata.profile_runtime_ldflag); gcc's
             # would emit gcov __gcov_* refs that the clang profile runtime
@@ -503,19 +505,24 @@ def build_llvm_pgo_inner(
             # by profdata.pgo_stage_instrumented so the live root is never touched.
             progress.step("instrument")
             passes.build_pass(
-                f"instrument · {passes.pkgbases(pgo_map)} (-fprofile-generate)",
+                f"instrument · {passes.pkgbases(pgo_map)} (LLVM_BUILD_INSTRUMENTED)",
                 pgo_map,
                 options,
                 cc="/usr/bin/clang",
                 cxx="/usr/bin/clang++",
                 install=False,
                 pgo_build=True,
-                compiler_flags_extra=f"-fprofile-generate={pgo_store}/",
+                # LLVM's own instrumentation option, never CFLAGS: makepkg
+                # exports CFLAGS into the PKGBUILD's runtimes sub-build, which
+                # compiles with the just-built clang, and -fprofile-generate
+                # makes that clang link a profile runtime not yet built
+                # (4.0.0-B12).
+                llvm_pgo=("generate", str(pgo_store)),
                 # Select lld like every other LLVM toolchain build. The PGO
                 # bootstrap runs under a CC=gcc profile whose makepkg.conf
                 # defaults to bfd; only the [VARIANT_LD] guard (keyed on this
                 # variant) injects -fuse-ld=lld. Pass 1 links via the
-                # -fprofile-generate driver flag regardless, but stay consistent
+                # instrumentation driver flag regardless, but stay consistent
                 # with Pass 2/3/4 so the whole sequence uses one linker.
                 toolchain_variant="pgo_llvm",
                 record_variant=constants.INTERMEDIATE_VARIANT,
@@ -525,10 +532,12 @@ def build_llvm_pgo_inner(
                     f"{staging1}: system /usr untouched)")
 
             # Purge any profraw accumulated during Pass 1 + 2. CMake feature-
-            # test programs compiled with -fprofile-generate run during
-            # configuration and deposit spurious profraw files (and emit
-            # "Running out of static counters" warnings). Those represent tiny
-            # probe programs, not clang doing real work — they would contaminate
+            # test programs compiled instrumented run during configuration and
+            # deposit spurious profraw files (and emit "Running out of static
+            # counters" warnings), and the PKGBUILD's runtimes, device and wasi
+            # builds run the just-built, instrumented clang, which writes
+            # profraw too. Those are probe programs and runtime libraries,
+            # not clang compiling the training workload — they would contaminate
             # the training profile if kept. Pass 3 generates the real data.
             # We purge here (after Pass 1) and again after Pass 2 — the latter
             # only matters if Pass 2's profile runtime injection somehow caused
@@ -806,7 +815,11 @@ def build_llvm_pgo_inner(
 
         all_pass3 = {**pgo_map, **non_pgo_map, **lib32_map}
         opt = "reusing profdata" if skip_profgen else "-fprofile-use"
+        # 4a (the LLVM PKGBUILD) takes the profile as LLVM's own cmake option,
+        # which stays out of its runtimes sub-build; 4b/4c are separate
+        # PKGBUILDs and take it as CFLAGS (4.0.0-B12).
         profile_use = f"-fprofile-use={profdata_path}"
+        llvm_profile_use = ("use", str(profdata_path))
 
         # Input-fingerprint reuse setup (Pass 4 only). The cache lives *outside*
         # pgo_store (a sibling dir; see reuse_cache_file) so a fresh 4-pass
@@ -895,7 +908,7 @@ def build_llvm_pgo_inner(
                 cc=pass3_cc,
                 cxx=pass3_cxx,
                 install=False,
-                compiler_flags_extra=profile_use,
+                llvm_pgo=llvm_profile_use,
                 linker_flags_extra=_bolt_ldflag,
                 pgo_build=True,
                 pgo_env=build_pgo_env,
@@ -916,7 +929,7 @@ def build_llvm_pgo_inner(
                 def _repackage_4a() -> None:
                     _repackage_llvm(
                         pgo_map, options, cc=pass3_cc, cxx=pass3_cxx,
-                        profile_use=profile_use, linker_flags=_bolt_ldflag,
+                        llvm_pgo=llvm_profile_use, linker_flags=_bolt_ldflag,
                         pgo_env=build_pgo_env,
                     )
                 tick4.note("BOLT")

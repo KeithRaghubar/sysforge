@@ -106,6 +106,7 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
             "owner_stage": kw.get("owner_stage"),
             "cc": kw.get("cc"),
             "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
+            "llvm_pgo": kw.get("llvm_pgo"),
         })
         return {}  # real build_pass returns {pkgbase: fingerprint}
 
@@ -149,7 +150,12 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
 
     for c in calls:
         assert c["owner_stage"] == "toolchain"
-        assert c["cfe"] == f"-fprofile-use={profdata}"
+    # 4.0.0-B12: 4a (the LLVM PKGBUILD) gets the profile as LLVM's cmake
+    # option, never CFLAGS, which reach its runtimes sub-build; 4b keeps CFLAGS.
+    assert pgo_call["llvm_pgo"] == ("use", str(profdata))
+    assert pgo_call["cfe"] is None
+    assert non_pgo_call["cfe"] == f"-fprofile-use={profdata}"
+    assert non_pgo_call["llvm_pgo"] is None
 
     # The optimized libLLVM was staged into stage3 *before* clang built.
     extract_mock.assert_any_call(pgo_map, staging3, False)
@@ -187,6 +193,7 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
             "cmake_llvm_dir": kw.get("cmake_llvm_dir"),
             "cc": kw.get("cc"),
             "cxx": kw.get("cxx"),
+            "llvm_pgo": kw.get("llvm_pgo"),
         })
         return {}  # real build_pass returns {pkgbase: fingerprint}
 
@@ -235,13 +242,14 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
     train = [c for c in calls if c["pkgs"] == {"clang", "llvm"}]
     assert train and all(c["cmake_llvm_dir"] is None for c in train)
 
-    # A pgo sub-pass (4a) optimized llvm with -fprofile-use beforehand (Pass 1
-    # also touches llvm but with -fprofile-generate, so filter on the flag).
+    # A pgo sub-pass (4a) optimized llvm with the profile beforehand, as LLVM's
+    # cmake option (4.0.0-B12; Pass 1 also touches llvm, in generate mode).
     pgo_opt = [
         c for c in calls
-        if c["pkgs"] == {"llvm"} and (c["cfe"] or "").startswith("-fprofile-use=")
+        if c["pkgs"] == {"llvm"} and c["llvm_pgo"] == ("use", str(profdata))
     ]
-    assert pgo_opt, "Pass 4a must optimize llvm/llvm-libs with -fprofile-use"
+    assert pgo_opt, "Pass 4a must optimize llvm/llvm-libs with the profile"
+    assert all(c["cfe"] is None for c in pgo_opt)
 
     # Pass 1 (instrument) MUST bootstrap on the live system clang, never the
     # resolved profile's CC=gcc — gcc + -fprofile-generate produces gcov
@@ -249,10 +257,12 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_full(tmp_path):
     # cannot satisfy, bricking the Pass 2 link.
     instrument = [
         c for c in calls
-        if c["pkgs"] == {"llvm"}
-        and (c["cfe"] or "").startswith("-fprofile-generate=")
+        if c["pkgs"] == {"llvm"} and c["llvm_pgo"] == ("generate", str(pgo_store))
     ]
-    assert len(instrument) == 1, "Pass 1 must instrument llvm with -fprofile-generate"
+    assert len(instrument) == 1, "Pass 1 must instrument llvm via LLVM_BUILD_INSTRUMENTED"
+    # Never as CFLAGS: makepkg exports them into the runtimes sub-build, whose
+    # just-built clang has no profile runtime to link (4.0.0-B12).
+    assert instrument[0]["cfe"] is None
     assert instrument[0]["cc"] == "/usr/bin/clang"
     assert instrument[0]["cxx"] == "/usr/bin/clang++"
 
@@ -432,6 +442,22 @@ def test_build_pass_threads_pgo_reuse_to_build_options(tmp_path):
     assert [o.pgo_reuse for o in captured] == [False, True]
 
 
+def test_build_pass_threads_llvm_pgo_to_build_options(tmp_path):
+    """4.0.0-B12: build_pass(llvm_pgo=...) reaches BuildOptions.llvm_pgo, the
+    wrapper's cmake-option PGO request."""
+    from sysforge.pipeline.stages.toolchain import passes
+
+    pkgbuild = make_pkgbuild(tmp_path / "builds", "llvm")
+    options = make_options(dry_run=False, state_dir=tmp_path / "state")
+    captured = []
+    with patch.object(passes, "makepkg_run",
+                      side_effect=lambda p, options: captured.append(options)):
+        passes.build_pass("instrument", {"llvm": pkgbuild}, options,
+                          install=False, llvm_pgo=("generate", "/s"))
+        passes.build_pass("normal", {"llvm": pkgbuild}, options, install=False)
+    assert [o.llvm_pgo for o in captured] == [("generate", "/s"), None]
+
+
 def test_pgo_lock_contention_raises_with_holder_pid(tmp_path):
     """Second acquirer fails fast with the holder's PID surfaced."""
     from sysforge.pipeline.stages.toolchain import pgo_lock
@@ -469,8 +495,8 @@ def test_pgo_train_disables_ccache_and_sccache(tmp_path):
 def test_pgo_instrument_and_build_do_not_disable_cache_tools(tmp_path):
     """
     CCACHE/SCCACHE_DISABLE must only be set in Pass 3 (the training run).
-    Passes 1 and 4 use distinct compiler flags (-fprofile-generate /
-    -fprofile-use) that already produce cache misses naturally; disabling
+    Passes 1 and 4 use distinct PGO options (instrument / profile use) that
+    already produce cache misses naturally; disabling
     cache tools there would throw away legitimate cache benefit on reruns.
     """
     call_log = _run_pgo(tmp_path, pgo_pkgs=["llvm"])
@@ -495,7 +521,7 @@ def test_pgo_train_includes_non_pgo_packages(tmp_path):
 
 def test_pgo_instrument_does_not_include_non_pgo_packages(tmp_path):
     """
-    Pass 1 builds only pgo packages with -fprofile-generate; non_pgo packages
+    Pass 1 builds only pgo packages, instrumented; non_pgo packages
     must not be included there (they don't need instrumentation, and building
     them against the instrumented static libs would fail at link time).
     """
@@ -847,7 +873,8 @@ def test_bolt_only_builds_nothing_and_bolts_strictly(tmp_path, monkeypatch):
         return True
 
     def fake_build_pkg(name, path, opts, **kw):
-        repacks.append((name, path, kw.get("extra_flags"), kw.get("compiler_flags_extra")))
+        repacks.append((name, path, kw.get("extra_flags"), kw.get("compiler_flags_extra"),
+                        kw.get("llvm_pgo")))
 
     T = "sysforge.pipeline.stages.toolchain."
     with patch(T + "bolt.check_bolt_only_tree", side_effect=fake_check), \
@@ -860,8 +887,8 @@ def test_bolt_only_builds_nothing_and_bolts_strictly(tmp_path, monkeypatch):
 
     assert seen == {"checked": {"llvm", "clang"}, "enabled": True,
                     "root": builds / "root", "strict": True}
-    assert repacks == [("llvm", llvm, ["--repackage", "--force"],
-                        f"-fprofile-use={pgo_store / 'clang.profdata'}")]
+    assert repacks == [("llvm", llvm, ["--repackage", "--force"], None,
+                        ("use", str(pgo_store / "clang.profdata")))]
     assert set(built) == {"llvm", "clang", "spirv-llvm-translator"}
     assert (cc, variant) == ("/usr/bin/clang", "pgo_llvm")
 

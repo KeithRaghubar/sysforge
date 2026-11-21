@@ -123,6 +123,8 @@ def pkg_fingerprint(
     linker_flags_extra: str | None,
     cmake_llvm_dir: str | None,
     extra_flags,
+    *,
+    llvm_pgo: tuple[str, str] | None = None,
 ) -> tuple[str, str]:
     """Return ``(pkgbase, fingerprint)`` for one PKGBUILD in pass ``ctx.pass_id``.
 
