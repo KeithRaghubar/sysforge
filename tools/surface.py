@@ -70,7 +70,12 @@ def _commands() -> dict:
                 continue
             values = sorted(map(str, a.choices)) if a.choices else None
             if a.option_strings:
-                flags[max(a.option_strings, key=len)] = values
+                # Every long spelling (4.0.0-DEV10): keeping only the longest
+                # hid `--headers` behind `--no-headers` and any alias behind its
+                # longer twin, so dropping one changed nothing here.
+                longs = [o for o in a.option_strings if o.startswith("--")]
+                for spelling in longs or [max(a.option_strings, key=len)]:
+                    flags[spelling] = values
             else:
                 positionals[a.metavar or a.dest] = values
         # A group parent takes nothing itself; its subcommands carry it all.

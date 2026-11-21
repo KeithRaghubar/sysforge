@@ -93,9 +93,8 @@ def _check_disk_space(config: dict | None, doctor_cfg: dict) -> list[diag.Findin
         "storage", diag.SEV_WARN, "disk_low",
         f"only {free_gb:.1f} GB free of {total_gb:.1f} GB on the build dir "
         f"({build_dir}): under the {low:.0f} GB threshold",
-        remediation="free space: clear build caches (`sysforge clean` / rm -rf "
-                    "~/builds/*), trim the pacman cache (`paccache -r`), or prune "
-                    "old package versions",
+        remediation=f"free space: clear the build dir (`rm -rf {build_dir}/*`), trim "
+                    "the pacman cache (`paccache -r`), or prune old package versions",
     )]
 
 

@@ -656,6 +656,8 @@ _REPO_TOP_DIRS = {"tools", "tests", "docs", "sysforge", "etc", "completions", "m
 _CITATION_LOCALS = {"run", "self", "args", "options", "opts", "state", "registry"}
 # A version or name placeholder (`docs/release-notes/vX.Y.Z.md`).
 _PLACEHOLDER_RE = re.compile(r"X\.Y|\bvX\b|\bNN\b|\bNAME\b")
+# `primitives/config.py:91`, `build_core.py:268-270`: a file of ours plus a line.
+_LINE_CITATION_RE = re.compile(r"([\w/.-]+\.(?:py|sh|toml|md)):\d+(?:-\d+)?")
 
 
 def _make_targets(repo: Path) -> set[str]:
@@ -692,6 +694,11 @@ def _check_citation(repo: Path, token: str) -> str | None:
         return None
     if token in _CITATION_HISTORY or _PLACEHOLDER_RE.search(token):
         return None
+    # `config.py:91` (4.0.0-DEV9): a line number moves on every edit above it,
+    # and only the path was ever resolved, so both in the design had gone stale.
+    if m := _LINE_CITATION_RE.fullmatch(token):
+        return (f"cites a line number (`{token}`); cite `{m.group(1)}::<symbol>` "
+                "instead, which this check resolves")
     if token.split(".")[0] in _CITATION_LOCALS and "/" not in token:
         return None
     # A bare code name with no module to resolve it against: it must at least
@@ -869,6 +876,8 @@ def check_citations(repo: Path) -> list[Finding]:
 _EXAMPLE_MARKER_RE = re.compile(
     r"<!--\s*shipped-example:\s*(\S+)(\s+complete)?\s*-->\s*\n```toml\n(.*?)\n```",
     re.DOTALL)
+# The line before a ```toml fence names what the block is.
+_TOML_FENCE_MARKER_RE = re.compile(r"<!--\s*(?:shipped-example:\s*\S+.*|illustrative)\s*-->")
 # A shipped default is a key line commented out with no space after `#`
 # (`#reuse_unchanged = false`); prose comments read `# key — what it does`.
 _SHIPPED_DEFAULT_RE = re.compile(r"^#([A-Za-z_\[].*)$")
@@ -887,11 +896,42 @@ def _flatten(table: dict, prefix: str = "") -> dict[str, object]:
 
 
 def _shipped_defaults(path: Path) -> dict[str, object]:
-    """The shipped file's keys, its commented-out defaults uncommented."""
+    """The shipped file's keys, its commented-out defaults uncommented.
+
+    A commented default can span lines (`#packages = [` then `#    "a",`): while
+    a bracket it opened is still open, each following `#` line is uncommented
+    too, or the array never closes and the whole file fails to parse.
+    """
     import tomllib
-    lines = [m.group(1) if (m := _SHIPPED_DEFAULT_RE.match(ln)) else ln
-             for ln in path.read_text(encoding="utf-8").splitlines()]
+    lines, depth = [], 0
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        if depth > 0 and ln.startswith("#"):
+            ln = ln[1:]
+        elif m := _SHIPPED_DEFAULT_RE.match(ln):
+            ln = m.group(1)
+        else:
+            lines.append(ln)
+            continue
+        depth += _bracket_balance(ln)
+        lines.append(ln)
     return _flatten(tomllib.loads("\n".join(lines)))
+
+
+def _bracket_balance(line: str) -> int:
+    """`[` minus `]` outside quoted strings, up to a comment."""
+    balance, quote = 0, ""
+    for ch in line:
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#":
+            break
+        elif ch == "[":
+            balance += 1
+        elif ch == "]":
+            balance -= 1
+    return balance
 
 
 def _example_skips(block: str) -> set[str]:
@@ -910,7 +950,9 @@ def _example_skips(block: str) -> set[str]:
 
 
 def check_design_examples(repo: Path) -> list[Finding]:
-    """A marked TOML example in docs/design/ mirrors the shipped file.
+    """A marked TOML example in docs/design/ mirrors the shipped file, and
+    every ```toml block carries a marker (`shipped-example` or `illustrative`,
+    4.0.0-DEV9), so leaving one unchecked is a decision, not a default.
 
     Every key it shows exists in the shipped file with the same default
     (unless its line says `# example`), and a `complete` marker also requires
@@ -923,6 +965,17 @@ def check_design_examples(repo: Path) -> list[Finding]:
     for md in sorted((repo / "docs/design").rglob("*.md")):
         rel = md.relative_to(repo).as_posix()
         text = md.read_text(encoding="utf-8")
+        # Every block opts in or out (4.0.0-DEV9): an unmarked one was never
+        # checked, which is how [conflict_groups] outlived its rename.
+        for fence in re.finditer(r"^```toml$", text, re.MULTILINE):
+            before = text[:fence.start()].rstrip().rsplit("\n", 1)[-1]
+            if not _TOML_FENCE_MARKER_RE.search(before):
+                findings.append(Finding(
+                    "design_examples", "error",
+                    f"{rel}:{text.count(chr(10), 0, fence.start()) + 1}",
+                    "```toml block has no marker: precede it with `<!-- shipped-example: "
+                    "etc/sysforge/<file>.toml -->` if it shows a shipped file, else "
+                    "`<!-- illustrative -->`"))
         for m in _EXAMPLE_MARKER_RE.finditer(text):
             target, complete, block = m.group(1), bool(m.group(2)), m.group(3)
             where = f"{rel}:{text.count(chr(10), 0, m.start()) + 1}"
@@ -2353,6 +2406,199 @@ def check_retired_names(repo: Path) -> list[Finding]:
                     f"(or allow this file in {_RETIRED_FILE})"))
     return findings
 
+# ---------------------------------------------------------------------------
+# Group: design_tree (4.0.0-DEV7) — design 04's Installed layout names every
+# installed path and state file. The sysforge/ package tree above it is
+# generated by tools/build_design.py and guarded by `make check-design`.
+# ---------------------------------------------------------------------------
+
+_TREE_DOC = "docs/design/04-directory-structure.md"
+
+
+def _installed_section(repo: Path) -> str | None:
+    path = repo / _TREE_DOC
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"^### Installed\n(.*?)(?=^#{2,4} )", text, re.MULTILINE | re.DOTALL)
+    return m.group(1) if m else None
+
+
+def _pkgbuild_destinations(repo: Path) -> list[str]:
+    """Paths `package()` installs (`"$pkgdir/usr/..."`, `"$_conf/x.toml"`) and the
+    directories its tmpfiles.d lines create (`d /var/lib/sysforge ...`)."""
+    pkgbuild = repo / "PKGBUILD"
+    if not pkgbuild.is_file():
+        return []
+    text = pkgbuild.read_text(encoding="utf-8")
+    # `local _conf="$pkgdir/etc/sysforge"`: a destination shorthand.
+    conf = re.search(r'_conf="\$pkgdir(/[^"$]+)"', text)
+    conf_dir = conf.group(1) if conf else "/etc/sysforge"
+    dests = re.findall(r'"\$pkgdir(/[^"$]+)"', text)
+    dests += [conf_dir + d for d in re.findall(r'"\$_conf(/[^"$]+)"', text)]
+    dests += re.findall(r"printf 'd (/\S+) ", text)
+    return [d for d in dests if d not in ("/", "/etc/sysforge")]
+
+
+def _state_dir_files(repo: Path) -> dict[str, str]:
+    """Names the code joins onto a state-dir path (`state_dir / "bench.toml"`,
+    `Path(state_dir) / FILENAME`), each with the first module that does: the
+    left operand's source mentions `state`, the right is a string literal or a
+    module-level string constant. A join it cannot see goes unchecked, never
+    falsely reported."""
+    import ast
+    found: dict[str, str] = {}
+    for py in sorted((repo / "sysforge").rglob("*.py")):
+        if "__pycache__" in py.parts:
+            continue
+        src = py.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        consts: dict[str, str] = {}
+        for node in tree.body:
+            targets = ([node.target] if isinstance(node, ast.AnnAssign)
+                       else node.targets if isinstance(node, ast.Assign) else [])
+            value = getattr(node, "value", None)
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                consts |= {t.id: value.value for t in targets if isinstance(t, ast.Name)}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+                continue
+            if "state" not in (ast.get_source_segment(src, node.left) or "").lower():
+                continue
+            right = node.right
+            name = (right.value if isinstance(right, ast.Constant) and isinstance(right.value, str)
+                    else consts.get(right.id) if isinstance(right, ast.Name) else None)
+            # `sysforge` is the XDG fallback's own directory, not a file in it.
+            if name and name != "sysforge" and "/" not in name:
+                found.setdefault(name, py.relative_to(repo).as_posix())
+    return found
+
+
+def check_design_tree(repo: Path) -> list[Finding]:
+    """Every installed path and state file appears in design 04's Installed
+    layout (4.0.0-DEV7). The hand-kept list had lost three of the six shipped
+    configs, the hooks, completions and man page, and most state files."""
+    section = _installed_section(repo)
+    if section is None:
+        return []
+
+    def named(name: str) -> bool:
+        return re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", section) is not None
+
+    findings: list[Finding] = []
+    for dest in _pkgbuild_destinations(repo):
+        if not (named(dest) or named(dest.rsplit("/", 1)[-1])):
+            findings.append(Finding("design_tree", "error", _TREE_DOC,
+                                    f"the PKGBUILD installs `{dest}`, which Installed does "
+                                    "not name"))
+    for name, where in sorted(_state_dir_files(repo).items()):
+        if not named(name):
+            findings.append(Finding("design_tree", "error", _TREE_DOC,
+                                    f"{where} keeps `{name}` in the state dir, which "
+                                    "Installed does not name"))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Group: design_flags (4.0.0-DEV8) — a flag the design names in a code span
+# exists. `--track-deps`, `--check-drift` and `--standalone` were all written
+# down as sysforge flags and none ever was one.
+# ---------------------------------------------------------------------------
+
+# A code span that is only a flag: `--foo`, `--foo=X`, `--foo VALUE`,
+# `--foo/--no-foo`. A span that opens with a command word is that command's,
+# and only `sysforge …` spans are ours.
+_BARE_FLAG_SPAN_RE = re.compile(
+    r"--[a-z][\w-]*(?:[= ][^\s/`]+)?(?:\s*/\s*--[a-z][\w-]*(?:[= ][^\s/`]+)?)*")
+_FLAG_RE = re.compile(r"--[a-z][a-z0-9-]*[a-z0-9]")
+# Flags of other tools the design discusses but sysforge never passes (a flag
+# it passes is found in the code's string literals). Name the owner.
+_EXTERNAL_FLAGS = {
+    "--console": "systemd-nspawn",
+    "--keep-unit": "systemd-run",
+    "--slice": "systemd-run",
+    "--log": "makechrootpkg",
+    "--prune": "git (an example of a name left to the per-command check)",
+}
+
+
+def _string_literal_flags(repo: Path) -> set[str]:
+    """Flags sysforge or its tooling actually passes: every non-docstring
+    string literal in sysforge/ and tools/ Python, plus tools/ shell and the
+    Makefile. A docstring alone does not count; that is how a phantom flag
+    reads as real."""
+    import ast
+    flags: set[str] = set()
+    for base in ("sysforge", "tools"):
+        for py in sorted((repo / base).rglob("*.py")):
+            try:
+                tree = ast.parse(py.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            docstrings = {
+                id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                  ast.AsyncFunctionDef))
+                and n.body and isinstance(n.body[0], ast.Expr)
+                and isinstance(n.body[0].value, ast.Constant)}
+            for n in ast.walk(tree):
+                if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                        and id(n) not in docstrings):
+                    flags.update(_FLAG_RE.findall(n.value))
+    for path in [*sorted((repo / "tools").rglob("*.sh")), repo / "Makefile"]:
+        if path.is_file():
+            flags.update(_FLAG_RE.findall(path.read_text(encoding="utf-8")))
+    return flags
+
+
+def _cli_flags(repo: Path) -> set[str] | None:
+    """Every long flag spelling on every command, from the surface snapshot
+    (`make check-surface` keeps it current)."""
+    import json
+    path = repo / "tests/data/surface.json"
+    if not path.is_file():
+        return None
+    commands = json.loads(path.read_text(encoding="utf-8")).get("commands", {})
+    return {f for cmd in commands.values() for f in cmd.get("flags", {})}
+
+
+def check_design_flags(repo: Path) -> list[Finding]:
+    """A `--flag` the design names (alone in a code span, or in a `sysforge …`
+    span) is a real CLI flag, a retired name (the `retired_names` group owns
+    those), a flag the code or tooling passes to another program, or a listed
+    external flag. Fenced blocks are skipped: they quote other tools' sessions."""
+    import tomllib
+    cli = _cli_flags(repo)
+    if cli is None:
+        return []
+    reg = repo / _RETIRED_FILE
+    retired = ({e["name"] for e in tomllib.loads(reg.read_text(encoding="utf-8"))
+                .get("retired", [])} if reg.is_file() else set())
+    known = cli | retired | set(_EXTERNAL_FLAGS) | _string_literal_flags(repo)
+    findings: list[Finding] = []
+    for md in sorted((repo / "docs/design").rglob("*.md")):
+        rel = md.relative_to(repo).as_posix()
+        text = re.sub(r"^\s*```.*?^\s*```", "", md.read_text(encoding="utf-8"),
+                      flags=re.MULTILINE | re.DOTALL)
+        seen: set[str] = set()
+        for span in _inline_code(text):
+            span = span.strip()
+            if not (_BARE_FLAG_SPAN_RE.fullmatch(span) or span.startswith("sysforge ")):
+                continue
+            for flag in _FLAG_RE.findall(span):
+                if flag not in known and flag not in seen:
+                    seen.add(flag)
+                    findings.append(Finding(
+                        "design_flags", "error", rel,
+                        f"names `{flag}`, which no sysforge command has (and the code "
+                        f"never passes to another tool); if it is another program's, "
+                        f"add it to _EXTERNAL_FLAGS in tools/check_standards.py"))
+    return findings
+
+
 GROUPS = {
     "paths":          check_paths,
     "spdx":           check_spdx,
@@ -2373,6 +2619,8 @@ GROUPS = {
     "retired_names":  check_retired_names,
     "citations":      check_citations,
     "design_examples": check_design_examples,
+    "design_tree":    check_design_tree,
+    "design_flags":   check_design_flags,
 }
 
 

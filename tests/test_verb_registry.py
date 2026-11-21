@@ -104,10 +104,14 @@ def test_no_user_facing_text_names_git_pull():
 # (a pipe, a closing backtick, punctuation).
 _CMD = re.compile(
     r"\bsysforge((?:[ \t]+(?:--?[A-Za-z][\w-]*(?:=[^\s`'\"]*)?|<[^>\s]+>|[A-Za-z][\w.+-]*))+)")
-# Where a user can be told to run a command. Design docs, ROADMAP and release
-# notes describe old spellings on purpose and are left out.
+# Where a user can be told to run a command. ROADMAP and release notes describe
+# old spellings on purpose and are left out. The design is scanned since
+# 4.0.0-DEV8: it is the source of truth, and had kept `sysforge pipeline` for a
+# verb that moved under `run`; it names an old spelling as a bare flag, which
+# this scan (`sysforge …` only) never reads.
 _DOC_FILES = ("README.md", "CLAUDE.md", "sysforge/CLAUDE.md", "man/sysforge.1.scd.in")
-_DOC_GLOBS = ("docs/guides/*.md", "docs/concepts/*.md", "etc/sysforge/*.toml")
+_DOC_GLOBS = ("docs/guides/*.md", "docs/concepts/*.md", "etc/sysforge/*.toml",
+              "docs/design/*.md", "docs/design/verbs/*.md")
 
 
 def _texts():
@@ -148,7 +152,19 @@ def _check_command(root, tokens):
 
     global_opts = options(root)
     first = tokens[0]
-    if not first.startswith("-") and first not in _subparsers(root).choices:
+    top = _subparsers(root)
+    assert top is not None
+    if not first.startswith("-") and first not in top.choices:
+        # A nested subcommand with its namespace dropped (`sysforge pipeline`
+        # for `run pipeline`, 4.0.0-DEV8): only when it stands alone or is
+        # followed by a flag or placeholder; "the sysforge kernel stage" is prose.
+        rest = tokens[1:]
+        if not rest or rest[0].startswith(("-", "<")):
+            owners = [name for name, sub in top.choices.items()
+                      if (inner := _subparsers(sub)) is not None and first in inner.choices]
+            if owners:
+                return [f"(top level) has no subcommand {first!r}; "
+                        f"did you mean `{owners[0]} {first}`?"]
         return []  # prose or a path ("sysforge builds", "sysforge -mindepth")
     parser, path, problems = root, [], []
     takes_value = False
@@ -209,3 +225,7 @@ def test_command_check_catches_the_known_failure_shapes():
     assert _check_command(root, ["build", "mesa", "--toolchain", "gcc"]) == []
     assert _check_command(root, ["build", "-sfCci", "mesa"]) == []  # makepkg pass-through
     assert _check_command(root, ["builds", "--anything"]) == []     # prose, not a command
+    # 4.0.0-DEV8: a nested verb without its namespace, alone or before a flag.
+    assert "run pipeline" in _check_command(root, ["pipeline"])[0]
+    assert _check_command(root, ["pipeline", "--resume"])
+    assert _check_command(root, ["kernel", "stage", "runs"]) == []  # prose

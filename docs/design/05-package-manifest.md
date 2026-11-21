@@ -51,12 +51,13 @@ Each entry overrides at most these fields (all optional except `name`):
 - `enable_build_from_source` *(bool)* — if `true`, this **repo** package is built from source (via `pkgctl repo clone` + makepkg with sysforge flag profiles) instead of installed as the binary via pacman. It also opts the package into `sysforge build` without a confirmation prompt (see §`build`). The boolean replaced the misleadingly-named `pkgbuild_patch` (which never patched anything — real PKGBUILD patching is gated by separate predicates); as of 3.0.0 the legacy `pkgbuild_patch` key is no longer honored on read (`config.normalize_package_entry` is now an identity function) — a manifest that still spells it no longer opts the package into a source build. `packages_cmd` still rewrites the key to the current name on the next `packages.toml` write (`add`/`remove`), so a file touched since the rename self-cleans; a never-rewritten file keeps the stale key inert.
 - `cache` *(bool)* — `false` builds this package with ccache and sccache off: `CCACHE_DISABLE=1` and an empty `RUSTC_WRAPPER` in its makepkg environment (`config.cache_disabled_for`, applied in `makepkg_wrapper.run`).
 
+<!-- shipped-example: etc/sysforge/packages.toml -->
 ```toml
 [build]
 pkgbuild_src_dir = "~/src"        # PKGBUILD source tree; auto-cloned if absent
-repo_mode = "build_from_source"   # default for repo packages: "pacman" | "build_from_source"
+repo_mode = "pacman"              # default for repo packages: "pacman" | "build_from_source"
 
-[[package]]
+[[package]]  # example: overrides
 name = "mesa-git"
 enable_build_from_source = true   # override: build this repo package from source
 
@@ -80,6 +81,7 @@ An entry with only `name` and no override fields has no effect on the build. `sy
 
 `[group.<name>]` tables declare named sets that expand into `[[package]]`-equivalent entries at load time, so a desktop stack (e.g. 20+ git packages) can be tracked without enumerating every member as its own block:
 
+<!-- illustrative -->
 ```toml
 [group.cosmic]
 packages = ["cosmic-session-git", "cosmic-comp-git", "cosmic-settings-git", ...]

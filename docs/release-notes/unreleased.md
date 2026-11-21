@@ -62,6 +62,22 @@ https://keepachangelog.com/en/1.1.0/
 
 - **`4.0.0-DEV6` — TOML examples in the design docs are checked against the shipped config.** A ```` ```toml ```` block preceded by `<!-- shipped-example: etc/sysforge/<file>.toml -->` may show only keys the shipped file has, at their shipped values; a line commented `# example` keeps an illustrative value, and `complete` also requires every shipped key. The first run found the toolchain example's old package lists and eight missing keys, the kernel example's `interactive` (renamed `review_config`), and a bootstrap ESP default of 512 MiB where the code uses 1024. The root `CLAUDE.md` now asks a change to revise every design passage it makes untrue, not only add a paragraph about itself.
 
+---
+
+- **`4.0.0-DEV7` — the design's module tree is generated, and its installed layout is checked.** Design 04's hand-kept `sysforge/` tree had fallen 80 modules behind and still listed the toolchain and kernel stages as single files. `make design` now builds it from each module's first docstring paragraph, so `make check-design` fails on a new, removed or re-described module and a module without a docstring fails the build. A new `check_standards` group, `design_tree`, fails when the *Installed* layout omits a path the PKGBUILD installs, a directory tmpfiles.d creates, or a file the code keeps in the state dir. Rewriting the layout added the three missing shipped configs, the libalpm hooks, completions, man page and fifteen state files, and fixed the `/var/cache/sysforge` mode (`2775 root:sysforge`, not `0777`).
+
+---
+
+- **`4.0.0-DEV8` — commands and flags written in the design docs are checked.** The written-down-commands test now scans `docs/design/`, and reports a nested subcommand written without its namespace (`sysforge pipeline` for `run pipeline`). A new `check_standards` group, `design_flags`, requires a `--flag` the design names to be a real flag, a retired name, one the code passes to another program, or a listed external flag; docstrings don't count, since that is how a phantom flag reads as real. Their first runs found `sysforge pipeline` in five places, seventeen `sysforge doctor --<axis>` commands from before the `doctor system`/`doctor pkg` split, `update --check-drift` (the route is `--explain-drift`), `build --track-deps` (documented, never implemented) and a `--standalone` flag that is an options field.
+
+---
+
+- **`4.0.0-DEV9` — every TOML block in the design is marked, and line-number citations are refused.** A ```` ```toml ```` block now needs `<!-- shipped-example: … -->` or `<!-- illustrative -->`, so leaving one unchecked is a decision. Marking the rest found design 10's conflict-group example using `[conflict_groups]`, a table the loader ignores (`[append_conflict_groups]`), and design 05 giving `repo_mode = "build_from_source"` as the default (it is `"pacman"`). A commented-out default spanning several lines is now uncommented until its bracket closes, without which `packages.toml` could not be compared at all. A `file.py:NN` citation fails the `citations` group (cite `file.py::symbol`): both in the design pointed at moved code.
+
+---
+
+- **`4.0.0-DEV10` — the surface snapshot records every spelling of a flag.** `tools/surface.py` kept only the longest spelling, so `run kernel --headers`, `--docs` and `--keep-hotplug-drivers` sat behind their `--no-` forms, and dropping one would not have changed `tests/data/surface.json`. Each long spelling is now its own entry.
+
 ## Fixed
 
 - **`4.0.0-B1` — `build --failed` no longer rebuilds a package you removed.** Replacing a failed `ethtool-git` with `pacman -S ethtool` left its failure recorded, so `build --failed` queued `ethtool-git` again. A removal cleared the failure only when sysforge read the pacman hook's record of that transaction, and that record can be gone by then. A failed package that sysforge tracks but that is no longer installed now counts as removed too, in `update`, `state failed`, `doctor --state` and `build --failed`; `update` checks it before pruning the entry. A package whose first build failed was never installed and is still retried. A failure left over from before this fix is cleared with `sysforge state failed --clear PKGBASE`.
@@ -89,3 +105,7 @@ https://keepachangelog.com/en/1.1.0/
 ---
 
 - **`4.0.0-B8` — the `run toolchain` build plan says whether BOLT will run, and where.** The plan printed before a build showed the compiler, PGO, package counts, staging paths and gates, but not `[bolt]`, so you could not tell from it whether a multi-hour build would BOLT anything. It now has a `bolt:` row naming the libraries (`libclang-cpp`, plus `libLLVM` with `[bolt] libllvm`), the step (after Pass 4a, in the build tree before install) and the training workload. When BOLT will not run, the row says why: it is off, `[bolt] enabled` is set on a run without PGO, or clang is not built by the PGO PKGBUILD. `--bolt-only` shows its targets too. The plan also gains a `corpus:` row (the Pass-3 training packages), a `reuse:` row (`--reuse-built` or `reuse_unchanged`) and an `after:` row (the soname-consumer rebuild mode and `[bench] after_build`).
+
+---
+
+- **`4.0.0-B9` — the low-disk warning no longer suggests a command that does not exist.** `doctor system --storage` told you to free space with `sysforge clean`, which sysforge has never had, and assumed the build dir was `~/builds`. It now names the build dir it measured (`rm -rf <dir>/*`) beside `paccache -r`. Two docstrings that described flags sysforge does not have (`update --check-drift`, `run reconfigure --standalone`) are corrected with it.
