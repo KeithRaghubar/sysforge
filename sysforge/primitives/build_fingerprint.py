@@ -56,7 +56,9 @@ from sysforge.primitives import atomic_write, run
 # v4: the llvm PKGBUILD gains the libLLVM std:: export parity block (3.5.0-F4).
 # The fingerprint hashes the upstream PKGBUILD, which never shows it, so without
 # the bump --reuse-built would reuse a libLLVM built without the thunks.
-_SCHEMA = 4
+# v5: the pgo PKGBUILD's PGO moved from compiler_flags_extra to the llvm_pgo
+# cmake option (4.0.0-B12), so a CFLAGS-era entry must not match.
+_SCHEMA = 5
 
 # Chunk size for streaming file hashes (profdata can be hundreds of MiB).
 _HASH_CHUNK = 1024 * 1024
@@ -233,8 +235,8 @@ def compute_fingerprint(components: dict) -> str:
       pkgbuild_sha         — hash_file() of the upstream PKGBUILD.
       source_commit        — source_commit() of the PKGBUILD dir.
       cc_identity          — clang_identity() of the build compiler.
-      compiler_flags_extra / linker_flags_extra / cmake_llvm_dir / extra_flags
-                           — the per-pass injected flags.
+      compiler_flags_extra / linker_flags_extra / cmake_llvm_dir / llvm_pgo /
+      extra_flags          — the per-pass injected flags and cmake options.
       config_digest        — hash_obj() of the flag-relevant config subset.
       profdata_sha         — hash_file() of clang.profdata (Pass 4 only).
       makedep_versions     — {dep: installed_version} of the *external* build

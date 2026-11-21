@@ -156,6 +156,8 @@ def pkg_fingerprint(
         "compiler_flags_extra": compiler_flags_extra,
         "linker_flags_extra": linker_flags_extra,
         "cmake_llvm_dir": cmake_llvm_dir,
+        # Pass 4a's profile is a cmake option, not compiler_flags_extra (4.0.0-B12).
+        "llvm_pgo": list(llvm_pgo) if llvm_pgo else None,
         "extra_flags": list(extra_flags or []),
         "config_digest": ctx.config_digest,
         "profdata_sha": ctx.profdata_sha,

@@ -253,6 +253,26 @@ def test_pkg_fingerprint_merkle_chain_changes(tmp_path):
     _, fp2 = pkg_fingerprint(ctx_v2, "clang", pkgbuild, None, "-fp=/p", None, None, [])
     assert fp1 != fp2
 
+def test_pkg_fingerprint_changes_with_llvm_pgo(tmp_path):
+    """4.0.0-B12: the cmake-option PGO request is a build input. With Pass 4a's
+    profile out of compiler_flags_extra, only this keeps --reuse-built from
+    reusing a build made with another profile, or with none."""
+    pkgbuild = make_pkgbuild(tmp_path, "llvm")
+    ctx = _reuse_ctx(tmp_path, pass_id="build-pgo")
+    fps = {
+        pkg_fingerprint(ctx, "llvm", pkgbuild, None, None, None, None, [],
+                        llvm_pgo=req)[1]
+        for req in (None, ("use", "/p/clang.profdata"), ("use", "/q/clang.profdata"))
+    }
+    assert len(fps) == 3
+
+
+def test_fingerprint_schema_bumped_for_llvm_pgo():
+    """4.0.0-B12: a CFLAGS-era cache entry must not match the cmake-option build."""
+    from sysforge.primitives import build_fingerprint
+    assert build_fingerprint._SCHEMA >= 5
+
+
 def test_pkg_fingerprint_stable_across_staged_vs_system_clang(tmp_path):
     """Pass-4 reuse must survive the staged→installed compiler swap (2.1.0-B14).
 
