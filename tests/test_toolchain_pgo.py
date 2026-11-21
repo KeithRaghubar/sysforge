@@ -415,61 +415,6 @@ def test_train_corpus_enrichment_failure_is_non_fatal(tmp_path):
     assert {"mesa"} in seen
     assert any(s == {"llvm"} for s in seen), "Pass 4 must proceed after corpus failure"
 
-def test_train_corpus_user_abort_propagates(tmp_path):
-    """3.2.0-B26: 'abort' at the corpus build's failure menu stops the run —
-    it is not swallowed as a best-effort corpus failure, and Pass 4 never
-    starts."""
-    from sysforge.primitives.makepkg_invoke import BuildAborted
-
-    builds = tmp_path / "builds"
-    pgo_map = {"llvm": make_pkgbuild(builds, "llvm")}
-    non_pgo_map = {"clang": make_pkgbuild(builds, "clang")}
-    corpus_map = {"mesa": make_pkgbuild(builds, "mesa")}
-    staging1, staging, staging3 = (
-        tmp_path / "stage1", tmp_path / "stage2", tmp_path / "stage3"
-    )
-    pgo_store = tmp_path / "pgo_store"
-    pgo_store.mkdir()
-    profdata = tmp_path / "clang.profdata"
-    profdata.write_bytes(b"x" * (PGO_PROFDATA_MIN_BYTES + 1))
-
-    options = make_options(
-        dry_run=False, rebuild_profdata=True, state_dir=tmp_path / "state"
-    )
-
-    seen = []
-
-    def fake_build_pass(label, pkgbuild_map, options, **kw):
-        seen.append(set(pkgbuild_map.keys()))
-        if set(pkgbuild_map.keys()) == {"mesa"}:
-            raise BuildAborted("[build_failed] Aborted by user after build failure")
-        return {}
-
-    T = "sysforge.pipeline.stages.toolchain."
-    with patch(T + "profdata.validate_pgo_environment"), \
-         patch(T + "pgo.pgo_confirm"), \
-         patch(T + "profdata.pgo_stage_instrumented"), \
-         patch(T + "profdata.profile_runtime_ldflag", return_value=None), \
-         patch(T + "profdata.profraw_merge_daemon"), \
-         patch(T + "profdata.merge_profraw", return_value=profdata), \
-         patch(T + "profdata.write_profdata_version") as wpv, \
-         patch(T + "pgo.fs_provision.ensure_writable_dir"), \
-         patch(T + "pgo.fs_provision.empty_dir_contents"), \
-         patch(T + "profdata.extract_built_to_staging"), \
-         patch(T + "profdata.assert_staging_has_llvm_cmake"), \
-         patch(T + "profdata.remove_staging"), \
-         patch(T + "passes.build_pass", side_effect=fake_build_pass), \
-         patch("subprocess.run", return_value=MagicMock(returncode=0, stderr="")), \
-         pytest.raises(BuildAborted):
-        build_llvm_pgo_inner(
-            pgo_map, non_pgo_map, {},
-            staging1, staging, staging3, pgo_store, options,
-            corpus_map=corpus_map,
-        )
-
-    assert seen[-1] == {"mesa"}, "nothing may build after the user's abort"
-    wpv.assert_not_called()
-
 
 def test_build_pass_threads_pgo_reuse_to_build_options(tmp_path):
     """3.2.0-B28: build_pass(pgo_reuse=False) reaches BuildOptions.pgo_reuse,

@@ -1425,6 +1425,17 @@ def test_make_build_options_packages_parity():
     assert bo.source == "aur"
 
 
+def test_make_build_options_toolchain_never_offers_recovery_menu():
+    """A failed toolchain pass aborts the stage: no retry / edit-PKGBUILD /
+    swap-compiler menu. A hand-patched PKGBUILD or swapped compiler mid-run
+    would leave the PGO passes built from different inputs. Other stages keep
+    the interactive menu."""
+    opts = _run_options()
+    assert make_build_options("toolchain", opts).force_batch is True
+    assert make_build_options("packages", opts).force_batch is False
+    assert make_build_options("kernel", opts).force_batch is False
+
+
 def test_make_build_options_override_wins_over_stage_default():
     """An explicit override beats the stage constant (e.g. kernel building a
     package it does install, or stamping a different owner)."""

@@ -34,7 +34,6 @@ from sysforge.primitives.build_lock import build_lock
 from sysforge.pipeline.stages.toolchain import bolt, constants, passes, pkgbuilds, profdata, reuse
 
 from sysforge.primitives import prompt
-from sysforge.primitives.makepkg_invoke import BuildAborted
 from sysforge.primitives import pacman
 from sysforge import build_core
 from sysforge import log
@@ -702,8 +701,8 @@ def build_llvm_pgo_inner(
                     # corpus build failure (missing makedep, mesa configure quirk)
                     # is logged and the PGO run proceeds with the LLVM-only profile
                     # — enrichment must never brick the toolchain build. A user
-                    # abort at the failure menu is NOT a corpus failure: it
-                    # propagates and stops the run.
+                    # abort (Ctrl-C) is a KeyboardInterrupt, not an Exception, so
+                    # it propagates and stops the run.
                     #
                     # No residual_linker_flags: the corpus links stage1's *shared*
                     # instrumented libLLVM (which carries its own profile runtime),
@@ -729,8 +728,6 @@ def build_llvm_pgo_inner(
                                 pgo_reuse=False,
                                 tick=tick3,
                             )
-                        except BuildAborted:
-                            raise
                         except Exception as e:
                             _log.warn(
                                 f"[PGO] Training-corpus enrichment build failed "

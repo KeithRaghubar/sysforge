@@ -155,7 +155,8 @@ after the strip flags, and only for this build's own artifacts, the
 PKGBUILD's exact version from PKGDEST or, when unset, the PKGBUILD dir,
 `_this_builds_artifacts`, `3.5.0-B61`), it hands off to `makepkg_invoke._run_recovery_menu` — the
 **one home** for interactive build-failure recovery. This replaces the old
-bare "fix the PKGBUILD and press Enter" prompt with a small menu:
+bare "fix the PKGBUILD and press Enter" prompt with a small menu (the
+toolchain stage never shows it, see below):
 
 ```
 Recover:
@@ -176,6 +177,15 @@ resolver's PATH guard means a declared-but-missing linker degrades to `ld`.
 The banner names the toolchain of the attempt that **just failed**: after a
 failed `[c]` swap it reports the swapped `cc`/`cxx`/`ld`, and `[r]`/`[e]` (which
 re-run the original conf and env) report the original again.
+
+**The toolchain stage never offers the menu** (`4.0.0-B11`): its stage
+default in `build_core._STAGE_BUILD_DEFAULTS` sets `force_batch`, so every
+pass (instrument, bootstrap, train, final, BOLT) runs in batch mode and a
+failed pass aborts the stage. The passes must all be built from one PKGBUILD
+with one compiler, so editing the recipe or swapping the compiler mid-run
+would leave the profile and the shipped binaries built from different inputs.
+The fix belongs in config or the PKGBUILD checkout, followed by a fresh
+`run toolchain`. The kernel and packages stages keep the menu.
 
 `[c]` is offered only when the caller supplied a `reemit_conf` closure (see
 below) — a caller with no conf-emission seam (e.g. a test harness) degrades

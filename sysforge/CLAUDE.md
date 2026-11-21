@@ -271,8 +271,8 @@ Mechanism lives in the cited §DESIGN section.
   `build_fingerprint.py` (`--reuse-built`, fail-safe to rebuild; bump `_SCHEMA` on new inputs).
 - **Pass-3 training corpus**: `resolve_training_corpus`; extras (mesa) compile with the instrumented
   stage1 clang so profraw merges into the one `clang.profdata` — never installed, never
-  `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort, but
-  `BuildAborted` (user abort) re-raises. PGO path only.
+  `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort (a failure
+  warns and Pass 4 proceeds); toolchain builds are batch, so no menu abort exists. PGO path only.
 - **libLLVM soname-bump → consumer rebuild**: `assess_libllvm_soname_impact` / `gates.gate_soname_consumers`
   (after Gate 3, outside sentinel). No parallel reverse-dep scanner.
 - **libLLVM `std::` export parity** (`3.5.0-F4`): the table is `primitives/llvm_std_exports.py`
