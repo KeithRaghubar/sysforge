@@ -1860,6 +1860,77 @@ def patch_llvm_std_exports(patched_path) -> bool:
     return True
 
 
+# The cmake cache keys :func:`patch_llvm_pgo` manages, per mode. Generate's
+# path is LLVM_PROFILE_DATA_DIR (the profraw directory), use's is the merged
+# profdata file.
+_LLVM_PGO_KEYS = ("LLVM_BUILD_INSTRUMENTED", "LLVM_PROFILE_DATA_DIR", "LLVM_PROFDATA_FILE")
+
+
+def _llvm_pgo_args(mode: str, path: str) -> dict[str, str]:
+    if mode == "generate":
+        return {"LLVM_BUILD_INSTRUMENTED": "-DLLVM_BUILD_INSTRUMENTED=IR",
+                "LLVM_PROFILE_DATA_DIR": f'-DLLVM_PROFILE_DATA_DIR="{path}"'}
+    if mode == "use":
+        return {"LLVM_PROFDATA_FILE": f'-DLLVM_PROFDATA_FILE="{path}"'}
+    raise ValueError(f"unknown LLVM PGO mode {mode!r} (expected 'generate' or 'use')")
+
+
+def _cmake_define_re(key: str, *, with_lead: bool) -> re.Pattern:
+    """``-D<key>=<value>``, optionally with the whitespace (and ``\\``
+    continuation) before it, so a removal leaves no empty continuation."""
+    lead = r"(?:[ \t]*\\\n)?[ \t]*" if with_lead else ""
+    return re.compile(lead + rf"-D{key}(?::[A-Z]+)?=(?:\"[^\"]*\"|'[^']*'|\S+)")
+
+
+def patch_llvm_pgo(patched_path, mode: str, path: str) -> bool:
+    """Inject LLVM's own PGO cache options into the cmake configure (4.0.0-B12).
+
+    ``generate`` → ``-DLLVM_BUILD_INSTRUMENTED=IR -DLLVM_PROFILE_DATA_DIR="<path>"``;
+    ``use`` → ``-DLLVM_PROFDATA_FILE="<path>"``. The other mode's keys are
+    removed. ``HandleLLVMOptions`` applies these to the LLVM projects only: the
+    merged llvm PKGBUILD's runtimes sub-build (compiler-rt, openmp, libc++),
+    compiled by the just-built clang, does not inherit them, where an exported
+    CFLAGS ``-fprofile-generate`` makes that clang link a profile runtime that
+    does not exist yet. As cache variables they persist across the PKGBUILD's
+    repeated configure calls, so the first configure is the anchor (mirrors
+    :func:`patch_llvm_dir`).
+
+    Idempotent; replaces a differing value. On a PKGBUILD with no cmake
+    configure, warns and returns False. Returns True when the file changed.
+    """
+    wanted = _llvm_pgo_args(mode, path)
+    patched_path = Path(patched_path)
+    original = text = patched_path.read_text()
+
+    for key in _LLVM_PGO_KEYS:
+        if key not in wanted:
+            text = _cmake_define_re(key, with_lead=True).sub("", text)
+
+    missing = []
+    for key, arg in wanted.items():
+        bare = _cmake_define_re(key, with_lead=False)
+        if bare.search(text):
+            text = bare.sub(lambda _m, a=arg: a, text, count=1)
+        else:
+            missing.append(arg)
+
+    for arg in missing:
+        cmake_match = _find_cmake_configure_anchor(text)
+        if not cmake_match:
+            _log.warn(f"LLVM PGO ({mode}) requested but no cmake invocation "
+                      "found in PKGBUILD: leaving unmodified")
+            return False
+        indent = cmake_match.group(1)
+        line_end = _cmake_statement_end(text, cmake_match.start())
+        text = text[:line_end] + f" \\\n{indent}    {arg}" + text[line_end:]
+
+    if text == original:
+        return False
+    patched_path.write_text(text)
+    _log.info(f"Injected LLVM PGO ({mode}) cmake options: {' '.join(wanted.values())}")
+    return True
+
+
 def patch_staged_build_rpath(patched_path) -> bool:
     """Narrow ``CMAKE_SKIP_RPATH=ON`` to ``CMAKE_SKIP_INSTALL_RPATH=ON`` in an
     already-written PKGBUILD.sysforge (3.3.0-B5).
