@@ -1866,7 +1866,7 @@ def patch_llvm_std_exports(patched_path) -> bool:
 _LLVM_PGO_KEYS = ("LLVM_BUILD_INSTRUMENTED", "LLVM_PROFILE_DATA_DIR", "LLVM_PROFDATA_FILE")
 
 
-def _llvm_pgo_args(mode: str, path: str) -> dict[str, str]:
+def llvm_pgo_args(mode: str, path: str) -> dict[str, str]:
     if mode == "generate":
         return {"LLVM_BUILD_INSTRUMENTED": "-DLLVM_BUILD_INSTRUMENTED=IR",
                 "LLVM_PROFILE_DATA_DIR": f'-DLLVM_PROFILE_DATA_DIR="{path}"'}
@@ -1898,7 +1898,7 @@ def patch_llvm_pgo(patched_path, mode: str, path: str) -> bool:
     Idempotent; replaces a differing value. On a PKGBUILD with no cmake
     configure, warns and returns False. Returns True when the file changed.
     """
-    wanted = _llvm_pgo_args(mode, path)
+    wanted = llvm_pgo_args(mode, path)
     patched_path = Path(patched_path)
     original = text = patched_path.read_text()
 
