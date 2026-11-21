@@ -266,6 +266,10 @@ Mechanism lives in the cited §DESIGN section.
   Gate 2 outside `sentinel_scope`, install→Gate-3→rollback inside. **GCC path never builds GCC**
   (register-only). LLVM `pgo=false` + repo_mode=`pacman` → install stock from repos; **PGO always
   builds from source**. `repo_mode` read via `config.resolve_repo_mode` only.
+- **The pgo PKGBUILD gets PGO only as LLVM cmake options** (`4.0.0-B12`): `BuildOptions.llvm_pgo`
+  → `pkgbuild_patcher.patch_llvm_pgo` (Pass 1 generate, Pass 4a + BOLT repackage use), never
+  `compiler_flags_extra`: makepkg's exported CFLAGS reach the runtimes sub-build, which the
+  just-built clang compiles. 4b/4c are separate PKGBUILDs and keep `-fprofile-use` CFLAGS.
 - **Pass-4 builds non-pgo against the libLLVM it ships** (`CMAKE_PREFIX_PATH` **and** forced
   `-DLLVM_DIR` via `patch_llvm_dir`; staging3 needs both `llvm-libs`+`llvm`). Build reuse opt-in via
   `build_fingerprint.py` (`--reuse-built`, fail-safe to rebuild; bump `_SCHEMA` on new inputs).

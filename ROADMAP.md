@@ -113,6 +113,7 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `4.0.0-B5` | a real drop-in in a batch auto-confirms every other conflict in it | med | small | patch |
+| `4.0.0-B13` | a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail | med | small | patch |
 | `3.5.0-DEV29` | the build sandbox end to end, in the VM tier | med | large | patch |
 | `3.5.0-DEV33` | an end-to-end scenario for unattended runs | low | small | patch |
 | `3.5.0-DEV34` | an end-to-end scenario for the --frozen and --thaw flags | low | small | patch |
@@ -152,6 +153,22 @@ canonical ordering.
 ---
 
 ### Bugs
+
+- **`4.0.0-B13` — a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail.**
+  `makepkg_invoke.select_failure_tail` anchors the `MAKEPKG_FAILURE_TAIL_LINES` (80) window on the
+  last `_FAILURE_MARKERS` hit, but `CMake Error at …` matches none of them, so a failed configure
+  anchors on ninja's `FAILED: …-configure` line, which is already inside the plain last-80 window.
+  On the 2026-11-21 `run toolchain` Pass 1 those 80 lines were all `LLVM Profile Warning: Unable to
+  track new values: Running out of static counters` (one per instrumented-clang probe), and the
+  real `Could NOT find Threads` error was recoverable only by re-running the configure by hand.
+  Fix: add `CMake Error` to the marker vocabulary, and collapse runs of an identical line in the
+  selected tail into one line plus a repeat count, so a warning flood cannot fill the window.
+  Verify on that log shape first: the configure's output must reach the captured stream (an
+  ExternalProject step in ninja's console pool may not). Unit tests over a captured-stream fixture.
+  *Priority: med · Effort: small · Bump: patch* — costs a manual re-run to diagnose, never a wrong
+  build; local to one function.
+
+---
 
 - **`4.0.0-B5` — a real drop-in in a batch auto-confirms every other conflict in it.**
   `pacman.batch_install_pkgs` adds `--ask=4` when any built package supersedes an installed one
