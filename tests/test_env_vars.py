@@ -19,8 +19,8 @@ from sysforge.primitives.journal import JOURNAL_FIELDS
 REPO = Path(__file__).resolve().parent.parent
 
 # SYSFORGE_* strings that are not names sysforge reads: heredoc delimiters in
-# the PKGBUILD text llvm_std_exports generates.
-_NOT_NAMES = {"SYSFORGE_CMAKE", "SYSFORGE_TU"}
+# the PKGBUILD text llvm_std_exports and patch_llvm_pgo generate.
+_NOT_NAMES = {"SYSFORGE_CMAKE", "SYSFORGE_PGO_CMAKE", "SYSFORGE_TU"}
 
 
 def _sysforge_strings():

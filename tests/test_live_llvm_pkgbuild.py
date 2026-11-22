@@ -24,6 +24,7 @@ import urllib.request
 import pytest
 
 from sysforge.primitives.pkgbuild_patcher import (
+    _PGO_RT_SENTINEL,
     _cmake_statement_end,
     patch_llvm_pgo,
 )
@@ -62,5 +63,21 @@ def test_live_llvm_pgo_lands_in_main_configure(tmp_path, live_pkgbuild, mode, pa
     text = p.read_text()
     assert expected in _main_configure(text)
     assert text.count(expected) == 1
+    result = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True)  # noqa: TID251 — syntax check of a downloaded fixture, never executed
+    assert result.returncode == 0, result.stderr
+
+
+def test_live_llvm_pgo_generate_hooks_offload_in_prepare(tmp_path, live_pkgbuild):
+    """4.0.0-B15: Pass 1 appends a prepare() hook that links offload's host tools
+    against the profile runtime. It needs the official PKGBUILD to keep a
+    prepare() and to still build offload; without either the hook silently has
+    nothing to do and Pass 1 fails at that link again."""
+    assert "offload" in live_pkgbuild
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(live_pkgbuild)
+    patch_llvm_pgo(p, "generate", "/store")
+    text = p.read_text()
+    prepare = text[text.index("prepare() {"):text.index("\nbuild() {")]
+    assert _PGO_RT_SENTINEL in prepare
     result = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True)  # noqa: TID251 — syntax check of a downloaded fixture, never executed
     assert result.returncode == 0, result.stderr

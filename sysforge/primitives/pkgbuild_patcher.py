@@ -1865,6 +1865,72 @@ def patch_llvm_std_exports(patched_path) -> bool:
 # profdata file.
 _LLVM_PGO_KEYS = ("LLVM_BUILD_INSTRUMENTED", "LLVM_PROFILE_DATA_DIR", "LLVM_PROFDATA_FILE")
 
+# Generate mode's link fix for offload's host tools (4.0.0-B15). The runtimes
+# sub-build builds them, and they link the main tree's instrumented static LLVM
+# libraries, but LLVM_BUILD_INSTRUMENTED never reaches that sub-build, so
+# nothing supplies __llvm_profile_*. The runtime is the instrumenting (host)
+# compiler's: the just-built clang has not built its own yet. It is attached to
+# these targets only, never as a link flag for the whole sub-build: that
+# sub-build also links compiler-rt's i386 probes and libraries, and lld fails an
+# x86_64 archive on an i386 link even when nothing references it, which
+# silently drops every i386 runtime. set_property, not target_link_libraries:
+# LLVM links these with either signature depending on config, and CMake
+# rejects mixing the two on one target. A new host tool of the same kind fails
+# its link the same loud way, and is added here.
+LLVM_PGO_HOST_TOOLS = ("offload-tblgen", "llvm-omp-kernel-replay")
+_PGO_RT_SENTINEL = "# sysforge: PGO host-tool profile runtime (4.0.0-B15)"
+_PGO_RT_END = "# sysforge: end PGO host-tool profile runtime"
+_PGO_RT_BLOCK_RE = re.compile(
+    rf"(?m)^[ \t]*{re.escape(_PGO_RT_SENTINEL)}\n.*?^[ \t]*{re.escape(_PGO_RT_END)}\n",
+    re.DOTALL)
+
+
+def render_llvm_pgo_runtime_block() -> str:
+    """The bash generate mode appends to ``prepare()`` (4.0.0-B15).
+
+    Resolves the host compiler's ``libclang_rt.profile.a`` (failing ``prepare()``
+    when it has none) and appends a CMake hook to ``offload/CMakeLists.txt``
+    that adds it to each of :data:`LLVM_PGO_HOST_TOOLS`. The heredoc is unquoted
+    so bash substitutes the archive path; the CMake text has no other ``$``.
+    """
+    cmake = [_PGO_RT_SENTINEL]
+    for tool in LLVM_PGO_HOST_TOOLS:
+        cmake += [f"if(TARGET {tool})",
+                  f'  set_property(TARGET {tool} APPEND PROPERTY LINK_LIBRARIES "$_sf_prt")',
+                  "endif()"]
+    lines = [
+        f"  {_PGO_RT_SENTINEL}",
+        "  local _sf_offload _sf_prt",
+        "  _sf_prt=$(${CC:-clang} -print-file-name=libclang_rt.profile.a)",
+        "  [[ $_sf_prt == /* ]] || { echo \"sysforge: ${CC:-clang} has no "
+        "libclang_rt.profile.a; install compiler-rt\" >&2; return 1; }",
+        '  for _sf_offload in "$srcdir"/llvm-project*/offload; do',
+        "    [[ -f $_sf_offload/CMakeLists.txt ]] || continue",
+        f"    grep -qF '{_PGO_RT_SENTINEL}' \"$_sf_offload/CMakeLists.txt\" ||",
+        '      cat >> "$_sf_offload/CMakeLists.txt" <<SYSFORGE_PGO_CMAKE',
+        *cmake,
+        "SYSFORGE_PGO_CMAKE",
+        "  done",
+        f"  {_PGO_RT_END}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _set_llvm_pgo_runtime_block(text: str, wanted: bool) -> str:
+    """Add (once) or remove the :func:`render_llvm_pgo_runtime_block` in ``prepare()``."""
+    text = _PGO_RT_BLOCK_RE.sub("", text)
+    if not wanted:
+        return text
+    span = _find_func_body_span(text, "prepare")
+    if span is None:
+        _log.warn("LLVM PGO (generate): the PKGBUILD has no prepare(), so offload's "
+                  "host tools get no profile runtime and Pass 1 may fail to link them")
+        return text
+    head = text[:span[1]]
+    if not head.endswith("\n"):
+        head += "\n"
+    return head + render_llvm_pgo_runtime_block() + text[span[1]:]
+
 
 def llvm_pgo_args(mode: str, path: str) -> dict[str, str]:
     if mode == "generate":
@@ -1891,9 +1957,12 @@ def patch_llvm_pgo(patched_path, mode: str, path: str) -> bool:
     merged llvm PKGBUILD's runtimes sub-build (compiler-rt, openmp, libc++),
     compiled by the just-built clang, does not inherit them, where an exported
     CFLAGS ``-fprofile-generate`` makes that clang link a profile runtime that
-    does not exist yet. As cache variables they persist across the PKGBUILD's
-    repeated configure calls, so the first configure is the anchor (mirrors
-    :func:`patch_llvm_dir`).
+    does not exist yet. ``generate`` also appends
+    :func:`render_llvm_pgo_runtime_block` to ``prepare()`` (``use`` removes
+    it), which hands offload's host tools in that sub-build the host profile
+    runtime: they link the instrumented static LLVM libraries (4.0.0-B15). As
+    cache variables the options persist across the PKGBUILD's repeated configure
+    calls, so the first configure is the anchor (mirrors :func:`patch_llvm_dir`).
 
     Idempotent; replaces a differing value. On a PKGBUILD with no cmake
     configure, warns and returns False. Returns True when the file changed.
@@ -1923,6 +1992,12 @@ def patch_llvm_pgo(patched_path, mode: str, path: str) -> bool:
         indent = cmake_match.group(1)
         line_end = _cmake_statement_end(text, cmake_match.start())
         text = text[:line_end] + f" \\\n{indent}    {arg}" + text[line_end:]
+
+    if _find_cmake_configure_anchor(text) is None:
+        _log.warn(f"LLVM PGO ({mode}) requested but no cmake invocation "
+                  "found in PKGBUILD: leaving unmodified")
+        return False
+    text = _set_llvm_pgo_runtime_block(text, wanted=(mode == "generate"))
 
     if text == original:
         return False
