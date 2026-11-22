@@ -154,6 +154,39 @@ def test_extract_built_split_pkgname_does_not_swallow_sibling(tmp_path):
         "the 'llvm' key swallowed the sibling artifact"
     )
 
+def test_extract_built_stages_the_members_a_staged_package_depends_on(tmp_path, monkeypatch):
+    """4.0.0-B17: clang's builtin headers and libclang-cpp live in ``clang-libs``.
+
+    Nobody configures ``clang-libs``, so staging only the configured names left
+    stage2's clang without ``lib/clang/<N>/include`` (``stddef.h`` not found in
+    Pass 4's first cmake check) and loading the host's older libclang-cpp. A
+    staged package's dependency on a member built by the same PKGBUILD is
+    staged too; a member nothing depends on (``wasi-libc++``) is not.
+    """
+    from sysforge.pipeline.stages.toolchain import profdata
+    from sysforge.primitives import pacman
+    pb = tmp_path / "llvm" / "PKGBUILD"
+    pb.parent.mkdir()
+    pb.write_text("pkgbase=llvm\npkgname=('llvm' 'clang' 'clang-libs' 'wasi-libc++')\n")
+    files = {}
+    for name in ("llvm", "clang", "clang-libs", "wasi-libc++"):
+        files[name] = pb.parent / f"{name}-23.1.5-1-x86_64.pkg.tar.zst"
+        files[name].touch()
+    name_of = {str(p): n for n, p in files.items()}
+    depends = {"clang": ["clang-libs", "llvm"], "llvm": [], "clang-libs": [], "wasi-libc++": []}
+    monkeypatch.setattr(pacman, "read_pkgname_from_file", lambda p: name_of[str(p)])
+    monkeypatch.setattr(pacman, "read_pkginfo_relations",
+                        lambda p: {"depend": depends[name_of[str(p)]]})
+    extracted: list[str] = []
+    monkeypatch.setattr(profdata, "extract_pkg_to_staging",
+                        lambda pkg, staging: extracted.append(pkg.name))
+
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}):
+        extract_built_to_staging({"llvm": pb, "clang": pb}, tmp_path / "stage2", dry_run=False)
+
+    assert sorted(extracted) == sorted(
+        files[n].name for n in ("llvm", "clang", "clang-libs"))
+
 def test_remove_staging_removes_dir(tmp_path):
     staging = tmp_path / "stage"
     staging.mkdir()
@@ -343,26 +376,21 @@ def test_collect_pgo_packages_excludes_missing_and_sig(tmp_path):
 
     assert pkgs == [real_pkg]
 
-def test_pgo_install_calls_pacman_u(tmp_path):
+def test_pgo_install_calls_pacman_u(tmp_path, pacman_tx):
+    """4.0.0-B18: through the logged transaction, so pacman's output reaches the
+    run log (it used to go to the terminal only)."""
     pkg_dir = tmp_path / "llvm"
     pkg_dir.mkdir()
     fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
     fake_pkg.touch()
     pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+    listed = MagicMock(returncode=0, stdout=str(fake_pkg), stderr="")
 
-    pacman_calls = []
-    def fake_run(cmd, **kwargs):
-        pacman_calls.append(cmd)
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch("subprocess.run", return_value=listed):
         pgo_install("test", pkgbuild_map, dry_run=False)
 
-    assert any("pacman" in c and "-U" in c for c in pacman_calls)
+    [argv] = pacman_tx.calls
+    assert "pacman" in argv and "-U" in argv and str(fake_pkg) in argv
 
 def test_pgo_install_records_a_self_install(tmp_path):
     """3.5.0-B64: every pacman -U of sysforge's own artifacts is recorded."""
@@ -398,25 +426,23 @@ def test_pgo_install_raises_when_no_packages(tmp_path):
         with pytest.raises(RuntimeError, match="No built packages"):
             pgo_install("test", pkgbuild_map, dry_run=False)
 
-def test_pgo_install_raises_on_pacman_failure(tmp_path):
+def test_pgo_install_raises_on_pacman_failure(tmp_path, pacman_tx):
+    """4.0.0-B18: the error carries pacman's last lines (the conflict list), as
+    ``install_built_packages`` does; before, it said only "exit 1"."""
     pkg_dir = tmp_path / "llvm"
     pkg_dir.mkdir()
     fake_pkg = pkg_dir / "llvm-18.0.0-1-x86_64.pkg.tar.zst"
     fake_pkg.touch()
     pkgbuild_map = {"llvm": pkg_dir / "PKGBUILD"}
+    listed = MagicMock(returncode=0, stdout=str(fake_pkg), stderr="")
+    pacman_tx.returncode = 1
+    pacman_tx.tail = ["error: failed to commit transaction (conflicting files)",
+                      "/default.profraw exists in both 'llvm' and 'polly'"]
 
-    def fake_run(cmd, **kwargs):
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = str(fake_pkg)
-        result.stderr = ""
-        if "pacman" in cmd:
-            result.returncode = 1
-        return result
-
-    with patch("subprocess.run", side_effect=fake_run):
-        with pytest.raises(RuntimeError, match="pacman -U failed"):
-            pgo_install("test", pkgbuild_map, dry_run=False)
+    with patch("subprocess.run", return_value=listed), \
+            pytest.raises(RuntimeError, match=r"(?s)pacman -U failed \(exit 1\).*"
+                                              r"/default\.profraw exists in both"):
+        pgo_install("test", pkgbuild_map, dry_run=False)
 
 def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
     """When scan_abi_hazards finds a leak, gate2_audit aborts before install.
@@ -447,6 +473,24 @@ def test_gate2_audit_refuses_hazardous_build(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="refusing to install"):
         gate2_audit(built_map, [], _g2_opts(), {}, dry_run=False)
+
+def test_gate2_audit_refuses_stray_profiles(tmp_path, monkeypatch):
+    """4.0.0-B18: a packaged ``default.profraw`` aborts Gate 2, before the
+    sentinel, naming the rebuild. Left alone, three split members each carried
+    ``/default.profraw`` and ``pacman -U`` failed on the conflict among them."""
+    from sysforge.pipeline.stages.toolchain import gate2_audit
+    from sysforge.primitives import toolchain_safety as _ts
+
+    fake_pkg = tmp_path / "llvm-23.1.5-1-x86_64.pkg.tar"
+    fake_pkg.touch()
+    monkeypatch.setattr(
+        "sysforge.pipeline.stages.toolchain.profdata.collect_pgo_packages",
+        lambda m: [fake_pkg])
+    monkeypatch.setattr(_ts, "scan_stray_profiles", lambda pkgs: [_ts.ToolchainFinding(
+        "error", "stray_profile", f"{fake_pkg.name}: default.profraw")])
+    with pytest.raises(RuntimeError, match=r"(?s)profile data.*Nothing was installed"
+                                           r".*default\.profraw"):
+        gate2_audit({"llvm": tmp_path / "PKGBUILD"}, [], _g2_opts(), {}, dry_run=False)
 
 def test_gate2_audit_clean_build_passes(tmp_path, monkeypatch):
     """No hazard → gate2_audit returns without raising."""
@@ -749,6 +793,47 @@ def test_profile_runtime_ldflag_returns_flag(tmp_path):
     assert str(profile_lib) in flag
     assert "-Wl,--push-state,--whole-archive" in flag
     assert "-Wl,--pop-state" in flag
+
+def test_profile_runtime_ldflag_finds_per_target_layout(tmp_path):
+    """4.0.0-B16: clang 23 ships its runtimes per target triple
+    (``lib/x86_64-pc-linux-gnu/libclang_rt.profile.a``, no arch suffix), where
+    clang 22 used ``lib/linux/libclang_rt.profile-x86_64.a``. The driver's own
+    ``-print-file-name`` lookup knows both; the old name-building did not."""
+    runtime_dir = tmp_path / "clang" / "lib" / "x86_64-pc-linux-gnu"
+    runtime_dir.mkdir(parents=True)
+    profile_lib = runtime_dir / "libclang_rt.profile.a"
+    profile_lib.touch()
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock(returncode=0, stderr="")
+        if "-print-file-name=libclang_rt.profile.a" in cmd:
+            result.stdout = str(profile_lib) + "\n"
+        elif "--print-runtime-dir" in cmd:
+            result.stdout = str(runtime_dir) + "\n"
+        elif "uname" in cmd:
+            result.stdout = "x86_64\n"
+        else:
+            result.stdout = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        flag = profile_runtime_ldflag()
+
+    assert flag == f"-Wl,--push-state,--whole-archive {profile_lib} -Wl,--pop-state"
+
+
+def test_profile_runtime_ldflag_as_needed_is_the_bare_archive(tmp_path):
+    """4.0.0-B18: ``force_load=False`` hands lld the archive itself, so the
+    runtime is linked only into a binary that references ``__llvm_profile_*``.
+    Force-loaded, it lands in every Pass-3 binary, and each one then writes a
+    ``default.profraw`` into its cwd when Pass 4 runs it."""
+    profile_lib = tmp_path / "lib" / "x86_64-pc-linux-gnu" / "libclang_rt.profile.a"
+    profile_lib.parent.mkdir(parents=True)
+    profile_lib.touch()
+    ok = MagicMock(returncode=0, stdout=str(profile_lib) + "\n", stderr="")
+    with patch("subprocess.run", return_value=ok):
+        assert profile_runtime_ldflag(force_load=False) == str(profile_lib)
+
 
 def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
     """Returns None when the profile runtime lib does not exist."""
@@ -1072,17 +1157,17 @@ def test_select_install_members_takes_wanted_plus_member_dependencies(tmp_path, 
     assert [by_path[str(p)] for p in out] == ["llvm", "clang", "clang-libs"]
 
 
-def test_pgo_install_with_members_installs_only_those(tmp_path, monkeypatch):
+def test_pgo_install_with_members_installs_only_those(tmp_path, monkeypatch, pacman_tx):
     from sysforge.pipeline.stages.toolchain import profdata
+    from sysforge.primitives import pacman
     llvm = tmp_path / "llvm-1-1-x86_64.pkg.tar.zst"
     wasi = tmp_path / "wasi-libc++-1-1-x86_64.pkg.tar.zst"
     monkeypatch.setattr(profdata, "collect_pgo_packages", lambda m: [llvm, wasi])
     monkeypatch.setattr(profdata, "select_install_members", lambda files, wanted: [llvm])
-    calls = []
-    monkeypatch.setattr(profdata.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv) or MagicMock(returncode=0))
+    monkeypatch.setattr(pacman, "record_installed_artifacts", lambda pkgs: None)
     profdata.pgo_install("test", {"llvm": tmp_path / "PKGBUILD"}, False, members={"llvm"})
-    assert str(llvm) in calls[0] and str(wasi) not in calls[0]
+    [argv] = pacman_tx.calls
+    assert str(llvm) in argv and str(wasi) not in argv
 
 
 def test_gate2_reports_std_export_parity_gap_at_verbose_only(quiet_at_default, monkeypatch):

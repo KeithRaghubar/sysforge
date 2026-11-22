@@ -52,6 +52,7 @@ def build_pkg(
     cmake_llvm_dir: str | None = None,
     pgo_reuse: bool = True,
     record_variant: str | None = None,
+    llvm_pgo: tuple[str, str] | None = None,
 ) -> Path | None:
     """Build one package via makepkg_wrapper.run().
 
@@ -108,6 +109,7 @@ def build_pkg(
             record_toolchain_variant=record_variant,
             cmake_llvm_dir=cmake_llvm_dir,
             pgo_reuse=pgo_reuse,
+            llvm_pgo=llvm_pgo,
         ))
     except AlreadyBuilt:
         # 2.5.1-F2: previously uncaught — a stale same-version artifact in
@@ -154,6 +156,7 @@ def build_pass(
     toolchain_variant: str | None = None,
     owner_stage: str | None = None,
     cmake_llvm_dir: str | None = None,
+    llvm_pgo: tuple[str, str] | None = None,
     reuse_ctx: "reuse.ReuseCtx | None" = None,
     pgo_reuse: bool = True,
     tick: "progress.Tick | None" = None,
@@ -245,6 +248,7 @@ def build_pass(
                 pkgbase, fp = reuse.pkg_fingerprint(
                     reuse_ctx, name, pkgbuild_path, cc, compiler_flags_extra,
                     linker_flags_extra, cmake_llvm_dir, extra,
+                    llvm_pgo=llvm_pgo,
                 )
                 fingerprints[pkgbase] = fp
                 if reuse_ctx.consult:
@@ -276,6 +280,7 @@ def build_pass(
                 cmake_llvm_dir=cmake_llvm_dir,
                 pgo_reuse=pgo_reuse,
                 record_variant=record_variant,
+                llvm_pgo=llvm_pgo,
             )
             first = False
             if build_roots is not None and root is not None:

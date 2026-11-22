@@ -21,6 +21,10 @@ from sysforge.primitives.pkgbuild_patcher import (
     _find_cmake_configure_anchor,
     is_llvm_pkgbase,
     patch_llvm_dir,
+    LLVM_PGO_HOST_TOOLS,
+    _PGO_RT_SENTINEL,
+    patch_llvm_pgo,
+    render_llvm_pgo_runtime_block,
     patch_llvm_targets,
     patch_staged_build_rpath,
     validate_patched_pkgbuild,
@@ -962,3 +966,210 @@ def test_g2_refuses_an_arg_behind_a_separator(tmp_path):
                                   'ninja -C build -DLLVM_TARGETS_TO_BUILD="X86"'))
     with pytest.raises(PkgbuildPatchError):
         validate_patched_pkgbuild(orig, p)
+
+
+# ---------------------------------------------------------------------------
+# patch_llvm_pgo — PGO through LLVM's own cmake options (4.0.0-B12). The merged
+# llvm PKGBUILD builds its runtimes with the just-built clang, so a CFLAGS
+# -fprofile-generate reaches them and breaks their link checks.
+# ---------------------------------------------------------------------------
+
+_UNIFIED_LLVM_PKGBUILD = """pkgname=llvm
+prepare() {
+  cd llvm-project-$pkgver.src
+}
+
+build() {
+  cd llvm-project-$pkgver.src
+  local cmake_args=(
+    -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+  )
+
+  cmake -S llvm -B build "${cmake_args[@]}"
+  local c=$(cd build && echo x)
+  cmake -S llvm -B build "${cmake_args[@]}" -DLLVM_DISTRIBUTION_COMPONENTS="$c"
+  ninja -C build
+
+  local _target
+  for _target in amdgcn-amd-amdhsa nvptx64-nvidia-cuda; do
+    cmake -B "build-device-$_target" -S runtimes -G Ninja \\
+      -DCMAKE_BUILD_TYPE=Release
+  done
+}
+"""
+
+_STORE = "/var/cache/sysforge/llvm-pgo"
+_PROFDATA = f"{_STORE}/clang.profdata"
+
+
+def _llvm_pkgbuild(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_UNIFIED_LLVM_PKGBUILD)
+    return p
+
+
+def _first_configure(text):
+    start = text.index("cmake -S llvm")
+    return text[start:text.index("\n  local", start)]
+
+
+def _runtimes_configure(text):
+    start = text.index('cmake -B "build-device-')
+    return text[start:text.index("\n  done", start)]
+
+
+def test_patch_llvm_pgo_generate_lands_in_first_llvm_configure(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    assert patch_llvm_pgo(p, "generate", _STORE) is True
+    text = p.read_text()
+    first = _first_configure(text)
+    assert "-DLLVM_BUILD_INSTRUMENTED=IR" in first
+    assert f'-DLLVM_PROFILE_DATA_DIR="{_STORE}"' in first
+    runtimes = _runtimes_configure(text)
+    assert "LLVM_BUILD_INSTRUMENTED" not in runtimes
+    assert "LLVM_PROFILE_DATA_DIR" not in runtimes
+    assert text.count("LLVM_BUILD_INSTRUMENTED") == 1
+
+
+def _prepare_body(text):
+    start = text.index("prepare() {")
+    return text[start:text.index("\n}\n", start)]
+
+
+def test_patch_llvm_pgo_generate_links_profile_runtime_into_offload_host_tools(tmp_path):
+    """4.0.0-B15: offload's host tools link the main tree's instrumented static
+    LLVM libraries from inside the runtimes sub-build, which carries no
+    -fprofile-generate. Generate appends a prepare() hook that adds the host
+    profile runtime to those targets only: a link flag for the whole sub-build
+    also reaches compiler-rt's i386 links, where the x86_64 archive fails them."""
+    p = _llvm_pkgbuild(tmp_path)
+    assert patch_llvm_pgo(p, "generate", _STORE) is True
+    text = p.read_text()
+    prepare = _prepare_body(text)
+    assert prepare.count("# sysforge: end PGO host-tool profile runtime") == 1
+    for tool in LLVM_PGO_HOST_TOOLS:
+        assert (f'set_property(TARGET {tool} APPEND PROPERTY LINK_LIBRARIES "$_sf_prt")'
+                in prepare)
+    assert "RUNTIMES_CMAKE_ARGS" not in text
+    assert "LINKER_FLAGS" not in text
+    assert "STANDARD_LIBRARIES" not in text
+
+
+def test_patch_llvm_pgo_use_removes_offload_runtime_hook(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    patch_llvm_pgo(p, "generate", _STORE)
+    patch_llvm_pgo(p, "use", _PROFDATA)
+    text = p.read_text()
+    assert _PGO_RT_SENTINEL not in text
+    assert _prepare_body(text) == _prepare_body(_UNIFIED_LLVM_PKGBUILD)
+
+
+def test_patch_llvm_pgo_without_prepare_still_instruments(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    p.write_text(_UNIFIED_LLVM_PKGBUILD.replace(
+        "prepare() {\n  cd llvm-project-$pkgver.src\n}\n\n", ""))
+    assert patch_llvm_pgo(p, "generate", _STORE) is True
+    text = p.read_text()
+    assert "-DLLVM_BUILD_INSTRUMENTED=IR" in _first_configure(text)
+    assert _PGO_RT_SENTINEL not in text
+
+
+def _run_runtime_block(tmp_path, cc_output):
+    import subprocess
+    src = tmp_path / "src"
+    offload = src / "llvm-project-23.1.5.src" / "offload"
+    offload.mkdir(parents=True)
+    (offload / "CMakeLists.txt").write_text("add_subdirectory(tools)\n")
+    cc = tmp_path / "fake-cc"
+    cc.write_text(f"#!/bin/sh\necho '{cc_output}'\n")
+    cc.chmod(0o755)
+    script = f"prepare() {{\n{render_llvm_pgo_runtime_block()}}}\nprepare && prepare\n"
+    result = subprocess.run(  # noqa: TID251 — runs the rendered bash against a scratch tree
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "srcdir": str(src), "CC": str(cc)})
+    return result, (offload / "CMakeLists.txt").read_text()
+
+
+def test_offload_runtime_hook_appends_host_archive_once(tmp_path):
+    result, cmake = _run_runtime_block(tmp_path, "/usr/lib/clang/23/lib/x/libclang_rt.profile.a")
+    assert result.returncode == 0, result.stderr
+    assert cmake.startswith("add_subdirectory(tools)\n")
+    assert cmake.count(_PGO_RT_SENTINEL) == 1  # the second prepare run is a no-op
+    for tool in LLVM_PGO_HOST_TOOLS:
+        assert (f"set_property(TARGET {tool} APPEND PROPERTY LINK_LIBRARIES "
+                '"/usr/lib/clang/23/lib/x/libclang_rt.profile.a")') in cmake
+    assert "$" not in cmake
+
+
+def test_offload_runtime_hook_fails_prepare_without_profile_runtime(tmp_path):
+    # clang -print-file-name echoes an unfound name back bare.
+    result, cmake = _run_runtime_block(tmp_path, "libclang_rt.profile.a")
+    assert result.returncode == 1
+    assert "install compiler-rt" in result.stderr
+    assert cmake == "add_subdirectory(tools)\n"
+
+
+def test_patch_llvm_pgo_use_injects_profdata_file(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    assert patch_llvm_pgo(p, "use", _PROFDATA) is True
+    text = p.read_text()
+    assert text.count(f'-DLLVM_PROFDATA_FILE="{_PROFDATA}"') == 1
+    assert f'-DLLVM_PROFDATA_FILE="{_PROFDATA}"' in _first_configure(text)
+    assert "LLVM_BUILD_INSTRUMENTED" not in text
+
+
+def test_patch_llvm_pgo_idempotent(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    patch_llvm_pgo(p, "generate", _STORE)
+    snapshot = p.read_text()
+    assert patch_llvm_pgo(p, "generate", _STORE) is False
+    assert p.read_text() == snapshot
+
+
+def test_patch_llvm_pgo_replaces_path(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    patch_llvm_pgo(p, "generate", "/a")
+    assert patch_llvm_pgo(p, "generate", "/b") is True
+    text = p.read_text()
+    assert '"/b"' in text
+    assert '"/a"' not in text
+    assert text.count("LLVM_PROFILE_DATA_DIR") == 1
+
+
+def test_patch_llvm_pgo_switch_generate_to_use(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    patch_llvm_pgo(p, "generate", _STORE)
+    assert patch_llvm_pgo(p, "use", _PROFDATA) is True
+    text = p.read_text()
+    assert "LLVM_BUILD_INSTRUMENTED" not in text
+    assert "LLVM_PROFILE_DATA_DIR" not in text
+    assert f'-DLLVM_PROFDATA_FILE="{_PROFDATA}"' in _first_configure(text)
+
+
+def test_patch_llvm_pgo_no_cmake_returns_false(tmp_path):
+    p = tmp_path / "PKGBUILD.sysforge"
+    original = "pkgname=llvm\nbuild() {\n  make\n}\n"
+    p.write_text(original)
+    assert patch_llvm_pgo(p, "generate", _STORE) is False
+    assert p.read_text() == original
+
+
+def test_patch_llvm_pgo_rejects_unknown_mode(tmp_path):
+    p = _llvm_pkgbuild(tmp_path)
+    with pytest.raises(ValueError):
+        patch_llvm_pgo(p, "sample", _STORE)
+
+
+@pytest.mark.parametrize("steps", [
+    [("generate", _STORE)],
+    [("use", _PROFDATA)],
+    [("generate", _STORE), ("use", _PROFDATA)],
+])
+def test_patched_llvm_pgo_is_valid_bash(tmp_path, steps):
+    import subprocess
+    p = _llvm_pkgbuild(tmp_path)
+    for mode, path in steps:
+        patch_llvm_pgo(p, mode, path)
+    result = subprocess.run(["bash", "-n", str(p)], capture_output=True, text=True)  # noqa: TID251 — syntax check of a test fixture
+    assert result.returncode == 0, result.stderr

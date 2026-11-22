@@ -113,9 +113,13 @@ canonical ordering.
 | ID | Item | Priority | Effort | Bump |
 |----|------|----------|--------|------|
 | `4.0.0-B5` | a real drop-in in a batch auto-confirms every other conflict in it | med | small | patch |
+| `4.0.0-B13` | a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail | med | small | patch |
+| `4.0.0-B14` | build-failure auto-repair never runs | med | small | patch |
+| `4.0.0-F1` | hold a logind sleep inhibitor for the length of a long-running verb | med | small | minor |
 | `3.5.0-DEV29` | the build sandbox end to end, in the VM tier | med | large | patch |
 | `3.5.0-DEV33` | an end-to-end scenario for unattended runs | low | small | patch |
 | `3.5.0-DEV34` | an end-to-end scenario for the --frozen and --thaw flags | low | small | patch |
+| `4.0.0-F2` | a running pass/fail tally on the progress bar | low | small | minor |
 | `3.5.0-DEV26` | a release-time run of the real toolchain → kernel chain on real hardware | low | medium | patch |
 | `3.5.0-DEV32` | an end-to-end scenario for package PGO (build --pgo) | low | medium | patch |
 | `3.5.0-F24` | bench package <pkg>: time an installed package's build with the stock and the sysforge clang | low | medium | minor |
@@ -151,7 +155,86 @@ canonical ordering.
 
 ---
 
+- **`4.0.0-F1` — hold a logind sleep inhibitor for the length of a long-running verb.** A 2–3h
+  `run toolchain` (also a stack `build`, `update`, kernel AutoFDO/Propeller collection, `bench`)
+  can be cut short by idle-suspend; today the only guard is wrapping the command by hand in
+  `systemd-inhibit`. `verbs.runner.run_verb` takes a `--what=sleep:idle --mode=block` lock around
+  `execute()` for verbs that opt in (a class attribute alongside `requires_sentinel`, not every
+  mutating verb, since a quick `state` edit gains nothing from it). Implementation without a D-Bus
+  dependency: spawn `systemd-inhibit --what=sleep:idle --who=sysforge --why=<verb> --mode=block cat`
+  with a stdin pipe and close the pipe on exit. The lock is bound to the open fd, so a crash or
+  SIGKILL releases it and nothing can leak. Degrades silently (a `debug()` line, not `ui()`) when
+  `systemd-inhibit` is absent (the `ci-local`/container tiers) or polkit refuses a block lock (a
+  non-active, e.g. SSH, session). Design points: a config key to turn it off plus a CLI override,
+  with the usual shipped-file, fixture, surface and completions follow-through; whether `bench`
+  should also inhibit `idle` only (sleep mid-bench invalidates a round rather than losing hours).
+  Out of scope: `shutdown` inhibition, and lid-switch handling.
+  *Priority: med · Effort: small · Bump: minor* — an active gap on a real run (a toolchain rebuild
+  went to sleep mid-run); one wrapper at the verb runner plus a config toggle.
+
+---
+
+- **`4.0.0-F2` — a running pass/fail tally on the progress bar.** During a batch `build`/`update`
+  a failure is only visible in the scrollback (quiet at default verbosity) or in the final
+  summary, so a long run gives no at-a-glance sign that something already failed. The tracker
+  never learns an item's outcome: `tick(label)` only means "next item started", and outcomes live
+  in `build_core.build_and_install`'s `outcome.built_pkgs`/`failed_pkgs` (written at about five
+  sites). Add `tick.tally(ok, failed)` to `ui/progress.py`'s `_TrackerTick` and the
+  `progress_hooks._NoOpTick`, taking absolute counts (not increments) so a missed or repeated call
+  cannot drift; the build loop reports once per item in a `finally` from the outcome lists, so no
+  individual failure site needs touching. `update_sync`'s source-sync tracker reports too (a
+  blocking sync status is a failure). The tally is hidden until first reported, so trackers that
+  never call it (version check, scanning) render unchanged. TTY: right-aligned `✓ 7  ✗ 1`, the
+  fail count red only when non-zero; `_compose()`/`_paint_seq` must reserve its width and truncate
+  the label before it, since the line is clamped by character count today and a long label would
+  push the tally off a narrow terminal (colour codes kept out of the width maths, glyphs through
+  `log.downgrade_glyphs`). Plain/CI mode: ` · 7 ok, 1 failed` appended. Tests: both modes, narrow
+  terminal truncation, hidden-until-reported, and the build loop's tally on a mixed batch.
+  *Priority: low · Effort: small · Bump: minor* — a display convenience; one new tick method plus
+  two callers and the right-align layout.
+
+---
+
 ### Bugs
+
+- **`4.0.0-B13` — a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail.**
+  `makepkg_invoke.select_failure_tail` anchors the `MAKEPKG_FAILURE_TAIL_LINES` (80) window on the
+  last `_FAILURE_MARKERS` hit, but `CMake Error at …` matches none of them, so a failed configure
+  anchors on ninja's `FAILED: …-configure` line, which is already inside the plain last-80 window.
+  On the 2026-11-21 `run toolchain` Pass 1 those 80 lines were all `LLVM Profile Warning: Unable to
+  track new values: Running out of static counters` (one per instrumented-clang probe), and the
+  real `Could NOT find Threads` error was recoverable only by re-running the configure by hand.
+  Fix: add `CMake Error` to the marker vocabulary, and collapse runs of an identical line in the
+  selected tail into one line plus a repeat count, so a warning flood cannot fill the window.
+  Verify on that log shape first: the configure's output must reach the captured stream (an
+  ExternalProject step in ninja's console pool may not). Unit tests over a captured-stream fixture.
+  *Priority: med · Effort: small · Bump: patch* — costs a manual re-run to diagnose, never a wrong
+  build; local to one function.
+
+---
+
+- **`4.0.0-B14` — build-failure auto-repair never runs.**
+  `_run_build`'s outer loop catches `subprocess.CalledProcessError` and walks
+  `auto_repair.REGISTRY` (§Build-failure auto-repair), but no `CalledProcessError` ever reaches it:
+  `makepkg_invoke._invoke_with_retry` wraps one into the `[build_failed]` `RuntimeError` in batch
+  mode, and in interactive mode either loops through `_run_recovery_menu` or raises the same
+  wrapped error on abort. The only exception it lets through is `ToolchainMismatchError`, which
+  `_run_build` catches first. So the three `REGISTRY` scenarios (`vendored_deps_missing`,
+  `pgp_key_missing`, `checksum_mismatch`) and their `[failure_handling]` keys have no effect: a
+  build they would repair fails instead (batch) or drops straight into the recovery menu
+  (interactive). `srcinfo_drift` is a preflight check outside `REGISTRY` and is not affected. The wrapper handler was
+  added on 2026-05-02 with the batch wrap already in place. The tests stub `_run_build` or call
+  `apply_first_match` directly, so no test drives a real makepkg failure through `_invoke_with_retry`
+  into the handler. Fix: run the auto-repair walk inside `_invoke_with_retry`, ahead of both the
+  batch wrap and the recovery menu, so it keeps its once-per-scenario guard and a toolchain build
+  (forced batch, `4.0.0-B11`) still gets repairs without the menu. Then delete the dead handler.
+  Test: a `_run_build` test whose stubbed `invoke_makepkg` raises a `CalledProcessError` carrying a
+  matching `captured_output`, once in batch and once in interactive mode, checking that the repair
+  runs and the retry builds. Revise design 11's "Status: implemented" line in the same change.
+  *Priority: med · Effort: small · Bump: patch* — a repairable build fails or prompts instead of
+  self-healing, never a wrong build; the fix moves one block between two functions.
+
+---
 
 - **`4.0.0-B5` — a real drop-in in a batch auto-confirms every other conflict in it.**
   `pacman.batch_install_pkgs` adds `--ask=4` when any built package supersedes an installed one

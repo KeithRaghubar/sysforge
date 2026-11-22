@@ -163,6 +163,41 @@ def test_scan_abi_hazards_clean_glibcxx_no_finding(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# scan_stray_profiles (4.0.0-B18)
+# ---------------------------------------------------------------------------
+
+def test_stray_profile_members_finds_profraw_anywhere():
+    """A profile-runtime binary run with an unset/empty LLVM_PROFILE_FILE writes
+    ``default.profraw`` into its cwd: at a package root (makepkg's tidy steps run
+    in ``$pkgdir``) or deeper. Every one is a build leftover."""
+    names = ["./.PKGINFO", "default.profraw", "usr/", "usr/bin/clang",
+             "usr/share/x/default_123.profraw", "usr/share/x/profraw.txt"]
+    assert ts.stray_profile_members(names) == [
+        "default.profraw", "usr/share/x/default_123.profraw"]
+
+
+def test_scan_stray_profiles_flags_each_package(tmp_path, monkeypatch):
+    llvm = tmp_path / "llvm-23.1.5-1-x86_64.pkg.tar"
+    clang = tmp_path / "clang-23.1.5-1-x86_64.pkg.tar"
+    listing = {str(llvm): "usr/bin/llvm-ar\ndefault.profraw\n",
+               str(clang): "usr/bin/clang\n"}
+    monkeypatch.setattr(ts.run, "probe", lambda cmd, **k: MagicMock(
+        returncode=0, stdout=listing[cmd[-1]], stderr=""))
+    findings = ts.scan_stray_profiles([llvm, clang])
+    assert [f.check_id for f in findings] == ["stray_profile"]
+    assert llvm.name in findings[0].message
+    assert "default.profraw" in findings[0].message
+
+
+def test_scan_stray_profiles_skips_an_unlistable_archive(tmp_path, monkeypatch):
+    """A listing failure is not a finding: pacman -U names a broken archive itself."""
+    pkg = tmp_path / "llvm-23.1.5-1-x86_64.pkg.tar"
+    monkeypatch.setattr(ts.run, "probe", lambda cmd, **k: MagicMock(
+        returncode=1, stdout="", stderr="bad"))
+    assert ts.scan_stray_profiles([pkg]) == []
+
+
+# ---------------------------------------------------------------------------
 # check_pkgver_lockstep
 # ---------------------------------------------------------------------------
 

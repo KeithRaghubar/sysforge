@@ -696,7 +696,10 @@ def install_built(
 # toolchain's ``pgo_managed=True`` marks its makepkg runs as PGO-orchestrated.
 _STAGE_BUILD_DEFAULTS: dict[str, dict] = {
     "kernel": {"owner_stage": "kernel", "no_install": True},
-    "toolchain": {"pgo_managed": True},
+    # force_batch: a failed pass aborts the stage, never the retry / edit
+    # PKGBUILD / swap-compiler menu. A hand-patched PKGBUILD or a swapped
+    # compiler would leave the PGO passes built from different inputs.
+    "toolchain": {"pgo_managed": True, "force_batch": True},
     "packages": {},
 }
 

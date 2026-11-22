@@ -266,13 +266,20 @@ Mechanism lives in the cited §DESIGN section.
   Gate 2 outside `sentinel_scope`, install→Gate-3→rollback inside. **GCC path never builds GCC**
   (register-only). LLVM `pgo=false` + repo_mode=`pacman` → install stock from repos; **PGO always
   builds from source**. `repo_mode` read via `config.resolve_repo_mode` only.
+- **The pgo PKGBUILD gets PGO only as LLVM cmake options** (`4.0.0-B12`): `BuildOptions.llvm_pgo`
+  → `pkgbuild_patcher.patch_llvm_pgo` (Pass 1 generate, Pass 4a + BOLT repackage use), never
+  `compiler_flags_extra`: makepkg's exported CFLAGS reach the runtimes sub-build, which the
+  just-built clang compiles. 4b/4c are separate PKGBUILDs and keep `-fprofile-use` CFLAGS.
+  Generate also appends `render_llvm_pgo_runtime_block` to `prepare()` (`4.0.0-B15`): the host
+  profile archive goes on `LLVM_PGO_HOST_TOOLS` only, never a runtimes-wide link setting (it
+  reaches compiler-rt's i386 links: probes drop i386 silently or `.so` links fail).
 - **Pass-4 builds non-pgo against the libLLVM it ships** (`CMAKE_PREFIX_PATH` **and** forced
   `-DLLVM_DIR` via `patch_llvm_dir`; staging3 needs both `llvm-libs`+`llvm`). Build reuse opt-in via
   `build_fingerprint.py` (`--reuse-built`, fail-safe to rebuild; bump `_SCHEMA` on new inputs).
 - **Pass-3 training corpus**: `resolve_training_corpus`; extras (mesa) compile with the instrumented
   stage1 clang so profraw merges into the one `clang.profdata` — never installed, never
-  `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort, but
-  `BuildAborted` (user abort) re-raises. PGO path only.
+  `-fprofile-use` (`pgo_reuse=False`), no profile-runtime force-load. Best-effort (a failure
+  warns and Pass 4 proceeds); toolchain builds are batch, so no menu abort exists. PGO path only.
 - **libLLVM soname-bump → consumer rebuild**: `assess_libllvm_soname_impact` / `gates.gate_soname_consumers`
   (after Gate 3, outside sentinel). No parallel reverse-dep scanner.
 - **libLLVM `std::` export parity** (`3.5.0-F4`): the table is `primitives/llvm_std_exports.py`

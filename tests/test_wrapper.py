@@ -11,6 +11,7 @@ import subprocess
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -790,3 +791,100 @@ def test_record_build_state_marks_compiling_build(tmp_path, monkeypatch):
         "build() {\n\tmake\n}\n"
         "package() {\n\tmake DESTDIR=\"$pkgdir\" install\n}\n"))
     assert captured["compiles"] is True
+
+
+# ---------------------------------------------------------------------------
+# BuildOptions.llvm_pgo → patch_llvm_pgo (4.0.0-B12): PGO for the LLVM PKGBUILD
+# through LLVM's cmake options, and a refusal when it cannot be applied.
+# ---------------------------------------------------------------------------
+
+_LLVM_CMAKE_PKGBUILD = (
+    "pkgname=llvm\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+    "build() {\n  cmake -S llvm -B build -G Ninja\n  ninja -C build\n}\n"
+    "package() { :; }\n"
+)
+_NO_CMAKE_PKGBUILD = (
+    "pkgname=llvm\npkgver=1\npkgrel=1\narch=(x86_64)\n"
+    "build() {\n  make\n}\npackage() { :; }\n"
+)
+
+
+def _drive_run_build(tmp_path, text, **kw):
+    """Run makepkg_wrapper._run_build up to makepkg, which is stubbed to raise
+    AlreadyBuilt. Returns (PKGBUILD path, whether makepkg was reached)."""
+    from contextlib import contextmanager, suppress
+
+    from sysforge.build import makepkg_wrapper as mw
+    from sysforge.primitives.makepkg_invoke import AlreadyBuilt
+
+    pb = tmp_path / "PKGBUILD"
+    pb.write_text(text)
+    reached = []
+
+    @contextmanager
+    def fake_emit(*a, **k):
+        yield "/tmp/fake_makepkg.conf"
+
+    def stop(*a, **k):
+        reached.append(True)
+        raise AlreadyBuilt(pb)
+
+    with (
+        patch.object(mw, "patch_pkgbuild_groups", return_value=pb),
+        patch.object(mw, "_maybe_patch_llvm_targets", return_value=False),
+        patch.object(mw, "_apply_staged_llvm_patches", return_value=False),
+        patch.object(mw, "_maybe_patch_mesa_drivers", return_value=None),
+        patch.object(mw, "_maybe_patch_llvm_std_exports", return_value=False),
+        patch.object(mw, "validate_patched_pkgbuild"),
+        patch.object(mw, "emit_makepkg_conf", side_effect=fake_emit),
+        patch.object(mw, "resolve_env_vars", return_value={}),
+        patch.object(mw, "_invoke_with_retry", side_effect=stop),
+    ):
+        meta = {"globals": {"pkgname": ["llvm"]}}
+        with suppress(AlreadyBuilt):
+            mw._run_build(pb, {"batch": True}, {}, [], extracted_profile=None,
+                          pkgmeta=meta, **kw)
+    return pb, bool(reached)
+
+
+def test_run_build_llvm_pgo_patches_pkgbuild(tmp_path):
+    pb, reached = _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD,
+                                   llvm_pgo=("generate", "/store"))
+    assert "-DLLVM_BUILD_INSTRUMENTED=IR" in pb.read_text()
+    assert reached
+
+
+def test_run_build_llvm_pgo_without_cmake_refuses(tmp_path):
+    """A PGO request that cannot be applied must not build uninstrumented: an
+    empty profile would surface only passes later."""
+    with pytest.raises(RuntimeError, match="LLVM PGO"):
+        _drive_run_build(tmp_path, _NO_CMAKE_PKGBUILD, llvm_pgo=("generate", "/store"))
+
+
+def test_run_build_without_llvm_pgo_leaves_pkgbuild_alone(tmp_path):
+    pb, reached = _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD)
+    assert "LLVM_BUILD_INSTRUMENTED" not in pb.read_text()
+    assert reached
+
+
+def test_build_options_llvm_pgo_defaults_to_none():
+    from sysforge.build.makepkg_wrapper import BuildOptions
+    assert BuildOptions().llvm_pgo is None
+
+
+def test_run_build_llvm_pgo_use_with_missing_profdata_refuses(tmp_path):
+    """LLVM's cmake only warns when LLVM_PROFDATA_FILE is missing, where the old
+    -fprofile-use=<missing> was a hard clang error: without this check Pass 4a
+    would ship an unoptimized clang recorded as pgo_llvm."""
+    missing = tmp_path / "gone" / "clang.profdata"
+    with pytest.raises(RuntimeError, match="profdata"):
+        _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD, llvm_pgo=("use", str(missing)))
+
+
+def test_run_build_llvm_pgo_use_with_profdata_builds(tmp_path):
+    profdata = tmp_path / "clang.profdata"
+    profdata.write_bytes(b"x")
+    pb, reached = _drive_run_build(tmp_path, _LLVM_CMAKE_PKGBUILD,
+                                   llvm_pgo=("use", str(profdata)))
+    assert f'-DLLVM_PROFDATA_FILE="{profdata}"' in pb.read_text()
+    assert reached

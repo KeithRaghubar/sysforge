@@ -276,6 +276,46 @@ def scan_abi_hazards(pkg_files: list[Path]) -> list[ToolchainFinding]:
     return findings
 
 
+def stray_profile_members(names) -> list[str]:
+    """The ``.profraw`` members of an archive listing. Pure (4.0.0-B18).
+
+    A binary carrying the profile runtime writes ``default.profraw`` into its
+    cwd at exit when ``LLVM_PROFILE_FILE`` is unset or empty, and makepkg runs
+    tools from inside ``$pkgdir``; no package ships one on purpose.
+    """
+    found = []
+    for raw in names:
+        name = raw.strip()
+        name = name[2:] if name.startswith("./") else name
+        if name.endswith(".profraw"):
+            found.append(name)
+    return found
+
+
+def scan_stray_profiles(pkg_files: list[Path]) -> list[ToolchainFinding]:
+    """One finding per built package that carries profile data (4.0.0-B18).
+
+    Split members of one pkgbase each pick up their own ``/default.profraw``, so
+    ``pacman -U`` of the set fails on the conflict among them. Found here, Gate 2
+    refuses before the snapshot and sentinel, naming the rebuild. An archive that
+    cannot be listed is skipped: ``pacman -U`` reports a broken archive itself.
+    """
+    findings: list[ToolchainFinding] = []
+    for pkg in pkg_files:
+        result = run.probe(["bsdtar", "-t", "-f", str(pkg)], stdin=subprocess.DEVNULL)
+        if result.returncode != 0:
+            continue
+        members = stray_profile_members(result.stdout.splitlines())
+        if members:
+            findings.append(ToolchainFinding(
+                SEV_ERROR, "stray_profile",
+                f"{Path(pkg).name}: {', '.join(members)}",
+                "Rebuild: sysforge run toolchain (reusing the profdata rebuilds "
+                "Pass 4 only).",
+            ))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # System graphics-consumer symbol sufficiency — a rebuilt libLLVM that dropped
 # an LLVM backend an installed consumer imports would brick the desktop

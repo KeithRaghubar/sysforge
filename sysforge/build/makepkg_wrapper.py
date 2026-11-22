@@ -116,7 +116,9 @@ from sysforge.primitives.pkgbuild_patcher import (
     patch_kernel_btf_guard,
     patch_kernel_config_install,
     patch_kernel_subpackages,
+    llvm_pgo_args,
     patch_llvm_dir,
+    patch_llvm_pgo,
     patch_llvm_std_exports,
     patch_llvm_targets,
     patch_mesa_drivers,
@@ -625,6 +627,33 @@ def _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir: str | None) -> boo
     return patch_staged_build_rpath(pkgbuild_path) or changed
 
 
+def _apply_llvm_pgo(pkgbuild_path, llvm_pgo: tuple[str, str] | None) -> bool:
+    """Apply a toolchain pass's LLVM PGO request as cmake options (4.0.0-B12).
+
+    ``llvm_pgo`` is ``(mode, path)`` for :func:`patch_llvm_pgo`. A request that
+    cannot be applied raises instead of building: an uninstrumented Pass 1
+    would surface only as an empty profile passes later. Returns True when the
+    PKGBUILD changed; a no-op when no PGO was requested.
+    """
+    if not llvm_pgo:
+        return False
+    mode, path = llvm_pgo
+    # LLVM's cmake only warns on a missing LLVM_PROFDATA_FILE and builds without
+    # the profile, where -fprofile-use=<missing> was a hard clang error.
+    if mode == "use" and not Path(path).is_file():
+        raise _build_failed_error(RuntimeError(
+            f"LLVM PGO profdata not found: {path}: refusing to build without the profile"))
+    if patch_llvm_pgo(pkgbuild_path, mode, path):
+        return True
+    # False also means "already carries exactly these args" (a resumed build).
+    text = Path(pkgbuild_path).read_text()
+    if all(arg in text for arg in llvm_pgo_args(mode, path).values()):
+        return False
+    raise _build_failed_error(RuntimeError(
+        f"LLVM PGO ({mode}) requested but no cmake configure found "
+        f"in {pkgbuild_path}: refusing to build uninstrumented"))
+
+
 def _maybe_patch_llvm_targets(
     pkgbuild_path, pkgmeta, state_dir_override: Path | None = None
 ) -> bool:
@@ -827,6 +856,7 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
                state_dir: Path | None = None,
                toolchain_variant: str | None = None,
                cmake_llvm_dir: str | None = None,
+               llvm_pgo: tuple[str, str] | None = None,
                optimization_build_mode: str | None = None,
                rename_pkgbase_to: str | None = None):
     """
@@ -860,6 +890,8 @@ def _run_build(pkgbuild_path, resolved_profile, config, groups,
     cmake_injected = (
         _apply_staged_llvm_patches(pkgbuild_path, cmake_llvm_dir) or cmake_injected
     )
+
+    cmake_injected = _apply_llvm_pgo(pkgbuild_path, llvm_pgo) or cmake_injected
 
     cmake_injected = (
         _maybe_patch_llvm_std_exports(pkgbuild_path, pkgmeta) or cmake_injected
@@ -1320,6 +1352,9 @@ class BuildOptions:
     toolchain_fingerprint: str | None = None
     # force -DLLVM_DIR at a staged libLLVM prefix (toolchain PGO passes 1b/3b/3c)
     cmake_llvm_dir: str | None = None
+    # (mode, path) for pkgbuild_patcher.patch_llvm_pgo: the toolchain stage's PGO
+    # for the LLVM PKGBUILD, as cmake options rather than CFLAGS (4.0.0-B12).
+    llvm_pgo: tuple[str, str] | None = None
     # "record" | "use" — mesa instrumentation PGO (`build --pgo`); no-op for non-mesa pkgbases
     pgo_mode: str | None = None
     # False suppresses the durable per-package profile reuse (a prior --pgo=use
@@ -1687,7 +1722,8 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
         # pgo_llvm_toolchain: inject -fprofile-use if saved profdata is compatible,
         # otherwise prompt to plain-build or skip (default: skip).
         # Skip this block when pgo_managed=True — the toolchain stage controls PGO
-        # flags directly via compiler_flags_extra; we must not override or prompt.
+        # itself (llvm_pgo cmake options for the LLVM PKGBUILD, compiler_flags_extra
+        # for the others, 4.0.0-B12); we must not override or prompt.
         effective_flags_extra = options.compiler_flags_extra
         if build_mode == "pgo_llvm_toolchain" and not options.pgo_managed:
             pkgname = pkgbuild_path.parent.name
@@ -1923,6 +1959,7 @@ def run(pkgbuild_path, options: BuildOptions | None = None) -> Path | None:
                 state_dir=options.state_dir,
                 toolchain_variant=options.toolchain_variant,
                 cmake_llvm_dir=options.cmake_llvm_dir,
+                llvm_pgo=options.llvm_pgo,
                 optimization_build_mode=record_build_mode,
                 rename_pkgbase_to=options.rename_pkgbase_to,
             )

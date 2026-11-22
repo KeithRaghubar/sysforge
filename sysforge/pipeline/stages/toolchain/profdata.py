@@ -18,10 +18,9 @@ module was hard to follow.
 """
 from pathlib import Path
 import os
-import subprocess
 import threading
 
-from sysforge.primitives import fs_provision, pacman
+from sysforge.primitives import fs_provision, pacman, pkgbuild_meta
 from sysforge.primitives import toolchain_safety
 from sysforge.primitives.privilege import privileged_argv
 from sysforge.primitives import run
@@ -31,7 +30,6 @@ from sysforge.pipeline.stages.toolchain import constants
 
 from sysforge.primitives import prompt
 from sysforge import log
-from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -90,40 +88,79 @@ def extract_built_to_staging(
         )
 
     _log.ui(f"─── staging extraction → {staging} ────────")
-    for name, pkgbuild_path in pkgbuild_map.items():
-        build_dir = pkgbuild_path.parent
+
+    def _search_dirs(pkgbuild_path: Path) -> list[Path]:
         # PKGDEST takes precedence; fall back to PKGBUILD directory.
-        search_dirs = [pkgdest] if pkgdest and pkgdest.is_dir() else []
-        search_dirs.append(build_dir)
-        pkgs: list[Path] = []
-        for d in search_dirs:
-            # *.pkg.tar* matches both compressed (.pkg.tar.zst) and
-            # uncompressed (.pkg.tar) packages (PKGEXT='.pkg.tar').
-            # The version segment is anchored with [0-9] (pkgver/epoch always
-            # starts with a digit) so a shorter pkgname does NOT swallow a
-            # longer sibling that shares its prefix — critically, name="llvm"
-            # must not match the split sibling "llvm-libs-…" (a plain
-            # f"{name}-*" glob does, and the mtime tiebreak below would then
-            # stage llvm-libs for the "llvm" key, leaving staging3 without
-            # LLVMConfig.cmake/headers and silently defeating the Pass-4 split).
-            # Same version-anchored idiom as pacman.cached_pkg_files_for and
-            # build_core._find_existing_artifacts. Sort by mtime descending and
-            # take only the newest to avoid extracting stale packages from
-            # previous runs in PKGDEST.
-            candidates = [p for p in d.glob(f"{name}-[0-9]*-*.pkg.tar*")
-                          if not p.name.endswith(".sig")]
-            if candidates:
-                pkgs = [max(candidates, key=lambda p: p.stat().st_mtime)]
-                break
-        if not pkgs:
+        dirs = [pkgdest] if pkgdest and pkgdest.is_dir() else []
+        dirs.append(pkgbuild_path.parent)
+        return dirs
+
+    wanted: list[Path] = []
+    for name, pkgbuild_path in pkgbuild_map.items():
+        search_dirs = _search_dirs(pkgbuild_path)
+        pkg = _newest_artifact(name, search_dirs)
+        if pkg is None:
             searched = ", ".join(str(d) for d in search_dirs)
             raise RuntimeError(
                 f"[TOOLCHAIN] No .pkg.tar* found for {name!r} in: {searched}. "
                 "Pass 3 build may have failed."
             )
-        for pkg_file in pkgs:
-            extract_pkg_to_staging(pkg_file, staging)
+        wanted.append(pkg)
+
+    # 4.0.0-B17: a staged package can depend on a member of the same PKGBUILD
+    # that nobody configured (clang → clang-libs, which holds libclang-cpp and
+    # the builtin headers). Offer every built member, keep the configured ones
+    # plus what they depend on — the same closure the install uses.
+    others: list[Path] = []
+    for pkgbuild_path in dict.fromkeys(pkgbuild_map.values()):
+        for member in _split_members(pkgbuild_path):
+            if member in pkgbuild_map:
+                continue
+            pkg = _newest_artifact(member, _search_dirs(pkgbuild_path))
+            if pkg is not None:
+                others.append(pkg)
+    extra = [p for p in select_install_members(wanted + others, set(pkgbuild_map))
+             if p not in wanted] if others else []
+
+    for name, pkg_file in zip(pkgbuild_map, wanted, strict=True):
+        extract_pkg_to_staging(pkg_file, staging)
         _log.info(f"  {name}: staged")
+    for pkg_file in extra:
+        extract_pkg_to_staging(pkg_file, staging)
+        _log.info(f"  {pkg_file.name}: staged (a dependency of a staged package)")
+
+
+def _newest_artifact(name: str, search_dirs: list[Path]) -> Path | None:
+    """The newest built ``name`` package in the first of ``search_dirs`` holding one.
+
+    ``*.pkg.tar*`` matches both compressed (.pkg.tar.zst) and uncompressed
+    (.pkg.tar) packages (PKGEXT='.pkg.tar'). The version segment is anchored
+    with [0-9] (pkgver/epoch always starts with a digit) so a shorter pkgname
+    does NOT swallow a longer sibling that shares its prefix — critically,
+    name="llvm" must not match the split sibling "llvm-libs-…" (a plain
+    f"{name}-*" glob does, and the mtime tiebreak would then stage llvm-libs
+    for the "llvm" key, leaving staging3 without LLVMConfig.cmake/headers and
+    silently defeating the Pass-4 split). Same version-anchored idiom as
+    pacman.cached_pkg_files_for and build_core._find_existing_artifacts. Only
+    the newest is taken, to avoid extracting stale packages from previous runs
+    in PKGDEST.
+    """
+    for d in search_dirs:
+        candidates = [p for p in d.glob(f"{name}-[0-9]*-*.pkg.tar*")
+                      if not p.name.endswith(".sig")]
+        if candidates:
+            return max(candidates, key=lambda p: p.stat().st_mtime)
+    return None
+
+
+def _split_members(pkgbuild_path: Path) -> list[str]:
+    """The pkgnames ``pkgbuild_path`` builds; empty when it cannot be parsed."""
+    try:
+        members = pkgbuild_meta.parse_pkgbuild(pkgbuild_path).get("globals", {}).get("pkgname", [])
+    except Exception as e:
+        _log.info(f"  staging: parse failed for {pkgbuild_path}: {e}")
+        return []
+    return [members] if isinstance(members, str) else list(members)
 
 
 def assert_staging_has_llvm_cmake(staging: Path) -> None:
@@ -356,14 +393,16 @@ def pgo_install(
     _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
         _log.info(f"  {p.name}")
-    result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs],
-        preexec_fn=lift_for_child,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for {label}"
-        )
+    # On a pty, teeing into the run log (4.0.0-B18): with the TTY inherited,
+    # pacman's reason (a file conflict, a failed hook) reached the terminal only
+    # and the log said just "exit 1". Same seam as install_built_packages.
+    returncode, tail = pacman.run_logged_transaction(
+        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs])
+    if returncode != 0:
+        msg = f"[TOOLCHAIN] pacman -U failed (exit {returncode}) for {label}"
+        if tail:
+            msg += "; last output:\n  " + "\n  ".join(tail)
+        raise RuntimeError(msg)
     pacman.record_installed_artifacts(pkgs)
 
 
@@ -445,16 +484,21 @@ def system_llvm_is_instrumented() -> bool:
     return "__llvm_profile_" in result.stdout
 
 
-def profile_runtime_ldflag() -> str | None:
-    """Return a force-load LDFLAGS fragment for the clang profile runtime, or None.
+def profile_runtime_ldflag(*, force_load: bool = True) -> str | None:
+    """Return an LDFLAGS fragment for the clang profile runtime, or None.
 
     Form: ``-Wl,--push-state,--whole-archive <profile_lib>.a -Wl,--pop-state``,
-    using the full archive path so the linker locates it unambiguously. Returns
-    None if the runtime library cannot be located, with a log warning.
+    using the full archive path so the linker locates it unambiguously; with
+    ``force_load=False``, the bare archive path. Returns None if the runtime
+    library cannot be located, with a log warning.
 
-    Injected into LDFLAGS for Pass 2 and Pass 3 (the passes that link against
-    stage1's instrumented LLVM static libs), so packages linking those archives
-    can resolve __llvm_profile_* symbols. ``--whole-archive`` force-loads the
+    Injected into LDFLAGS for Pass 2 (force-loaded) and Pass 3 (as needed), the
+    passes that can link against stage1's instrumented LLVM static libs, so
+    packages linking those archives can resolve __llvm_profile_* symbols. Pass 3
+    takes the bare archive (4.0.0-B18): its binaries become stage2, which Pass 4
+    runs, and a force-loaded runtime writes a ``default.profraw`` into the cwd
+    of every one of them at exit. As a plain archive lld pulls the runtime in
+    only for a binary that references it. ``--whole-archive`` force-loads the
     runtime regardless of link order: a bare ``-lclang_rt.profile`` appended to
     LDFLAGS lands ahead of the libraries in CMAKE_EXE_LINKER_FLAGS, and bfd's
     strict left-to-right archive resolution then drops it before the
@@ -462,7 +506,19 @@ def profile_runtime_ldflag() -> str | None:
     force-load keeps correctness from depending on the linker. push-state /
     pop-state confines the --whole-archive to this one archive so surrounding
     --as-needed behaviour is preserved.
+
+    The archive is located by the driver's own ``-print-file-name`` lookup
+    first, which knows the per-target layout clang 23 ships
+    (``lib/<triple>/libclang_rt.profile.a``, 4.0.0-B16); the old flat
+    ``lib/<os>/libclang_rt.profile-<arch>.a`` name is the fallback.
     """
+    found = run.capture(["/usr/bin/clang", "-print-file-name=libclang_rt.profile.a"])
+    if found is not None and found.returncode == 0:
+        candidate = Path(found.stdout.strip())
+        # An unfound name is echoed back bare, never as an absolute path.
+        if candidate.is_absolute() and candidate.is_file():
+            return _runtime_flag(candidate, force_load)
+
     rt_result = run.capture(["/usr/bin/clang", "--print-runtime-dir"])
     if rt_result is None or rt_result.returncode != 0 or not rt_result.stdout.strip():
         _log.warn(
@@ -485,7 +541,13 @@ def profile_runtime_ldflag() -> str | None:
         )
         return None
 
-    return f"-Wl,--push-state,--whole-archive {profile_lib} -Wl,--pop-state"
+    return _runtime_flag(profile_lib, force_load)
+
+
+def _runtime_flag(archive: Path, force_load: bool) -> str:
+    if not force_load:
+        return str(archive)
+    return f"-Wl,--push-state,--whole-archive {archive} -Wl,--pop-state"
 
 
 def validate_pgo_environment(dry_run: bool) -> None:

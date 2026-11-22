@@ -32,7 +32,9 @@ toolchain.toml structure:
 
 LLVM PGO bootstrap (4 passes, only when pgo = true):
   Pass 1 — live system clang (pinned; the resolved profile ships CC=gcc) +
-            -fprofile-generate=<pgo_store>/; builds ONLY the
+            LLVM's own instrumentation (-DLLVM_BUILD_INSTRUMENTED=IR
+            -DLLVM_PROFILE_DATA_DIR=<pgo_store>, never CFLAGS, which reach the
+            runtimes sub-build; 4.0.0-B12); builds ONLY the
             pgo list (llvm, llvm-libs).  makepkg runs WITHOUT --install; outputs
             are extracted to pgo_staging1 (stage1) by pgo_stage_instrumented so the
             live /usr is never touched.  Both packages stage — including the
@@ -41,7 +43,9 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
             instrumented .a archives staged alongside surface __llvm_profile_*
             link errors for anything that consumes LLVM component targets;
             Pass 2 and Pass 3 work around that via profile_runtime_ldflag()
-            (force-loads the clang profile runtime) AND by selecting lld
+            (Pass 2 force-loads the clang profile runtime; Pass 3 links it as
+            a plain archive, so stage2 binaries carry it only where an
+            instrumented archive needs it, 4.0.0-B18) AND by selecting lld
             (toolchain_variant="pgo_llvm" → the [VARIANT_LD] guard in
             emit_makepkg_conf): under the CC=gcc profile's default bfd, the
             runtime would otherwise be dropped by strict left-to-right archive
@@ -78,7 +82,9 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
             logged at [INFO]; warns if below PGO_PROFDATA_MIN_BYTES (likely
             indicates bypassed compilation).
   Pass 4  — CC=staged clang from stage2 if available, else system clang.
-            CFLAGS/LDFLAGS += -fprofile-use=<profdata>; LTO disabled via
+            The pgo PKGBUILD takes -DLLVM_PROFDATA_FILE=<profdata>, the
+            non-pgo/lib32 PKGBUILDs CFLAGS/LDFLAGS += -fprofile-use=<profdata>;
+            LTO disabled via
             LTOFLAGS="" (ThinLTO + IR PGO causes non-PIC vtable relocations
             in lld's ThinLTO codegen for libLLVM.so).  Built in coherent
             sub-passes so the non-pgo suite links against the libLLVM that
