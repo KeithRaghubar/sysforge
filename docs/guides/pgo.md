@@ -590,7 +590,10 @@ It installs the packages the last run left, BOLTed ones included, through the sa
 checks, snapshot and verification as a full run. It refuses when the last build isn't
 the optimized build of the version you have checked out (including a run that stopped
 before its final pass, which leaves instrumented packages behind), or a package is
-missing; run `sysforge run toolchain` then. A full or `--bolt-only` run asks for your sudo password
+missing; run `sysforge run toolchain` then. It also refuses packages that contain stray
+profile data (`.profraw` files, which would make the install fail on a file conflict between
+them); run `sysforge run toolchain` and accept the reuse of the existing profile data, which
+rebuilds only the final pass. A full or `--bolt-only` run asks for your sudo password
 before its long work starts, and stops without changing anything if sudo isn't granted at
 install time, saying to run `--install-only`.
 
