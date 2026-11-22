@@ -115,6 +115,7 @@ canonical ordering.
 | `4.0.0-B5` | a real drop-in in a batch auto-confirms every other conflict in it | med | small | patch |
 | `4.0.0-B13` | a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail | med | small | patch |
 | `4.0.0-B14` | build-failure auto-repair never runs | med | small | patch |
+| `4.0.0-F1` | hold a logind sleep inhibitor for the length of a long-running verb | med | small | minor |
 | `3.5.0-DEV29` | the build sandbox end to end, in the VM tier | med | large | patch |
 | `3.5.0-DEV33` | an end-to-end scenario for unattended runs | low | small | patch |
 | `3.5.0-DEV34` | an end-to-end scenario for the --frozen and --thaw flags | low | small | patch |
@@ -150,6 +151,25 @@ canonical ordering.
   cutoff tuned on one machine means nothing on another. Promoted from `3.5.0-Q1`.
   *Priority: low · Effort: medium · Bump: minor* — a new verb that reuses the stock fetch, harness
   and record; the pristine-tree reset and wrapper are the new work.
+
+---
+
+- **`4.0.0-F1` — hold a logind sleep inhibitor for the length of a long-running verb.** A 2–3h
+  `run toolchain` (also a stack `build`, `update`, kernel AutoFDO/Propeller collection, `bench`)
+  can be cut short by idle-suspend; today the only guard is wrapping the command by hand in
+  `systemd-inhibit`. `verbs.runner.run_verb` takes a `--what=sleep:idle --mode=block` lock around
+  `execute()` for verbs that opt in (a class attribute alongside `requires_sentinel`, not every
+  mutating verb, since a quick `state` edit gains nothing from it). Implementation without a D-Bus
+  dependency: spawn `systemd-inhibit --what=sleep:idle --who=sysforge --why=<verb> --mode=block cat`
+  with a stdin pipe and close the pipe on exit. The lock is bound to the open fd, so a crash or
+  SIGKILL releases it and nothing can leak. Degrades silently (a `debug()` line, not `ui()`) when
+  `systemd-inhibit` is absent (the `ci-local`/container tiers) or polkit refuses a block lock (a
+  non-active, e.g. SSH, session). Design points: a config key to turn it off plus a CLI override,
+  with the usual shipped-file, fixture, surface and completions follow-through; whether `bench`
+  should also inhibit `idle` only (sleep mid-bench invalidates a round rather than losing hours).
+  Out of scope: `shutdown` inhibition, and lid-switch handling.
+  *Priority: med · Effort: small · Bump: minor* — an active gap on a real run (a toolchain rebuild
+  went to sleep mid-run); one wrapper at the verb runner plus a config toggle.
 
 ---
 
