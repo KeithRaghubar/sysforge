@@ -270,6 +270,9 @@ Mechanism lives in the cited §DESIGN section.
   → `pkgbuild_patcher.patch_llvm_pgo` (Pass 1 generate, Pass 4a + BOLT repackage use), never
   `compiler_flags_extra`: makepkg's exported CFLAGS reach the runtimes sub-build, which the
   just-built clang compiles. 4b/4c are separate PKGBUILDs and keep `-fprofile-use` CFLAGS.
+  Generate also appends `render_llvm_pgo_runtime_block` to `prepare()` (`4.0.0-B15`): the host
+  profile archive goes on `LLVM_PGO_HOST_TOOLS` only, never a runtimes-wide link setting (it
+  reaches compiler-rt's i386 links: probes drop i386 silently or `.so` links fail).
 - **Pass-4 builds non-pgo against the libLLVM it ships** (`CMAKE_PREFIX_PATH` **and** forced
   `-DLLVM_DIR` via `patch_llvm_dir`; staging3 needs both `llvm-libs`+`llvm`). Build reuse opt-in via
   `build_fingerprint.py` (`--reuse-built`, fail-safe to rebuild; bump `_SCHEMA` on new inputs).
