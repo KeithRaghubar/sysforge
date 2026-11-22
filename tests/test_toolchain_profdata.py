@@ -750,6 +750,34 @@ def test_profile_runtime_ldflag_returns_flag(tmp_path):
     assert "-Wl,--push-state,--whole-archive" in flag
     assert "-Wl,--pop-state" in flag
 
+def test_profile_runtime_ldflag_finds_per_target_layout(tmp_path):
+    """4.0.0-B16: clang 23 ships its runtimes per target triple
+    (``lib/x86_64-pc-linux-gnu/libclang_rt.profile.a``, no arch suffix), where
+    clang 22 used ``lib/linux/libclang_rt.profile-x86_64.a``. The driver's own
+    ``-print-file-name`` lookup knows both; the old name-building did not."""
+    runtime_dir = tmp_path / "clang" / "lib" / "x86_64-pc-linux-gnu"
+    runtime_dir.mkdir(parents=True)
+    profile_lib = runtime_dir / "libclang_rt.profile.a"
+    profile_lib.touch()
+
+    def fake_run(cmd, **kwargs):
+        result = MagicMock(returncode=0, stderr="")
+        if "-print-file-name=libclang_rt.profile.a" in cmd:
+            result.stdout = str(profile_lib) + "\n"
+        elif "--print-runtime-dir" in cmd:
+            result.stdout = str(runtime_dir) + "\n"
+        elif "uname" in cmd:
+            result.stdout = "x86_64\n"
+        else:
+            result.stdout = ""
+        return result
+
+    with patch("subprocess.run", side_effect=fake_run):
+        flag = profile_runtime_ldflag()
+
+    assert flag == f"-Wl,--push-state,--whole-archive {profile_lib} -Wl,--pop-state"
+
+
 def test_profile_runtime_ldflag_missing_lib_returns_none(tmp_path):
     """Returns None when the profile runtime lib does not exist."""
     runtime_dir = tmp_path / "clang" / "lib" / "linux"

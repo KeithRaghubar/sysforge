@@ -462,7 +462,19 @@ def profile_runtime_ldflag() -> str | None:
     force-load keeps correctness from depending on the linker. push-state /
     pop-state confines the --whole-archive to this one archive so surrounding
     --as-needed behaviour is preserved.
+
+    The archive is located by the driver's own ``-print-file-name`` lookup
+    first, which knows the per-target layout clang 23 ships
+    (``lib/<triple>/libclang_rt.profile.a``, 4.0.0-B16); the old flat
+    ``lib/<os>/libclang_rt.profile-<arch>.a`` name is the fallback.
     """
+    found = run.capture(["/usr/bin/clang", "-print-file-name=libclang_rt.profile.a"])
+    if found is not None and found.returncode == 0:
+        candidate = Path(found.stdout.strip())
+        # An unfound name is echoed back bare, never as an absolute path.
+        if candidate.is_absolute() and candidate.is_file():
+            return f"-Wl,--push-state,--whole-archive {candidate} -Wl,--pop-state"
+
     rt_result = run.capture(["/usr/bin/clang", "--print-runtime-dir"])
     if rt_result is None or rt_result.returncode != 0 or not rt_result.stdout.strip():
         _log.warn(
