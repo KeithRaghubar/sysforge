@@ -114,6 +114,7 @@ canonical ordering.
 |----|------|----------|--------|------|
 | `4.0.0-B5` | a real drop-in in a batch auto-confirms every other conflict in it | med | small | patch |
 | `4.0.0-B13` | a cmake configure failure is hidden behind repeated profile warnings in the persisted failure tail | med | small | patch |
+| `4.0.0-B14` | build-failure auto-repair never runs | med | small | patch |
 | `3.5.0-DEV29` | the build sandbox end to end, in the VM tier | med | large | patch |
 | `3.5.0-DEV33` | an end-to-end scenario for unattended runs | low | small | patch |
 | `3.5.0-DEV34` | an end-to-end scenario for the --frozen and --thaw flags | low | small | patch |
@@ -167,6 +168,29 @@ canonical ordering.
   ExternalProject step in ninja's console pool may not). Unit tests over a captured-stream fixture.
   *Priority: med · Effort: small · Bump: patch* — costs a manual re-run to diagnose, never a wrong
   build; local to one function.
+
+---
+
+- **`4.0.0-B14` — build-failure auto-repair never runs.**
+  `_run_build`'s outer loop catches `subprocess.CalledProcessError` and walks
+  `auto_repair.REGISTRY` (§Build-failure auto-repair), but no `CalledProcessError` ever reaches it:
+  `makepkg_invoke._invoke_with_retry` wraps one into the `[build_failed]` `RuntimeError` in batch
+  mode, and in interactive mode either loops through `_run_recovery_menu` or raises the same
+  wrapped error on abort. The only exception it lets through is `ToolchainMismatchError`, which
+  `_run_build` catches first. So the three `REGISTRY` scenarios (`vendored_deps_missing`,
+  `pgp_key_missing`, `checksum_mismatch`) and their `[failure_handling]` keys have no effect: a
+  build they would repair fails instead (batch) or drops straight into the recovery menu
+  (interactive). `srcinfo_drift` is a preflight check outside `REGISTRY` and is not affected. The wrapper handler was
+  added on 2026-05-02 with the batch wrap already in place. The tests stub `_run_build` or call
+  `apply_first_match` directly, so no test drives a real makepkg failure through `_invoke_with_retry`
+  into the handler. Fix: run the auto-repair walk inside `_invoke_with_retry`, ahead of both the
+  batch wrap and the recovery menu, so it keeps its once-per-scenario guard and a toolchain build
+  (forced batch, `4.0.0-B11`) still gets repairs without the menu. Then delete the dead handler.
+  Test: a `_run_build` test whose stubbed `invoke_makepkg` raises a `CalledProcessError` carrying a
+  matching `captured_output`, once in batch and once in interactive mode, checking that the repair
+  runs and the retry builds. Revise design 11's "Status: implemented" line in the same change.
+  *Priority: med · Effort: small · Bump: patch* — a repairable build fails or prompts instead of
+  self-healing, never a wrong build; the fix moves one block between two functions.
 
 ---
 
