@@ -154,6 +154,39 @@ def test_extract_built_split_pkgname_does_not_swallow_sibling(tmp_path):
         "the 'llvm' key swallowed the sibling artifact"
     )
 
+def test_extract_built_stages_the_members_a_staged_package_depends_on(tmp_path, monkeypatch):
+    """4.0.0-B17: clang's builtin headers and libclang-cpp live in ``clang-libs``.
+
+    Nobody configures ``clang-libs``, so staging only the configured names left
+    stage2's clang without ``lib/clang/<N>/include`` (``stddef.h`` not found in
+    Pass 4's first cmake check) and loading the host's older libclang-cpp. A
+    staged package's dependency on a member built by the same PKGBUILD is
+    staged too; a member nothing depends on (``wasi-libc++``) is not.
+    """
+    from sysforge.pipeline.stages.toolchain import profdata
+    from sysforge.primitives import pacman
+    pb = tmp_path / "llvm" / "PKGBUILD"
+    pb.parent.mkdir()
+    pb.write_text("pkgbase=llvm\npkgname=('llvm' 'clang' 'clang-libs' 'wasi-libc++')\n")
+    files = {}
+    for name in ("llvm", "clang", "clang-libs", "wasi-libc++"):
+        files[name] = pb.parent / f"{name}-23.1.5-1-x86_64.pkg.tar.zst"
+        files[name].touch()
+    name_of = {str(p): n for n, p in files.items()}
+    depends = {"clang": ["clang-libs", "llvm"], "llvm": [], "clang-libs": [], "wasi-libc++": []}
+    monkeypatch.setattr(pacman, "read_pkgname_from_file", lambda p: name_of[str(p)])
+    monkeypatch.setattr(pacman, "read_pkginfo_relations",
+                        lambda p: {"depend": depends[name_of[str(p)]]})
+    extracted: list[str] = []
+    monkeypatch.setattr(profdata, "extract_pkg_to_staging",
+                        lambda pkg, staging: extracted.append(pkg.name))
+
+    with patch("sysforge.primitives.config.parse_system_makepkg_conf", return_value={}):
+        extract_built_to_staging({"llvm": pb, "clang": pb}, tmp_path / "stage2", dry_run=False)
+
+    assert sorted(extracted) == sorted(
+        files[n].name for n in ("llvm", "clang", "clang-libs"))
+
 def test_remove_staging_removes_dir(tmp_path):
     staging = tmp_path / "stage"
     staging.mkdir()
