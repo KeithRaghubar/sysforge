@@ -94,6 +94,7 @@ def _toolchain_gates_clean(monkeypatch, tmp_path):
     monkeypatch.setattr(_ts, "check_pkgver_lockstep", lambda *a, **k: None, raising=True)
     monkeypatch.setattr(_ts, "detect_residual_instrumentation", lambda: [], raising=True)
     monkeypatch.setattr(_ts, "scan_abi_hazards", lambda pkgs: [], raising=True)
+    monkeypatch.setattr(_ts, "scan_stray_profiles", lambda pkgs: [], raising=True)
     monkeypatch.setattr(
         _ts, "check_system_consumer_symbols", lambda pkgs: [], raising=True)
     monkeypatch.setattr(

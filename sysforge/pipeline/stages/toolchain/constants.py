@@ -58,6 +58,12 @@ DEFAULT_STAGING_3 = "/var/tmp/sysforge-llvm-stage3"  # noqa: S108 — stable mul
 # lives in primitives.makepkg_pgo.resolve_pgo_store — the one home shared with
 # the reader (_resolve_pgo_state) and the wrapper's orphan-profraw guard.
 
+# LLVM_PROFILE_FILE for every pass that must not collect a profile (Pass 4, the
+# BOLT repackage). Empty is not "off": compiler-rt reads an empty pattern as
+# unset and writes default.profraw into the cwd, which Pass 4 then packaged at
+# three split members' roots and pacman -U refused on the conflict (4.0.0-B18).
+DISCARD_PROFILE_FILE = "/dev/null"
+
 # Makepkg flags permitted through to PGO builds from user -m input.
 # Only force-rebuild is safe; flags that alter build flow (e.g. --noextract,
 # --nobuild, --noprepare) would corrupt the instrumentation/use sequence.

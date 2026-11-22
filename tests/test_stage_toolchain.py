@@ -454,8 +454,9 @@ def test_toolchain_stage_pgo_calls_makepkg_four_passes(tmp_path):
         str(tmp_path / "staging1" / "usr")
     )
     build_env = call_log[2]["env"]
-    assert build_env.get("LLVM_PROFILE_FILE") == "", \
-        "Pass 4a must clear LLVM_PROFILE_FILE so Pass-3 training env doesn't leak"
+    assert build_env.get("LLVM_PROFILE_FILE") == "/dev/null", \
+        ("Pass 4a must discard LLVM_PROFILE_FILE so Pass-3 training env doesn't leak "
+         "(4.0.0-B18: an empty value means default.profraw)")
     # Pass 4a (pgo sub-pass) on the system-clang fallback (the test setup does
     # not materialise staged_cc): stage_env must NOT be injected. System
     # /usr/bin/clang is linked against the live /usr libLLVM (full target list);
@@ -612,8 +613,9 @@ def test_toolchain_stage_pgo_build_redirects_dyld_when_clang_staged(tmp_path):
     # Pass 4 picked up the staged clang from stage2
     assert call_log[2]["cc"] == str(staging / "usr/bin/clang")
     build_env = call_log[2]["env"]
-    assert build_env.get("LLVM_PROFILE_FILE") == "", \
-        "Pass 4 must clear LLVM_PROFILE_FILE so Pass-3 training env doesn't leak"
+    assert build_env.get("LLVM_PROFILE_FILE") == "/dev/null", \
+        ("Pass 4 must discard LLVM_PROFILE_FILE so Pass-3 training env doesn't leak "
+         "(4.0.0-B18: an empty value means default.profraw)")
     assert build_env.get("LD_LIBRARY_PATH", "").startswith(str(staging / "usr/lib")), \
         "Pass 4 must redirect dyld at stage2 when the staged clang is used"
     assert build_env.get("CMAKE_PREFIX_PATH", "").startswith(str(staging / "usr")), \

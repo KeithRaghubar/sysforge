@@ -18,7 +18,6 @@ module was hard to follow.
 """
 from pathlib import Path
 import os
-import subprocess
 import threading
 
 from sysforge.primitives import fs_provision, pacman, pkgbuild_meta
@@ -31,7 +30,6 @@ from sysforge.pipeline.stages.toolchain import constants
 
 from sysforge.primitives import prompt
 from sysforge import log
-from sysforge.primitives.resource_guard import lift_for_child
 
 _log = log.get_logger("TOOLCHAIN")
 
@@ -395,14 +393,16 @@ def pgo_install(
     _log.info(f"[PGO] Installing {len(pkgs)} package(s) ({label}):")
     for p in pkgs:
         _log.info(f"  {p.name}")
-    result = subprocess.run(  # noqa: TID251 — privileged pacman inherits the TTY, status inspected
-        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs],
-        preexec_fn=lift_for_child,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"[TOOLCHAIN] pacman -U failed (exit {result.returncode}) for {label}"
-        )
+    # On a pty, teeing into the run log (4.0.0-B18): with the TTY inherited,
+    # pacman's reason (a file conflict, a failed hook) reached the terminal only
+    # and the log said just "exit 1". Same seam as install_built_packages.
+    returncode, tail = pacman.run_logged_transaction(
+        privileged_argv(["pacman", "-U", "--noconfirm"]) + [str(p) for p in pkgs])
+    if returncode != 0:
+        msg = f"[TOOLCHAIN] pacman -U failed (exit {returncode}) for {label}"
+        if tail:
+            msg += "; last output:\n  " + "\n  ".join(tail)
+        raise RuntimeError(msg)
     pacman.record_installed_artifacts(pkgs)
 
 
@@ -484,16 +484,21 @@ def system_llvm_is_instrumented() -> bool:
     return "__llvm_profile_" in result.stdout
 
 
-def profile_runtime_ldflag() -> str | None:
-    """Return a force-load LDFLAGS fragment for the clang profile runtime, or None.
+def profile_runtime_ldflag(*, force_load: bool = True) -> str | None:
+    """Return an LDFLAGS fragment for the clang profile runtime, or None.
 
     Form: ``-Wl,--push-state,--whole-archive <profile_lib>.a -Wl,--pop-state``,
-    using the full archive path so the linker locates it unambiguously. Returns
-    None if the runtime library cannot be located, with a log warning.
+    using the full archive path so the linker locates it unambiguously; with
+    ``force_load=False``, the bare archive path. Returns None if the runtime
+    library cannot be located, with a log warning.
 
-    Injected into LDFLAGS for Pass 2 and Pass 3 (the passes that link against
-    stage1's instrumented LLVM static libs), so packages linking those archives
-    can resolve __llvm_profile_* symbols. ``--whole-archive`` force-loads the
+    Injected into LDFLAGS for Pass 2 (force-loaded) and Pass 3 (as needed), the
+    passes that can link against stage1's instrumented LLVM static libs, so
+    packages linking those archives can resolve __llvm_profile_* symbols. Pass 3
+    takes the bare archive (4.0.0-B18): its binaries become stage2, which Pass 4
+    runs, and a force-loaded runtime writes a ``default.profraw`` into the cwd
+    of every one of them at exit. As a plain archive lld pulls the runtime in
+    only for a binary that references it. ``--whole-archive`` force-loads the
     runtime regardless of link order: a bare ``-lclang_rt.profile`` appended to
     LDFLAGS lands ahead of the libraries in CMAKE_EXE_LINKER_FLAGS, and bfd's
     strict left-to-right archive resolution then drops it before the
@@ -512,7 +517,7 @@ def profile_runtime_ldflag() -> str | None:
         candidate = Path(found.stdout.strip())
         # An unfound name is echoed back bare, never as an absolute path.
         if candidate.is_absolute() and candidate.is_file():
-            return f"-Wl,--push-state,--whole-archive {candidate} -Wl,--pop-state"
+            return _runtime_flag(candidate, force_load)
 
     rt_result = run.capture(["/usr/bin/clang", "--print-runtime-dir"])
     if rt_result is None or rt_result.returncode != 0 or not rt_result.stdout.strip():
@@ -536,7 +541,13 @@ def profile_runtime_ldflag() -> str | None:
         )
         return None
 
-    return f"-Wl,--push-state,--whole-archive {profile_lib} -Wl,--pop-state"
+    return _runtime_flag(profile_lib, force_load)
+
+
+def _runtime_flag(archive: Path, force_load: bool) -> str:
+    if not force_load:
+        return str(archive)
+    return f"-Wl,--push-state,--whole-archive {archive} -Wl,--pop-state"
 
 
 def validate_pgo_environment(dry_run: bool) -> None:

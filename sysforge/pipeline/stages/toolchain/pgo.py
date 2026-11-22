@@ -223,7 +223,7 @@ def bolt_only(
         _repackage_llvm(
             pgo_map, options, cc="/usr/bin/clang", cxx="/usr/bin/clang++",
             llvm_pgo=llvm_pgo, linker_flags=_bolt.emit_relocs_ldflag(),
-            pgo_env={"LLVM_PROFILE_FILE": ""},
+            pgo_env={"LLVM_PROFILE_FILE": constants.DISCARD_PROFILE_FILE},
         )
 
     # BOLT takes minutes and the caller's install sudo follows it: authorize
@@ -671,6 +671,14 @@ def build_llvm_pgo_inner(
                     "in-tree LLVM source may surface here.",
                 )
                 pass2_cc, pass2_cxx = "/usr/bin/clang", "/usr/bin/clang++"
+            # The profile runtime as a plain archive, not Pass 2's force-load
+            # (4.0.0-B18): lld links it only into a binary that references
+            # __llvm_profile_*, i.e. one built from stage1's instrumented static
+            # archives. Force-loaded, it landed in every stage2 binary, each of
+            # which then wrote a default.profraw into its cwd whenever Pass 4 ran
+            # it, $pkgdir included, and the conflicting /default.profraw in three
+            # split members failed the install.
+            train_linker_flags = profdata.profile_runtime_ldflag(force_load=False)
             try:
                 # One counter for all of Pass 3 (train + corpus enrich), so the
                 # corpus builds continue the count instead of restarting it
@@ -685,13 +693,14 @@ def build_llvm_pgo_inner(
                         cc=pass2_cc,
                         cxx=pass2_cxx,
                         install=False,
-                        linker_flags_extra=residual_linker_flags,
+                        linker_flags_extra=train_linker_flags,
                         pgo_build=True,
                         pgo_env=train_env,
                         staged_deps=True,
-                        # lld parity (see Pass 2): without it this pass links the
-                        # instrumented stage1 archives under the gcc profile's bfd
-                        # and the bare profile-runtime ref drops out by order.
+                        # lld parity (see Pass 2), and what makes the plain
+                        # runtime archive above safe: lld resolves archives in any
+                        # order, where the gcc profile's bfd would drop it, sitting
+                        # ahead of the objects that reference it.
                         toolchain_variant="pgo_llvm",
                         record_variant=constants.INTERMEDIATE_VARIANT,
                         tick=tick3,
@@ -873,15 +882,16 @@ def build_llvm_pgo_inner(
         # the first symbol lookup. Building 4b against staging3 makes clang record
         # its true ABI (@GLIBCXX_*), coherent with the shipped libLLVM.
 
-        # 4a — optimize the pgo packages (llvm/llvm-libs). Clear
-        # LLVM_PROFILE_FILE so the Pass-3 training path doesn't leak; redirect
+        # 4a — optimize the pgo packages (llvm/llvm-libs). Discard
+        # LLVM_PROFILE_FILE so the Pass-3 training path doesn't leak and a
+        # stage2 binary carrying the runtime writes nowhere (4.0.0-B18); redirect
         # cmake/dyld at stage2 ONLY when CC is stage2's staged clang (its NEEDED
         # libLLVM is stage2's, so the redirect is ABI-coherent). System
         # /usr/bin/clang on the fallback must NOT be steered at stage2's
         # target-stripped libLLVM via LD_LIBRARY_PATH (missing target-init
         # symbols like LLVMInitializeBPFTarget). No profile-runtime LDFLAGS: the
         # pgo build is -fprofile-use (non-instrumented), so no __llvm_profile_*.
-        build_pgo_env: dict[str, str] = {"LLVM_PROFILE_FILE": ""}
+        build_pgo_env: dict[str, str] = {"LLVM_PROFILE_FILE": constants.DISCARD_PROFILE_FILE}
         if using_staged_cc:
             build_pgo_env.update(profdata.stage_env(staging))
         # BOLT (opt-in, 3.5.0-F3) rewrites libclang-cpp/libLLVM in the Pass-4a
@@ -965,7 +975,7 @@ def build_llvm_pgo_inner(
             # via LD_LIBRARY_PATH.
             if non_pgo_map:
                 build_nonpgo_env = {
-                    "LLVM_PROFILE_FILE": "",
+                    "LLVM_PROFILE_FILE": constants.DISCARD_PROFILE_FILE,
                     "CMAKE_PREFIX_PATH": f"{staging3}/usr",
                 }
                 nonpgo_fps = passes.build_pass(
@@ -1001,7 +1011,7 @@ def build_llvm_pgo_inner(
             # d191a89). Same CMAKE_PREFIX_PATH steering.
             if lib32_map:
                 pass3c_env = {
-                    "LLVM_PROFILE_FILE": "",
+                    "LLVM_PROFILE_FILE": constants.DISCARD_PROFILE_FILE,
                     "CMAKE_PREFIX_PATH": f"{staging3}/usr",
                 }
                 passes.build_pass(

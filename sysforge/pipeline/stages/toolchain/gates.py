@@ -470,6 +470,8 @@ def gate2_audit(
       1. ``scan_abi_hazards`` — the built suite's own std::-bound-to-LLVM hazard
          (any ``_ZNSt*@LLVM_*``): always a hard abort (the live toolchain could
          not resolve ``std::string`` at runtime).
+         ``scan_stray_profiles`` follows it: a packaged ``.profraw`` is a hard
+         abort too (4.0.0-B18), since split members conflict on it.
       2. ``check_system_consumer_symbols`` — graphics consumers (mesa) the
          freshly-built libLLVM would strand. *Unhealable* findings (a dropped
          LLVM backend / target-init symbol) hard-abort here, before any
@@ -502,6 +504,20 @@ def gate2_audit(
             "live toolchain would be unable to resolve std::string methods at "
             f"runtime). Nothing was installed.\n{joined}\n"
             "Restart with: sysforge run toolchain --rebuild-profdata"
+        )
+
+    # Profile data a stage tool wrote into $pkgdir (4.0.0-B18). Split members
+    # each carry their own /default.profraw, so pacman -U fails on the conflict
+    # among them; refuse here, with nothing installed and no sentinel.
+    progress.phase("stray profile data")
+    strays = toolchain_safety.scan_stray_profiles(pkgs)
+    if strays:
+        joined = "\n".join(f"  - {f.message}" for f in strays)
+        raise RuntimeError(
+            "[TOOLCHAIN] Gate 2: built packages contain profile data (.profraw) "
+            "a build tool wrote while they were packaged; refusing to install "
+            "(split members would conflict on it). Nothing was installed.\n"
+            f"{joined}\n{strays[0].remediation}"
         )
 
     # Advisory: stock std:: exports the build still lacks (3.5.0-F4).

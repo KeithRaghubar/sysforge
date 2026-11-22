@@ -141,7 +141,10 @@ def test_build_non_pgo_links_against_staged_optimized_libllvm_reuse(tmp_path):
         "host clang compiles the source; it must NOT be forced to LOAD the "
         "staged libLLVM (mirror Pass 2)"
     )
-    assert non_pgo_call["env"]["LLVM_PROFILE_FILE"] == ""
+    # 4.0.0-B18: discarded, not "" (compiler-rt reads an empty pattern as unset
+    # and writes default.profraw into the cwd).
+    assert non_pgo_call["env"]["LLVM_PROFILE_FILE"] == "/dev/null"
+    assert pgo_call["env"]["LLVM_PROFILE_FILE"] == "/dev/null"
     # 4b also forces -DLLVM_DIR at the staged cmake config so find_package(LLVM)
     # cannot fall back to /usr (env CMAKE_PREFIX_PATH alone was losing to /usr).
     assert non_pgo_call["cmake_llvm_dir"] == f"{staging3}/usr/lib/cmake/llvm"
@@ -332,11 +335,13 @@ def test_train_corpus_enrichment_compiles_extras_into_profile(tmp_path):
         return {}
 
     rt_flag = "-Wl,--push-state,--whole-archive /rt/libclang_rt.profile-x86_64.a -Wl,--pop-state"
+    rt_bare = "/rt/libclang_rt.profile-x86_64.a"
     T = "sysforge.pipeline.stages.toolchain."
     with patch(T + "profdata.validate_pgo_environment"), \
          patch(T + "pgo.pgo_confirm"), \
          patch(T + "profdata.pgo_stage_instrumented"), \
-         patch(T + "profdata.profile_runtime_ldflag", return_value=rt_flag), \
+         patch(T + "profdata.profile_runtime_ldflag",
+               side_effect=lambda force_load=True: rt_flag if force_load else rt_bare), \
          patch(T + "profdata.profraw_merge_daemon"), \
          patch(T + "profdata.merge_profraw", return_value=profdata), \
          patch(T + "profdata.write_profdata_version"), \
@@ -367,8 +372,13 @@ def test_train_corpus_enrichment_compiles_extras_into_profile(tmp_path):
     # LLVM passes only — meson doubles LDFLAGS, and a doubled --whole-archive
     # is a duplicate-symbol link failure (mesa "cannot compile programs").
     assert cc["lfe"] is None
+    # 4.0.0-B18: Pass 2 force-loads the runtime (it links stage1's instrumented
+    # archives); Pass 3 links it as needed, so the stage2 binaries Pass 4 runs
+    # carry no runtime unless something instrumented pulled it in.
+    bootstrap = [c for c in calls if c["pkgs"] == {"clang"}]
+    assert bootstrap and bootstrap[0]["lfe"] == rt_flag
     train = [c for c in calls if c["pkgs"] == {"llvm", "clang"}]
-    assert train and train[0]["lfe"] == rt_flag
+    assert train and train[0]["lfe"] == rt_bare
     # 3.2.0-B28: the target's own prior --pgo=use profile is not re-applied.
     assert cc["pgo_reuse"] is False
 

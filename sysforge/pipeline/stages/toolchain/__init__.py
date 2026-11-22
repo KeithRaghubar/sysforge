@@ -43,7 +43,9 @@ LLVM PGO bootstrap (4 passes, only when pgo = true):
             instrumented .a archives staged alongside surface __llvm_profile_*
             link errors for anything that consumes LLVM component targets;
             Pass 2 and Pass 3 work around that via profile_runtime_ldflag()
-            (force-loads the clang profile runtime) AND by selecting lld
+            (Pass 2 force-loads the clang profile runtime; Pass 3 links it as
+            a plain archive, so stage2 binaries carry it only where an
+            instrumented archive needs it, 4.0.0-B18) AND by selecting lld
             (toolchain_variant="pgo_llvm" → the [VARIANT_LD] guard in
             emit_makepkg_conf): under the CC=gcc profile's default bfd, the
             runtime would otherwise be dropped by strict left-to-right archive
